@@ -1,0 +1,286 @@
+// Spec section: Interaction
+//   - Click on any field to edit its underlying data
+//   - Remote lookups are updated on persistence
+//   - Rows with remote lookups and bound fields can be refreshed
+//   - Remote lookup values are cached so that the offline copy works for anyone it's shared with
+//   - Fields which might be stale highlight this in the UX
+const { test, expect } = require('@playwright/test');
+const h = require('./helpers');
+
+// Regression tests: none of these lighter dropdowns (unlike the field-editor
+// modal and slide-over, which already have their own full-screen backdrop)
+// closed on an outside click before — they only closed via their own
+// trigger, or picking an option.
+test.describe('Clicking off a menu/popover closes it', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  test('column "..." menu', async ({ page }) => {
+    await h.colHeader(page, 'rag').locator('span', { hasText: '⋯' }).click();
+    await expect(page.getByText('Sort ascending', { exact: true })).toBeVisible();
+    await page.mouse.click(700, 700);
+    await expect(page.getByText('Sort ascending', { exact: true })).toHaveCount(0);
+  });
+
+  test('row chevron menu', async ({ page }) => {
+    await h.row(page, 1).locator('[data-testid=row-chevron]').click();
+    await expect(page.locator('[data-testid=row-menu-open]')).toBeVisible();
+    await page.mouse.click(700, 700);
+    await expect(page.locator('[data-testid=row-menu-open]')).toHaveCount(0);
+  });
+
+  test('+field popover', async ({ page }) => {
+    await page.locator('[data-testid=add-field-wrap] span').click();
+    await expect(page.getByText('NEW FIELD', { exact: true })).toBeVisible();
+    await page.mouse.click(700, 700);
+    await expect(page.getByText('NEW FIELD', { exact: true })).toHaveCount(0);
+  });
+
+  test('export menu', async ({ page }) => {
+    await page.locator('[data-testid=btn-export]').click();
+    await expect(page.locator('[data-testid=btn-export-jsonl]')).toBeVisible();
+    await page.mouse.click(700, 700);
+    await expect(page.locator('[data-testid=btn-export-jsonl]')).toHaveCount(0);
+  });
+
+  test('single-select popover', async ({ page }) => {
+    await h.clickFieldToEdit(page, 1, 'priority');
+    await expect(page.getByText('Select an item', { exact: true })).toBeVisible();
+    await page.mouse.click(700, 700);
+    await expect(page.getByText('Select an item', { exact: true })).toHaveCount(0);
+  });
+
+  test('multi-select popover', async ({ page }) => {
+    await h.clickFieldToEdit(page, 1, 'teams');
+    await expect(page.getByText('Select items', { exact: true })).toBeVisible();
+    await page.mouse.click(700, 700);
+    await expect(page.getByText('Select items', { exact: true })).toHaveCount(0);
+  });
+});
+
+test.describe('Click any field to edit', () => {
+  test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
+
+  test('title', async ({ page }) => {
+    await h.clickTitleToEdit(page, 3);
+    expect(await page.evaluate(() => document.activeElement.tagName)).toBe('INPUT');
+  });
+
+  test('a text field', async ({ page }) => {
+    await h.clickFieldToEdit(page, 2, 'mitigation');
+    expect(await page.evaluate(() => document.activeElement.tagName)).toBe('INPUT');
+  });
+
+  test('a single-select field opens its option popover, not a text input', async ({ page }) => {
+    await h.clickFieldToEdit(page, 1, 'priority');
+    await expect(page.getByText('Select an item', { exact: true })).toBeVisible();
+  });
+
+  test('a multi-select field opens its option popover', async ({ page }) => {
+    await h.clickFieldToEdit(page, 1, 'teams');
+    await expect(page.getByText('Select items', { exact: true })).toBeVisible();
+  });
+
+  test('the same field is editable from the slide-over panel too', async ({ page }) => {
+    await h.openSlideover(page, 2);
+    // slideover-field's structure is [label div, cell div] as direct children —
+    // ':scope >' keeps this to direct children, not any nested div.
+    await h.slideoverField(page, 'mitigation').locator(':scope > div').nth(1).click();
+    expect(await page.evaluate(() => document.activeElement.tagName)).toBe('INPUT');
+  });
+
+  // Regression test for a real bug found while building this suite: activeCell
+  // is global app state, and the table row stays mounted behind the slide-over
+  // the whole time it's open. Clicking to edit a field on the issue that's
+  // CURRENTLY open in the slide-over used to make both the row's cell and the
+  // slide-over's field enter edit mode at once; their two autofocus inputs
+  // fought over focus, the resulting blur fired commitEdit, and it looked like
+  // clicking to edit silently did nothing. Fix: while an issue's slide-over is
+  // open, its own table-row cells become read-only previews — all editing for
+  // that issue goes through the slide-over exclusively until it's closed.
+  test('editing via the slide-over does not fight with the row for the same issue', async ({ page }) => {
+    await h.openSlideover(page, 2);
+
+    await h.slideoverField(page, 'mitigation').locator(':scope > div').nth(1).click();
+    expect(await page.evaluate(() => document.activeElement.tagName)).toBe('INPUT');
+    await page.keyboard.press('Escape');
+
+    // row 2's OWN table cell is read-only while its own slide-over is open.
+    // A coordinate-based click({force:true}) would actually land on the
+    // slide-over's own content instead (it visually covers this column while
+    // open — force:true only skips Playwright's actionability pre-check, not
+    // real browser hit-testing at those screen coordinates) — dispatch a
+    // native click directly on the row's DOM node instead, which tests the
+    // app's readOnly logic regardless of what's drawn on top of it.
+    await page.evaluate(() => {
+      document.querySelector('[data-testid=row][data-row-num="2"] [data-testid=field-cell][data-col=mitigation]').click();
+    });
+    await page.waitForTimeout(200);
+    expect(await page.evaluate(() => document.activeElement.tagName)).not.toBe('INPUT');
+
+    // a DIFFERENT row is completely unaffected and still editable normally
+    // (also visually covered by the still-open slide-over, so native-click
+    // the DOM node directly for the same reason as above)
+    await page.evaluate(() => {
+      document.querySelector('[data-testid=row][data-row-num="5"] [data-testid=field-cell][data-col=mitigation]').click();
+    });
+    await page.waitForTimeout(200);
+    expect(await page.evaluate(() => document.activeElement.tagName)).toBe('INPUT');
+  });
+});
+
+test.describe('Remote lookups persist with the data', () => {
+  test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
+
+  test('a resolved field survives a page reload (state, not a re-fetch)', async ({ page }) => {
+    await h.clickFieldToEdit(page, 3, 'mitigation');
+    await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/1');
+    await page.keyboard.press('Enter');
+    await h.waitForFieldResolved(page, 3, 'mitigation');
+    const before = (await h.fieldCell(page, 3, 'mitigation').textContent()).trim();
+
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+    const after = (await h.fieldCell(page, 3, 'mitigation').textContent()).trim();
+    expect(after).toBe(before);
+  });
+
+  test('the resolved ref (owner/repo/num/labels) is part of persisted state, not just the display text', async ({ page }) => {
+    await h.clickFieldToEdit(page, 3, 'mitigation');
+    await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/1');
+    await page.keyboard.press('Enter');
+    await h.waitForFieldResolved(page, 3, 'mitigation');
+
+    const stored = await page.evaluate(() => {
+      const raw = localStorage.getItem('git_native_tracker_v1');
+      const parsed = JSON.parse(raw);
+      return parsed.issues.find(i => i.id === 'i3').fieldRefs.mitigation;
+    });
+    expect(stored).toMatchObject({ owner: 'octocat', repo: 'Hello-World', num: '1' });
+  });
+
+  test('the exported/viewed JSONL source carries fieldRefs too (regression: it used to read a removed property and silently drop this)', async ({ page }) => {
+    await h.clickFieldToEdit(page, 3, 'mitigation');
+    await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/1');
+    await page.keyboard.press('Enter');
+    await h.waitForFieldResolved(page, 3, 'mitigation');
+
+    await page.getByText('{ } View source', { exact: true }).click();
+    await page.waitForTimeout(200);
+    const sourceText = await page.locator('pre').textContent();
+    const i3Line = sourceText.split('\n').find(l => l.includes('"id":"i3"'));
+    expect(i3Line).toBeTruthy();
+    const parsed = JSON.parse(i3Line);
+    expect(parsed.fieldRefs.mitigation).toMatchObject({ owner: 'octocat', repo: 'Hello-World', num: '1' });
+  });
+});
+
+test.describe('Refresh: row / whole table', () => {
+  test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
+
+  test('row: refreshing re-pulls every GitHub-linked field on that row, not just one', async ({ page }) => {
+    // link row 3's title AND mitigation to two different (mocked) issues
+    await h.clickTitleToEdit(page, 3);
+    await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/1');
+    await page.keyboard.press('Enter');
+    await h.waitForTitleResolved(page, 3);
+
+    await h.clickFieldToEdit(page, 3, 'mitigation');
+    await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/2');
+    await page.keyboard.press('Enter');
+    await h.waitForFieldResolved(page, 3, 'mitigation');
+
+    // row menu -> Refresh
+    await h.row(page, 3).locator('[data-testid=row-chevron]').click();
+    await page.locator('[data-testid=row-menu-refresh]').click();
+    await h.waitForTitleResolved(page, 3);
+    await h.waitForFieldResolved(page, 3, 'mitigation');
+
+    const history = await h.getHistoryEntriesFor(page, 'i3');
+    expect(history.some(t => /[Rr]efresh(ing|ed)? title/.test(t) || /[Rr]efresh(ing|ed)? Issue/.test(t))).toBe(true);
+    expect(history.some(t => /[Rr]efresh(ing|ed)? Mitigation/.test(t))).toBe(true);
+  });
+
+  test('row: unlinked row\'s refresh is a harmless no-op', async ({ page }) => {
+    // row 3 has nothing linked in seed data
+    await h.row(page, 3).locator('[data-testid=row-chevron]').click();
+    await page.locator('[data-testid=row-menu-refresh]').click();
+    await page.waitForTimeout(300);
+    const history = await h.getHistoryEntriesFor(page, 'i3');
+    expect(history.some(t => /[Rr]efresh/.test(t))).toBe(false);
+  });
+
+  // Deliberately no column-level refresh: refreshing one column but leaving
+  // OTHER columns that reference the same underlying link stale doesn't make
+  // sense (e.g. Type is computed from Title's link — only refreshing Title,
+  // not Type-the-column, is the coherent unit). Row and whole-table refresh
+  // cover this instead.
+  test('column menu has no "Refresh column" item, on any field type', async ({ page }) => {
+    await h.openColumnMenu(page, 'mitigation'); // text type
+    await expect(page.locator('[data-testid=col-menu-refresh]')).toHaveCount(0);
+    await page.mouse.click(700, 700);
+
+    await h.openColumnMenu(page, 'priority'); // select type
+    await expect(page.locator('[data-testid=col-menu-refresh]')).toHaveCount(0);
+  });
+
+  test('whole table: "Refresh all" re-pulls every linked field across every row', async ({ page }) => {
+    await h.clickFieldToEdit(page, 3, 'mitigation');
+    await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/1');
+    await page.keyboard.press('Enter');
+    await h.waitForFieldResolved(page, 3, 'mitigation');
+
+    await page.locator('[data-testid=btn-refresh-all]').click();
+    await h.waitForFieldResolved(page, 3, 'mitigation');
+    // row 1's title was already linked in seed data — refreshing it too means it
+    // hits the mocked API (acme/app is a fictional repo, so this resolves as a
+    // real 404 via the mock — the point is it was attempted, not that it succeeds).
+    await page.waitForTimeout(500);
+
+    const h1 = await h.getHistoryEntriesFor(page, 'i1');
+    expect(h1.some(t => /[Rr]efresh/.test(t))).toBe(true);
+    const h3 = await h.getHistoryEntriesFor(page, 'i3');
+    expect(h3.some(t => /Mitigation/.test(t) && /[Rr]efresh/.test(t))).toBe(true);
+  });
+});
+
+test.describe('Staleness highlighting (KNOWN GAP)', () => {
+  test('a resolved field records when it was last fetched', async ({ page }) => {
+    test.fail(true, 'No timestamp is recorded at all when a field resolves — fieldRefs only carries ' +
+      'owner/repo/num/labels. Staleness can\'t be computed without a fetchedAt/syncedAt field.');
+
+    await h.gotoTracker(page);
+    await h.clickFieldToEdit(page, 3, 'mitigation');
+    await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/1');
+    await page.keyboard.press('Enter');
+    await h.waitForFieldResolved(page, 3, 'mitigation');
+    const stored = await page.evaluate(() => {
+      const raw = localStorage.getItem('git_native_tracker_v1');
+      return JSON.parse(raw).issues.find(i => i.id === 'i3').fieldRefs.mitigation;
+    });
+    expect(stored.fetchedAt).toBeTruthy();
+  });
+
+  test('a stale (old) resolved field is visually flagged', async ({ page }) => {
+    test.fail(true, 'No staleness UX exists at all yet — there is nothing to visually flag with, since ' +
+      'there is no fetchedAt timestamp to compare against (see the previous test).');
+
+    await h.gotoTracker(page);
+    await h.clickFieldToEdit(page, 3, 'mitigation');
+    await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/1');
+    await page.keyboard.press('Enter');
+    await h.waitForFieldResolved(page, 3, 'mitigation');
+
+    // Simulate a fetch that happened 2 days ago and re-render.
+    await page.evaluate(() => {
+      const raw = JSON.parse(localStorage.getItem('git_native_tracker_v1'));
+      const iss = raw.issues.find(i => i.id === 'i3');
+      iss.fieldRefs.mitigation.fetchedAt = Date.now() - 2 * 24 * 60 * 60 * 1000;
+      localStorage.setItem('git_native_tracker_v1', JSON.stringify(raw));
+    });
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    const staleIndicator = await h.fieldCell(page, 3, 'mitigation').locator('[data-stale="true"], [title*="stale" i]').count();
+    expect(staleIndicator).toBeGreaterThan(0);
+  });
+});

@@ -1,0 +1,21 @@
+{
+  "name": "workspace",
+  "version": "1.0.0",
+  "description": "A GitHub-Projects-style tracker that isn't siloed: the data is a single plain-text file you can put in git, email, or drop in a shared folder, and the viewer is a static HTML/JS app with no server and no build step.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "example": "example"
+  },
+  "scripts": {
+    "test": "playwright test"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "playwright": "^1.62.1"
+  }
+}

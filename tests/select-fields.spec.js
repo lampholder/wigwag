@@ -129,6 +129,13 @@ test.describe('Multi-select', () => {
     await h.fieldCell(page, 3, 'teams').click();
     await expect(page.getByText('Select items', { exact: true })).toBeVisible();
   });
+
+  test('rule helper text includes a return-type hint ("Return an array of option ids or labels.")', async ({ page }) => {
+    await h.openFieldEditor(page, 'teams');
+    await page.locator('[data-testid=field-editor-source-select]').selectOption({ label: 'Issue' });
+    await page.waitForTimeout(150);
+    await expect(page.getByText('Return an array of option ids or labels.', { exact: true })).toBeVisible();
+  });
 });
 
 test.describe('Text fields', () => {
@@ -151,5 +158,12 @@ test.describe('Text fields', () => {
     await page.locator('[data-testid=field-editor-source-select]').selectOption({ label: 'Issue' });
     await page.waitForTimeout(150);
     expect(await page.locator('[data-testid=field-editor-rule-textarea]').count()).toBe(1);
+  });
+
+  test('rule helper text includes a return-type hint ("Return a string.")', async ({ page }) => {
+    await h.openFieldEditor(page, 'mitigation');
+    await page.locator('[data-testid=field-editor-source-select]').selectOption({ label: 'Issue' });
+    await page.waitForTimeout(150);
+    await expect(page.getByText('Return a string.', { exact: true })).toBeVisible();
   });
 });

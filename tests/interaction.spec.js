@@ -284,3 +284,70 @@ test.describe('Staleness highlighting (KNOWN GAP)', () => {
     expect(staleIndicator).toBeGreaterThan(0);
   });
 });
+
+test.describe('Comment-indicator column', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  test('a row with no comments shows the icon but no badge', async ({ page }) => {
+    const indicator = h.row(page, 1).locator('[data-testid=comment-indicator]');
+    await expect(indicator).toBeVisible();
+    expect(await indicator.locator('[data-testid=comment-count-badge]').count()).toBe(0);
+    await expect(indicator).toHaveAttribute('title', 'Add a comment');
+  });
+
+  test('a row with comments shows a count badge and the latest comment as a tooltip', async ({ page }) => {
+    // seed row 2 has exactly one comment: "Confirmed on staging, filed with the sync team."
+    const indicator = h.row(page, 2).locator('[data-testid=comment-indicator]');
+    await expect(indicator.locator('[data-testid=comment-count-badge]')).toHaveText('1');
+    await expect(indicator).toHaveAttribute('title', 'Confirmed on staging, filed with the sync team.');
+  });
+
+  test('clicking it opens the slide-over for that issue', async ({ page }) => {
+    await h.row(page, 2).locator('[data-testid=comment-indicator]').click();
+    await page.waitForTimeout(400);
+    const slideover = page.locator('[data-testid=slideover]');
+    await expect(slideover).toBeVisible();
+    await expect(slideover).toContainText("ACME – New rooms added to spaces don't show until sync");
+  });
+});
+
+test.describe('Detail slide-over', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  test('is 87.5vw wide, not a fixed pixel width', async ({ page }) => {
+    await page.setViewportSize({ width: 1600, height: 900 });
+    const slideover = await h.openSlideover(page, 1);
+    await page.waitForTimeout(300);
+    const box = await slideover.boundingBox();
+    expect(Math.abs(box.width - 1600 * 0.875)).toBeLessThan(2);
+  });
+
+  test('header shows a stable short ref (first 8 chars of the issue uid), not the positional row number', async ({ page }) => {
+    const slideover = await h.openSlideover(page, 1);
+    const uid = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_v1')).issues.find(i => i.id === 'i1').uid);
+    await expect(slideover).toContainText('#' + uid.slice(0, 8));
+  });
+
+  test('comments and history are merged into a single most-recent-first ACTIVITY timeline', async ({ page }) => {
+    // seed row 2: history "Created" (Jul 15) -> comment (Jul 21) -> history "RAG set to At risk" (Jul 21, later same day)
+    const slideover = await h.openSlideover(page, 2);
+    expect(await page.getByText('COMMENTS', { exact: true }).count()).toBe(0);
+    expect(await page.getByText('HISTORY', { exact: true }).count()).toBe(0);
+    await expect(page.getByText('ACTIVITY', { exact: true })).toBeVisible();
+
+    const entries = slideover.locator('[data-testid=activity-entry]');
+    expect(await entries.count()).toBe(3);
+    await expect(entries.nth(0)).toContainText('RAG set to At risk');
+    await expect(entries.nth(1)).toContainText('Confirmed on staging');
+    await expect(entries.nth(2)).toContainText('Created');
+  });
+
+  test('posting a new comment adds it to the top of the ACTIVITY timeline', async ({ page }) => {
+    const slideover = await h.openSlideover(page, 1);
+    await page.locator('input[placeholder="Add a comment…"]').fill('A brand new comment');
+    await page.locator('button', { hasText: 'Post' }).click();
+    await page.waitForTimeout(150);
+    const entries = slideover.locator('[data-testid=activity-entry]');
+    await expect(entries.first()).toContainText('A brand new comment');
+  });
+});

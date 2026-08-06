@@ -351,3 +351,217 @@ test.describe('Detail slide-over', () => {
     await expect(entries.first()).toContainText('A brand new comment');
   });
 });
+
+test.describe('Control+Space opens and focuses the add-item box', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  test('pressing it opens the box and moves keyboard focus into it', async ({ page }) => {
+    expect(await page.locator('[data-testid=add-item-input]').count()).toBe(0);
+    await page.keyboard.down('Control');
+    await page.keyboard.press('Space');
+    await page.keyboard.up('Control');
+    await page.waitForTimeout(150);
+
+    const input = page.locator('[data-testid=add-item-input]');
+    await expect(input).toBeVisible();
+    const isFocused = await input.evaluate(el => el === document.activeElement);
+    expect(isFocused).toBe(true);
+  });
+
+  test('a full create flow works via keyboard alone', async ({ page }) => {
+    await page.keyboard.down('Control');
+    await page.keyboard.press('Space');
+    await page.keyboard.up('Control');
+    await page.waitForTimeout(150);
+    await page.keyboard.type('Created via keyboard shortcut');
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(200);
+
+    const lastRow = page.locator('[data-testid=row]').last();
+    await expect(lastRow.locator('[data-testid=title-cell]')).toContainText('Created via keyboard shortcut');
+  });
+
+  test('does nothing while a modal is already open (would otherwise steal focus behind it)', async ({ page }) => {
+    await h.openFieldEditor(page, 'rag');
+    await page.keyboard.down('Control');
+    await page.keyboard.press('Space');
+    await page.keyboard.up('Control');
+    await page.waitForTimeout(150);
+
+    await expect(page.locator('[data-testid=field-editor]')).toBeVisible();
+    expect(await page.locator('[data-testid=add-item-input]').isVisible().catch(() => false)).toBe(false);
+  });
+});
+
+test.describe('Select/multiselect popover flips above the field when there is no room below', () => {
+  test('opens above a field near the bottom of a short viewport', async ({ page }) => {
+    await page.setViewportSize({ width: 1450, height: 520 });
+    await h.gotoTracker(page);
+    const cell = h.fieldCell(page, 9, 'priority');
+    const cellBox = await cell.boundingBox();
+    await cell.click();
+    await page.waitForTimeout(200);
+    const popover = page.getByText('Select an item', { exact: true }).locator('../..');
+    const popoverBox = await popover.boundingBox();
+    expect(popoverBox.y).toBeLessThan(cellBox.y);
+  });
+
+  test('still opens below a field near the top of the viewport', async ({ page }) => {
+    await page.setViewportSize({ width: 1450, height: 900 });
+    await h.gotoTracker(page);
+    const cell = h.fieldCell(page, 1, 'priority');
+    const cellBox = await cell.boundingBox();
+    await cell.click();
+    await page.waitForTimeout(200);
+    const popover = page.getByText('Select an item', { exact: true }).locator('../..');
+    const popoverBox = await popover.boundingBox();
+    expect(popoverBox.y).toBeGreaterThan(cellBox.y);
+  });
+});
+
+test.describe('Activity history', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  test('editing a plain text field logs a history entry', async ({ page }) => {
+    await h.clickFieldToEdit(page, 3, 'mitigation');
+    await h.typeAndCommit(page, 'A new mitigation note');
+    await page.waitForTimeout(150);
+    const history = await h.getHistoryEntriesFor(page, 'i3');
+    expect(history.some(t => t.includes('Mitigation set to "A new mitigation note"'))).toBe(true);
+  });
+
+  test('committing the same (unchanged) text does not add a no-op entry', async ({ page }) => {
+    await h.clickFieldToEdit(page, 2, 'mitigation'); // seed row 2 already has mitigation text
+    const before = await h.getHistoryEntriesFor(page, 'i2');
+    await h.typeAndCommit(page, 'Manual refresh workaround documented'); // same as seed value
+    await page.waitForTimeout(150);
+    const after = await h.getHistoryEntriesFor(page, 'i2');
+    expect(after.length).toBe(before.length);
+  });
+
+  test('picking a single-select option logs a history entry', async ({ page }) => {
+    await h.clickFieldToEdit(page, 3, 'priority');
+    await page.waitForTimeout(150);
+    const optionList = page.locator('div[style*="max-height: 220px"]');
+    await optionList.getByText('P1', { exact: true }).click();
+    await page.waitForTimeout(150);
+    const history = await h.getHistoryEntriesFor(page, 'i3');
+    expect(history.some(t => t === 'Priority set to P1')).toBe(true);
+  });
+
+  test('toggling a multiselect option logs an added/removed history entry', async ({ page }) => {
+    await h.clickFieldToEdit(page, 3, 'teams');
+    await page.waitForTimeout(150);
+    const optionList = page.locator('div[style*="max-height: 220px"]');
+    await optionList.getByText('Infra', { exact: true }).click();
+    await page.waitForTimeout(150);
+    const history = await h.getHistoryEntriesFor(page, 'i3');
+    expect(history.some(t => t === 'Delivery teams: added Infra')).toBe(true);
+  });
+
+  test('new history/comment entries carry a real timestamp, not a static "Now"/"Just now" placeholder', async ({ page }) => {
+    await h.clickFieldToEdit(page, 3, 'priority');
+    await page.waitForTimeout(150);
+    const optionList = page.locator('div[style*="max-height: 220px"]');
+    await optionList.getByText('P2', { exact: true }).click();
+    await page.waitForTimeout(150);
+
+    const times = await page.evaluate(() => {
+      const d = JSON.parse(localStorage.getItem('git_native_tracker_v1'));
+      return d.issues.find(i => i.id === 'i3').history.map(h => h.time);
+    });
+    const newest = times[times.length - 1];
+    expect(newest).not.toBe('Now');
+    expect(newest).not.toBe('Just now');
+    // real timestamps look like "Aug 6, 8:48 AM" -- a month abbreviation, a day number, and a time.
+    expect(newest).toMatch(/^[A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2}\s?(AM|PM)$/);
+  });
+});
+
+test.describe('A too-wide table scrolls on its own, not the whole page', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.setViewportSize({ width: 900, height: 900 }); // narrow enough that the table overflows
+    await h.gotoTracker(page);
+  });
+
+  test('the page itself has no horizontal scrollbar', async ({ page }) => {
+    const docScrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
+    expect(docScrollWidth).toBeLessThanOrEqual(900);
+  });
+
+  test('the table wrapper itself scrolls internally', async ({ page }) => {
+    const wrap = page.locator('[data-testid=table-scroll-wrap]');
+    const scrollWidth = await wrap.evaluate(el => el.scrollWidth);
+    const clientWidth = await wrap.evaluate(el => el.clientWidth);
+    expect(scrollWidth).toBeGreaterThan(clientWidth);
+  });
+
+  test('the header, add-item box, and "View source" link do not move when the table scrolls', async ({ page }) => {
+    const header = await page.locator('text=Delivery tracker').boundingBox();
+    const addItem = await page.getByText('Control + Space').boundingBox();
+    const viewSource = await page.getByText('{ } View source').boundingBox();
+
+    await page.locator('[data-testid=table-scroll-wrap]').evaluate(el => { el.scrollLeft = 400; });
+    await page.waitForTimeout(150);
+
+    expect(await page.locator('text=Delivery tracker').boundingBox()).toEqual(header);
+    expect(await page.getByText('Control + Space').boundingBox()).toEqual(addItem);
+    expect(await page.getByText('{ } View source').boundingBox()).toEqual(viewSource);
+  });
+
+  test('a select popover on the last row still renders fully, not clipped by the new scroll container', async ({ page }) => {
+    const lastRowCell = page.locator('[data-testid=row]').last().locator('[data-testid=field-cell][data-col=priority]');
+    await lastRowCell.click();
+    await page.waitForTimeout(200);
+    // scope to the popover's own option list (max-height:220px is its
+    // distinguishing style) -- otherwise "P0" also matches row 5's own
+    // already-set Priority chip elsewhere in the table.
+    const optionList = page.locator('div[style*="max-height: 220px"]');
+    await expect(optionList.getByText('P0', { exact: true })).toBeVisible();
+  });
+});
+
+test.describe('Clearing an active sort', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  // Regression: the "✕" shown next to the active sort direction in the
+  // column menu used to be purely decorative -- clicking it (or anywhere
+  // on that row) just re-applied the same direction via sortBy(), a no-op
+  // since it was already sorted that way. There was no way to actually
+  // clear a sort from the menu.
+  test('clicking "Sort ascending" again while already ascending clears the sort', async ({ page }) => {
+    await h.sortByColumn(page, 'rag', 'ascending');
+    let sort = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_v1')).sort);
+    expect(sort).toEqual({ colId: 'rag', dir: 'asc' });
+
+    await h.colHeader(page, 'rag').locator('span', { hasText: '⋯' }).click();
+    await page.waitForTimeout(150);
+    await page.getByText('Sort ascending', { exact: true }).click();
+    await page.waitForTimeout(150);
+
+    sort = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_v1')).sort);
+    expect(sort.colId).toBeNull();
+  });
+
+  test('clicking "Sort descending" again while already descending clears the sort', async ({ page }) => {
+    await h.sortByColumn(page, 'priority', 'descending');
+    let sort = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_v1')).sort);
+    expect(sort).toEqual({ colId: 'priority', dir: 'desc' });
+
+    await h.colHeader(page, 'priority').locator('span', { hasText: '⋯' }).click();
+    await page.waitForTimeout(150);
+    await page.getByText('Sort descending', { exact: true }).click();
+    await page.waitForTimeout(150);
+
+    sort = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_v1')).sort);
+    expect(sort.colId).toBeNull();
+  });
+});
+
+test.describe('Table card corners', () => {
+  test('the last row gets a matching bottom border-radius, not a square corner clipping the card\'s rounding', async ({ page }) => {
+    await h.gotoTracker(page);
+    const radius = await page.locator('[data-testid=row]').last().evaluate(el => getComputedStyle(el).borderRadius);
+    expect(radius).toBe('0px 0px 8px 8px');
+  });
+});

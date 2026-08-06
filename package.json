@@ -8,7 +8,8 @@
     "example": "example"
   },
   "scripts": {
-    "test": "playwright test"
+    "test": "playwright test",
+    "jira-proxy": "node jira-proxy.js"
   },
   "keywords": [],
   "author": "",

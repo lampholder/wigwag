@@ -113,6 +113,27 @@ test.describe('Multi-select', () => {
     }
   });
 
+  test('chips always render in the field\'s configured option order, regardless of selection order', async ({ page }) => {
+    // teams options configured order: Platform, Ops, Mobile, Web, Infra.
+    // Row 8 starts with just ['infra'] -- select the rest in REVERSE
+    // configured order and confirm the rendered chips don't follow that.
+    const cell = h.fieldCell(page, 8, 'teams');
+    await cell.click();
+    await page.waitForTimeout(150);
+    const optionList = page.locator('div[style*="max-height: 220px"]');
+    for (const label of ['Web', 'Mobile', 'Ops', 'Platform']) {
+      await optionList.getByText(label, { exact: true }).click();
+      await page.waitForTimeout(100);
+    }
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(150);
+
+    const rawTexts = await cell.locator('span').evaluateAll(spans => spans.map(s => s.textContent.trim()));
+    const known = ['Platform', 'Ops', 'Mobile', 'Web', 'Infra'];
+    const chips = rawTexts.filter((t, i) => known.includes(t) && t !== rawTexts[i - 1]); // dedupe nested sc-interp span
+    expect(chips).toEqual(['Platform', 'Ops', 'Mobile', 'Web', 'Infra']);
+  });
+
   test('can be bound to a field via the rule DSL', async ({ page }) => {
     await h.openFieldEditor(page, 'teams');
     await h.setBoundSourceAndRule(page, 'Issue', 'source.github.labels.includes("bug") ? ["platform"] : []');
@@ -150,6 +171,14 @@ test.describe('Text fields', () => {
     expect(await page.locator('[data-testid=option-row]').count()).toBe(0);
   });
 
+  test('a truncated value shows the full text as a native hover tooltip', async ({ page }) => {
+    // seed row 7's mitigation text is long enough to truncate in the column.
+    const span = h.fieldCell(page, 7, 'mitigation').locator('span[title]').first();
+    const full = await span.getAttribute('title');
+    expect(full).toBe('Fallback to plain text export until fixed');
+    expect(full).toBe(await span.textContent());
+  });
+
   test('is bindable via BOUND SOURCE, same as select/multiselect', async ({ page }) => {
     await h.openFieldEditor(page, 'mitigation');
     expect(await page.getByText('BOUND SOURCE', { exact: true }).count()).toBe(1);
@@ -165,5 +194,25 @@ test.describe('Text fields', () => {
     await page.locator('[data-testid=field-editor-source-select]').selectOption({ label: 'Issue' });
     await page.waitForTimeout(150);
     await expect(page.getByText('Return a string.', { exact: true })).toBeVisible();
+  });
+
+  test('once bound, shows a pretty-printed preview of the actual source object instead of prose', async ({ page }) => {
+    await h.openFieldEditor(page, 'mitigation');
+    // no preview before a source is picked
+    expect(await page.locator('[data-testid=field-editor-source-preview]').count()).toBe(0);
+
+    await page.locator('[data-testid=field-editor-source-select]').selectOption({ label: 'Issue' });
+    await page.waitForTimeout(150);
+    const preview = page.locator('[data-testid=field-editor-source-preview]');
+    await expect(preview).toBeVisible();
+    const text = await preview.textContent();
+    const parsed = JSON.parse(text); // must be valid, parseable JSON
+    expect(parsed).toHaveProperty('isLinked');
+    expect(parsed).toHaveProperty('github');
+    expect(parsed).toHaveProperty('jira');
+    // seed row 1's title IS github-linked, so the preview should reflect a
+    // real linked example, not just the empty default shape.
+    expect(parsed.isLinked).toBe(true);
+    expect(parsed.github.labels).toContain('enhancement');
   });
 });

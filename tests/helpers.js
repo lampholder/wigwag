@@ -84,6 +84,41 @@ async function mockGithubApi(page) {
   });
 }
 
+// Mirrors mockGithubApi, for the local Jira proxy the app talks to instead
+// of Jira directly (Jira doesn't allow direct browser CORS requests the way
+// GitHub does — see jira-proxy.js). fixtures maps issue key -> the proxy's
+// normalized response shape ({title, description, labels, browseUrl}).
+async function mockJiraProxy(page, fixtures, proxyUrl = 'http://localhost:8934') {
+  await page.route(proxyUrl + '/issue/*', async (route) => {
+    const key = decodeURIComponent(new URL(route.request().url()).pathname.replace(/^\/issue\//, ''));
+    const fixture = fixtures[key];
+    if (fixture) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(fixture) });
+    } else {
+      await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: 'not found' }) });
+    }
+  });
+}
+
+async function openSettings(page) {
+  await page.locator('[data-testid=btn-settings]').click();
+  await page.waitForTimeout(150);
+}
+
+async function setGithubToken(page, token) {
+  await openSettings(page);
+  await page.locator('[data-testid=settings-github-token]').fill(token);
+  await page.mouse.click(700, 700);
+  await page.waitForTimeout(150);
+}
+
+async function setJiraProxyUrl(page, url) {
+  await openSettings(page);
+  await page.locator('[data-testid=settings-jira-proxy-url]').fill(url);
+  await page.mouse.click(700, 700);
+  await page.waitForTimeout(150);
+}
+
 async function pasteText(page, text) {
   await page.evaluate((t) => navigator.clipboard.writeText(t), text);
   await page.keyboard.press('Control+A'); // replace any pre-filled value, don't paste-append at the cursor
@@ -209,4 +244,8 @@ module.exports = {
   getHistoryEntries,
   getHistoryEntriesFor,
   mockGithubApi,
+  mockJiraProxy,
+  openSettings,
+  setGithubToken,
+  setJiraProxyUrl,
 };

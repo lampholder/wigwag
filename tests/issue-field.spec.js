@@ -82,4 +82,12 @@ test.describe('Key/Issue field', () => {
     // row 3's title has no link at all -> the rule's null branch, no computed value
     await expect(h.fieldCell(page, 3, 'type')).toHaveText(/—/);
   });
+
+  test('a truncated title shows the full text as a native hover tooltip', async ({ page }) => {
+    // seed row 1's title is long enough to truncate in the fixed-width column.
+    const span = h.titleCell(page, 1).locator('span[title]').first();
+    const full = await span.getAttribute('title');
+    expect(full).toBe('Sidebar sizing does not stick between application starts');
+    expect(full).toBe(await span.textContent());
+  });
 });

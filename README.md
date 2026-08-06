@@ -10,8 +10,9 @@ Design goals this addresses (see `docs/FORMAT.md` for the full rationale):
   fields crammed onto one line item.
 - Free-form + multiselect fields, defined per-document, no schema migration
   to add one.
-- Any issue can be backed by a real GitHub issue (Jira scaffolded, not yet
-  wired up) or be purely local — mix freely, and link across that boundary.
+- Any issue can be backed by a real GitHub issue (public or private, with a
+  token) or a real Jira issue (via a small local proxy — see below), or be
+  purely local — mix freely, and link across that boundary.
 - History (including comments) travels inside the file itself, so it
   survives being emailed or Dropboxed, not just committed to git.
 - Two people can edit offline and merge back safely — conflicts are
@@ -38,6 +39,27 @@ fields, plus comments.
   sent back) and merges it against your working copy. If both sides changed
   the same field, you'll be asked to pick a winner before the merge applies.
 
+## Linking to private GitHub repos & Jira
+
+- **Private GitHub repos**: open Settings (gear icon in the header) and
+  paste a GitHub personal access token with `repo` read access. It's stored
+  only in your browser's `localStorage`, in a key kept separate from the
+  tracker's own data — it's never written into "View source", never
+  included in an export, and never leaves your machine except in requests
+  straight to `api.github.com`.
+- **Jira**: Jira's REST API doesn't allow direct browser requests the way
+  GitHub's does, so linking to a Jira issue needs a small local relay
+  process you run yourself:
+  ```
+  JIRA_BASE_URL=https://yourco.atlassian.net JIRA_EMAIL=you@yourco.com JIRA_API_TOKEN=xxxx npm run jira-proxy
+  ```
+  (or `JIRA_PAT=xxxx` instead of `JIRA_EMAIL`/`JIRA_API_TOKEN` for Jira
+  Server/Data Center). See the comment at the top of `jira-proxy.js` for
+  details. Then point Settings > Jira proxy URL at wherever it's listening
+  (`http://localhost:8934` by default) and type a Jira key (e.g. `TRK-118`)
+  into any text field to link it — same as pasting a GitHub link. Jira
+  credentials stay in the proxy process; the browser never sees them.
+
 ## Layout
 
 - `schema/tracker.schema.json` — JSON Schema for each line of the file.
@@ -49,8 +71,8 @@ fields, plus comments.
 ## Status
 
 This is a working v1, not a finished product. Deliberately out of scope for
-now (tracked in `docs/FORMAT.md`): Jira live-pull, private-repo/token auth,
-automatic conflict-resolution policies, and cryptographic hash signing.
+now (tracked in `docs/FORMAT.md`): automatic conflict-resolution policies
+and cryptographic hash signing.
 
 The core data logic (parse, event replay, squash, state hashing, and the
 merge algorithm including conflict detection) is covered by a Node-based

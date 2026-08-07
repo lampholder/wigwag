@@ -7,41 +7,49 @@
 const { test, expect } = require('@playwright/test');
 const h = require('./helpers');
 
-test.describe('JSONL export/import (KNOWN GAP: only an in-memory view-source exists)', () => {
+test.describe('JSONL export/import', () => {
   test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
 
   test('exporting downloads a real .jsonl file', async ({ page }) => {
-    test.fail(true, '"Export as JSONL" only closes the menu — the only working export today is the ' +
-      '"View source" modal\'s copy-to-clipboard. There is no actual file download anywhere in the app.');
-
     await page.locator('[data-testid=btn-export]').click();
-    // Bounded wait: with no download ever firing, an unbounded wait here would
-    // hit the *test's* overall timeout, which test.fail() does NOT treat as an
-    // "expected" failure (only in-test assertion errors are) — it would show
-    // as a hard failure instead of the intended documented gap.
-    const downloadPromise = page.waitForEvent('download', { timeout: 3000 });
+    const downloadPromise = page.waitForEvent('download');
     await page.locator('[data-testid=btn-export-jsonl]').click();
     const download = await downloadPromise;
     expect(download.suggestedFilename()).toMatch(/\.jsonl$/);
   });
 
-  test('"Open file…" loads a .jsonl file\'s data into the view', async ({ page }) => {
-    test.fail(true, 'onOpenFileChange is a no-op stub (see TODO(file-io) in the source) — selecting a ' +
-      'file currently does nothing at all.');
+  test('a squashed export keeps only the latest per-field entry, but keeps narrative/comment entries', async ({ page }) => {
+    // Generate two RAG edits on row 1 so there's an intermediate entry to squash away.
+    await h.fieldCell(page, 1, 'rag').click();
+    await page.locator('div[style*="z-index: 70"]').getByText('At risk').click();
+    await page.waitForTimeout(150);
+    await h.fieldCell(page, 1, 'rag').click();
+    await page.locator('div[style*="z-index: 70"]').getByText('Off track').click();
+    await page.waitForTimeout(150);
 
+    await page.locator('[data-testid=btn-export]').click();
+    const downloadPromise = page.waitForEvent('download');
+    await page.locator('[data-testid=btn-export-jsonl-squashed]').click();
+    const download = await downloadPromise;
+    const fs = require('fs');
+    const lines = fs.readFileSync(await download.path(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+    const issue1 = lines.find(l => l.type === 'issue' && l.id === 'i1');
+    expect(issue1.history.filter(hh => hh.field === 'rag').length).toBe(1);
+    expect(issue1.history.some(hh => !hh.field)).toBe(true); // e.g. "Created" is kept
+  });
+
+  test('"Open file…" loads a .jsonl file\'s data into the view', async ({ page }) => {
     const fixture = Buffer.from(
       JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, columnOrder: [] }) + '\n' +
       JSON.stringify({ type: 'issue', id: 'x1', num: 1, jira: null, fieldRefs: {}, values: { title: 'Imported issue' }, comments: [], history: [] }) + '\n'
     );
+    page.once('dialog', d => d.accept());
     await page.locator('[data-testid=open-file-input]').setInputFiles({ name: 'import.jsonl', mimeType: 'application/octet-stream', buffer: fixture });
     await page.waitForTimeout(300);
     await expect(h.titleCell(page, 1)).toContainText('Imported issue');
   });
 
   test('"Import & merge…" unions an incoming file\'s issues with the current ones', async ({ page }) => {
-    test.fail(true, 'onMergeFileChange is a no-op stub — there is no merge logic at all yet (no ' +
-      'shared-history diffing, no conflict surfacing).');
-
     const fixture = Buffer.from(
       JSON.stringify({ type: 'fields', fields: {}, columnOrder: [] }) + '\n' +
       JSON.stringify({ type: 'issue', id: 'new1', num: 100, jira: null, fieldRefs: {}, values: { title: 'Merged-in issue' }, comments: [], history: [] }) + '\n'
@@ -53,7 +61,128 @@ test.describe('JSONL export/import (KNOWN GAP: only an in-memory view-source exi
   });
 });
 
-test.describe('Full history log vs. latest-state export (KNOWN GAP)', () => {
+test.describe('Merge conflict detection and resolution', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  // Builds an "incoming" fixture by taking a real export of the current
+  // working copy and grafting on a new authored history entry for one
+  // field on one issue — simulating a collaborator's file that diverged
+  // from the same shared base, without needing a second browser session.
+  async function exportBaseline(page) {
+    await page.locator('[data-testid=btn-export]').click();
+    const [download] = await Promise.all([
+      page.waitForEvent('download'),
+      page.locator('[data-testid=btn-export-jsonl]').click()
+    ]);
+    const fs = require('fs');
+    return fs.readFileSync(await download.path(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+  }
+
+  test('only one side changed a field: auto-taken, no conflict prompt', async ({ page }) => {
+    const baseline = await exportBaseline(page);
+    const i8 = baseline.find(l => l.type === 'issue' && l.id === 'i8');
+    i8.values.mitigation = 'Root cause identified, fix in review';
+    i8.history.push({ id: 'ext_h1', time: 'Aug 2', actor: 'jordan', email: 'jordan@example.com', text: 'Mitigation set', field: 'mitigation', value: 'Root cause identified, fix in review', origin: 'authored', sortKey: Date.now() + 1000, sig: null, pubKey: null });
+    const incomingText = baseline.map(l => JSON.stringify(l)).join('\n');
+
+    await page.locator('[data-testid=merge-file-input]').setInputFiles({ name: 'incoming.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(incomingText) });
+    await page.waitForTimeout(400);
+
+    await expect(page.locator('[data-testid=merge-conflict-modal]')).toHaveCount(0);
+    await expect(h.fieldCell(page, 8, 'mitigation')).toContainText('Root cause identified');
+  });
+
+  test('both sides changed the same field: surfaces a conflict, resolvable by picking a side', async ({ page }) => {
+    const baseline = await exportBaseline(page);
+
+    // Local side changes RAG on row 7.
+    await h.fieldCell(page, 7, 'rag').click();
+    await page.locator('div[style*="z-index: 70"]').getByText('On track').click();
+    await page.waitForTimeout(200);
+
+    // Incoming side independently changes the same field from the same base.
+    const i7 = baseline.find(l => l.type === 'issue' && l.id === 'i7');
+    i7.values.rag = 'amber';
+    i7.history.push({ id: 'ext_h2', time: 'Aug 3', actor: 'jordan', email: 'jordan@example.com', text: 'RAG set to At risk', field: 'rag', value: 'amber', origin: 'authored', sortKey: Date.now() + 2000, sig: null, pubKey: null });
+    const incomingText = baseline.map(l => JSON.stringify(l)).join('\n');
+
+    await page.locator('[data-testid=merge-file-input]').setInputFiles({ name: 'incoming.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(incomingText) });
+    await page.waitForTimeout(400);
+
+    await expect(page.locator('[data-testid=merge-conflict-modal]')).toBeVisible();
+    expect(await page.locator('[data-testid=merge-conflict-row]').count()).toBe(1);
+    await expect(page.locator('[data-testid=merge-conflict-row]')).toContainText('RAG');
+    await expect(page.locator('[data-testid=merge-conflict-row]')).toContainText('jordan@example.com');
+
+    await page.locator('[data-testid=merge-conflict-choose-incoming]').click();
+    await page.locator('[data-testid=merge-conflict-resolve]').click();
+    await page.waitForTimeout(300);
+
+    await expect(page.locator('[data-testid=merge-conflict-modal]')).toHaveCount(0);
+    await expect(h.fieldCell(page, 7, 'rag')).toContainText('At risk');
+    const entries = await h.getHistoryEntriesFor(page, 'i7');
+    expect(entries.some(text => text.includes('resolved to') && text.includes('during merge'))).toBe(true);
+  });
+
+  test('cancelling a conflict leaves local state untouched', async ({ page }) => {
+    const baseline = await exportBaseline(page);
+    await h.fieldCell(page, 7, 'rag').click();
+    await page.locator('div[style*="z-index: 70"]').getByText('On track').click();
+    await page.waitForTimeout(200);
+
+    const i7 = baseline.find(l => l.type === 'issue' && l.id === 'i7');
+    i7.values.rag = 'amber';
+    i7.history.push({ id: 'ext_h3', time: 'Aug 4', actor: 'jordan', email: 'jordan@example.com', text: 'RAG set to At risk', field: 'rag', value: 'amber', origin: 'authored', sortKey: Date.now() + 3000, sig: null, pubKey: null });
+    const incomingText = baseline.map(l => JSON.stringify(l)).join('\n');
+
+    await page.locator('[data-testid=merge-file-input]').setInputFiles({ name: 'incoming.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(incomingText) });
+    await page.waitForTimeout(400);
+    await expect(page.locator('[data-testid=merge-conflict-modal]')).toBeVisible();
+
+    await page.locator('[data-testid=merge-conflict-cancel]').click();
+    await page.waitForTimeout(300);
+
+    await expect(page.locator('[data-testid=merge-conflict-modal]')).toHaveCount(0);
+    await expect(h.fieldCell(page, 7, 'rag')).toContainText('On track'); // local edit preserved, untouched by the cancelled merge
+  });
+
+  test('comments union by content without duplication or loss', async ({ page }) => {
+    const baseline = await exportBaseline(page);
+    const i2 = baseline.find(l => l.type === 'issue' && l.id === 'i2');
+    const localCommentCountBefore = i2.comments.length;
+    i2.comments.push({ author: 'jordan', time: 'Aug 2', text: 'External note from incoming file', sortKey: 99999 });
+    const incomingText = baseline.map(l => JSON.stringify(l)).join('\n');
+
+    await page.locator('[data-testid=merge-file-input]').setInputFiles({ name: 'incoming.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(incomingText) });
+    await page.waitForTimeout(400);
+
+    const state = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_v1')));
+    const i2After = state.issues.find(i => i.id === 'i2');
+    expect(i2After.comments.length).toBe(localCommentCountBefore + 1);
+    expect(i2After.comments.some(c => c.text === 'External note from incoming file')).toBe(true);
+  });
+
+  test('a bound/derived field never surfaces as a conflict and recomputes fresh after merge', async ({ page }) => {
+    // row 1's Type is bound to Title (rule reads source.github.labels) and has only
+    // derived history entries, never authored ones -- merging an unrelated change
+    // should never prompt about Type, regardless of what the incoming file's Type
+    // computed to.
+    const baseline = await exportBaseline(page);
+    const i1 = baseline.find(l => l.type === 'issue' && l.id === 'i1');
+    i1.values.type = 'chore'; // pretend the incoming side's own recompute landed differently
+    i1.history.push({ id: 'ext_derived', time: 'Aug 2', actor: 'jordan', email: 'jordan@example.com', text: 'Type set to Chore (derived from Issue)', field: 'type', value: 'chore', origin: 'derived', sortKey: Date.now() + 1000, sig: null, pubKey: null });
+    const incomingText = baseline.map(l => JSON.stringify(l)).join('\n');
+
+    await page.locator('[data-testid=merge-file-input]').setInputFiles({ name: 'incoming.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(incomingText) });
+    await page.waitForTimeout(400);
+
+    await expect(page.locator('[data-testid=merge-conflict-modal]')).toHaveCount(0);
+    // applyLinkedRules recomputed fresh from row 1's own (unchanged) linked GitHub data, not the incoming's stale guess.
+    await expect(h.fieldCell(page, 1, 'type')).toHaveText(/Enhancement/);
+  });
+});
+
+test.describe('Full history log vs. latest-state export', () => {
   test('a "latest state only" export squashes to current values', async ({ page }) => {
     await h.gotoTracker(page);
     await page.getByText('{ } View source', { exact: true }).click();
@@ -66,13 +195,9 @@ test.describe('Full history log vs. latest-state export (KNOWN GAP)', () => {
   });
 
   test('a "full history" export additionally carries the append-only event log', async ({ page }) => {
-    test.fail(true, 'There is no event-sourced history at all in this app — "history" is just a flat, ' +
-      'manually-appended activity list for display, not an authoritative append-only log that can be ' +
-      'replayed. Only one export shape exists; there\'s no full-vs-squashed distinction to select between.');
-
     await h.gotoTracker(page);
     await page.locator('[data-testid=btn-export]').click();
-    const fullOption = page.getByText('Full history', { exact: false });
+    const fullOption = page.getByText('full history', { exact: false });
     expect(await fullOption.count()).toBeGreaterThan(0);
   });
 });

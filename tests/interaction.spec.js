@@ -178,6 +178,21 @@ test.describe('Refresh: row / whole table', () => {
   test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
 
   test('row: refreshing re-pulls every GitHub-linked field on that row, not just one', async ({ page }) => {
+    // The fixtures are deterministic (mockGithubApi always returns the same
+    // body for a given URL), so a plain refresh of freshly-linked fields would
+    // be a genuine no-op and log nothing (see the dedicated no-op test below).
+    // To prove refresh actually re-fetches every field, make the upstream
+    // title change between the initial link and the refresh, and count requests.
+    let titleCalls = 0, mitigationCalls = 0;
+    await page.route('https://api.github.com/repos/octocat/Hello-World/issues/1', route => {
+      titleCalls++;
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Edited README via GitHub' + (titleCalls > 1 ? ' (v2)' : ''), state: 'closed', pull_request: {}, labels: [] }) });
+    });
+    await page.route('https://api.github.com/repos/octocat/Hello-World/issues/2', route => {
+      mitigationCalls++;
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'README file modified' + (mitigationCalls > 1 ? ' (v2)' : ''), state: 'closed', pull_request: {}, labels: [] }) });
+    });
+
     // link row 3's title AND mitigation to two different (mocked) issues
     await h.clickTitleToEdit(page, 3);
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/1');
@@ -195,9 +210,14 @@ test.describe('Refresh: row / whole table', () => {
     await h.waitForTitleResolved(page, 3);
     await h.waitForFieldResolved(page, 3, 'mitigation');
 
+    expect(titleCalls).toBe(2);
+    expect(mitigationCalls).toBe(2);
+    await expect(h.titleCell(page, 3)).toContainText('(v2)');
+    await expect(h.fieldCell(page, 3, 'mitigation')).toContainText('(v2)');
+
     const history = await h.getHistoryEntriesFor(page, 'i3');
-    expect(history.some(t => /[Rr]efresh(ing|ed)? title/.test(t) || /[Rr]efresh(ing|ed)? Issue/.test(t))).toBe(true);
-    expect(history.some(t => /[Rr]efresh(ing|ed)? Mitigation/.test(t))).toBe(true);
+    expect(history.some(t => /Issue [Rr]efresh/.test(t))).toBe(true);
+    expect(history.some(t => /Mitigation [Rr]efresh/.test(t))).toBe(true);
   });
 
   test('row: unlinked row\'s refresh is a harmless no-op', async ({ page }) => {
@@ -207,6 +227,53 @@ test.describe('Refresh: row / whole table', () => {
     await page.waitForTimeout(300);
     const history = await h.getHistoryEntriesFor(page, 'i3');
     expect(history.some(t => /[Rr]efresh/.test(t))).toBe(false);
+  });
+
+  // Regression test: repeatedly refreshing a link whose upstream data hasn't
+  // changed used to log a fresh "Refreshing X..."/"X refreshed..." pair
+  // every single click, forever -- so a few clicks of "Refresh all" buried
+  // real activity under a pile of near-identical, near-simultaneous "now"
+  // entries. A refresh that finds nothing new should be silent, same as
+  // every other no-op mutation path in this app.
+  test('a no-op refresh (upstream data unchanged) does not spam the history log', async ({ page }) => {
+    await h.clickFieldToEdit(page, 3, 'mitigation');
+    await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/3'); // fixture never changes across calls
+    await page.keyboard.press('Enter');
+    await h.waitForFieldResolved(page, 3, 'mitigation');
+    const afterLink = await h.getHistoryEntriesFor(page, 'i3');
+
+    // the row menu stays open after clicking Refresh (it's not a navigating
+    // action like "Open"), so it can be clicked again directly without
+    // re-opening it via the chevron.
+    await h.row(page, 3).locator('[data-testid=row-chevron]').click();
+    await page.locator('[data-testid=row-menu-refresh]').click();
+    await page.waitForTimeout(400);
+    const afterFirstRefresh = await h.getHistoryEntriesFor(page, 'i3');
+    expect(afterFirstRefresh.length).toBe(afterLink.length);
+
+    await page.locator('[data-testid=row-menu-refresh]').click();
+    await page.waitForTimeout(400);
+    const afterSecondRefresh = await h.getHistoryEntriesFor(page, 'i3');
+    expect(afterSecondRefresh.length).toBe(afterLink.length);
+    expect(afterSecondRefresh.some(t => /[Rr]efreshing/.test(t))).toBe(false);
+  });
+
+  // Same principle, failure side: row 1 seeds a link to a fictional repo
+  // (acme/app) that always 404s. Repeatedly refreshing a permanently-broken
+  // link used to log "Could not fetch..." forever too; it should only log
+  // when the failure state is new, not every time it fails the same way again.
+  test('a no-op refresh that keeps failing the same way does not spam the history log either', async ({ page }) => {
+    const before = await h.getHistoryEntriesFor(page, 'i1');
+    await h.row(page, 1).locator('[data-testid=row-chevron]').click();
+    await page.locator('[data-testid=row-menu-refresh]').click();
+    await page.waitForTimeout(400);
+    const afterFirstRefresh = await h.getHistoryEntriesFor(page, 'i1');
+    expect(afterFirstRefresh.length).toBeGreaterThan(before.length); // first failure after load IS new, logs once
+
+    await page.locator('[data-testid=row-menu-refresh]').click();
+    await page.waitForTimeout(400);
+    const afterSecondRefresh = await h.getHistoryEntriesFor(page, 'i1');
+    expect(afterSecondRefresh.length).toBe(afterFirstRefresh.length); // repeating the same failure logs nothing new
   });
 
   // Deliberately no column-level refresh: refreshing one column but leaving
@@ -224,6 +291,16 @@ test.describe('Refresh: row / whole table', () => {
   });
 
   test('whole table: "Refresh all" re-pulls every linked field across every row', async ({ page }) => {
+    // Deterministic fixtures mean a same-data refresh is a legitimate no-op
+    // and logs nothing (see the dedicated no-op tests above) — so prove the
+    // re-pull actually happened via request count + an upstream data change,
+    // not via a log entry that (correctly) might not exist.
+    let mitigationCalls = 0;
+    await page.route('https://api.github.com/repos/octocat/Hello-World/issues/1', route => {
+      mitigationCalls++;
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Edited README via GitHub' + (mitigationCalls > 1 ? ' (v2)' : ''), state: 'closed', pull_request: {}, labels: [] }) });
+    });
+
     await h.clickFieldToEdit(page, 3, 'mitigation');
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/1');
     await page.keyboard.press('Enter');
@@ -236,8 +313,11 @@ test.describe('Refresh: row / whole table', () => {
     // real 404 via the mock — the point is it was attempted, not that it succeeds).
     await page.waitForTimeout(500);
 
+    expect(mitigationCalls).toBe(2);
+    await expect(h.fieldCell(page, 3, 'mitigation')).toContainText('(v2)');
+
     const h1 = await h.getHistoryEntriesFor(page, 'i1');
-    expect(h1.some(t => /[Rr]efresh/.test(t))).toBe(true);
+    expect(h1.some(t => /Could not fetch/.test(t))).toBe(true);
     const h3 = await h.getHistoryEntriesFor(page, 'i3');
     expect(h3.some(t => /Mitigation/.test(t) && /[Rr]efresh/.test(t))).toBe(true);
   });
@@ -350,6 +430,33 @@ test.describe('Detail slide-over', () => {
     const entries = slideover.locator('[data-testid=activity-entry]');
     await expect(entries.first()).toContainText('A brand new comment');
   });
+
+  // Regression test: the slide-over's select/multiselect popovers used to
+  // be a stripped-down copy of the in-row popover's markup (no "Select
+  // an item(s)" header, no filter box, no current-selection indicator).
+  // The multiselect version also referenced a field (opt.checked) that
+  // never existed on the cell data (the real field is opt.selected), so
+  // its checkmark silently never rendered in either state.
+  test('select and multiselect popovers match the in-row ones exactly (header, filter box, current-selection indicator)', async ({ page }) => {
+    await h.openSlideover(page, 2); // seed row 2: RAG = amber ("At risk"), teams = ["platform"]
+
+    await page.locator('[data-testid=slideover-field][data-col=rag]').click();
+    await page.waitForTimeout(150);
+    await expect(page.getByText('Select an item', { exact: true })).toBeVisible();
+    await expect(page.locator('input[placeholder="Filter options"]')).toBeVisible();
+    const selectedRow = page.locator('div', { hasText: 'At risk' }).filter({ has: page.locator('text=✓') });
+    expect(await selectedRow.count()).toBeGreaterThan(0);
+    await page.keyboard.press('Escape');
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(150);
+
+    await page.locator('[data-testid=slideover-field][data-col=teams]').click();
+    await page.waitForTimeout(150);
+    await expect(page.getByText('Select items', { exact: true })).toBeVisible();
+    await expect(page.locator('input[placeholder="Filter options"]')).toBeVisible();
+    const selectedTeamRow = page.locator('div', { hasText: 'Platform' }).filter({ has: page.locator('text=✓') });
+    expect(await selectedTeamRow.count()).toBeGreaterThan(0);
+  });
 });
 
 test.describe('Control+Space opens and focuses the add-item box', () => {
@@ -417,6 +524,35 @@ test.describe('Select/multiselect popover flips above the field when there is no
     const popoverBox = await popover.boundingBox();
     expect(popoverBox.y).toBeGreaterThan(cellBox.y);
   });
+
+  // Regression test: the flip decision used to measure "room below" against
+  // the table wrapper's own bottom edge, not the viewport. A short table
+  // (here, filtered down to a single row) made that measurement near-zero
+  // regardless of real viewport space, forcing an upward flip that pushed
+  // the popover off-screen above the row instead of just floating over the
+  // add-item box below, where there was plenty of real room.
+  test('a single (e.g. filtered-down) row near the top of a tall viewport still opens below, not off-screen', async ({ page }) => {
+    await page.setViewportSize({ width: 1450, height: 900 });
+    await h.gotoTracker(page);
+    await page.locator('[data-testid=filter-input]').fill('Sidebar sizing');
+    await page.waitForTimeout(200);
+    expect(await page.locator('[data-testid=row]').count()).toBe(1);
+
+    const cell = h.fieldCell(page, 1, 'priority');
+    await cell.click();
+    await page.waitForTimeout(200);
+    // Measure the cell fresh, after the click has settled -- not before.
+    // Immediately after a fresh page load + filter, this cell's own
+    // position shifts slightly once the first real interaction lands (a
+    // separate, pre-existing initial-render quirk unrelated to the flip
+    // logic itself); comparing two positions from the same settled instant
+    // avoids that noise entirely.
+    const cellBox = await cell.boundingBox();
+    const popover = page.getByText('Select an item', { exact: true }).locator('../..');
+    const popoverBox = await popover.boundingBox();
+    expect(popoverBox.y).toBeGreaterThan(cellBox.y); // opens below, not flipped upward
+    expect(popoverBox.y).toBeGreaterThanOrEqual(0); // and fully on-screen, not clipped above the viewport
+  });
 });
 
 test.describe('Activity history', () => {
@@ -457,6 +593,40 @@ test.describe('Activity history', () => {
     await page.waitForTimeout(150);
     const history = await h.getHistoryEntriesFor(page, 'i3');
     expect(history.some(t => t === 'Delivery teams: added Infra')).toBe(true);
+  });
+
+  test('select/multiselect field changes show a coloured pill in the activity timeline, not plain text', async ({ page }) => {
+    await h.clickFieldToEdit(page, 3, 'priority');
+    await page.waitForTimeout(150);
+    await page.locator('div[style*="max-height: 220px"]').getByText('P1', { exact: true }).click();
+    await page.waitForTimeout(150);
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(150);
+
+    await h.clickFieldToEdit(page, 3, 'teams');
+    await page.waitForTimeout(150);
+    await page.locator('div[style*="max-height: 220px"]').getByText('Infra', { exact: true }).click();
+    await page.waitForTimeout(150);
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(150);
+
+    const slideover = await h.openSlideover(page, 3);
+    const entries = slideover.locator('[data-testid=activity-entry]');
+
+    const priorityEntry = entries.filter({ hasText: 'Priority set to' });
+    const priorityPill = priorityEntry.locator('span', { hasText: 'P1' }).first();
+    await expect(priorityPill).toBeVisible();
+    const priorityPillBg = await priorityPill.evaluate(el => getComputedStyle(el).backgroundColor);
+    expect(priorityPillBg).not.toBe('rgba(0, 0, 0, 0)'); // a real configured colour, not transparent/unstyled text
+
+    const teamsEntry = entries.filter({ hasText: 'Delivery teams: added' });
+    await expect(teamsEntry.locator('span', { hasText: 'Infra' }).first()).toBeVisible();
+
+    // Comments are unaffected -- still plain text, no pill markup.
+    await page.locator('input[placeholder="Add a comment…"]').fill('Just a plain comment');
+    await page.locator('button', { hasText: 'Post' }).click();
+    await page.waitForTimeout(150);
+    await expect(entries.first()).toContainText('Just a plain comment');
   });
 
   test('new history/comment entries carry a real timestamp, not a static "Now"/"Just now" placeholder', async ({ page }) => {

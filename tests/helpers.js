@@ -29,17 +29,35 @@ function slideoverField(page, colId) {
   return page.locator(`[data-testid=slideover] [data-testid=slideover-field][data-col="${colId}"]`);
 }
 
-// Title has no click handler on its own wrapping div (unlike field cells) —
-// only the inner display span/anchor is interactive, and it's always the
-// first such element when present (isLoading/isEditing states have no
-// clickable span, which is intentional: you can't edit a loading field).
+// GitHub-Projects-style two-click cells: a first click just selects a
+// cell, a second click on the SAME cell commits to editing (or opens the
+// select/multiselect popover). Every cell-editing helper below performs
+// both clicks so callers don't have to think about the gate.
 async function clickTitleToEdit(page, num) {
+  // Clicking the title's own resolved text/pill opens the slide-over
+  // instead of editing (see clickTitleToPeek) -- to reach genuine edit
+  // mode (revealing the raw URL/text), click elsewhere in the title cell,
+  // twice. dispatchEvent targets the cell's own wrapping div directly
+  // rather than guessing at real "empty" pixel coordinates within it (the
+  // resolved text span is width:100% and usually fills the cell).
+  const cell = titleCell(page, num);
+  await cell.dispatchEvent('click');
+  await page.waitForTimeout(120);
+  await cell.dispatchEvent('click');
+}
+
+// Single click on the title's own resolved text/pill: opens the
+// slide-over peek panel (GitHub Projects-style), bypassing the two-click
+// gate entirely.
+async function clickTitleToPeek(page, num) {
   await titleCell(page, num).locator('span').first().click();
 }
 
 async function clickFieldToEdit(page, num, colId) {
-  // The field cell's own wrapping div carries the click handler.
-  await fieldCell(page, num, colId).click();
+  const cell = fieldCell(page, num, colId);
+  await cell.click();
+  await page.waitForTimeout(120);
+  await cell.click();
 }
 
 async function openSlideover(page, num) {
@@ -229,6 +247,7 @@ module.exports = {
   colHeader,
   slideoverField,
   clickTitleToEdit,
+  clickTitleToPeek,
   clickFieldToEdit,
   openSlideover,
   closeSlideover,

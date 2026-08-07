@@ -56,7 +56,7 @@ test.describe('Single-select', () => {
     // row 1's title is linked but Type's rule now reads Related, and row 1's
     // Related isn't linked — so Type is unlocked there (human-editable),
     // not derived from Title anymore.
-    await h.fieldCell(page, 1, 'type').click();
+    await h.clickFieldToEdit(page, 1, 'type');
     await expect(page.getByText('Select an item', { exact: true })).toBeVisible();
   });
 
@@ -80,7 +80,7 @@ test.describe('Single-select', () => {
 
     // row 1's title IS GitHub-linked, so its Type rule resolves — it must
     // stay locked (no popover), unaffected by the above.
-    await h.fieldCell(page, 1, 'type').click();
+    await h.clickFieldToEdit(page, 1, 'type');
     await page.waitForTimeout(200);
     await expect(page.getByText('Select an item', { exact: true })).toHaveCount(0);
   });
@@ -120,6 +120,8 @@ test.describe('Multi-select', () => {
     const cell = h.fieldCell(page, 8, 'teams');
     await cell.click();
     await page.waitForTimeout(150);
+    await cell.click();
+    await page.waitForTimeout(150);
     const optionList = page.locator('div[style*="max-height: 220px"]');
     for (const label of ['Web', 'Mobile', 'Ops', 'Platform']) {
       await optionList.getByText(label, { exact: true }).click();
@@ -147,7 +149,7 @@ test.describe('Multi-select', () => {
     // row 3's title has no GitHub link at all — must stay unlocked/untouched
     // by the rule's else-branch ([]), not silently cleared.
     await expect(h.fieldCell(page, 3, 'teams')).toHaveText('—');
-    await h.fieldCell(page, 3, 'teams').click();
+    await h.clickFieldToEdit(page, 3, 'teams');
     await expect(page.getByText('Select items', { exact: true })).toBeVisible();
   });
 

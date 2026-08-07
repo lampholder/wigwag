@@ -20,10 +20,10 @@ test.describe('JSONL export/import', () => {
 
   test('a squashed export keeps only the latest per-field entry, but keeps narrative/comment entries', async ({ page }) => {
     // Generate two RAG edits on row 1 so there's an intermediate entry to squash away.
-    await h.fieldCell(page, 1, 'rag').click();
+    await h.clickFieldToEdit(page, 1, 'rag');
     await page.locator('div[style*="z-index: 70"]').getByText('At risk').click();
     await page.waitForTimeout(150);
-    await h.fieldCell(page, 1, 'rag').click();
+    await h.clickFieldToEdit(page, 1, 'rag');
     await page.locator('div[style*="z-index: 70"]').getByText('Off track').click();
     await page.waitForTimeout(150);
 
@@ -96,7 +96,7 @@ test.describe('Merge conflict detection and resolution', () => {
     const baseline = await exportBaseline(page);
 
     // Local side changes RAG on row 7.
-    await h.fieldCell(page, 7, 'rag').click();
+    await h.clickFieldToEdit(page, 7, 'rag');
     await page.locator('div[style*="z-index: 70"]').getByText('On track').click();
     await page.waitForTimeout(200);
 
@@ -126,7 +126,7 @@ test.describe('Merge conflict detection and resolution', () => {
 
   test('cancelling a conflict leaves local state untouched', async ({ page }) => {
     const baseline = await exportBaseline(page);
-    await h.fieldCell(page, 7, 'rag').click();
+    await h.clickFieldToEdit(page, 7, 'rag');
     await page.locator('div[style*="z-index: 70"]').getByText('On track').click();
     await page.waitForTimeout(200);
 

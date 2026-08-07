@@ -84,7 +84,10 @@ test.describe('Click any field to edit', () => {
     await h.openSlideover(page, 2);
     // slideover-field's structure is [label div, cell div] as direct children —
     // ':scope >' keeps this to direct children, not any nested div.
-    await h.slideoverField(page, 'mitigation').locator(':scope > div').nth(1).click();
+    const mitigationCell = h.slideoverField(page, 'mitigation').locator(':scope > div').nth(1);
+    await mitigationCell.click();
+    await page.waitForTimeout(120);
+    await mitigationCell.click();
     expect(await page.evaluate(() => document.activeElement.tagName)).toBe('INPUT');
   });
 
@@ -100,7 +103,10 @@ test.describe('Click any field to edit', () => {
   test('editing via the slide-over does not fight with the row for the same issue', async ({ page }) => {
     await h.openSlideover(page, 2);
 
-    await h.slideoverField(page, 'mitigation').locator(':scope > div').nth(1).click();
+    const mitigationCell = h.slideoverField(page, 'mitigation').locator(':scope > div').nth(1);
+    await mitigationCell.click();
+    await page.waitForTimeout(120);
+    await mitigationCell.click();
     expect(await page.evaluate(() => document.activeElement.tagName)).toBe('INPUT');
     await page.keyboard.press('Escape');
 
@@ -119,12 +125,119 @@ test.describe('Click any field to edit', () => {
 
     // a DIFFERENT row is completely unaffected and still editable normally
     // (also visually covered by the still-open slide-over, so native-click
-    // the DOM node directly for the same reason as above)
+    // the DOM node directly for the same reason as above; two clicks for
+    // the two-click select-then-edit gate)
+    await page.evaluate(() => {
+      document.querySelector('[data-testid=row][data-row-num="5"] [data-testid=field-cell][data-col=mitigation]').click();
+    });
+    await page.waitForTimeout(150);
     await page.evaluate(() => {
       document.querySelector('[data-testid=row][data-row-num="5"] [data-testid=field-cell][data-col=mitigation]').click();
     });
     await page.waitForTimeout(200);
     expect(await page.evaluate(() => document.activeElement.tagName)).toBe('INPUT');
+  });
+});
+
+test.describe('Two-click cell selection (GitHub Projects-style)', () => {
+  test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
+
+  test('a single click on a text field selects/highlights it but does not enter edit mode', async ({ page }) => {
+    const cell = h.fieldCell(page, 2, 'mitigation');
+    await cell.click();
+    await page.waitForTimeout(150);
+    expect(await cell.locator('input').count()).toBe(0);
+    expect(await cell.evaluate(el => getComputedStyle(el).outlineStyle)).toBe('solid');
+  });
+
+  test('a single click on a select field selects/highlights it but does not open the popover', async ({ page }) => {
+    const cell = h.fieldCell(page, 1, 'priority');
+    await cell.click();
+    await page.waitForTimeout(150);
+    expect(await page.locator('div[style*="z-index: 70"]').count()).toBe(0);
+    expect(await cell.evaluate(el => getComputedStyle(el).outlineStyle)).toBe('solid');
+  });
+
+  test('clicking a different cell moves the selection instead of editing the new cell immediately', async ({ page }) => {
+    const first = h.fieldCell(page, 2, 'mitigation');
+    const second = h.fieldCell(page, 3, 'mitigation');
+    await first.click();
+    await page.waitForTimeout(150);
+    await second.click();
+    await page.waitForTimeout(150);
+    expect(await first.evaluate(el => getComputedStyle(el).outlineStyle)).toBe('none');
+    expect(await second.evaluate(el => getComputedStyle(el).outlineStyle)).toBe('solid');
+    expect(await second.locator('input').count()).toBe(0); // still just selected, not editing
+  });
+
+  // The dropdown arrow bypasses the two-click gate entirely -- a single
+  // click on it always opens the popover directly, matching GitHub
+  // Projects' own convention.
+  test('a single click directly on the dropdown arrow opens the popover immediately', async ({ page }) => {
+    const cell = h.fieldCell(page, 1, 'priority');
+    const arrow = cell.locator('span[style*="border-top: 7px solid"]');
+    await arrow.click();
+    await page.waitForTimeout(150);
+    await expect(page.getByText('Select an item', { exact: true })).toBeVisible();
+  });
+});
+
+test.describe('Title: click to peek vs. click to edit', () => {
+  test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
+
+  // Matches GitHub Projects' Title-cell convention: the resolved title
+  // text/pill peeks the issue on a single click (not editable in place
+  // there); the external ref link opens in a new tab; clicking elsewhere
+  // in the cell (not the text, not the link) falls through to the normal
+  // two-click text edit, revealing the raw URL/text.
+  test('a single click on the resolved title opens the slide-over', async ({ page }) => {
+    await h.clickTitleToPeek(page, 1);
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=slideover]')).toBeVisible();
+  });
+
+  test('hovering the resolved title shows blue hover feedback, signalling it is clickable', async ({ page }) => {
+    const titleSpan = h.titleCell(page, 1).locator('span').first();
+    const colorBefore = await titleSpan.evaluate(el => getComputedStyle(el).color);
+    await titleSpan.hover();
+    await page.waitForTimeout(150);
+    const colorAfter = await titleSpan.evaluate(el => getComputedStyle(el).color);
+    expect(colorAfter).not.toBe(colorBefore);
+    expect(colorAfter).toBe('oklch(0.5 0.13 235)'); // the app's standard accent blue
+  });
+
+  test('clicking elsewhere in the title cell (not the text) still needs two clicks to edit, revealing the raw URL', async ({ page }) => {
+    await h.clickTitleToEdit(page, 8); // row 8 is a plain (unlinked) title
+    expect(await page.evaluate(() => document.activeElement.tagName)).toBe('INPUT');
+    await expect(page.locator('[data-testid=slideover]')).toHaveCount(0);
+  });
+
+  test('the external ref link opens in a new tab, without selecting the cell or peeking', async ({ context, page }) => {
+    const link = h.titleCell(page, 1).locator('a');
+    const [newPage] = await Promise.all([
+      context.waitForEvent('page'),
+      link.click()
+    ]);
+    await newPage.waitForLoadState().catch(() => {});
+    expect(newPage.url()).toContain('github.com');
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=slideover]')).toHaveCount(0);
+    expect(await h.titleCell(page, 1).evaluate(el => getComputedStyle(el).outlineStyle)).toBe('none');
+  });
+
+  // The slide-over's own title header is a separate render path from the
+  // table row's (colId is 'title' in both, but only the row's should
+  // peek -- the panel you're already looking at needs its title to stay
+  // editable in place, same as before this feature existed).
+  test('the slide-over\'s own title still edits in place on a second click, rather than re-peeking itself', async ({ page }) => {
+    await h.openSlideover(page, 2);
+    const titleDiv = page.locator('[data-testid=slideover] div[style*="cursor: text"]');
+    await titleDiv.click();
+    await page.waitForTimeout(150);
+    await titleDiv.click();
+    await page.waitForTimeout(150);
+    const headerHtml = await page.locator('[data-testid=slideover] div[style*="padding: 20px 24px"]').evaluate(el => el.outerHTML);
+    expect(headerHtml).toContain('<input');
   });
 });
 
@@ -440,7 +553,10 @@ test.describe('Detail slide-over', () => {
   test('select and multiselect popovers match the in-row ones exactly (header, filter box, current-selection indicator)', async ({ page }) => {
     await h.openSlideover(page, 2); // seed row 2: RAG = amber ("At risk"), teams = ["platform"]
 
-    await page.locator('[data-testid=slideover-field][data-col=rag]').click();
+    const ragField = page.locator('[data-testid=slideover-field][data-col=rag]');
+    await ragField.click();
+    await page.waitForTimeout(150);
+    await ragField.click();
     await page.waitForTimeout(150);
     await expect(page.getByText('Select an item', { exact: true })).toBeVisible();
     await expect(page.locator('input[placeholder="Filter options"]')).toBeVisible();
@@ -450,7 +566,10 @@ test.describe('Detail slide-over', () => {
     await page.mouse.click(700, 700);
     await page.waitForTimeout(150);
 
-    await page.locator('[data-testid=slideover-field][data-col=teams]').click();
+    const teamsField = page.locator('[data-testid=slideover-field][data-col=teams]');
+    await teamsField.click();
+    await page.waitForTimeout(150);
+    await teamsField.click();
     await page.waitForTimeout(150);
     await expect(page.getByText('Select items', { exact: true })).toBeVisible();
     await expect(page.locator('input[placeholder="Filter options"]')).toBeVisible();
@@ -507,6 +626,8 @@ test.describe('Select/multiselect popover flips above the field when there is no
     const cell = h.fieldCell(page, 9, 'priority');
     const cellBox = await cell.boundingBox();
     await cell.click();
+    await page.waitForTimeout(150);
+    await cell.click();
     await page.waitForTimeout(200);
     const popover = page.getByText('Select an item', { exact: true }).locator('../..');
     const popoverBox = await popover.boundingBox();
@@ -518,6 +639,8 @@ test.describe('Select/multiselect popover flips above the field when there is no
     await h.gotoTracker(page);
     const cell = h.fieldCell(page, 1, 'priority');
     const cellBox = await cell.boundingBox();
+    await cell.click();
+    await page.waitForTimeout(150);
     await cell.click();
     await page.waitForTimeout(200);
     const popover = page.getByText('Select an item', { exact: true }).locator('../..');
@@ -540,6 +663,8 @@ test.describe('Select/multiselect popover flips above the field when there is no
 
     const cell = h.fieldCell(page, 1, 'priority');
     await cell.click();
+    await page.waitForTimeout(150);
+    await cell.click();
     await page.waitForTimeout(200);
     // Measure the cell fresh, after the click has settled -- not before.
     // Immediately after a fresh page load + filter, this cell's own
@@ -552,6 +677,39 @@ test.describe('Select/multiselect popover flips above the field when there is no
     const popoverBox = await popover.boundingBox();
     expect(popoverBox.y).toBeGreaterThan(cellBox.y); // opens below, not flipped upward
     expect(popoverBox.y).toBeGreaterThanOrEqual(0); // and fully on-screen, not clipped above the viewport
+  });
+
+  // Regression test: popup positioning didn't clamp horizontally, so a
+  // trigger near the right edge (the rightmost column's "..." menu, here)
+  // could push the whole popup off-screen.
+  test('a popup near the right edge of the viewport stays fully on-screen', async ({ page }) => {
+    await page.setViewportSize({ width: 1450, height: 900 });
+    await h.gotoTracker(page);
+    await h.openColumnMenu(page, 'mitigation'); // rightmost column
+    const menu = page.locator('div[style*="z-index: 80"]');
+    const box = await menu.boundingBox();
+    expect(box.x + box.width).toBeLessThanOrEqual(1450);
+  });
+
+  // Regression test: the slide-over panel always carries a CSS transform
+  // (translateX, even at rest), which per spec becomes the containing
+  // block for any position:fixed descendant -- so a popup anchored to a
+  // field inside the slide-over rendered offset by the slide-over's own
+  // distance from the left edge of the window instead of lining up with
+  // its field.
+  test('a popover inside the slide-over lines up with its field, not offset by the panel', async ({ page }) => {
+    await page.setViewportSize({ width: 1450, height: 900 });
+    await h.gotoTracker(page);
+    const slideover = await h.openSlideover(page, 2);
+    const field = slideover.locator('[data-testid=slideover-field][data-col=rag]');
+    const fieldBox = await field.boundingBox();
+    await field.click();
+    await page.waitForTimeout(150);
+    await field.click();
+    await page.waitForTimeout(200);
+    const popover = page.locator('div[style*="z-index: 70"]');
+    const popoverBox = await popover.boundingBox();
+    expect(Math.abs(popoverBox.x - fieldBox.x)).toBeLessThan(20); // exact alignment isn't the point -- ruling out the ~180px panel-offset drift is
   });
 });
 
@@ -681,6 +839,8 @@ test.describe('A too-wide table scrolls on its own, not the whole page', () => {
 
   test('a select popover on the last row still renders fully, not clipped by the new scroll container', async ({ page }) => {
     const lastRowCell = page.locator('[data-testid=row]').last().locator('[data-testid=field-cell][data-col=priority]');
+    await lastRowCell.click();
+    await page.waitForTimeout(150);
     await lastRowCell.click();
     await page.waitForTimeout(200);
     // scope to the popover's own option list (max-height:220px is its

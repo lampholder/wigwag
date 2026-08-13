@@ -9,7 +9,8 @@
   },
   "scripts": {
     "test": "playwright test",
-    "jira-proxy": "node jira-proxy.js"
+    "jira-proxy": "node jira-proxy.js",
+    "github-oauth-proxy": "node github-oauth-proxy.js"
   },
   "keywords": [],
   "author": "",

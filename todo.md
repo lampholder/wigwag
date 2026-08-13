@@ -1,5 +1,15 @@
 # Status / continuation notes
 
+> **Superseded.** This was an early mid-session snapshot, written before
+> Playwright was even working. `docs/EDITING.md` is the current, complete
+> version of the patch methodology described below (and covers real gotchas
+> discovered since — the `__bundler/*` tags getting removed from the DOM
+> after boot, the `MARK` sentinel character, `window.__wigwagOwnSource`).
+> `README.md` and `docs/FORMAT.md` are the current project overview and
+> data-format spec. Read those, not this, unless you specifically want the
+> history of how headless-browser testing got set up. Kept for that
+> history, not as a live reference.
+
 Written because a `claude-rebuild` is about to happen and this session might
 not survive it. If you're a fresh session picking this up: read this whole
 file before doing anything else, then check `git status` / `git log` to see

@@ -21,13 +21,6 @@ test.describe('Clicking off a menu/popover closes it', () => {
     await expect(page.getByText('Sort ascending', { exact: true })).toHaveCount(0);
   });
 
-  test('row chevron menu', async ({ page }) => {
-    await h.row(page, 1).locator('[data-testid=row-chevron]').click();
-    await expect(page.locator('[data-testid=row-menu-open]')).toBeVisible();
-    await page.mouse.click(700, 700);
-    await expect(page.locator('[data-testid=row-menu-open]')).toHaveCount(0);
-  });
-
   test('+field popover', async ({ page }) => {
     await page.locator('[data-testid=add-field-wrap] span').click();
     await expect(page.getByText('NEW FIELD', { exact: true })).toBeVisible();
@@ -54,6 +47,25 @@ test.describe('Clicking off a menu/popover closes it', () => {
     await expect(page.getByText('Select items', { exact: true })).toBeVisible();
     await page.mouse.click(700, 700);
     await expect(page.getByText('Select items', { exact: true })).toHaveCount(0);
+  });
+});
+
+// Regression: the +field popover used a static CSS position (anchored below
+// its trigger with no viewport-boundary awareness) instead of going through
+// computeAnchor() like every other popover in the app -- on a short window
+// its ~150px of content could run past the bottom of the viewport with no
+// way to flip upward or clamp. Confirm it now stays on-screen.
+test.describe('Add field popover stays within the viewport', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  test('on a short viewport, the popover is fully visible, not clipped', async ({ page }) => {
+    await page.setViewportSize({ width: 1000, height: 400 });
+    await page.locator('[data-testid=add-field-wrap] span').first().click();
+    const panel = page.getByText('NEW FIELD', { exact: true }).locator('..');
+    await expect(panel).toBeVisible();
+    const box = await panel.boundingBox();
+    expect(box.y).toBeGreaterThanOrEqual(0);
+    expect(box.y + box.height).toBeLessThanOrEqual(400);
   });
 });
 
@@ -212,6 +224,35 @@ test.describe('Title: click to peek vs. click to edit', () => {
     await expect(page.locator('[data-testid=slideover]')).toHaveCount(0);
   });
 
+  // The test above uses clickTitleToEdit, which dispatches synthetic click
+  // events straight at the cell wrapper -- it bypasses real hit-testing, so
+  // it wouldn't have caught a real bug: the title span used to be
+  // display:block; width:100%, making its clickable box cover the WHOLE
+  // cell regardless of how much text there was. A real mouse click on
+  // visually-empty cell space (to the right of a short title) always
+  // landed on that oversized span and peeked, with no way to reach the
+  // two-click edit gate at all. This test uses real page.mouse.click() at
+  // real pixel coordinates specifically to catch that class of bug.
+  test('a real mouse click on empty cell space (not on the text itself) reaches the two-click edit gate, not the peek', async ({ page }) => {
+    await h.clickTitleToEdit(page, 8);
+    await page.keyboard.press('Control+A');
+    await page.keyboard.type('Hi');
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(200);
+
+    const box = await h.titleCell(page, 8).boundingBox();
+    const emptySpaceX = box.x + box.width - 10;
+    const y = box.y + box.height / 2;
+
+    await page.mouse.click(emptySpaceX, y);
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=slideover]')).toHaveCount(0);
+
+    await page.mouse.click(emptySpaceX, y);
+    await page.waitForTimeout(200);
+    expect(await page.evaluate(() => document.activeElement.tagName)).toBe('INPUT');
+  });
+
   test('the external ref link opens in a new tab, without selecting the cell or peeking', async ({ context, page }) => {
     const link = h.titleCell(page, 1).locator('a');
     const [newPage] = await Promise.all([
@@ -263,12 +304,8 @@ test.describe('Remote lookups persist with the data', () => {
     await page.keyboard.press('Enter');
     await h.waitForFieldResolved(page, 3, 'mitigation');
 
-    const stored = await page.evaluate(() => {
-      const raw = localStorage.getItem('git_native_tracker_v1');
-      const parsed = JSON.parse(raw);
-      return parsed.issues.find(i => i.id === 'i3').fieldRefs.mitigation;
-    });
-    expect(stored).toMatchObject({ owner: 'octocat', repo: 'Hello-World', num: '1' });
+    const doc = await h.readActiveMilestoneDoc(page);
+    expect(doc.issues.find(i => i.id === 'i3').fieldRefs.mitigation).toMatchObject({ owner: 'octocat', repo: 'Hello-World', num: '1' });
   });
 
   test('the exported/viewed JSONL source carries fieldRefs too (regression: it used to read a removed property and silently drop this)', async ({ page }) => {
@@ -289,6 +326,21 @@ test.describe('Remote lookups persist with the data', () => {
 
 test.describe('Refresh: row / whole table', () => {
   test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
+
+  // The row number is replaced by a refresh button on hover (no more
+  // chevron/menu) -- full opacity if the row has any linked field, dimmed
+  // (but still clickable, see the no-op test below) if it doesn't.
+  test('the row-hover refresh button is dimmed on a row with no linked fields, full opacity on one that has a link', async ({ page }) => {
+    await h.row(page, 1).hover(); // seed row 1 has a GitHub link
+    await page.waitForTimeout(150);
+    const linkedOpacity = await h.row(page, 1).locator('[data-testid=row-refresh-btn]').evaluate(el => getComputedStyle(el).opacity);
+    expect(Number(linkedOpacity)).toBe(1);
+
+    await h.row(page, 3).hover(); // seed row 3 has nothing linked
+    await page.waitForTimeout(150);
+    const unlinkedOpacity = await h.row(page, 3).locator('[data-testid=row-refresh-btn]').evaluate(el => getComputedStyle(el).opacity);
+    expect(Number(unlinkedOpacity)).toBeLessThan(1);
+  });
 
   test('row: refreshing re-pulls every GitHub-linked field on that row, not just one', async ({ page }) => {
     // The fixtures are deterministic (mockGithubApi always returns the same
@@ -317,9 +369,7 @@ test.describe('Refresh: row / whole table', () => {
     await page.keyboard.press('Enter');
     await h.waitForFieldResolved(page, 3, 'mitigation');
 
-    // row menu -> Refresh
-    await h.row(page, 3).locator('[data-testid=row-chevron]').click();
-    await page.locator('[data-testid=row-menu-refresh]').click();
+    await h.refreshRow(page, 3);
     await h.waitForTitleResolved(page, 3);
     await h.waitForFieldResolved(page, 3, 'mitigation');
 
@@ -335,8 +385,7 @@ test.describe('Refresh: row / whole table', () => {
 
   test('row: unlinked row\'s refresh is a harmless no-op', async ({ page }) => {
     // row 3 has nothing linked in seed data
-    await h.row(page, 3).locator('[data-testid=row-chevron]').click();
-    await page.locator('[data-testid=row-menu-refresh]').click();
+    await h.refreshRow(page, 3);
     await page.waitForTimeout(300);
     const history = await h.getHistoryEntriesFor(page, 'i3');
     expect(history.some(t => /[Rr]efresh/.test(t))).toBe(false);
@@ -355,16 +404,12 @@ test.describe('Refresh: row / whole table', () => {
     await h.waitForFieldResolved(page, 3, 'mitigation');
     const afterLink = await h.getHistoryEntriesFor(page, 'i3');
 
-    // the row menu stays open after clicking Refresh (it's not a navigating
-    // action like "Open"), so it can be clicked again directly without
-    // re-opening it via the chevron.
-    await h.row(page, 3).locator('[data-testid=row-chevron]').click();
-    await page.locator('[data-testid=row-menu-refresh]').click();
+    await h.refreshRow(page, 3);
     await page.waitForTimeout(400);
     const afterFirstRefresh = await h.getHistoryEntriesFor(page, 'i3');
     expect(afterFirstRefresh.length).toBe(afterLink.length);
 
-    await page.locator('[data-testid=row-menu-refresh]').click();
+    await h.refreshRow(page, 3);
     await page.waitForTimeout(400);
     const afterSecondRefresh = await h.getHistoryEntriesFor(page, 'i3');
     expect(afterSecondRefresh.length).toBe(afterLink.length);
@@ -377,13 +422,12 @@ test.describe('Refresh: row / whole table', () => {
   // when the failure state is new, not every time it fails the same way again.
   test('a no-op refresh that keeps failing the same way does not spam the history log either', async ({ page }) => {
     const before = await h.getHistoryEntriesFor(page, 'i1');
-    await h.row(page, 1).locator('[data-testid=row-chevron]').click();
-    await page.locator('[data-testid=row-menu-refresh]').click();
+    await h.refreshRow(page, 1);
     await page.waitForTimeout(400);
     const afterFirstRefresh = await h.getHistoryEntriesFor(page, 'i1');
     expect(afterFirstRefresh.length).toBeGreaterThan(before.length); // first failure after load IS new, logs once
 
-    await page.locator('[data-testid=row-menu-refresh]').click();
+    await h.refreshRow(page, 1);
     await page.waitForTimeout(400);
     const afterSecondRefresh = await h.getHistoryEntriesFor(page, 'i1');
     expect(afterSecondRefresh.length).toBe(afterFirstRefresh.length); // repeating the same failure logs nothing new
@@ -434,6 +478,48 @@ test.describe('Refresh: row / whole table', () => {
     const h3 = await h.getHistoryEntriesFor(page, 'i3');
     expect(h3.some(t => /Mitigation/.test(t) && /[Rr]efresh/.test(t))).toBe(true);
   });
+
+  // Regression: "Refresh all" used to fire every linked field's fetch in one
+  // synchronous burst -- concurrent requests (a real risk of tripping
+  // GitHub's secondary rate limiting) and a pile of overlapping
+  // setState-driven re-renders landing at uncoordinated times, visible as
+  // UI glitching. It should now walk one field at a time.
+  test('"Refresh all" fires its requests one at a time, never concurrently', async ({ page }) => {
+    let inFlight = 0, maxConcurrent = 0;
+    await page.route('https://api.github.com/repos/**', async (route) => {
+      inFlight++;
+      maxConcurrent = Math.max(maxConcurrent, inFlight);
+      await new Promise(r => setTimeout(r, 80));
+      inFlight--;
+      await route.continue();
+    });
+
+    await page.locator('[data-testid=btn-refresh-all]').click();
+    await page.waitForFunction(() => !document.body.textContent.includes('Loading…'), { timeout: 15000 });
+    await page.waitForTimeout(200);
+
+    expect(maxConcurrent).toBeLessThanOrEqual(1);
+  });
+
+  test('the refresh-all glyph lives in the table\'s top-left corner and greys out when nothing in the milestone is linked', async ({ page }) => {
+    const icon = page.locator('[data-testid=btn-refresh-all]');
+    await expect(icon).toHaveCSS('cursor', 'pointer'); // seed data has linked issues
+    const enabledColor = await icon.evaluate(el => getComputedStyle(el).color);
+
+    await h.openTrackerSwitcher(page);
+    await page.locator('[data-testid=btn-add-milestone]').click();
+    await page.locator('[data-testid=btn-new-blank-milestone]').click();
+    await page.locator('[data-testid=new-milestone-name-input]').fill('No links here');
+    await page.locator('[data-testid=btn-create-milestone]').click();
+    await page.waitForTimeout(300);
+
+    await expect(icon).toHaveCSS('cursor', 'default');
+    await expect(icon).toHaveAttribute('title', 'No linked issues to refresh');
+    const disabledColor = await icon.evaluate(el => getComputedStyle(el).color);
+    expect(disabledColor).not.toBe(enabledColor);
+
+    await expect(page.locator('button', { hasText: 'Refresh all' })).toHaveCount(0); // old toolbar button is gone
+  });
 });
 
 test.describe('Staleness highlighting (KNOWN GAP)', () => {
@@ -446,11 +532,8 @@ test.describe('Staleness highlighting (KNOWN GAP)', () => {
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/1');
     await page.keyboard.press('Enter');
     await h.waitForFieldResolved(page, 3, 'mitigation');
-    const stored = await page.evaluate(() => {
-      const raw = localStorage.getItem('git_native_tracker_v1');
-      return JSON.parse(raw).issues.find(i => i.id === 'i3').fieldRefs.mitigation;
-    });
-    expect(stored.fetchedAt).toBeTruthy();
+    const doc = await h.readActiveMilestoneDoc(page);
+    expect(doc.issues.find(i => i.id === 'i3').fieldRefs.mitigation.fetchedAt).toBeTruthy();
   });
 
   test('a stale (old) resolved field is visually flagged', async ({ page }) => {
@@ -464,12 +547,9 @@ test.describe('Staleness highlighting (KNOWN GAP)', () => {
     await h.waitForFieldResolved(page, 3, 'mitigation');
 
     // Simulate a fetch that happened 2 days ago and re-render.
-    await page.evaluate(() => {
-      const raw = JSON.parse(localStorage.getItem('git_native_tracker_v1'));
-      const iss = raw.issues.find(i => i.id === 'i3');
-      iss.fieldRefs.mitigation.fetchedAt = Date.now() - 2 * 24 * 60 * 60 * 1000;
-      localStorage.setItem('git_native_tracker_v1', JSON.stringify(raw));
-    });
+    const doc = await h.readActiveMilestoneDoc(page);
+    doc.issues.find(i => i.id === 'i3').fieldRefs.mitigation.fetchedAt = Date.now() - 2 * 24 * 60 * 60 * 1000;
+    await h.writeActiveMilestoneDoc(page, doc);
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
 
@@ -502,6 +582,34 @@ test.describe('Comment-indicator column', () => {
     await expect(slideover).toBeVisible();
     await expect(slideover).toContainText("ACME – New rooms added to spaces don't show until sync");
   });
+
+  test('editing a comment does not inflate the count -- it stays one note, not one entry per edit', async ({ page }) => {
+    await h.openSettings(page);
+    await page.locator('[data-testid=settings-identity-email]').fill('me@example.com');
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(150);
+
+    await h.openSlideover(page, 1);
+    await page.locator('[data-testid=new-comment-input]').fill('original text');
+    await page.locator('[data-testid=new-comment-input]').press('Control+Enter');
+    await page.waitForTimeout(200);
+
+    const badge = h.row(page, 1).locator('[data-testid=comment-indicator] [data-testid=comment-count-badge]');
+    await expect(badge).toHaveText('1');
+
+    await page.locator('[data-testid=comment-edit-btn]').first().click();
+    await page.waitForTimeout(150);
+    const editInput = page.locator('[data-testid=comment-edit-input]');
+    await editInput.fill('updated text');
+    await editInput.press('Control+Enter');
+    await page.waitForTimeout(200);
+
+    // The append-only log now has 2 raw entries for this one comment...
+    const doc = await h.readActiveMilestoneDoc(page);
+    expect(doc.issues[0].comments.length).toBe(2);
+    // ...but the badge still counts it as a single visible note.
+    await expect(badge).toHaveText('1');
+  });
 });
 
 test.describe('Detail slide-over', () => {
@@ -517,8 +625,39 @@ test.describe('Detail slide-over', () => {
 
   test('header shows a stable short ref (first 8 chars of the issue uid), not the positional row number', async ({ page }) => {
     const slideover = await h.openSlideover(page, 1);
-    const uid = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_v1')).issues.find(i => i.id === 'i1').uid);
+    const uid = (await h.readActiveMilestoneDoc(page)).issues.find(i => i.id === 'i1').uid;
     await expect(slideover).toContainText('#' + uid.slice(0, 8));
+  });
+
+  test('pressing Escape closes it', async ({ page }) => {
+    await h.openSlideover(page, 1);
+    await expect(page.locator('[data-testid=slideover]')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(400);
+    await expect(page.locator('[data-testid=slideover]')).toHaveCount(0);
+  });
+
+  test('Escape while editing a comment only cancels that edit -- a second Escape then closes the panel', async ({ page }) => {
+    await h.openSettings(page);
+    await page.locator('[data-testid=settings-identity-email]').fill('me@example.com');
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(150);
+
+    await h.openSlideover(page, 1);
+    await page.locator('[data-testid=new-comment-input]').fill('temp comment');
+    await page.locator('[data-testid=new-comment-input]').press('Control+Enter');
+    await page.waitForTimeout(200);
+    await page.locator('[data-testid=comment-edit-btn]').first().click();
+    await page.waitForTimeout(150);
+
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=comment-edit-input]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=slideover]')).toBeVisible();
+
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(400);
+    await expect(page.locator('[data-testid=slideover]')).toHaveCount(0);
   });
 
   test('comments and history are merged into a single most-recent-first ACTIVITY timeline', async ({ page }) => {
@@ -537,7 +676,7 @@ test.describe('Detail slide-over', () => {
 
   test('posting a new comment adds it to the top of the ACTIVITY timeline', async ({ page }) => {
     const slideover = await h.openSlideover(page, 1);
-    await page.locator('input[placeholder="Add a comment…"]').fill('A brand new comment');
+    await page.locator('[data-testid=new-comment-input]').fill('A brand new comment');
     await page.locator('button', { hasText: 'Post' }).click();
     await page.waitForTimeout(150);
     const entries = slideover.locator('[data-testid=activity-entry]');
@@ -575,6 +714,24 @@ test.describe('Detail slide-over', () => {
     await expect(page.locator('input[placeholder="Filter options"]')).toBeVisible();
     const selectedTeamRow = page.locator('div', { hasText: 'Platform' }).filter({ has: page.locator('text=✓') });
     expect(await selectedTeamRow.count()).toBeGreaterThan(0);
+  });
+
+  test('Delete asks for confirmation; dismissing it leaves the issue untouched', async ({ page }) => {
+    const slideover = await h.openSlideover(page, 3);
+    page.once('dialog', d => d.dismiss());
+    await page.locator('[data-testid=slideover-delete-btn]').click();
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=row]')).toHaveCount(9);
+    await expect(slideover).toBeVisible();
+  });
+
+  test('Delete removes the issue and closes the slide-over once confirmed', async ({ page }) => {
+    await h.openSlideover(page, 3);
+    page.once('dialog', d => d.accept());
+    await page.locator('[data-testid=slideover-delete-btn]').click();
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=row]')).toHaveCount(8);
+    await expect(page.locator('[data-testid=slideover]')).toHaveCount(0);
   });
 });
 
@@ -780,8 +937,10 @@ test.describe('Activity history', () => {
     const teamsEntry = entries.filter({ hasText: 'Delivery teams: added' });
     await expect(teamsEntry.locator('span', { hasText: 'Infra' }).first()).toBeVisible();
 
-    // Comments are unaffected -- still plain text, no pill markup.
-    await page.locator('input[placeholder="Add a comment…"]').fill('Just a plain comment');
+    // Comments are unaffected -- still plain text (rendered via the
+    // markdown pipeline, but plain text round-trips through it unchanged),
+    // no pill markup.
+    await page.locator('[data-testid=new-comment-input]').fill('Just a plain comment');
     await page.locator('button', { hasText: 'Post' }).click();
     await page.waitForTimeout(150);
     await expect(entries.first()).toContainText('Just a plain comment');
@@ -794,15 +953,163 @@ test.describe('Activity history', () => {
     await optionList.getByText('P2', { exact: true }).click();
     await page.waitForTimeout(150);
 
-    const times = await page.evaluate(() => {
-      const d = JSON.parse(localStorage.getItem('git_native_tracker_v1'));
-      return d.issues.find(i => i.id === 'i3').history.map(h => h.time);
-    });
+    const doc = await h.readActiveMilestoneDoc(page);
+    const times = doc.issues.find(i => i.id === 'i3').history.map(hh => hh.time);
     const newest = times[times.length - 1];
     expect(newest).not.toBe('Now');
     expect(newest).not.toBe('Just now');
     // real timestamps look like "Aug 6, 8:48 AM" -- a month abbreviation, a day number, and a time.
     expect(newest).toMatch(/^[A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2}\s?(AM|PM)$/);
+  });
+});
+
+test.describe('Comments: markdown rendering and append-only editing', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  async function setIdentity(page, email) {
+    await h.openSettings(page);
+    await page.locator('[data-testid=settings-identity-email]').fill(email);
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(150);
+  }
+
+  test('renders GFM markdown (bold, italic, code, links, lists) as real elements, not literal text', async ({ page }) => {
+    await h.openSlideover(page, 1);
+    await page.locator('[data-testid=new-comment-input]').fill('**bold** *italic* `code` [link](https://example.com)\n\n- one\n- two');
+    await page.locator('[data-testid=new-comment-input]').press('Control+Enter');
+    await page.waitForTimeout(200);
+
+    const md = page.locator('[data-testid=comment-md]').first();
+    await expect(md.locator('strong')).toHaveText('bold');
+    await expect(md.locator('em')).toHaveText('italic');
+    await expect(md.locator('code')).toHaveText('code');
+    await expect(md.locator('a[href="https://example.com"]')).toHaveText('link');
+    await expect(md.locator('ul li')).toHaveCount(2);
+  });
+
+  test('a raw HTML/script payload in a comment renders as inert text, never executes', async ({ page }) => {
+    await h.openSlideover(page, 1);
+    await page.locator('[data-testid=new-comment-input]').fill('<img src=x onerror="window.__xssFired=true">gotcha');
+    await page.locator('[data-testid=new-comment-input]').press('Control+Enter');
+    await page.waitForTimeout(200);
+
+    expect(await page.evaluate(() => window.__xssFired)).toBeUndefined();
+    await expect(page.locator('[data-testid=comment-md]').first()).toContainText('<img src=x onerror="window.__xssFired=true">gotcha');
+    expect(await page.locator('[data-testid=comment-md]').first().locator('img').count()).toBe(0);
+  });
+
+  test('an unsafe link scheme (javascript:) is dropped -- the label shows as plain text, not a clickable link', async ({ page }) => {
+    await h.openSlideover(page, 1);
+    await page.locator('[data-testid=new-comment-input]').fill('[click me](javascript:alert(1))');
+    await page.locator('[data-testid=new-comment-input]').press('Control+Enter');
+    await page.waitForTimeout(200);
+
+    await expect(page.locator('[data-testid=comment-md]').first().locator('a')).toHaveCount(0);
+    await expect(page.locator('[data-testid=comment-md]').first()).toContainText('click me');
+  });
+
+  test('editing your own comment appends a new append-only entry rather than mutating the original, and shows an "(edited)" badge', async ({ page }) => {
+    await setIdentity(page, 'me@example.com');
+    await h.openSlideover(page, 1);
+    await page.locator('[data-testid=new-comment-input]').fill('original text');
+    await page.locator('[data-testid=new-comment-input]').press('Control+Enter');
+    await page.waitForTimeout(200);
+
+    await page.locator('[data-testid=comment-edit-btn]').first().click();
+    await page.waitForTimeout(150);
+    const editInput = page.locator('[data-testid=comment-edit-input]');
+    await editInput.fill('updated text');
+    await editInput.press('Control+Enter');
+    await page.waitForTimeout(200);
+
+    await expect(page.locator('[data-testid=comment-md]').first()).toContainText('updated text');
+    await expect(page.locator('body')).toContainText('(edited)');
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    const comments = doc.issues[0].comments;
+    expect(comments.length).toBe(2); // original entry untouched, edit appended
+    expect(comments.some(c => c.text === 'original text')).toBe(true);
+    expect(comments.some(c => c.text === 'updated text')).toBe(true);
+    expect(comments[0].id).toBe(comments[1].id); // same comment, same id across both entries
+  });
+
+  test('Escape cancels an in-progress edit without changing the stored comment', async ({ page }) => {
+    await setIdentity(page, 'me@example.com');
+    await h.openSlideover(page, 1);
+    await page.locator('[data-testid=new-comment-input]').fill('do not touch this');
+    await page.locator('[data-testid=new-comment-input]').press('Control+Enter');
+    await page.waitForTimeout(200);
+
+    await page.locator('[data-testid=comment-edit-btn]').first().click();
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=comment-edit-input]').fill('accidentally typed');
+    await page.locator('[data-testid=comment-edit-input]').press('Escape');
+    await page.waitForTimeout(150);
+
+    await expect(page.locator('[data-testid=comment-edit-input]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=comment-md]').first()).toContainText('do not touch this');
+    const doc = await h.readActiveMilestoneDoc(page);
+    expect(doc.issues[0].comments.length).toBe(1);
+  });
+
+  test('without a matching identity, comments show no edit affordance at all', async ({ page }) => {
+    await h.openSlideover(page, 1);
+    await page.locator('[data-testid=new-comment-input]').fill('a comment with no identity set');
+    await page.locator('[data-testid=new-comment-input]').press('Control+Enter');
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=comment-edit-btn]')).toHaveCount(0);
+  });
+
+  // Regression: comments imported from before ids existed (see "comments
+  // union by content" in data-structures.spec.js) can lack an id entirely.
+  // Grouping display bubbles by raw comment id treated every id-less
+  // comment as the SAME group (a Map allows undefined as a key),
+  // collapsing multiple genuinely different legacy comments into one.
+  test('two distinct legacy comments with no id each get their own bubble, and neither is editable', async ({ page }) => {
+    await setIdentity(page, 'me@example.com');
+    const doc = await h.readActiveMilestoneDoc(page);
+    doc.issues[0].comments.push(
+      { author: 'jordan', time: 'Aug 1', text: 'first legacy note', sortKey: 5001 },
+      { author: 'jordan', time: 'Aug 2', text: 'second legacy note', sortKey: 5002 }
+    );
+    await h.writeActiveMilestoneDoc(page, doc);
+    await page.reload();
+    await page.waitForTimeout(300);
+
+    await h.openSlideover(page, 1);
+    await expect(page.locator('[data-testid=comment-md]')).toHaveCount(2);
+    await expect(page.locator('body')).toContainText('first legacy note');
+    await expect(page.locator('body')).toContainText('second legacy note');
+    await expect(page.locator('[data-testid=comment-edit-btn]')).toHaveCount(0);
+  });
+
+  test('the compose box grows as its content grows, and shrinks back down', async ({ page }) => {
+    await h.openSlideover(page, 1);
+    const input = page.locator('[data-testid=new-comment-input]');
+    const initial = await input.evaluate(el => el.getBoundingClientRect().height);
+
+    await input.fill('line 1\nline 2\nline 3\nline 4\nline 5\nline 6');
+    await page.waitForTimeout(150);
+    const grown = await input.evaluate(el => el.getBoundingClientRect().height);
+    expect(grown).toBeGreaterThan(initial + 30);
+
+    await input.fill('short');
+    await page.waitForTimeout(150);
+    const shrunk = await input.evaluate(el => el.getBoundingClientRect().height);
+    expect(shrunk).toBeLessThan(grown - 30);
+  });
+
+  test('the edit textarea opens already sized to its existing multi-line content', async ({ page }) => {
+    await setIdentity(page, 'me@example.com');
+    await h.openSlideover(page, 1);
+    await page.locator('[data-testid=new-comment-input]').fill('a\nb\nc\nd\ne');
+    await page.locator('[data-testid=new-comment-input]').press('Control+Enter');
+    await page.waitForTimeout(200);
+
+    await page.locator('[data-testid=comment-edit-btn]').first().click();
+    await page.waitForTimeout(150);
+    const editHeight = await page.locator('[data-testid=comment-edit-input]').evaluate(el => el.getBoundingClientRect().height);
+    expect(editHeight).toBeGreaterThan(60);
   });
 });
 
@@ -859,32 +1166,457 @@ test.describe('Clearing an active sort', () => {
   // on that row) just re-applied the same direction via sortBy(), a no-op
   // since it was already sorted that way. There was no way to actually
   // clear a sort from the menu.
+  // These check the header's own visible sort-direction icon rather than
+  // reading storage directly.
   test('clicking "Sort ascending" again while already ascending clears the sort', async ({ page }) => {
     await h.sortByColumn(page, 'rag', 'ascending');
-    let sort = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_v1')).sort);
-    expect(sort).toEqual({ colId: 'rag', dir: 'asc' });
+    await expect(h.colHeader(page, 'rag').locator('[title="Sort"]')).toBeVisible();
 
     await h.colHeader(page, 'rag').locator('span', { hasText: '⋯' }).click();
     await page.waitForTimeout(150);
     await page.getByText('Sort ascending', { exact: true }).click();
     await page.waitForTimeout(150);
 
-    sort = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_v1')).sort);
-    expect(sort.colId).toBeNull();
+    await expect(h.colHeader(page, 'rag').locator('[title="Sort"]')).toHaveCount(0);
   });
 
   test('clicking "Sort descending" again while already descending clears the sort', async ({ page }) => {
     await h.sortByColumn(page, 'priority', 'descending');
-    let sort = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_v1')).sort);
-    expect(sort).toEqual({ colId: 'priority', dir: 'desc' });
+    await expect(h.colHeader(page, 'priority').locator('[title="Sort"]')).toBeVisible();
 
     await h.colHeader(page, 'priority').locator('span', { hasText: '⋯' }).click();
     await page.waitForTimeout(150);
     await page.getByText('Sort descending', { exact: true }).click();
     await page.waitForTimeout(150);
 
-    sort = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_v1')).sort);
-    expect(sort.colId).toBeNull();
+    await expect(h.colHeader(page, 'priority').locator('[title="Sort"]')).toHaveCount(0);
+  });
+});
+
+// Sort is cosmetic like column order/filters/widths: persists per browser,
+// per milestone, across reload and switching -- but is excluded from
+// persist()'s document blob and buildSourceText()'s exported fields line,
+// so it never appears in a JSONL download or "View source".
+test.describe('Sort persistence', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  test('a sort persists across reload', async ({ page }) => {
+    await h.sortByColumn(page, 'rag', 'ascending');
+    await expect(h.colHeader(page, 'rag').locator('[title="Sort"]')).toBeVisible();
+
+    await page.reload();
+    await page.waitForTimeout(300);
+    await expect(h.colHeader(page, 'rag').locator('[title="Sort"]')).toBeVisible();
+  });
+
+  test('a sort persists across switching away and back to the same milestone; a different milestone has none of its own', async ({ page }) => {
+    await h.sortByColumn(page, 'rag', 'descending');
+    await expect(h.colHeader(page, 'rag').locator('[title="Sort"]')).toBeVisible();
+
+    await h.openTrackerSwitcher(page);
+    await page.locator('[data-testid=btn-add-milestone]').click();
+    await page.locator('[data-testid=btn-new-blank-milestone]').click();
+    await page.locator('[data-testid=new-milestone-name-input]').fill('Other milestone');
+    await page.locator('[data-testid=btn-create-milestone]').click();
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=col-header]')).toHaveCount(0); // blank milestone, nothing to sort by
+
+    await h.openTrackerSwitcher(page);
+    await h.milestoneRow(page, 'Delivery tracker').click();
+    await page.waitForTimeout(300);
+
+    const sortIcon = h.colHeader(page, 'rag').locator('[title="Sort"]');
+    await expect(sortIcon).toBeVisible();
+    const pathD = await sortIcon.locator('svg path').getAttribute('d');
+    expect(pathD).toBe('M12 3v9M12 12l-2.5-2.5M12 12l2.5-2.5'); // the descending glyph specifically, not reset to ascending
+  });
+
+  test('a sort never appears in the JSONL export or "View source"', async ({ page }) => {
+    await h.sortByColumn(page, 'rag', 'ascending');
+    await page.waitForTimeout(150);
+
+    await page.getByText('{ } View source', { exact: true }).click();
+    await page.waitForTimeout(200);
+    const sourceText = await page.locator('pre').textContent();
+    expect(sourceText).not.toContain('"sort"');
+  });
+});
+
+test.describe('Column value filters', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+  // Seed RAG values: i1=green i2=amber i3=null i4=amber i5=green i6=null
+  // i7=red i8=green i9=amber. Seed Type: i2/i7/i9=bug, i1/i5=enhancement,
+  // i8=chore, i3/i4/i6=null.
+
+  test('selecting one value narrows the table to matching rows', async ({ page }) => {
+    await h.openColumnMenu(page, 'rag');
+    await page.locator('[data-testid=col-filter-option]').filter({ hasText: 'At risk' }).click(); // amber
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=row]')).toHaveCount(3); // i2, i4, i9
+  });
+
+  test('selecting a second value within the same column ORs them together', async ({ page }) => {
+    await h.openColumnMenu(page, 'rag');
+    await page.locator('[data-testid=col-filter-option]').filter({ hasText: 'At risk' }).click(); // amber
+    await page.locator('[data-testid=col-filter-option]').filter({ hasText: 'Off track' }).click(); // red
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=row]')).toHaveCount(4); // i2, i4, i7, i9
+  });
+
+  test('filtering two different columns ANDs them together', async ({ page }) => {
+    await h.openColumnMenu(page, 'rag');
+    await page.locator('[data-testid=col-filter-option]').filter({ hasText: 'At risk' }).click();
+    await page.locator('[data-testid=col-filter-option]').filter({ hasText: 'Off track' }).click();
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(200);
+
+    await h.openColumnMenu(page, 'type');
+    await page.locator('[data-testid=col-filter-option]').filter({ hasText: 'Bug' }).click();
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=row]')).toHaveCount(3); // i2, i7, i9 (RAG amber|red AND type=bug)
+  });
+
+  test('the column header shows a filtered indicator only while that column has an active filter', async ({ page }) => {
+    await expect(h.colHeader(page, 'rag').locator('[title="Filtered"]')).toHaveCount(0);
+    await h.openColumnMenu(page, 'rag');
+    await page.locator('[data-testid=col-filter-option]').filter({ hasText: 'At risk' }).click();
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(200);
+    await expect(h.colHeader(page, 'rag').locator('[title="Filtered"]')).toBeVisible();
+  });
+
+  test('Clear removes only that column\'s filter, leaving other columns\' filters intact', async ({ page }) => {
+    await h.openColumnMenu(page, 'rag');
+    await page.locator('[data-testid=col-filter-option]').filter({ hasText: 'At risk' }).click();
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(150);
+
+    await h.openColumnMenu(page, 'type');
+    await page.locator('[data-testid=col-filter-option]').filter({ hasText: 'Bug' }).click();
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(150);
+
+    await h.openColumnMenu(page, 'rag');
+    await page.locator('[data-testid=col-filter-clear]').click();
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(150);
+
+    await expect(h.colHeader(page, 'rag').locator('[title="Filtered"]')).toHaveCount(0);
+    await expect(h.colHeader(page, 'type').locator('[title="Filtered"]')).toBeVisible();
+    await expect(page.locator('[data-testid=row]')).toHaveCount(3); // i2, i7, i9 (type=bug alone)
+  });
+
+  // Filters are a cosmetic, per-browser, per-milestone preference now (same
+  // treatment as column widths/order) -- they persist across a milestone
+  // switch and a reload, rather than resetting. A different milestone
+  // simply has no filter of its own (a fresh per-milestone slot), not
+  // because filters are transient.
+  test('filters persist per milestone: switching away and back keeps the filter; a different milestone has none of its own', async ({ page }) => {
+    await h.openColumnMenu(page, 'rag');
+    await page.locator('[data-testid=col-filter-option]').filter({ hasText: 'At risk' }).click();
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=row]')).toHaveCount(3);
+
+    await h.openTrackerSwitcher(page);
+    await page.locator('[data-testid=btn-add-milestone]').click();
+    await page.locator('[data-testid=btn-new-blank-milestone]').click();
+    await page.locator('[data-testid=new-milestone-name-input]').fill('Other milestone');
+    await page.locator('[data-testid=btn-create-milestone]').click();
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=col-header]')).toHaveCount(0); // blank milestone, nothing to filter
+
+    await h.openTrackerSwitcher(page);
+    await h.milestoneRow(page, 'Delivery tracker').click();
+    await page.waitForTimeout(300);
+
+    await expect(h.colHeader(page, 'rag').locator('[title="Filtered"]')).toBeVisible();
+    await expect(page.locator('[data-testid=row]')).toHaveCount(3);
+
+    await page.reload();
+    await page.waitForTimeout(300);
+    await expect(h.colHeader(page, 'rag').locator('[title="Filtered"]')).toBeVisible();
+    await expect(page.locator('[data-testid=row]')).toHaveCount(3);
+  });
+});
+
+// Column order is cosmetic like column widths/wrap/filters: persists per
+// browser, per milestone, across reload and switching -- but is excluded
+// from persist()'s document blob and buildSourceText()'s exported fields
+// line, so it never appears in a JSONL download or "View source".
+test.describe('Column order', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  async function moveColumnToStart(page, colId) {
+    await h.openColumnMenu(page, colId);
+    await page.getByText('Move to start', { exact: true }).click();
+    await page.waitForTimeout(150);
+  }
+
+  test('a reorder persists across reload', async ({ page }) => {
+    const before = await page.locator('[data-testid=col-header]').evaluateAll(els => els.map(e => e.dataset.col));
+    await moveColumnToStart(page, 'rag');
+    const after = await page.locator('[data-testid=col-header]').evaluateAll(els => els.map(e => e.dataset.col));
+    expect(after[0]).toBe('rag');
+    expect(after).not.toEqual(before);
+
+    await page.reload();
+    await page.waitForTimeout(300);
+    const afterReload = await page.locator('[data-testid=col-header]').evaluateAll(els => els.map(e => e.dataset.col));
+    expect(afterReload).toEqual(after);
+  });
+
+  test('a reorder persists across switching away and back to the same milestone', async ({ page }) => {
+    await moveColumnToStart(page, 'rag');
+    const moved = await page.locator('[data-testid=col-header]').evaluateAll(els => els.map(e => e.dataset.col));
+
+    await h.openTrackerSwitcher(page);
+    await page.locator('[data-testid=btn-add-milestone]').click();
+    await page.locator('[data-testid=btn-new-blank-milestone]').click();
+    await page.locator('[data-testid=new-milestone-name-input]').fill('Other milestone');
+    await page.locator('[data-testid=btn-create-milestone]').click();
+    await page.waitForTimeout(300);
+
+    await h.openTrackerSwitcher(page);
+    await h.milestoneRow(page, 'Delivery tracker').click();
+    await page.waitForTimeout(300);
+
+    const backOnOriginal = await page.locator('[data-testid=col-header]').evaluateAll(els => els.map(e => e.dataset.col));
+    expect(backOnOriginal).toEqual(moved);
+  });
+
+  test('hiding then re-showing a field restores it at its canonical position, not necessarily where it was', async ({ page }) => {
+    await h.openColumnMenu(page, 'mitigation');
+    await page.getByText('Hide field', { exact: true }).click();
+    await page.waitForTimeout(150);
+    await expect(h.colHeader(page, 'mitigation')).toHaveCount(0);
+
+    await page.locator('[data-testid=add-field-wrap] span').first().click();
+    await page.waitForTimeout(150);
+    await page.locator('div', { hasText: 'Show "Mitigation"' }).last().click();
+    await page.waitForTimeout(150);
+
+    const order = await page.locator('[data-testid=col-header]').evaluateAll(els => els.map(e => e.dataset.col));
+    expect(order[order.length - 1]).toBe('mitigation'); // last in the default sequence
+  });
+
+  test('a reordered column never appears in the JSONL export or "View source"', async ({ page }) => {
+    await moveColumnToStart(page, 'rag');
+    await page.waitForTimeout(150);
+
+    await page.getByText('{ } View source', { exact: true }).click();
+    await page.waitForTimeout(200);
+    const sourceText = await page.locator('pre').textContent();
+    expect(sourceText).not.toContain('columnOrder');
+    const fieldsLine = sourceText.split('\n').find(l => l.includes('"type":"fields"'));
+    expect(fieldsLine).toBeTruthy();
+  });
+
+  test('dragging a column header actually reorders (and persists), not just the "Move to start" menu shortcut', async ({ page }) => {
+    // The other tests in this block drive reorder through the column menu's
+    // "Move to start" item, which never touches the real HTML5
+    // draggable/dragstart path a user actually drags with. Exercise that
+    // path directly too.
+    const before = await page.locator('[data-testid=col-header]').evaluateAll(els => els.map(e => e.dataset.col));
+    await h.colHeader(page, 'teams').dragTo(h.colHeader(page, 'type'));
+    await page.waitForTimeout(150);
+    const afterDrag = await page.locator('[data-testid=col-header]').evaluateAll(els => els.map(e => e.dataset.col));
+    expect(afterDrag).not.toEqual(before);
+    expect(afterDrag[0]).toBe('type');
+    expect(afterDrag[1]).toBe('teams');
+
+    await page.reload();
+    await page.waitForTimeout(300);
+    const afterReload = await page.locator('[data-testid=col-header]').evaluateAll(els => els.map(e => e.dataset.col));
+    expect(afterReload).toEqual(afterDrag);
+  });
+
+  // Regression guard for a real cross-browser bug: without user-select:none,
+  // Firefox treats a click-drag over the header's own label text as a text
+  // selection gesture instead of starting native drag-and-drop, so the
+  // dragstart event driving reorder never fires at all -- from the user's
+  // side that reads as "column order doesn't persist" (nothing to persist
+  // ever happened), even though Chromium is forgiving enough that the
+  // functional drag test above passes regardless.
+  test('column headers disable text selection so a click-drag starts a reorder, not a text selection', async ({ page }) => {
+    expect(await h.colHeader(page, 'type').evaluate(el => getComputedStyle(el).userSelect)).toBe('none');
+    expect(await page.locator('[data-testid=title-col-header]').evaluate(el => getComputedStyle(el).userSelect)).toBe('none');
+  });
+});
+
+test.describe('Column resize', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  async function dragResizeHandle(page, colId, deltaX) {
+    const handle = h.colHeader(page, colId).locator('[data-testid=col-resize-handle]');
+    const box = await handle.boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 + deltaX, box.y + box.height / 2, { steps: 8 });
+    await page.mouse.up();
+    await page.waitForTimeout(100);
+  }
+
+  test('dragging the handle widens the column and its cells, without triggering the column-reorder drag', async ({ page }) => {
+    const orderBefore = await page.locator('[data-testid=col-header]').evaluateAll(els => els.map(e => e.dataset.col));
+    const before = await h.colHeader(page, 'rag').boundingBox();
+
+    await dragResizeHandle(page, 'rag', 60);
+
+    const after = await h.colHeader(page, 'rag').boundingBox();
+    expect(after.width).toBeGreaterThan(before.width + 30);
+
+    const orderAfter = await page.locator('[data-testid=col-header]').evaluateAll(els => els.map(e => e.dataset.col));
+    expect(orderAfter).toEqual(orderBefore);
+
+    const cellWidth = await h.fieldCell(page, 1, 'rag').evaluate(el => el.getBoundingClientRect().width);
+    expect(Math.round(cellWidth)).toBe(Math.round(after.width));
+  });
+
+  test('a resized width persists across reload (it is a per-browser preference, not document data)', async ({ page }) => {
+    await dragResizeHandle(page, 'rag', 60);
+    const widened = await h.colHeader(page, 'rag').boundingBox();
+
+    await page.reload();
+    await page.waitForTimeout(300);
+
+    const reloaded = await h.colHeader(page, 'rag').boundingBox();
+    expect(Math.abs(reloaded.width - widened.width)).toBeLessThan(2);
+  });
+
+  test('a resized width never appears in "View source" or a JSONL export', async ({ page }) => {
+    await dragResizeHandle(page, 'rag', 60);
+    const widened = await h.colHeader(page, 'rag').boundingBox();
+    const widenedPx = String(Math.round(widened.width));
+
+    await page.getByText('{ } View source', { exact: true }).click();
+    await page.waitForTimeout(200);
+    const sourceText = await page.locator('pre').textContent();
+    expect(sourceText.includes(widenedPx)).toBe(false);
+    expect(sourceText).not.toContain('columnWidths');
+  });
+
+  test('resizing one milestone\'s column does not affect another milestone\'s width for the same column id', async ({ page }) => {
+    await dragResizeHandle(page, 'rag', 60);
+    const widenedOnFirst = await h.colHeader(page, 'rag').boundingBox();
+
+    await h.openTrackerSwitcher(page);
+    await page.locator('[data-testid=btn-add-milestone]').click();
+    await page.locator('[data-testid=btn-new-blank-milestone]').click();
+    await page.locator('[data-testid=new-milestone-name-input]').fill('Other milestone');
+    await page.locator('[data-testid=btn-create-milestone]').click();
+    await page.waitForTimeout(300);
+
+    await h.openTrackerSwitcher(page);
+    await h.milestoneRow(page, 'Delivery tracker').click();
+    await page.waitForTimeout(300);
+
+    const backOnFirst = await h.colHeader(page, 'rag').boundingBox();
+    expect(Math.abs(backOnFirst.width - widenedOnFirst.width)).toBeLessThan(2);
+  });
+
+  test('the Key Issue (title) column is resizable the same way, and its row cells follow', async ({ page }) => {
+    const titleHeader = page.locator('[data-testid=title-col-header]');
+    const before = await titleHeader.boundingBox();
+    const handle = titleHeader.locator('[data-testid=col-resize-handle]');
+    const box = await handle.boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 + 80, box.y + box.height / 2, { steps: 8 });
+    await page.mouse.up();
+    await page.waitForTimeout(100);
+
+    const after = await titleHeader.boundingBox();
+    expect(after.width).toBeGreaterThan(before.width + 50);
+
+    const rowCellWidth = await h.titleCell(page, 1).evaluate(el => el.getBoundingClientRect().width);
+    expect(Math.round(rowCellWidth)).toBe(Math.round(after.width));
+
+    await page.reload();
+    await page.waitForTimeout(300);
+    const reloaded = await titleHeader.boundingBox();
+    expect(Math.abs(reloaded.width - after.width)).toBeLessThan(2);
+  });
+
+  test('the comment-indicator column has no resize handle -- it is not a data column', async ({ page }) => {
+    const count = await page.locator('[title=Comments] [data-testid=col-resize-handle]').count();
+    expect(count).toBe(0);
+  });
+});
+
+test.describe('Wrap vs truncate per column', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  const LONG_TEXT = 'A very long value that should truncate with an ellipsis by default and wrap onto multiple lines once the toggle is switched on';
+
+  async function setLongTitle(page) {
+    await h.clickTitleToEdit(page, 1);
+    await h.typeAndCommit(page, LONG_TEXT);
+    await page.waitForTimeout(150);
+  }
+
+  test('title: truncates by default, and its dedicated header icon switches it to full wrap', async ({ page }) => {
+    await setLongTitle(page);
+    const span = h.titleCell(page, 1).locator('span').first();
+    await expect(span).toHaveCSS('white-space', 'nowrap');
+    const before = await h.row(page, 1).boundingBox();
+
+    await page.locator('[data-testid=title-wrap-toggle]').click();
+    await page.waitForTimeout(150);
+
+    await expect(span).toHaveCSS('white-space', 'normal');
+    await expect(span).toHaveText(LONG_TEXT);
+    const after = await h.row(page, 1).boundingBox();
+    expect(after.height).toBeGreaterThan(before.height + 10);
+  });
+
+  test('a text-type column gets its own "Wrap text" item in the column menu', async ({ page }) => {
+    await h.clickFieldToEdit(page, 1, 'mitigation');
+    await h.typeAndCommit(page, LONG_TEXT);
+    await page.waitForTimeout(150);
+
+    const span = h.fieldCell(page, 1, 'mitigation').locator('span span').first();
+    await expect(span).toHaveCSS('white-space', 'nowrap');
+
+    await h.openColumnMenu(page, 'mitigation');
+    const wrapItem = page.locator('[data-testid=col-wrap-toggle]');
+    await expect(wrapItem).toBeVisible();
+    await wrapItem.click();
+    await page.waitForTimeout(150);
+
+    await expect(span).toHaveCSS('white-space', 'normal');
+    // Toggling one column doesn't affect the title or other columns.
+    await expect(h.titleCell(page, 1).locator('span').first()).toHaveCSS('white-space', 'nowrap');
+  });
+
+  test('a select-type column has no "Wrap text" item -- it renders as pills, not truncatable prose', async ({ page }) => {
+    await h.openColumnMenu(page, 'rag');
+    await expect(page.locator('[data-testid=col-wrap-toggle]')).toHaveCount(0);
+  });
+
+  test('wrap preferences persist across reload and are excluded from export', async ({ page }) => {
+    await setLongTitle(page);
+    await page.locator('[data-testid=title-wrap-toggle]').click();
+    await page.waitForTimeout(150);
+    await h.clickFieldToEdit(page, 2, 'mitigation');
+    await h.typeAndCommit(page, LONG_TEXT);
+    await h.openColumnMenu(page, 'mitigation');
+    await page.locator('[data-testid=col-wrap-toggle]').click();
+    await page.waitForTimeout(150);
+
+    await page.reload();
+    await page.waitForTimeout(300);
+    await expect(h.titleCell(page, 1).locator('span').first()).toHaveCSS('white-space', 'normal');
+    await expect(h.fieldCell(page, 2, 'mitigation').locator('span span').first()).toHaveCSS('white-space', 'normal');
+
+    await page.getByText('{ } View source', { exact: true }).click();
+    await page.waitForTimeout(200);
+    const sourceText = await page.locator('pre').textContent();
+    expect(sourceText).not.toContain('columnWrap');
+    expect(sourceText).not.toContain('titleWrap');
   });
 });
 

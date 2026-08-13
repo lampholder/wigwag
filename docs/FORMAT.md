@@ -17,22 +17,137 @@ or Dropbox file.
 
 Every line has a `type` discriminator:
 
-- `fields` — exactly one per file, first line. `{ type: 'fields', fields: {...fieldDefs}, columnOrder: [...] }`.
+- `fields` — exactly one per file, first line. Carries the milestone's own
+  metadata alongside the schema:
+  `{ type: 'fields', fields: {...fieldDefs}, id, name, projectNotes, projectComments }`.
+  `id`/`name` identify the milestone this file represents (see
+  "Milestones" below); `projectNotes` (a markdown string) and
+  `projectComments` (array of `{author, email, time, text, sortKey}`) are
+  milestone-level, not per-issue — see "Project notes & comments" below.
+  All four are optional on the way in (an older or hand-written file
+  without them still parses fine) and omitted on the way out when empty,
+  so a file with no notes/comments doesn't carry empty placeholders.
+  `columnOrder` may still be present on an *incoming* file for backward
+  compatibility with older exports, but is never written by the app
+  anymore — column order is cosmetic, see below.
 - `issue` — one per tracked issue, any order. `{ type: 'issue', id, uid, num, fieldRefs, values, comments, history }`.
+
+## Milestones: one file is one milestone, an installation holds many
+
+The app manages multiple independent tracker documents ("milestones") per
+browser, each with its own id, name, schema, issues, and project
+notes/comments — switchable from a dropdown next to the milestone title.
+**A single `.jsonl` file/export always represents exactly one milestone**;
+the multi-milestone concept exists only in the app's own per-browser
+storage (a small index of `{id, name}` pairs, plus one localStorage key per
+milestone holding its actual document), never inside the file format
+itself. Importing a file creates a new milestone rather than overwriting
+the current one (unless using "Open file…", which explicitly replaces the
+current milestone's working copy in place, with a confirmation prompt).
+GitHub repo-sync target is also per-milestone (not global), specifically to
+avoid one milestone's auto-push clobbering another's repo the moment a
+second milestone is created — this was a deliberate fix, not an oversight.
+
+## Field types
+
+`fieldDefs[colId].type` is one of `text`, `select`, `multiselect`,
+`issue` (the Key/Title-style field — can hold a GitHub/Jira link), or
+`date`. Date fields store a plain ISO 8601 string (`YYYY-MM-DD`) — the
+same format a native `<input type="date">` already uses as its own
+`value`, so there's no separate serialization step. They're deliberately
+**not** bindable via the rule DSL (no "Bound source" option) and have no
+wrap-text or value-filter affordance, unlike text/select fields.
+
+## Project notes & comments
+
+Separate from any issue: a milestone-wide notes document (markdown, edited
+via the "Notes" button on the header's metadata line — same slide-over
+panel style as an issue's own detail view) and a simple comment thread
+(no per-comment edit affordance, unlike issue comments — post-only). Both
+live in the `fields` line (see above), not on any issue row, and both
+persist and restore with the rest of the milestone when switching. Markdown
+rendering (shared with issue comments — see `renderMarkdown`/
+`renderMarkdownInline` in the app source) additionally turns any bare email
+address into a person pill (`mailto:` link, dimmed domain) and any bare URL
+into a real link, with no special markdown syntax required for either.
+
+**Known gap**: `projectNotes`/`projectComments` are carried through by
+"Open file…" (replaces the current milestone in place) and "Import from
+file…" (creates a new milestone), but **not** by "Import & merge…" — that
+path only reads and merges an incoming file's `issues`, silently ignoring
+anything on the `fields` line beyond the schema itself. Merging in a
+teammate's edited notes/project-comments doesn't currently work; only
+issue-level data does.
+
+## Cosmetic, per-browser preferences (never in the file)
+
+Column width, column order, column wrap-vs-truncate, per-column value
+filters, and sort are all **per-browser, per-milestone preferences** —
+persisted in their own separate `localStorage` keys, never written into
+`persist()`'s document blob and never exported into a `.jsonl` file or
+shown in "View source". Reordering columns, resizing one, or sorting by RAG
+before sending a teammate an export has zero effect on what they see; each
+browser keeps its own arrangement independently. Deliberate: these are
+presentation, not data.
+
+## Export as HTML: a fully interactive standalone copy
+
+Beyond `.jsonl`, "Export ▾" also offers "Export as HTML (interactive)" —
+not a static rendering, but a real independently-editable copy of the app
+itself, with the current milestone's data (squashed history — same reduced
+form as "JSONL squashed") baked in. The recipient opens it (double-click,
+no server needed) and gets the full app: edit fields, add comments, write
+notes, then export their own changes back out as `.jsonl` for you to
+"Import & merge…" against your original. See `docs/EDITING.md`'s "Editing the outer
+shell" section for the mechanism (a cached copy of the page's own source,
+captured at load time, with a small script injecting the milestone
+snapshot before download — no network request involved, so it works
+whether the *source* page is served or itself a downloaded copy someone's
+re-exporting from).
 
 ## Field provenance: sourced vs. local vs. bound
 
 `fieldRefs[colId]` is a read-only, cached mirror of an external system
-(GitHub issue/PR or Jira ticket) that a field is linked to — e.g. the Key
-field's `{ owner, repo, num, labels }`. It's only ever overwritten wholesale
-by a refresh pull, same idea as the old design's `source.cached`.
+(GitHub issue/PR or Jira ticket) that a field is linked to. Both systems now
+expose a maximalist field set, not just `{owner, repo, num, labels}`:
+
+- **GitHub**: `key` (`owner/repo#num`), `labels`, `description`, `status`
+  (raw `state`, `'open'`/`'closed'`), `statusCategory` (normalized to the
+  same `'new'`/`'done'` vocabulary Jira uses — GitHub has no native "in
+  progress" state at this API level, so only two of the three buckets are
+  ever produced), `issueType` (`'Issue'`/`'Pull Request'`), `assignees`
+  (array — GitHub issues support multiple), `reporter`, `created`,
+  `updated`, `resolution` (`state_reason`), `resolutionDate` (`closed_at`),
+  `fixVersions` (the issue's milestone title, as a one-element array),
+  `project` (`owner/repo`). No `priority`/`dueDate`/`components` — GitHub's
+  API has no such concepts, unlike Jira, so they're omitted rather than
+  shipped as permanently-empty fields.
+- **Jira**: `key`, `labels`, `description`, `status`, `statusCategory`
+  (Jira's own stable 3-bucket `'new'`/`'indeterminate'`/`'done'`
+  normalization — steadier for a rule to branch on than the raw status
+  name, which varies per project's workflow), `issueType`, `priority`,
+  `assignee`, `reporter`, `created`, `updated`, `dueDate`, `resolution`,
+  `resolutionDate`, `components`, `fixVersions`, `project`.
+
+Each system has a shared picker (`pickGithubFields`/`pickJiraFields`) that
+every field safely defaults (`''`/`[]`), so old, already-linked data missing
+newer fields (e.g. from before this expansion shipped) resolves cleanly
+rather than crashing — confirmed by a dedicated backward-compatibility test.
+`fieldRefs[colId]` is only ever overwritten wholesale by a refresh pull.
 
 A field can additionally be **bound**: `fieldDefs[colId].linkedSourceId`
 names another field to read from, and `fieldDefs[colId].rule` is a small JS
-expression evaluated against that source (`source.github`/`source.jira` are
-always-object, so a rule can safely read `source.github.labels` even when
-nothing's linked yet — it just evaluates against `{}`). Recomputation
-happens automatically whenever the source field or the rule itself changes.
+expression evaluated against that source. **`source.github`/`source.jira`
+are `null`, not an empty-shaped object, unless the bound field is actually
+linked to that specific system** — this is a deliberate reversal of an
+earlier design (the original "always-object" approach is preserved for
+history in `linked-value-rework.md`, now superseded). A rule branches with a
+plain truthy check or optional chaining, e.g.
+`source.jira ? source.jira.status : source.github ? source.github.status : 'Todo'`
+— this also means a rule written assuming one system will silently produce
+`undefined` (clearing the target field) if the actual link turns out to be
+the other system, so guard accordingly. Recomputation happens automatically
+whenever the source field or the rule itself changes.
 
 ## History is a signed, append-only per-issue log
 

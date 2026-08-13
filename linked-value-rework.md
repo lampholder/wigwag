@@ -1,5 +1,15 @@
 # Change: Rework "Linked value" binding UX
 
+> **Superseded.** This was the original design for `source`/`linkedSourceId`
+> binding, from before this document's own point 3 was reversed: `source.github`/
+> `source.jira` are now `null` (not an always-populated empty object) when
+> the bound field isn't linked to that specific system, and both systems'
+> field sets have grown well past `{labels, description}` since this was
+> written. See `docs/FORMAT.md`'s "Field provenance" section for the
+> current shape. Kept for history — the core UX (Bound source dropdown,
+> `source`-based rule DSL, select/multiselect/text bindability) is still
+> accurate, only the "always-object" claim and the field lists are stale.
+
 ## Problem
 Select fields can auto-populate from a linked issue via a rule DSL, e.g.:
 

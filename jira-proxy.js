@@ -73,7 +73,12 @@ http.createServer(async (req, res) => {
   }
 
   try {
-    const apiRes = await fetch(BASE_URL + '/rest/api/' + auth.apiVersion + '/issue/' + encodeURIComponent(key) + '?fields=summary,description,labels', {
+    const FIELDS = [
+      'summary', 'description', 'labels', 'status', 'issuetype', 'priority',
+      'assignee', 'reporter', 'created', 'updated', 'duedate', 'resolution',
+      'resolutiondate', 'components', 'fixVersions', 'project'
+    ].join(',');
+    const apiRes = await fetch(BASE_URL + '/rest/api/' + auth.apiVersion + '/issue/' + encodeURIComponent(key) + '?fields=' + FIELDS, {
       headers: { Authorization: auth.header, Accept: 'application/json' }
     });
     if (!apiRes.ok) {
@@ -82,11 +87,35 @@ http.createServer(async (req, res) => {
       return;
     }
     const data = await apiRes.json();
+    const f = data.fields || {};
+    // Every field gets a safe empty-string/empty-array default (never
+    // null/undefined) so rule text on the app side never needs a null
+    // guard — same convention as the existing title/description/labels.
+    // Nested objects (person/status/etc.) are flattened to the one or two
+    // properties actually useful in a rule, not passed through whole.
     const result = {
-      title: (data.fields && data.fields.summary) || key,
-      description: adfToText(data.fields && data.fields.description).trim(),
-      labels: (data.fields && data.fields.labels) || [],
-      browseUrl: BASE_URL + '/browse/' + key
+      title: f.summary || key,
+      description: adfToText(f.description).trim(),
+      labels: f.labels || [],
+      browseUrl: BASE_URL + '/browse/' + key,
+      key,
+      status: (f.status && f.status.name) || '',
+      // statusCategory is Jira's own 3-bucket normalization ('new' /
+      // 'indeterminate' / 'done') -- stabler for a rule to branch on than
+      // the raw status name, which varies per project's own workflow.
+      statusCategory: (f.status && f.status.statusCategory && f.status.statusCategory.key) || '',
+      issueType: (f.issuetype && f.issuetype.name) || '',
+      priority: (f.priority && f.priority.name) || '',
+      assignee: (f.assignee && f.assignee.displayName) || '',
+      reporter: (f.reporter && f.reporter.displayName) || '',
+      created: f.created || '',
+      updated: f.updated || '',
+      dueDate: f.duedate || '',
+      resolution: (f.resolution && f.resolution.name) || '',
+      resolutionDate: f.resolutiondate || '',
+      components: (f.components || []).map(c => c.name),
+      fixVersions: (f.fixVersions || []).map(v => v.name),
+      project: (f.project && f.project.key) || ''
     };
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(result));

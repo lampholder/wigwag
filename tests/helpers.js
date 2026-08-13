@@ -1,12 +1,79 @@
 // Shared helpers for the tracker's Playwright test suite. The app has no
 // build step and no client-side router — every test just navigates to the
-// bundled HTML file fresh, which resets to the seed demo data because each
-// Playwright test gets an isolated browser context (fresh localStorage).
+// bundled HTML file fresh (each Playwright test gets an isolated browser
+// context, i.e. fresh localStorage). The real app now starts genuinely
+// blank on a true first-ever open (no seed content) -- gotoTracker below
+// pre-seeds the classic 9-issue demo dataset instead, since virtually the
+// whole suite relies on that exact fixture (specific issues/fields/values)
+// and that's a test-suite concern, entirely decoupled from what a real new
+// user should see.
+const fs = require('fs');
+const path = require('path');
 const TRACKER_PATH = '/Git-native%20Project%20Tracker.html';
 
+const DEMO_MILESTONE_ID = 'demo-milestone';
+const DEMO_MILESTONE_NAME = 'Delivery tracker';
+const demoLines = fs.readFileSync(path.join(__dirname, 'fixtures', 'demo-milestone.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+const demoFieldsLine = demoLines.find(l => l.type === 'fields');
+const demoIssues = demoLines.filter(l => l.type === 'issue');
+const demoDoc = {
+  fieldDefs: demoFieldsLine.fields, columnOrder: demoFieldsLine.columnOrder, hiddenFieldIds: [],
+  issues: demoIssues.map(iss => ({
+    id: iss.id, uid: iss.uid, num: iss.num, fieldRefs: iss.fieldRefs || {}, fieldLoading: {},
+    values: iss.values, comments: iss.comments, history: iss.history
+  })),
+  githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: ''
+};
+
+// Seeds the demo dataset (tests/fixtures/demo-milestone.jsonl -- extracted
+// from what the app itself used to seed on first-ever open, before it
+// switched to starting blank) as an already-migrated milestone, via
+// addInitScript so it exists before the app's own constructor runs on the
+// next navigation. Exported separately from gotoTracker so a test that
+// specifically needs a truly-unseeded first-ever-open state (e.g. legacy
+// storage migration) can navigate without it.
+// addInitScript re-runs on EVERY navigation in this page, including a test's
+// own page.reload() after making edits -- guarded the same way the app's
+// own migrateLegacyStorageIfNeeded() guards itself, so a reload doesn't
+// clobber whatever's actually there back to the pristine seed.
+async function seedDemoMilestone(page) {
+  await page.addInitScript(({ id, name, doc }) => {
+    if (localStorage.getItem('git_native_tracker_milestones_v1')) return;
+    localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({ activeMilestoneId: id, milestones: [{ id, name }] }));
+    localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify(doc));
+  }, { id: DEMO_MILESTONE_ID, name: DEMO_MILESTONE_NAME, doc: demoDoc });
+}
+
 async function gotoTracker(page) {
+  await seedDemoMilestone(page);
   await page.goto(TRACKER_PATH, { waitUntil: 'networkidle' });
   await page.waitForTimeout(300); // initial render settle
+}
+
+// The tracker's own document (fieldDefs/issues/etc.) is persisted under a
+// per-milestone key resolved via a small index -- see the milestone-switcher
+// storage layout. Tests that used to read the bare 'git_native_tracker_v1'
+// key directly should go through these instead.
+async function readActiveMilestoneDoc(page) {
+  return page.evaluate(() => {
+    const idx = JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1'));
+    return JSON.parse(localStorage.getItem('git_native_tracker_v1:' + idx.activeMilestoneId));
+  });
+}
+async function writeActiveMilestoneDoc(page, doc) {
+  await page.evaluate((doc) => {
+    const idx = JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1'));
+    localStorage.setItem('git_native_tracker_v1:' + idx.activeMilestoneId, JSON.stringify(doc));
+  }, doc);
+}
+
+async function openTrackerSwitcher(page) {
+  await page.locator('[data-testid=btn-tracker-switcher]').click();
+  await page.waitForTimeout(150);
+}
+
+function milestoneRow(page, name) {
+  return page.locator('[data-testid=milestone-row]').filter({ hasText: name });
 }
 
 function row(page, num) {
@@ -61,10 +128,14 @@ async function clickFieldToEdit(page, num, colId) {
 }
 
 async function openSlideover(page, num) {
-  await row(page, num).locator('[data-testid=row-chevron]').click();
-  await page.locator('[data-testid=row-menu-open]').click();
+  await clickTitleToPeek(page, num);
   await page.waitForTimeout(200);
   return page.locator('[data-testid=slideover]');
+}
+
+// The row-hover refresh button, replacing the old chevron-then-menu path.
+async function refreshRow(page, num) {
+  await row(page, num).locator('[data-testid=row-refresh-btn]').click();
 }
 
 async function closeSlideover(page) {
@@ -126,14 +197,67 @@ async function openSettings(page) {
 async function setGithubToken(page, token) {
   await openSettings(page);
   await page.locator('[data-testid=settings-github-token]').fill(token);
-  await page.mouse.click(700, 700);
+  await page.mouse.click(10, 10); // outside Settings -- its panel is tall enough to reach (700,700) on some layouts
   await page.waitForTimeout(150);
+}
+
+// Configures the tracker's own repo-sync (Settings > GITHUB REPO SYNC),
+// distinct from setGithubToken's issue-linking-only use above (the token
+// field is dual-purpose and shared by both).
+async function setGithubRepoSync(page, { repo, path, branch, token } = {}) {
+  await openSettings(page);
+  if (token !== undefined) await page.locator('[data-testid=settings-github-token]').fill(token);
+  if (repo !== undefined) await page.locator('[data-testid=settings-github-repo]').fill(repo);
+  if (path !== undefined) await page.locator('[data-testid=settings-github-repo-path]').fill(path);
+  if (branch !== undefined) await page.locator('[data-testid=settings-github-repo-branch]').fill(branch);
+  await page.mouse.click(10, 10); // outside Settings -- its panel is tall enough to reach (700,700) on some layouts
+  await page.waitForTimeout(150);
+}
+
+// Mocks the Contents API endpoint the repo-sync feature itself talks to
+// (GET to pull, PUT to push) for one repo/path -- separate from
+// mockGithubApi above, which fakes the unrelated per-field issue-link
+// endpoints. `state.getResponses` is a script of {status, sha, text}
+// consumed one per GET call (the last entry repeats for any GET beyond the
+// script's length, so a test only has to describe the calls it cares
+// about). `state.pushStatusOverride` lets a test make exactly one PUT come
+// back as e.g. 409 before reverting to normal 200s. Returns live counters
+// and the raw bodies of every PUT actually sent, for assertions.
+function mockGithubContentsApi(page, repo, path = 'tracker.jsonl') {
+  const state = { getCount: 0, pushCount: 0, pushes: [], getResponses: [], pushStatusOverride: null };
+  page.route(`https://api.github.com/repos/${repo}/contents/${path}`, async (route) => {
+    const method = route.request().method();
+    if (method === 'GET') {
+      const idx = Math.min(state.getCount, state.getResponses.length - 1);
+      const resp = state.getResponses[idx];
+      state.getCount++;
+      if (!resp || resp.status === 404) {
+        await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ message: 'Not Found' }) });
+      } else {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ sha: resp.sha, content: Buffer.from(resp.text, 'utf8').toString('base64') }) });
+      }
+      return;
+    }
+    if (method === 'PUT') {
+      const body = JSON.parse(route.request().postData());
+      state.pushCount++;
+      state.pushes.push(body);
+      if (state.pushStatusOverride && state.pushCount === state.pushStatusOverride.onCall) {
+        await route.fulfill({ status: state.pushStatusOverride.status, contentType: 'application/json', body: '{}' });
+      } else {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ content: { sha: 'sha-after-push-' + state.pushCount } }) });
+      }
+      return;
+    }
+    await route.fulfill({ status: 404, contentType: 'application/json', body: '{}' });
+  });
+  return state;
 }
 
 async function setJiraProxyUrl(page, url) {
   await openSettings(page);
   await page.locator('[data-testid=settings-jira-proxy-url]').fill(url);
-  await page.mouse.click(700, 700);
+  await page.mouse.click(10, 10); // outside Settings -- its panel is tall enough to reach (700,700) on some layouts
   await page.waitForTimeout(150);
 }
 
@@ -232,7 +356,8 @@ async function getHistoryEntries(page) {
 // to be open) for tests that just need to confirm a specific event happened.
 async function getHistoryEntriesFor(page, issueId) {
   return page.evaluate((issueId) => {
-    const d = JSON.parse(localStorage.getItem('git_native_tracker_v1'));
+    const idx = JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1'));
+    const d = JSON.parse(localStorage.getItem('git_native_tracker_v1:' + idx.activeMilestoneId));
     const iss = d.issues.find(i => i.id === issueId);
     return iss ? iss.history.map(h => h.text) : [];
   }, issueId);
@@ -241,6 +366,7 @@ async function getHistoryEntriesFor(page, issueId) {
 module.exports = {
   TRACKER_PATH,
   gotoTracker,
+  seedDemoMilestone,
   row,
   titleCell,
   fieldCell,
@@ -251,6 +377,7 @@ module.exports = {
   clickFieldToEdit,
   openSlideover,
   closeSlideover,
+  refreshRow,
   pasteText,
   typeAndCommit,
   waitUntil,
@@ -262,9 +389,15 @@ module.exports = {
   sortByColumn,
   getHistoryEntries,
   getHistoryEntriesFor,
+  readActiveMilestoneDoc,
+  writeActiveMilestoneDoc,
+  openTrackerSwitcher,
+  milestoneRow,
   mockGithubApi,
+  mockGithubContentsApi,
   mockJiraProxy,
   openSettings,
   setGithubToken,
+  setGithubRepoSync,
   setJiraProxyUrl,
 };

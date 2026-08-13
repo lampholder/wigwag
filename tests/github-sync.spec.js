@@ -1,0 +1,296 @@
+// Spec section: repo sync -- the tracker's OWN data (not per-field issue
+// links, which have their own coverage in issue-field.spec.js) persisted to
+// a GitHub repo via the Contents API, with real commit history. See
+// vectorized-whistling-pancake.md for the design.
+const { test, expect } = require('@playwright/test');
+const h = require('./helpers');
+
+const REPO = 'acme/tracker-data';
+
+test.describe('GitHub repo sync', () => {
+  test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); });
+
+  test('connecting to a repo with no file yet pushes local state as the initial commit', async ({ page }) => {
+    const gh = h.mockGithubContentsApi(page, REPO);
+    gh.getResponses = [{ status: 404 }];
+
+    await h.gotoTracker(page);
+    await h.setGithubRepoSync(page, { repo: REPO, token: 'ghp_faketoken' });
+    await page.reload({ waitUntil: 'networkidle' });
+
+    await h.waitUntil(() => Promise.resolve(gh.pushCount >= 1));
+    expect(gh.pushCount).toBe(1);
+    const pushed = Buffer.from(gh.pushes[0].content, 'base64').toString('utf8');
+    expect(pushed).toContain('"type":"fields"');
+  });
+
+  test('reconnecting adopts a non-conflicting remote change via the existing merge path', async ({ page }) => {
+    const gh = h.mockGithubContentsApi(page, REPO);
+
+    await h.gotoTracker(page);
+    await page.locator('[data-testid=btn-export]').click();
+    const [dl] = await Promise.all([
+      page.waitForEvent('download'),
+      page.locator('[data-testid=btn-export-jsonl]').click(),
+    ]);
+    const fs = require('fs');
+    const lines = fs.readFileSync(await dl.path(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+    const i8 = lines.find(l => l.type === 'issue' && l.id === 'i8');
+    i8.values.mitigation = 'Root cause identified, fix in review';
+    i8.history.push({ id: 'ext_h1', time: 'Aug 2', actor: 'jordan', email: 'jordan@example.com', text: 'Mitigation set', field: 'mitigation', value: 'Root cause identified, fix in review', origin: 'authored', sortKey: Date.now() + 1000, sig: null, pubKey: null });
+    gh.getResponses = [{ status: 200, sha: 'sha1', text: lines.map(l => JSON.stringify(l)).join('\n') }];
+
+    await h.setGithubRepoSync(page, { repo: REPO, token: 'ghp_faketoken' });
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(500);
+
+    await expect(page.locator('[data-testid=merge-conflict-modal]')).toHaveCount(0);
+    await expect(h.fieldCell(page, 8, 'mitigation')).toContainText('Root cause identified');
+  });
+
+  test('a burst of local edits results in exactly one debounced push', async ({ page }) => {
+    const gh = h.mockGithubContentsApi(page, REPO);
+    gh.getResponses = [{ status: 404 }];
+
+    await h.gotoTracker(page);
+    await h.setGithubRepoSync(page, { repo: REPO, token: 'ghp_faketoken' });
+    await page.reload({ waitUntil: 'networkidle' });
+    await h.waitUntil(() => Promise.resolve(gh.pushCount >= 1)); // initial-commit push from connect
+    const afterConnect = gh.pushCount;
+
+    await h.clickFieldToEdit(page, 1, 'rag');
+    await page.locator('div[style*="z-index: 70"]').getByText('At risk').click();
+    await page.waitForTimeout(200);
+    await h.clickFieldToEdit(page, 2, 'rag');
+    await page.locator('div[style*="z-index: 70"]').getByText('At risk').click();
+    await page.waitForTimeout(200);
+    await h.clickFieldToEdit(page, 3, 'rag');
+    await page.locator('div[style*="z-index: 70"]').getByText('At risk').click();
+    await page.waitForTimeout(4800); // past the default debounce
+
+    expect(gh.pushCount).toBe(afterConnect + 1); // three edits, one push
+  });
+
+  test('a 409 with no genuine conflict pulls, merges cleanly, and retries the push automatically', async ({ page }) => {
+    const gh = h.mockGithubContentsApi(page, REPO);
+
+    await h.gotoTracker(page);
+    await page.locator('[data-testid=btn-export]').click();
+    const [dl] = await Promise.all([
+      page.waitForEvent('download'),
+      page.locator('[data-testid=btn-export-jsonl]').click(),
+    ]);
+    const fs = require('fs');
+    const baseline = fs.readFileSync(await dl.path(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+    const remote = JSON.parse(JSON.stringify(baseline));
+    const i8 = remote.find(l => l.type === 'issue' && l.id === 'i8');
+    i8.values.mitigation = 'Root cause identified, fix in review';
+    i8.history.push({ id: 'ext_h1', time: 'Aug 2', actor: 'jordan', email: 'jordan@example.com', text: 'Mitigation set', field: 'mitigation', value: 'Root cause identified, fix in review', origin: 'authored', sortKey: Date.now() + 1000, sig: null, pubKey: null });
+
+    // First connect finds nothing yet, so it pushes -- but that push comes
+    // back 409 (someone else's commit landed first, in this fixture). The
+    // retry-via-reconnect's GET this time finds real, non-conflicting
+    // remote content to merge in.
+    gh.getResponses = [{ status: 404 }, { status: 200, sha: 'sha-retry', text: remote.map(l => JSON.stringify(l)).join('\n') }];
+    gh.pushStatusOverride = { onCall: 1, status: 409 };
+
+    await h.setGithubRepoSync(page, { repo: REPO, token: 'ghp_faketoken' });
+    await page.reload({ waitUntil: 'networkidle' });
+
+    await h.waitUntil(async () => (await h.fieldCell(page, 8, 'mitigation').textContent()).includes('Root cause identified'));
+    await expect(page.locator('[data-testid=merge-conflict-modal]')).toHaveCount(0);
+
+    await h.waitUntil(() => Promise.resolve(gh.pushCount >= 2), 15000); // the 409'd attempt, then the auto-retried push after the clean merge
+    expect(gh.pushCount).toBeGreaterThanOrEqual(2);
+  });
+
+  test('a genuine conflict pauses auto-push on cancel, and resumes it once resolved', async ({ page }) => {
+    const gh = h.mockGithubContentsApi(page, REPO);
+
+    await h.gotoTracker(page);
+    await page.locator('[data-testid=btn-export]').click();
+    const [dl] = await Promise.all([
+      page.waitForEvent('download'),
+      page.locator('[data-testid=btn-export-jsonl]').click(),
+    ]);
+    const fs = require('fs');
+    const baseline = fs.readFileSync(await dl.path(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+    const remote = JSON.parse(JSON.stringify(baseline));
+    const i7r = remote.find(l => l.type === 'issue' && l.id === 'i7');
+    i7r.values.rag = 'amber';
+    i7r.history.push({ id: 'remote_h1', time: 'Aug 2', actor: 'jordan', email: 'jordan@example.com', text: 'RAG set to At risk', field: 'rag', value: 'amber', origin: 'authored', sortKey: Date.now() + 5000, sig: null, pubKey: null });
+    gh.getResponses = [{ status: 200, sha: 'sha-remote-1', text: remote.map(l => JSON.stringify(l)).join('\n') }];
+
+    await h.setGithubRepoSync(page, { repo: REPO, token: 'ghp_faketoken' });
+
+    // Local independently changes the SAME field on the same issue.
+    await h.clickFieldToEdit(page, 7, 'rag');
+    await page.locator('div[style*="z-index: 70"]').getByText('On track').click();
+    await page.waitForTimeout(200);
+
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(500);
+    await expect(page.locator('[data-testid=merge-conflict-modal]')).toBeVisible();
+
+    await page.locator('[data-testid=merge-conflict-cancel]').click();
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=merge-conflict-modal]')).toHaveCount(0);
+
+    // An unrelated edit made after cancelling must NOT auto-push --
+    // conflict-paused blocks it until the conflict is actually resolved.
+    await h.clickFieldToEdit(page, 3, 'rag');
+    await page.locator('div[style*="z-index: 70"]').getByText('On track').click();
+    await page.waitForTimeout(4800);
+    expect(gh.pushCount).toBe(0);
+
+    // Reconnecting resurfaces the same still-unresolved conflict; resolving
+    // it this time should let auto-push resume on the next edit.
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(500);
+    await expect(page.locator('[data-testid=merge-conflict-modal]')).toBeVisible();
+    await page.locator('[data-testid=merge-conflict-resolve]').click();
+    await page.waitForTimeout(400);
+    await expect(page.locator('[data-testid=merge-conflict-modal]')).toHaveCount(0);
+
+    await h.clickFieldToEdit(page, 4, 'rag');
+    await page.locator('div[style*="z-index: 70"]').getByText('Off track').click();
+    await page.waitForTimeout(4800);
+    expect(gh.pushCount).toBeGreaterThan(0);
+  });
+
+  test('the header sync-status pill reflects connection state, and doubles as a retry/settings shortcut', async ({ page }) => {
+    const gh = h.mockGithubContentsApi(page, REPO);
+    gh.getResponses = [{ status: 404 }];
+    const pill = page.locator('[data-testid=github-sync-status]');
+
+    await h.gotoTracker(page);
+    await expect(pill).toHaveCount(0); // no repo configured yet -- nothing to show
+
+    await h.setGithubRepoSync(page, { repo: REPO, token: 'ghp_faketoken' });
+    await page.reload({ waitUntil: 'networkidle' });
+    await h.waitUntil(() => Promise.resolve(gh.pushCount >= 1));
+    await page.waitForTimeout(300);
+    await expect(pill).toBeVisible();
+    await expect(pill).toContainText('Synced');
+
+    // Clicking a synced pill opens Settings (it's not a conflict/error state).
+    await expect(page.locator('[data-testid=settings-github-repo]')).toHaveCount(0);
+    await pill.click();
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=settings-github-repo]')).toBeVisible();
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(150);
+
+    // Drive it into conflict-paused via a genuine same-field conflict.
+    await page.locator('[data-testid=btn-export]').click();
+    const [dl] = await Promise.all([
+      page.waitForEvent('download'),
+      page.locator('[data-testid=btn-export-jsonl]').click(),
+    ]);
+    const fs = require('fs');
+    const baseline = fs.readFileSync(await dl.path(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+    const remote = JSON.parse(JSON.stringify(baseline));
+    const i7r = remote.find(l => l.type === 'issue' && l.id === 'i7');
+    i7r.values.rag = 'amber';
+    i7r.history.push({ id: 'remote_h1', time: 'Aug 2', actor: 'jordan', email: 'jordan@example.com', text: 'RAG set to At risk', field: 'rag', value: 'amber', origin: 'authored', sortKey: Date.now() + 5000, sig: null, pubKey: null });
+    gh.getResponses.push({ status: 200, sha: 'sha-conflict-1', text: remote.map(l => JSON.stringify(l)).join('\n') });
+
+    await h.clickFieldToEdit(page, 7, 'rag');
+    await page.locator('div[style*="z-index: 70"]').getByText('On track').click();
+    await page.waitForTimeout(200);
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(500);
+    await expect(page.locator('[data-testid=merge-conflict-modal]')).toBeVisible();
+
+    await expect(pill).toContainText('Conflict');
+    await page.locator('[data-testid=merge-conflict-cancel]').click();
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=merge-conflict-modal]')).toHaveCount(0);
+    await expect(pill).toContainText('Conflict'); // stays paused after cancel
+
+    // Clicking a conflict-paused pill retries the connect, resurfacing the
+    // same unresolved conflict -- not Settings.
+    await pill.click();
+    await page.waitForTimeout(500);
+    await expect(page.locator('[data-testid=merge-conflict-modal]')).toBeVisible();
+
+    await page.locator('[data-testid=merge-conflict-resolve]').click();
+    await page.waitForTimeout(400);
+    await expect(pill).toContainText('Synced');
+  });
+});
+
+test.describe('GitHub OAuth sign-in popup handshake', () => {
+  test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); });
+
+  // Stubs window.open so "Sign in with GitHub" doesn't try to open a real
+  // popup, and returns a helper for reading back the authorize URL it built
+  // (which carries the state nonce the message handler will check).
+  async function stubWindowOpen(page) {
+    await page.exposeFunction('__capturedOpen', () => {});
+    await page.evaluate(() => {
+      window.__openedUrls = [];
+      window.open = (url) => { window.__openedUrls.push(url); return { closed: false }; };
+    });
+    return async () => page.evaluate(() => window.__openedUrls[window.__openedUrls.length - 1]);
+  }
+
+  function nonceFrom(url) {
+    const m = url.match(/state=([^&]+)/);
+    return m && decodeURIComponent(m[1]);
+  }
+
+  test('a correctly-nonced message from the configured proxy origin fills in the token', async ({ page }) => {
+    await h.gotoTracker(page);
+    const lastOpenedUrl = await stubWindowOpen(page);
+    await h.openSettings(page);
+    await page.locator('[data-testid=settings-github-oauth-client-id]').fill('Iv1.testclientid');
+    // Same origin the test server itself runs on, so a same-page
+    // postMessage's real event.origin matches what the handler expects.
+    await page.locator('[data-testid=settings-github-oauth-proxy-url]').fill('http://localhost:8935');
+
+    await page.locator('[data-testid=btn-github-signin]').click();
+    await page.waitForTimeout(150);
+    const url = await lastOpenedUrl();
+    expect(url).toMatch(/^https:\/\/github\.com\/login\/oauth\/authorize\?/);
+    expect(url).toContain('client_id=Iv1.testclientid');
+    const nonce = nonceFrom(url);
+    expect(nonce).toBeTruthy();
+
+    await page.evaluate((nonce) => window.postMessage({ source: 'github-oauth', token: 'ghp_from_oauth', state: nonce }, '*'), nonce);
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=settings-github-token]')).toHaveValue('ghp_from_oauth');
+  });
+
+  test('a message with the wrong state nonce is ignored', async ({ page }) => {
+    await h.gotoTracker(page);
+    await stubWindowOpen(page);
+    await h.openSettings(page);
+    await page.locator('[data-testid=settings-github-oauth-client-id]').fill('Iv1.testclientid');
+    await page.locator('[data-testid=settings-github-oauth-proxy-url]').fill('http://localhost:8935');
+    await page.locator('[data-testid=btn-github-signin]').click();
+    await page.waitForTimeout(150);
+
+    await page.evaluate(() => window.postMessage({ source: 'github-oauth', token: 'ghp_should_not_land', state: 'not-the-real-nonce' }, '*'));
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=settings-github-token]')).toHaveValue('');
+  });
+
+  test('a correctly-nonced message from an unexpected origin is ignored', async ({ page }) => {
+    await h.gotoTracker(page);
+    const lastOpenedUrl = await stubWindowOpen(page);
+    await h.openSettings(page);
+    await page.locator('[data-testid=settings-github-oauth-client-id]').fill('Iv1.testclientid');
+    // Configured proxy is on a DIFFERENT origin than this test page actually
+    // runs on -- a same-page postMessage's real event.origin can never match
+    // it, so even a correct nonce must not be enough on its own.
+    await page.locator('[data-testid=settings-github-oauth-proxy-url]').fill('http://localhost:19999');
+    await page.locator('[data-testid=btn-github-signin]').click();
+    await page.waitForTimeout(150);
+    const nonce = nonceFrom(await lastOpenedUrl());
+
+    await page.evaluate((nonce) => window.postMessage({ source: 'github-oauth', token: 'ghp_should_not_land', state: nonce }, '*'), nonce);
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=settings-github-token]')).toHaveValue('');
+  });
+});

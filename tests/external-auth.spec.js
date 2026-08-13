@@ -41,10 +41,13 @@ test.describe('GitHub token', () => {
 
   test('the token is stored separately and never appears in the tracker\'s own persisted state or "View source"', async ({ page }) => {
     await h.setGithubToken(page, 'ghp_shouldNeverLeak');
-    const storage = await page.evaluate(() => ({
-      main: localStorage.getItem('git_native_tracker_v1'),
-      secrets: localStorage.getItem('git_native_tracker_secrets_v1'),
-    }));
+    const storage = await page.evaluate(() => {
+      const idx = JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1'));
+      return {
+        main: localStorage.getItem('git_native_tracker_v1:' + idx.activeMilestoneId),
+        secrets: localStorage.getItem('git_native_tracker_secrets_v1'),
+      };
+    });
     expect(storage.main).not.toContain('shouldNeverLeak');
     expect(storage.secrets).toContain('shouldNeverLeak');
 
@@ -98,8 +101,8 @@ test.describe('Jira linking', () => {
     const anchor = cell.locator('a');
     await expect(anchor).toHaveAttribute('href', 'https://mock.atlassian.net/browse/TRK-999');
 
-    const ref = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_v1')).issues.find(i => i.num === 3).fieldRefs.title);
-    expect(ref).toMatchObject({ system: 'jira', key: 'TRK-999' });
+    const doc = await h.readActiveMilestoneDoc(page);
+    expect(doc.issues.find(i => i.num === 3).fieldRefs.title).toMatchObject({ system: 'jira', key: 'TRK-999' });
   });
 
   test('the linked field is stored with a system:"jira" tag carrying the full resolved shape', async ({ page }) => {
@@ -108,14 +111,15 @@ test.describe('Jira linking', () => {
     await page.keyboard.press('Enter');
     await h.waitForFieldResolved(page, 3, 'mitigation');
 
-    const ref = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_v1')).issues.find(i => i.num === 3).fieldRefs.mitigation);
+    const doc = await h.readActiveMilestoneDoc(page);
+    const ref = doc.issues.find(i => i.num === 3).fieldRefs.mitigation;
     expect(ref).toMatchObject({
       system: 'jira', key: 'TRK-999', labels: ['bug', 'urgent'],
       description: 'A mocked description.', browseUrl: 'https://mock.atlassian.net/browse/TRK-999',
     });
   });
 
-  test('row-menu Refresh re-fetches an existing Jira link', async ({ page }) => {
+  test('the row refresh button re-fetches an existing Jira link', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'mitigation');
     await h.pasteText(page, 'TRK-999');
     await page.keyboard.press('Enter');
@@ -126,9 +130,7 @@ test.describe('Jira linking', () => {
       fetchCount++;
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Mocked Jira ticket title', labels: ['bug', 'urgent'], browseUrl: 'https://mock.atlassian.net/browse/TRK-999' }) });
     });
-    await h.row(page, 3).locator('[data-testid=row-chevron]').click();
-    await page.waitForTimeout(150);
-    await page.locator('[data-testid=row-menu-refresh]').click();
+    await h.refreshRow(page, 3);
     await page.waitForTimeout(500);
     expect(fetchCount).toBeGreaterThan(0);
   });
@@ -166,5 +168,127 @@ test.describe('Jira linking', () => {
     const cell = h.titleCell(page, 9);
     await expect(cell).toContainText('TRK-118');
     expect(await cell.locator('a').count()).toBe(0);
+  });
+});
+
+test.describe('Jira linking: expanded field set', () => {
+  test.beforeEach(async ({ page }) => {
+    await h.mockGithubApi(page);
+    await h.mockJiraProxy(page, {
+      'TRK-999': {
+        title: 'Rich Jira ticket', description: 'A rich description.', labels: ['bug', 'urgent'],
+        browseUrl: 'https://mock.atlassian.net/browse/TRK-999', key: 'TRK-999',
+        status: 'In Progress', statusCategory: 'indeterminate', issueType: 'Bug', priority: 'High',
+        assignee: 'Priya Sharma', reporter: 'Jordan Lee', created: '2026-01-01T00:00:00.000Z',
+        updated: '2026-02-01T00:00:00.000Z', dueDate: '2026-03-01', resolution: '', resolutionDate: '',
+        components: ['backend', 'api'], fixVersions: ['v2.0'], project: 'TRK',
+      },
+    });
+    await h.gotoTracker(page);
+  });
+
+  test('the full field set (status, priority, assignee, dates, components, ...) is persisted into fieldRefs', async ({ page }) => {
+    await h.clickFieldToEdit(page, 3, 'mitigation');
+    await h.pasteText(page, 'TRK-999');
+    await page.keyboard.press('Enter');
+    await h.waitForFieldResolved(page, 3, 'mitigation');
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    const ref = doc.issues.find(i => i.num === 3).fieldRefs.mitigation;
+    expect(ref).toMatchObject({
+      status: 'In Progress', statusCategory: 'indeterminate', issueType: 'Bug', priority: 'High',
+      assignee: 'Priya Sharma', reporter: 'Jordan Lee', dueDate: '2026-03-01',
+      components: ['backend', 'api'], fixVersions: ['v2.0'], project: 'TRK',
+    });
+  });
+
+  test('a bound-source rule can branch on source.jira.status', async ({ page }) => {
+    await h.clickFieldToEdit(page, 3, 'linked');
+    await h.pasteText(page, 'TRK-999');
+    await page.keyboard.press('Enter');
+    await h.waitForFieldResolved(page, 3, 'linked');
+
+    await h.openFieldEditor(page, 'type');
+    await h.setBoundSourceAndRule(page, 'Related', 'source.jira.status === "In Progress" ? "bug" : "chore"');
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(200);
+
+    await expect(h.fieldCell(page, 3, 'type')).toHaveText(/Bug/);
+  });
+
+  test('the rule editor\'s live source preview shows the expanded field set', async ({ page }) => {
+    await h.clickFieldToEdit(page, 3, 'linked');
+    await h.pasteText(page, 'TRK-999');
+    await page.keyboard.press('Enter');
+    await h.waitForFieldResolved(page, 3, 'linked');
+
+    await h.openFieldEditor(page, 'priority');
+    await page.locator('[data-testid=field-editor-source-select]').selectOption({ label: 'Related' });
+    await page.waitForTimeout(150);
+    const preview = JSON.parse(await page.locator('[data-testid=field-editor-source-preview]').textContent());
+    expect(preview.jira).toMatchObject({
+      status: 'In Progress', priority: 'High', assignee: 'Priya Sharma', reporter: 'Jordan Lee',
+      dueDate: '2026-03-01', project: 'TRK',
+    });
+    expect(preview.github).toBeNull(); // linked to Jira, not GitHub -- the other system is falsey, not an empty shape
+  });
+
+  test('source.jira / source.github are null (not an empty-shaped object) unless the link is actually that system', async ({ page }) => {
+    // GitHub-linked: source.jira must be falsey, so a rule can branch with a
+    // plain truthy check instead of needing to know which system a field is
+    // linked to.
+    await h.clickFieldToEdit(page, 3, 'linked');
+    await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/3');
+    await page.keyboard.press('Enter');
+    await h.waitForFieldResolved(page, 3, 'linked');
+
+    await h.openFieldEditor(page, 'priority');
+    await page.locator('[data-testid=field-editor-source-select]').selectOption({ label: 'Related' });
+    await page.waitForTimeout(150);
+    let preview = JSON.parse(await page.locator('[data-testid=field-editor-source-preview]').textContent());
+    expect(preview.github).toMatchObject({ status: 'open', issueType: 'Issue' });
+    expect(preview.jira).toBeNull();
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(150);
+
+    // Relink the same field to Jira instead -- github flips to null, jira becomes the object.
+    await h.clickFieldToEdit(page, 3, 'linked');
+    await h.pasteText(page, 'TRK-999');
+    await page.keyboard.press('Enter');
+    await h.waitForFieldResolved(page, 3, 'linked');
+
+    await h.openFieldEditor(page, 'priority');
+    await page.locator('[data-testid=field-editor-source-select]').selectOption({ label: 'Related' });
+    await page.waitForTimeout(150);
+    preview = JSON.parse(await page.locator('[data-testid=field-editor-source-preview]').textContent());
+    expect(preview.jira).toMatchObject({ status: 'In Progress' });
+    expect(preview.github).toBeNull();
+  });
+
+  test('an old-shaped fixture missing the new fields still resolves cleanly (backward compatible)', async ({ page }) => {
+    // A local proxy someone hasn't restarted yet after this change only
+    // ever sends the original {title, description, labels, browseUrl}
+    // shape -- confirm that degrades to empty defaults, not a crash.
+    // Must be page.route (not context.route): beforeEach's mockJiraProxy
+    // already installed a page-level route for this same URL pattern, and
+    // page routes take precedence over context routes regardless of
+    // registration order -- a context.route override here would silently
+    // never fire, falling through to mockJiraProxy's own 404-for-unknown-key
+    // fallback instead. Registering here as page.route wins because among
+    // same-level routes the most-recently-registered one is tried first.
+    await page.route('http://localhost:8934/issue/TRK-1000', route => route.fulfill({
+      status: 200, contentType: 'application/json',
+      body: JSON.stringify({ title: 'Old-shaped ticket', description: 'x', labels: [], browseUrl: 'https://mock.atlassian.net/browse/TRK-1000' }),
+    }));
+    await h.clickFieldToEdit(page, 3, 'mitigation');
+    await h.pasteText(page, 'TRK-1000');
+    await page.keyboard.press('Enter');
+    await h.waitForFieldResolved(page, 3, 'mitigation');
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    const ref = doc.issues.find(i => i.num === 3).fieldRefs.mitigation;
+    expect(ref.key).toBe('TRK-1000'); // the explicit key param wins even though data.key is absent
+    expect(ref.status).toBe('');
+    expect(ref.components).toEqual([]);
   });
 });

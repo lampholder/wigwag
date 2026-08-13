@@ -218,3 +218,108 @@ test.describe('Text fields', () => {
     expect(parsed.github.labels).toContain('enhancement');
   });
 });
+
+test.describe('Date fields', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  // No dedicated helper for this yet -- inline the create-field flow.
+  async function addDateField(page, name) {
+    await page.locator('[data-testid=add-field-wrap] span').first().click();
+    await page.waitForTimeout(150);
+    await page.locator('input[placeholder="Field name"]').fill(name);
+    await page.locator('select').selectOption('date');
+    await page.locator('button', { hasText: 'Add field' }).click();
+    await page.waitForTimeout(200);
+    return page.locator('[data-testid=col-header]').last().getAttribute('data-col');
+  }
+
+  async function setDate(page, colId, rowNum, iso) {
+    const cell = page.locator(`[data-testid=row][data-row-num="${rowNum}"] [data-testid=field-cell][data-col="${colId}"]`);
+    await cell.dispatchEvent('click');
+    await page.waitForTimeout(100);
+    await cell.dispatchEvent('click');
+    await page.waitForTimeout(100);
+    await cell.locator('input[type=date]').fill(iso);
+    await cell.locator('input[type=date]').blur();
+    await page.waitForTimeout(150);
+  }
+
+  test('an unset date shows a plain placeholder, editing uses a native date input', async ({ page }) => {
+    const colId = await addDateField(page, 'Due date');
+    const cell = h.fieldCell(page, 1, colId);
+    await expect(cell).toHaveText('—');
+
+    await cell.dispatchEvent('click');
+    await page.waitForTimeout(100);
+    await cell.dispatchEvent('click');
+    await page.waitForTimeout(100);
+    await expect(cell.locator('input[type=date]')).toBeVisible();
+  });
+
+  test('a set date renders as plain ISO 8601 (YYYY-MM-DD), and the same value shows in the slide-over', async ({ page }) => {
+    const colId = await addDateField(page, 'Due date');
+    await setDate(page, colId, 1, '2026-08-10');
+
+    await expect(h.fieldCell(page, 1, colId)).toHaveText('2026-08-10');
+
+    await h.openSlideover(page, 1);
+    await expect(h.slideoverField(page, colId)).toContainText('2026-08-10');
+  });
+
+  test('a date value persists across reload', async ({ page }) => {
+    const colId = await addDateField(page, 'Due date');
+    await setDate(page, colId, 1, '2026-08-10');
+    await expect(h.fieldCell(page, 1, colId)).toHaveText('2026-08-10');
+
+    await page.reload();
+    await page.waitForTimeout(300);
+    await expect(h.fieldCell(page, 1, colId)).toHaveText('2026-08-10');
+  });
+
+  // The glyph is a browser-independent cue for the "at rest" (display)
+  // state only, positioned to the right like the select/multiselect
+  // dropdown arrow. It's deliberately absent while editing -- overlaying it
+  // on the native <input type="date"> collided with Chrome's own built-in
+  // calendar-picker-indicator icon, which already sits in that same spot.
+  test('shows a calendar glyph to the right when at rest; none while editing, to avoid colliding with a native picker icon', async ({ page }) => {
+    const colId = await addDateField(page, 'Due date');
+    const cell = h.fieldCell(page, 1, colId);
+    await expect(cell.locator('svg')).toHaveCount(1); // empty display
+
+    await setDate(page, colId, 1, '2026-08-10');
+    await expect(cell.locator('svg')).toHaveCount(1); // set display
+    const textBox = await cell.locator('span').first().boundingBox();
+    const svgBox = await cell.locator('svg').boundingBox();
+    expect(svgBox.x).toBeGreaterThan(textBox.x);
+
+    await cell.dispatchEvent('click');
+    await page.waitForTimeout(100);
+    await cell.dispatchEvent('click');
+    await page.waitForTimeout(100);
+    await expect(cell.locator('svg')).toHaveCount(0); // no overlay while editing
+  });
+
+  test('a date value stores as a plain ISO string in the exported JSONL', async ({ page }) => {
+    const colId = await addDateField(page, 'Due date');
+    await setDate(page, colId, 1, '2026-08-10');
+
+    await page.getByText('{ } View source', { exact: true }).click();
+    await page.waitForTimeout(200);
+    const sourceText = await page.locator('pre').textContent();
+    const i1 = JSON.parse(sourceText.split('\n').find(l => l.includes('"id":"i1"')));
+    expect(i1.values[colId]).toBe('2026-08-10');
+  });
+
+  test('has no OPTIONS section or "Edit field…" menu item -- not bindable via a rule', async ({ page }) => {
+    const colId = await addDateField(page, 'Due date');
+    await h.openColumnMenu(page, colId);
+    await expect(page.getByText('Edit field…', { exact: true })).toHaveCount(0);
+  });
+
+  test('has no "Wrap text" menu item and no value-filter section -- fixed-format, not free-form or option-based', async ({ page }) => {
+    const colId = await addDateField(page, 'Due date');
+    await h.openColumnMenu(page, colId);
+    await expect(page.locator('[data-testid=col-wrap-toggle]')).toHaveCount(0);
+    await expect(page.getByText('FILTER', { exact: true })).toHaveCount(0);
+  });
+});

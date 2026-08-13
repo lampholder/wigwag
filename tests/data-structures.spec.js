@@ -18,6 +18,25 @@ test.describe('JSONL export/import', () => {
     expect(download.suggestedFilename()).toMatch(/\.jsonl$/);
   });
 
+  test('the export filename\'s timestamp is the last actual change, not the moment Export was clicked', async ({ page }) => {
+    const doc = await h.readActiveMilestoneDoc(page);
+    const knownTs = new Date('2024-03-15T09:41:00.000Z').getTime();
+    doc.issues[0].comments.push({ id: 'c-fixed', author: 'Test', email: '', time: 'a while ago', text: 'fixed-time comment', sortKey: knownTs });
+    await h.writeActiveMilestoneDoc(page, doc);
+    await page.reload();
+    await page.waitForTimeout(300);
+
+    await page.locator('[data-testid=btn-export]').click();
+    const downloadPromise = page.waitForEvent('download');
+    await page.locator('[data-testid=btn-export-jsonl]').click();
+    const download = await downloadPromise;
+
+    const d = new Date(knownTs);
+    const pad = n => String(n).padStart(2, '0');
+    const expectedStamp = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + pad(d.getMinutes());
+    expect(download.suggestedFilename()).toContain(expectedStamp);
+  });
+
   test('a squashed export keeps only the latest per-field entry, but keeps narrative/comment entries', async ({ page }) => {
     // Generate two RAG edits on row 1 so there's an intermediate entry to squash away.
     await h.clickFieldToEdit(page, 1, 'rag');
@@ -156,7 +175,7 @@ test.describe('Merge conflict detection and resolution', () => {
     await page.locator('[data-testid=merge-file-input]').setInputFiles({ name: 'incoming.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(incomingText) });
     await page.waitForTimeout(400);
 
-    const state = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_v1')));
+    const state = await h.readActiveMilestoneDoc(page);
     const i2After = state.issues.find(i => i.id === 'i2');
     expect(i2After.comments.length).toBe(localCommentCountBefore + 1);
     expect(i2After.comments.some(c => c.text === 'External note from incoming file')).toBe(true);

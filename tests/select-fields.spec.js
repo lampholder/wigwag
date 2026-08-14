@@ -60,6 +60,40 @@ test.describe('Single-select', () => {
     await expect(page.getByText('Select an item', { exact: true })).toBeVisible();
   });
 
+  // Regression test: a derived/rule-computed select change used to log the
+  // option's raw storage id (e.g. "opt_1786483541502") in its history entry
+  // instead of resolving it to the option's label, and named only the bound
+  // column ("derived from Related") rather than what actually drove the
+  // change. Renaming the option ids to opt_-style values reproduces the
+  // exact shape a user gets from "+ add option" in the real UI (see
+  // addOption, which mints `'opt_' + Date.now()`).
+  test('a derived select change logs the option\'s label, not its raw storage id, and names the linked issue', async ({ page }) => {
+    const doc = await h.readActiveMilestoneDoc(page);
+    doc.fieldDefs.type.options = doc.fieldDefs.type.options.map((o, i) => ({ ...o, id: 'opt_' + (1000 + i) }));
+    await h.writeActiveMilestoneDoc(page, doc);
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    await h.openFieldEditor(page, 'type');
+    await h.setBoundSourceAndRule(page, 'Related', 'source.github.labels.includes("bug") ? "bug" : "enhancement"');
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(200);
+
+    await h.clickFieldToEdit(page, 3, 'linked');
+    await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/3');
+    await page.keyboard.press('Enter');
+    await h.waitForFieldResolved(page, 3, 'linked');
+
+    const doc2 = await h.readActiveMilestoneDoc(page);
+    expect(doc2.issues.find(i => i.id === 'i3').values.type).toBe('opt_1000'); // stored value is still the raw id...
+
+    const history = await h.getHistoryEntriesFor(page, 'i3');
+    // ...but the history text reads the label, and names the linked issue
+    // whose state actually drove the computation, not just the column.
+    expect(history.some(t => t.includes('opt_'))).toBe(false);
+    expect(history).toContain('Type set to Bug (derived from state of Test issue for the tracker suite in column Related)');
+  });
+
   // Regression test: a rule field used to lock permanently the instant ANY
   // rule was configured, even for issues where the rule couldn't resolve to
   // anything (e.g. the bound field isn't GitHub-linked) — leaving it stuck

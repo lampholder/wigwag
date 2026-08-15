@@ -30,6 +30,11 @@ test.describe('Single identity: pill/prefix still render, migration labels it "P
     await expect(options.first()).toContainText('Personal');
     await expect(options.first()).toContainText('1 project');
   });
+
+  test('migration preserves the JIRA PROXY URL default for a user who never set their own (regression: it was silently dropped to empty once the gear popover started reading the migrated identity record)', async ({ page }) => {
+    await h.openSettings(page);
+    await expect(page.locator('[data-testid=settings-jira-proxy-url]')).toHaveValue('http://localhost:8934');
+  });
 });
 
 test.describe('Multiple identities: pill, dropdown, title prefix', () => {
@@ -213,5 +218,161 @@ test.describe('Settings › Identities panel', () => {
     await page.locator('[data-testid=identities-overlay]').click({ position: { x: 10, y: 10 } });
     await page.waitForTimeout(150);
     await expect(page.locator('[data-testid=identities-panel]')).toHaveCount(0);
+  });
+});
+
+test.describe('Project switcher only lists the active identity\'s own projects', () => {
+  test.beforeEach(async ({ page }) => {
+    await h.seedTwoIdentities(page);
+    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(400);
+  });
+
+  test('the switcher dropdown shows only Personal\'s project while active, and only Northwind\'s after switching', async ({ page }) => {
+    await h.openTrackerSwitcher(page);
+    await expect(page.locator('[data-testid=milestone-row]')).toHaveCount(1);
+    await expect(h.milestoneRow(page, 'Project A')).toBeVisible();
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(150);
+
+    await page.locator('[data-testid=identity-pill]').click();
+    await page.locator('[data-testid=identity-option]').nth(1).click(); // -> Northwind
+    await page.waitForTimeout(400);
+
+    await h.openTrackerSwitcher(page);
+    await expect(page.locator('[data-testid=milestone-row]')).toHaveCount(2);
+    await expect(h.milestoneRow(page, 'Project B1')).toBeVisible();
+    await expect(h.milestoneRow(page, 'Project B2')).toBeVisible();
+    await expect(h.milestoneRow(page, 'Project A')).toHaveCount(0);
+  });
+
+  test('a newly created blank project is tagged with the active identity and disappears from the switcher after switching away', async ({ page }) => {
+    await h.openTrackerSwitcher(page);
+    await page.locator('[data-testid=btn-add-milestone]').click();
+    await page.locator('[data-testid=btn-new-blank-milestone]').click();
+    await page.locator('[data-testid=new-milestone-name-input]').fill('Personal-only project');
+    await page.locator('[data-testid=btn-create-milestone]').click();
+    await page.waitForTimeout(400);
+    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Personal-only project');
+
+    await page.locator('[data-testid=identity-pill]').click();
+    await page.locator('[data-testid=identity-option]').nth(1).click(); // -> Northwind
+    await page.waitForTimeout(400);
+    await h.openTrackerSwitcher(page);
+    await expect(h.milestoneRow(page, 'Personal-only project')).toHaveCount(0);
+  });
+});
+
+test.describe('Gear Settings popover is scoped to the active identity', () => {
+  test.beforeEach(async ({ page }) => {
+    await h.seedTwoIdentities(page);
+    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(400);
+  });
+
+  test('YOUR EMAIL/GITHUB TOKEN/JIRA PROXY URL/STATE REPO show the active identity\'s own values, and swap when switching identity', async ({ page }) => {
+    await h.openSettings(page);
+    await expect(page.locator('[data-testid=settings-identity-email]')).toHaveValue('tom@personal.com');
+    await expect(page.locator('[data-testid=settings-state-repo]')).toHaveValue('tom/personal-state');
+    await page.mouse.click(10, 10);
+    await page.waitForTimeout(150);
+
+    await page.locator('[data-testid=identity-pill]').click();
+    await page.locator('[data-testid=identity-option]').nth(1).click(); // -> Northwind
+    await page.waitForTimeout(400);
+
+    await h.openSettings(page);
+    await expect(page.locator('[data-testid=settings-identity-email]')).toHaveValue('tom@northwind.com');
+    await expect(page.locator('[data-testid=settings-state-repo]')).toHaveValue('');
+  });
+
+  test('editing YOUR EMAIL and STATE REPO writes through to the active identity\'s own record, and survives a switch away and back', async ({ page }) => {
+    await h.openSettings(page);
+    await page.locator('[data-testid=settings-identity-email]').fill('tom-changed@personal.com');
+    await page.locator('[data-testid=settings-state-repo]').fill('tom/renamed-state');
+    await page.waitForTimeout(200);
+
+    let idsRaw = await page.evaluate(() => localStorage.getItem('git_native_tracker_identities_v1'));
+    let ids = JSON.parse(idsRaw);
+    let personal = ids.identities.find(i => i.id === 'identity-a');
+    expect(personal.email).toBe('tom-changed@personal.com');
+    expect(personal.stateRepo).toBe('tom/renamed-state');
+
+    await page.mouse.click(10, 10);
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=identity-pill]').click();
+    await page.locator('[data-testid=identity-option]').nth(1).click(); // -> Northwind and back
+    await page.waitForTimeout(400);
+    await page.locator('[data-testid=identity-pill]').click();
+    await page.locator('[data-testid=identity-option]').nth(0).click();
+    await page.waitForTimeout(400);
+
+    await h.openSettings(page);
+    await expect(page.locator('[data-testid=settings-identity-email]')).toHaveValue('tom-changed@personal.com');
+    await expect(page.locator('[data-testid=settings-state-repo]')).toHaveValue('tom/renamed-state');
+  });
+
+  test('the Identities panel card reflects an edit made in the gear popover (host token mask, state repo)', async ({ page }) => {
+    await h.openSettings(page);
+    await page.locator('[data-testid=settings-github-token]').fill('ghp_newtoken');
+    await page.locator('[data-testid=settings-state-repo]').fill('tom/from-gear');
+    await page.waitForTimeout(200);
+    await page.mouse.click(10, 10);
+    await page.waitForTimeout(150);
+
+    await page.locator('[data-testid=identity-pill]').click();
+    await page.locator('[data-testid=btn-manage-identities]').click();
+    await page.waitForTimeout(200);
+    const first = page.locator('[data-testid=identity-card]').first();
+    await expect(first).toContainText('tom/from-gear');
+    await expect(first).toContainText('••••••••');
+  });
+});
+
+test.describe('Per-identity signing keys', () => {
+  test('switching to an identity with no signing key yet generates one for it, without regenerating the identity being left', async ({ page }) => {
+    await h.seedTwoIdentities(page); // both seeded identities start with signingPublicKeyJwk: null
+    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(400);
+
+    // Personal is active at boot, so componentDidMount's own ensureIdentity()
+    // call already generated its key by now -- capture that as the baseline.
+    let idsRaw = await page.evaluate(() => localStorage.getItem('git_native_tracker_identities_v1'));
+    let ids = JSON.parse(idsRaw);
+    const personalKeyAtBoot = ids.identities.find(i => i.id === 'identity-a').signingPublicKeyJwk;
+    expect(personalKeyAtBoot).toBeTruthy();
+
+    await page.locator('[data-testid=identity-pill]').click();
+    await page.locator('[data-testid=identity-option]').nth(1).click(); // -> Northwind
+    await page.waitForTimeout(500);
+
+    idsRaw = await page.evaluate(() => localStorage.getItem('git_native_tracker_identities_v1'));
+    ids = JSON.parse(idsRaw);
+    const personal = ids.identities.find(i => i.id === 'identity-a');
+    const northwind = ids.identities.find(i => i.id === 'identity-b');
+    expect(JSON.stringify(personal.signingPublicKeyJwk)).toBe(JSON.stringify(personalKeyAtBoot)); // not regenerated
+    expect(northwind.signingPublicKeyJwk).toBeTruthy();
+    expect(northwind.signingPrivateKeyJwk).toBeTruthy();
+  });
+
+  test('two different identities end up with two different signing keys', async ({ page }) => {
+    await h.seedTwoIdentities(page);
+    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(400);
+
+    await page.locator('[data-testid=identity-pill]').click();
+    await page.locator('[data-testid=identity-option]').nth(1).click(); // -> Northwind, generates its key
+    await page.waitForTimeout(500);
+    await page.locator('[data-testid=identity-pill]').click();
+    await page.locator('[data-testid=identity-option]').nth(0).click(); // -> back to Personal, generates its key (was also null)
+    await page.waitForTimeout(500);
+
+    const idsRaw = await page.evaluate(() => localStorage.getItem('git_native_tracker_identities_v1'));
+    const ids = JSON.parse(idsRaw);
+    const personal = ids.identities.find(i => i.id === 'identity-a');
+    const northwind = ids.identities.find(i => i.id === 'identity-b');
+    expect(personal.signingPublicKeyJwk).toBeTruthy();
+    expect(northwind.signingPublicKeyJwk).toBeTruthy();
+    expect(JSON.stringify(personal.signingPublicKeyJwk)).not.toBe(JSON.stringify(northwind.signingPublicKeyJwk));
   });
 });

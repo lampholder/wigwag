@@ -118,10 +118,100 @@ test.describe('Multiple identities: pill, dropdown, title prefix', () => {
     await expect(page.getByText('Project A', { exact: true })).toHaveCount(0);
   });
 
-  test('clicking "Manage identities..." closes the dropdown (Settings panel itself lands in a later batch)', async ({ page }) => {
+  test('clicking "Manage identities..." closes the dropdown and opens the Identities panel', async ({ page }) => {
     await page.locator('[data-testid=identity-pill]').click();
     await page.locator('[data-testid=btn-manage-identities]').click();
     await page.waitForTimeout(150);
     await expect(page.locator('[data-testid=identity-option]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=identities-panel]')).toBeVisible();
+  });
+});
+
+test.describe('Settings › Identities panel', () => {
+  test.beforeEach(async ({ page }) => {
+    await h.seedTwoIdentities(page);
+    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(400);
+    await page.locator('[data-testid=identity-pill]').click();
+    await page.locator('[data-testid=btn-manage-identities]').click();
+    await page.waitForTimeout(200);
+  });
+
+  test('lists a read-only card per identity: dot, label, IN USE HERE/DEFAULT badges, email, and the state repo/projects/signing key/host token/bridge root grid', async ({ page }) => {
+    const cards = page.locator('[data-testid=identity-card]');
+    await expect(cards).toHaveCount(2);
+
+    const first = cards.first();
+    await expect(first).toContainText('Personal');
+    await expect(first).toContainText('IN USE HERE');
+    await expect(first).toContainText('DEFAULT');
+    await expect(first).toContainText('tom@personal.com');
+    await expect(first).toContainText('tom/personal-state');
+    await expect(first).toContainText('1 project');
+    await expect(first).toContainText('—'); // signing key/host token/bridge root all unset in this seed
+
+    const second = cards.nth(1);
+    await expect(second).toContainText('Northwind');
+    await expect(second).not.toContainText('IN USE HERE');
+    await expect(second).not.toContainText('DEFAULT');
+    await expect(second).toContainText('tom@northwind.com');
+    await expect(second).toContainText('2 projects');
+  });
+
+  test('"Make default" is disabled (no-op, dimmed) on the already-default identity but works on another', async ({ page }) => {
+    const makeDefaultBtns = page.locator('[data-testid=btn-make-default]');
+    // Personal starts as default -- its own button should not be clickable.
+    await expect(page.locator('[data-testid=identity-card]').first()).toContainText('DEFAULT');
+    await makeDefaultBtns.nth(1).click();
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=identity-card]').nth(1)).toContainText('DEFAULT');
+    await expect(page.locator('[data-testid=identity-card]').first()).not.toContainText('DEFAULT');
+  });
+
+  test('"+ Add identity" reveals a label/email form; Cancel discards it without creating anything', async ({ page }) => {
+    await expect(page.locator('[data-testid=add-identity-form]')).toHaveCount(0);
+    await page.locator('[data-testid=btn-add-identity]').click();
+    await expect(page.locator('[data-testid=add-identity-form]')).toBeVisible();
+    await page.locator('[data-testid=new-identity-label-input]').fill('Acme Co');
+    await page.locator('[data-testid=btn-cancel-add-identity]').click();
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=add-identity-form]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=identity-card]')).toHaveCount(2);
+  });
+
+  test('creating a new identity generates its own signing key, switches to it, and lands on its empty (zero-project) state', async ({ page }) => {
+    await page.locator('[data-testid=btn-add-identity]').click();
+    await page.locator('[data-testid=new-identity-label-input]').fill('Acme Co');
+    await page.locator('[data-testid=new-identity-email-input]').fill('me@acme.test');
+    await page.locator('[data-testid=btn-create-identity]').click();
+    await page.waitForTimeout(400);
+
+    await expect(page.locator('[data-testid=identity-card]')).toHaveCount(3);
+    await expect(page.locator('[data-testid=identity-pill]')).toContainText('Acme Co');
+    await expect(page.locator('[data-testid=row]')).toHaveCount(0);
+
+    const idsRaw = await page.evaluate(() => localStorage.getItem('git_native_tracker_identities_v1'));
+    const ids = JSON.parse(idsRaw);
+    const created = ids.identities.find(i => i.label === 'Acme Co');
+    expect(created).toBeTruthy();
+    expect(created.email).toBe('me@acme.test');
+    expect(created.signingPublicKeyJwk).toBeTruthy();
+    expect(created.signingPrivateKeyJwk).toBeTruthy();
+    expect(ids.activeIdentityId).toBe(created.id);
+  });
+
+  test('the panel closes via the X button and via clicking the overlay', async ({ page }) => {
+    await expect(page.locator('[data-testid=identities-panel]')).toBeVisible();
+    await page.locator('[data-testid=identities-close-btn]').click();
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=identities-panel]')).toHaveCount(0);
+
+    await page.locator('[data-testid=identity-pill]').click();
+    await page.locator('[data-testid=btn-manage-identities]').click();
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=identities-panel]')).toBeVisible();
+    await page.locator('[data-testid=identities-overlay]').click({ position: { x: 10, y: 10 } });
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=identities-panel]')).toHaveCount(0);
   });
 });

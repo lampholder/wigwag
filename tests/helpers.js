@@ -51,6 +51,45 @@ async function seedDemoMilestone(page) {
 // maybeScheduleGithubPush in the tracker source) -- shrinking them here
 // runs the exact same real timing logic, just on a compressed clock, not
 // a mocked one.
+// Seeds two identities (with known, stable ids -- not the random ones a
+// real migration would generate) and a small project set split across
+// them, for tests that need real multi-identity UI to be reachable (the
+// pill/dropdown/title-prefix all render only when identities.length > 1).
+// Bypasses gotoTracker's own demo-project seed entirely -- coordinating a
+// known identity id with whatever random id a real migration would assign
+// the demo project isn't worth it when a fully custom seed is simpler and
+// more explicit about which project belongs to which identity.
+async function seedTwoIdentities(page, opts = {}) {
+  const idA = opts.idA || 'identity-a';
+  const idB = opts.idB || 'identity-b';
+  const activeIdentityId = opts.activeIdentityId || idA;
+  const projects = opts.projects || [
+    { id: 'project-a', name: 'Project A', identityId: idA },
+    { id: 'project-b1', name: 'Project B1', identityId: idB },
+    { id: 'project-b2', name: 'Project B2', identityId: idB },
+  ];
+  const blankDoc = {
+    fieldDefs: { title: { label: 'Issue', type: 'text' } }, issues: [], hiddenFieldIds: [],
+    githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', projectNotes: '', projectComments: []
+  };
+  await page.addInitScript(({ idA, idB, activeIdentityId, projects, blankDoc, docs }) => {
+    localStorage.setItem('git_native_tracker_identities_v1', JSON.stringify({
+      activeIdentityId, defaultIdentityId: idA,
+      identities: [
+        { id: idA, label: 'Personal', email: 'tom@personal.com', githubToken: '', jiraProxyUrl: '', stateRepo: 'tom/personal-state', signingPublicKeyJwk: null, signingPrivateKeyJwk: null },
+        { id: idB, label: 'Northwind', email: 'tom@northwind.com', githubToken: '', jiraProxyUrl: '', stateRepo: '', signingPublicKeyJwk: null, signingPrivateKeyJwk: null },
+      ],
+      lastActiveProjectByIdentity: {}
+    }));
+    localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({
+      activeMilestoneId: projects[0].id, milestones: projects
+    }));
+    for (const p of projects) {
+      localStorage.setItem('git_native_tracker_v1:' + p.id, JSON.stringify((docs && docs[p.id]) || blankDoc));
+    }
+  }, { idA, idB, activeIdentityId, projects, blankDoc, docs: opts.docs });
+}
+
 async function useFastTimers(page) {
   await page.addInitScript(() => {
     window.__wigwagLeaderStaleMs = 600;
@@ -205,8 +244,14 @@ async function mockJiraProxy(page, fixtures, proxyUrl = 'http://localhost:8934')
   });
 }
 
+// Settings moved off its own standalone gear button and into the identity
+// dropdown (a "Settings..." link, above "Manage identities...") -- this
+// helper hides that two-click path so every existing call site (there are
+// many) keeps working unchanged.
 async function openSettings(page) {
-  await page.locator('[data-testid=btn-settings]').click();
+  await page.locator('[data-testid=identity-pill]').click();
+  await page.waitForTimeout(150);
+  await page.locator('[data-testid=btn-open-settings]').click();
   await page.waitForTimeout(150);
 }
 
@@ -417,4 +462,5 @@ module.exports = {
   setGithubToken,
   setGithubRepoSync,
   setJiraProxyUrl,
+  seedTwoIdentities,
 };

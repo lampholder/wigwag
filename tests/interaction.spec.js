@@ -1722,24 +1722,38 @@ test.describe('Project panel button + header hover', () => {
     await expect(page.locator('[data-testid=btn-notes]')).not.toContainText('Notes');
   });
 
-  test('hovering the switcher caret alone does not also highlight the title -- they are two independent targets, not one shared control', async ({ page }) => {
+  // Regression note: Phase 1 (Batch 4) originally made title/caret hover
+  // fully independently, per the design handoff README's explicit "never a
+  // shared wrapper hover" guidance. User feedback during Phase 2 overrode
+  // that: the whole title+caret pill should read as one unit, lighting up
+  // together on hover, with each part additionally getting its own
+  // slightly darker shade. This test checks the WRAPPING element's own
+  // background (the actual shared-hover signal) rather than the caret's
+  // own computed background, which stays transparent either way -- the
+  // wrapper's fill showing through a transparent child is what makes the
+  // whole pill look highlighted.
+  test('hovering either the title or the caret highlights the whole pill (shared wrapper hover), each also picking up its own slightly darker shade', async ({ page }) => {
     const title = page.locator('[data-testid=tracker-name-title]');
     const caret = page.locator('[data-testid=btn-tracker-switcher]');
+    const wrapperBg = () => title.evaluate(el => getComputedStyle(el.parentElement).backgroundColor);
     const titleBg = () => title.evaluate(el => getComputedStyle(el).backgroundColor);
     const caretBg = () => caret.evaluate(el => getComputedStyle(el).backgroundColor);
 
-    const titleBefore = await titleBg();
+    const wrapperBefore = await wrapperBg();
+
     await caret.hover();
     await page.waitForTimeout(100);
-    expect(await titleBg()).toBe(titleBefore); // unchanged by hovering the caret
-    expect(await caretBg()).not.toBe(titleBefore); // the caret itself did pick up its own hover color
+    expect(await wrapperBg()).not.toBe(wrapperBefore); // the whole pill lit up...
+    expect(await caretBg()).not.toBe('rgba(0, 0, 0, 0)'); // ...and the caret itself has its own (darker) shade on top
 
-    await page.mouse.move(10, 10); // clear the caret's own hover state first
+    await page.mouse.move(10, 10);
     await page.waitForTimeout(100);
-    const caretUnhovered = await caretBg();
+    expect(await wrapperBg()).toBe(wrapperBefore); // clears once unhovered
+
     await title.hover();
     await page.waitForTimeout(100);
-    expect(await caretBg()).toBe(caretUnhovered); // unchanged by hovering the title
+    expect(await wrapperBg()).not.toBe(wrapperBefore); // hovering the title alone also lights up the whole pill
+    expect(await titleBg()).not.toBe('rgba(0, 0, 0, 0)');
   });
 });
 
@@ -1787,5 +1801,39 @@ test.describe('Post-Phase-1 fixes: Open file removed, Project button is a peer b
     await project.click();
     await page.waitForTimeout(300);
     await expect(page.locator('[data-testid=notes-panel]')).toBeVisible();
+  });
+});
+
+test.describe('App bar / Project bar stay fixed while the table scrolls', () => {
+  test('both bars remain at the same position on screen after scrolling a tall table, and the identity dropdown still renders above them', async ({ page }) => {
+    const id = 'big-project';
+    await page.addInitScript(({ id }) => {
+      const issues = [];
+      for (let i = 1; i <= 60; i++) {
+        issues.push({ id: 'i' + i, uid: 'u' + i, num: i, fieldRefs: {}, fieldLoading: {}, values: { title: 'Issue number ' + i }, comments: [], history: [] });
+      }
+      localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({ activeMilestoneId: id, milestones: [{ id, name: 'Big Project' }] }));
+      localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
+        fieldDefs: { title: { label: 'Issue', type: 'text' } }, issues,
+        hiddenFieldIds: [], githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', projectNotes: '', projectComments: []
+      }));
+    }, { id });
+    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(400);
+
+    const wordmark = page.getByText('Wigwag', { exact: true });
+    const before = await wordmark.boundingBox();
+
+    await page.mouse.wheel(0, 1500);
+    await page.waitForTimeout(200);
+    expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0); // sanity: the page actually scrolled
+
+    const after = await wordmark.boundingBox();
+    expect(after.y).toBe(before.y); // App bar didn't move
+    await expect(page.locator('[data-testid=tracker-name-title]')).toBeVisible(); // Project bar still on screen too
+
+    // Dropdowns anchored to the (now-sticky) bars still render correctly on top of scrolled table content.
+    await page.locator('[data-testid=identity-pill]').click();
+    await expect(page.locator('[data-testid=identity-option]').first()).toBeVisible();
   });
 });

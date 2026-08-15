@@ -44,7 +44,23 @@ async function seedDemoMilestone(page) {
   }, { id: DEMO_MILESTONE_ID, name: DEMO_MILESTONE_NAME, doc: demoDoc });
 }
 
+// Two real-time windows (GitHub-leader staleness, auto-push debounce)
+// otherwise cost the suite ~35s+ of pure waiting across a handful of
+// tests. Both are overridable via a window global the app reads at
+// startup (production default when unset, see GITHUB_LEADER_STALE_MS /
+// maybeScheduleGithubPush in the tracker source) -- shrinking them here
+// runs the exact same real timing logic, just on a compressed clock, not
+// a mocked one.
+async function useFastTimers(page) {
+  await page.addInitScript(() => {
+    window.__wigwagLeaderStaleMs = 600;
+    window.__wigwagPushDebounceMs = 300;
+    window.__wigwagLeaderHeartbeatMs = 200; // keep the same ~3x safety margin vs. staleMs as production (5000 vs 15000)
+  });
+}
+
 async function gotoTracker(page) {
+  await useFastTimers(page);
   await seedDemoMilestone(page);
   await page.goto(TRACKER_PATH, { waitUntil: 'networkidle' });
   await page.waitForTimeout(300); // initial render settle
@@ -367,6 +383,7 @@ module.exports = {
   TRACKER_PATH,
   gotoTracker,
   seedDemoMilestone,
+  useFastTimers,
   row,
   titleCell,
   fieldCell,

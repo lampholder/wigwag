@@ -23,6 +23,7 @@ test.describe('GitHub sync leader election across tabs', () => {
     const pageB = await context.newPage();
     const ghB = h.mockGithubContentsApi(pageB, REPO);
     ghB.getResponses = [{ status: 404 }];
+    await h.useFastTimers(pageB);
     await pageB.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
     await pageB.waitForTimeout(500);
 
@@ -34,7 +35,7 @@ test.describe('GitHub sync leader election across tabs', () => {
     // follower itself must not be the one to push it.
     await h.clickFieldToEdit(pageB, 3, 'mitigation');
     await h.typeAndCommit(pageB, 'edited in the follower tab');
-    await pageB.waitForTimeout(4500);
+    await pageB.waitForTimeout(500); // past the (shrunk) push debounce
     expect(ghB.pushCount).toBe(0);
 
     // The leader tab is the one that ends up pushing that change.
@@ -52,15 +53,17 @@ test.describe('GitHub sync leader election across tabs', () => {
     const pageB = await context.newPage();
     const ghB = h.mockGithubContentsApi(pageB, REPO);
     ghB.getResponses = [{ status: 404 }];
+    await h.useFastTimers(pageB);
     await pageB.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
     await pageB.waitForTimeout(500);
 
     await page.close();
     // Headless Chromium doesn't reliably fire beforeunload on a
-    // programmatic tab close -- wait past the staleness window
-    // (GITHUB_LEADER_STALE_MS = 15s) so this proves the fallback alone is
-    // enough, not just the best-effort release-on-close.
-    await pageB.waitForTimeout(16000);
+    // programmatic tab close -- wait past the staleness window (shrunk to
+    // 600ms by useFastTimers/__wigwagLeaderStaleMs, see helpers.js) so
+    // this proves the fallback alone is enough, not just the best-effort
+    // release-on-close.
+    await pageB.waitForTimeout(1500); // 600ms stale window + generous margin for real timing jitter
 
     await h.clickFieldToEdit(pageB, 4, 'mitigation');
     await h.typeAndCommit(pageB, 'edited after the leader tab closed');

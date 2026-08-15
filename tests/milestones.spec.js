@@ -139,7 +139,7 @@ test.describe('Tracker switcher', () => {
     await page.locator('[data-testid=btn-new-blank-milestone]').click();
     await page.locator('[data-testid=new-milestone-name-input]').fill('Milestone B');
     await page.locator('[data-testid=btn-create-milestone]').click();
-    await page.waitForTimeout(4800); // past B's own debounce window, if it were (wrongly) armed
+    await page.waitForTimeout(500); // past the (shrunk) push debounce, if it were (wrongly) armed
 
     expect(gh.pushCount).toBe(pushCountAfterA); // B never pushed to A's repo
     expect(gh.getCount).toBe(getCountAfterA); // B never reconnected to A's repo either
@@ -226,8 +226,73 @@ test.describe('Legacy storage migration', () => {
     const indexRaw = await page.evaluate(() => localStorage.getItem('git_native_tracker_milestones_v1'));
     const index = JSON.parse(indexRaw);
     expect(index.activeMilestoneId).toBe(id);
-    expect(index.milestones).toEqual([{ id, name: 'My Real Project' }]);
+    // identityId is expected now (Phase 2's migration tags every existing
+    // project with the identity it was migrated into) -- everything else
+    // about the shape must still match exactly.
+    expect(index.milestones).toEqual([{ id, name: 'My Real Project', identityId: expect.any(String) }]);
     expect(index.activeProjectId).toBeUndefined();
     expect(index.projects).toBeUndefined();
+  });
+
+  // Regression test for the Phase 2 identity migration specifically:
+  // pre-existing real data (global identityEmail/githubToken/jiraProxyUrl/
+  // signing keys in secrets, a flat project list with no identityId
+  // anywhere) must migrate into exactly one identity, with every existing
+  // project tagged, and -- learning directly from the incident above --
+  // the activeMilestoneId/milestones key names must stay byte-identical,
+  // only gaining the new identityId field inside each project entry.
+  test('pre-identity real data migrates into exactly one identity, tags existing projects, and never touches the project-index wire format', async ({ page }) => {
+    const id = 'pre-existing-real-project-id';
+    await page.context().addInitScript(({ id }) => {
+      localStorage.setItem('git_native_tracker_secrets_v1', JSON.stringify({
+        githubToken: 'ghp_realtoken', jiraProxyUrl: 'http://localhost:8934', identityEmail: 'thomas@lant.uk',
+        identityPublicKeyJwk: { kty: 'EC', fake: 'pub' }, identityPrivateKeyJwk: { kty: 'EC', fake: 'priv' }
+      }));
+      localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({
+        activeMilestoneId: id, milestones: [{ id, name: 'My Real Project' }]
+      }));
+      localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
+        fieldDefs: { title: { label: 'Issue', type: 'text' } },
+        issues: [{ id: 'i1', uid: 'u1', num: 1, fieldRefs: {}, fieldLoading: {}, values: { title: 'Real issue' }, comments: [], history: [] }],
+        hiddenFieldIds: [], githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', projectNotes: '', projectComments: []
+      }));
+    }, { id });
+    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    // Existing behavior is completely unaffected -- this is the whole
+    // point of doing the data model as an isolated, additive-only step.
+    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('My Real Project');
+    await expect(page.locator('[data-testid=row]')).toHaveCount(1);
+
+    const before = await page.evaluate(() => localStorage.getItem('git_native_tracker_identities_v1'));
+    const identities = JSON.parse(before);
+    expect(identities.identities).toHaveLength(1);
+    const identity = identities.identities[0];
+    expect(identity.email).toBe('thomas@lant.uk');
+    expect(identity.githubToken).toBe('ghp_realtoken');
+    expect(identity.jiraProxyUrl).toBe('http://localhost:8934');
+    expect(identity.stateRepo).toBe('');
+    expect(identities.activeIdentityId).toBe(identity.id);
+    expect(identities.defaultIdentityId).toBe(identity.id);
+
+    const projectIndex = JSON.parse(await page.evaluate(() => localStorage.getItem('git_native_tracker_milestones_v1')));
+    expect(projectIndex.activeMilestoneId).toBe(id); // wire key names untouched
+    expect(projectIndex.milestones).toEqual([{ id, name: 'My Real Project', identityId: identity.id }]);
+
+    // Force a re-render (the exact path that clobbered data in the Batch 1
+    // incident) and confirm nothing gets rewritten to a different shape.
+    await h.openSettings(page);
+    await page.waitForTimeout(200);
+    const identitiesAfter = await page.evaluate(() => localStorage.getItem('git_native_tracker_identities_v1'));
+    const projectIndexAfter = await page.evaluate(() => localStorage.getItem('git_native_tracker_milestones_v1'));
+    expect(identitiesAfter).toBe(before);
+    expect(JSON.parse(projectIndexAfter)).toEqual(projectIndex);
+
+    // Idempotent: reload should not re-migrate or duplicate identities.
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+    const identitiesAfterReload = await page.evaluate(() => localStorage.getItem('git_native_tracker_identities_v1'));
+    expect(identitiesAfterReload).toBe(before);
   });
 });

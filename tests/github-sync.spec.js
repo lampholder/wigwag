@@ -66,7 +66,7 @@ test.describe('GitHub repo sync', () => {
     await page.waitForTimeout(200);
     await h.clickFieldToEdit(page, 3, 'rag');
     await page.locator('div[style*="z-index: 70"]').getByText('At risk').click();
-    await page.waitForTimeout(4800); // past the default debounce
+    await page.waitForTimeout(500); // past the (shrunk) push debounce
 
     expect(gh.pushCount).toBe(afterConnect + 1); // three edits, one push
   });
@@ -140,7 +140,7 @@ test.describe('GitHub repo sync', () => {
     // conflict-paused blocks it until the conflict is actually resolved.
     await h.clickFieldToEdit(page, 3, 'rag');
     await page.locator('div[style*="z-index: 70"]').getByText('On track').click();
-    await page.waitForTimeout(4800);
+    await page.waitForTimeout(500); // past the (shrunk) push debounce
     expect(gh.pushCount).toBe(0);
 
     // Reconnecting resurfaces the same still-unresolved conflict; resolving
@@ -154,7 +154,7 @@ test.describe('GitHub repo sync', () => {
 
     await h.clickFieldToEdit(page, 4, 'rag');
     await page.locator('div[style*="z-index: 70"]').getByText('Off track').click();
-    await page.waitForTimeout(4800);
+    await page.waitForTimeout(500); // past the (shrunk) push debounce
     expect(gh.pushCount).toBeGreaterThan(0);
   });
 

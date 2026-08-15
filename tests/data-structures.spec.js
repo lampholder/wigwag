@@ -57,17 +57,6 @@ test.describe('JSONL export/import', () => {
     expect(issue1.history.some(hh => !hh.field)).toBe(true); // e.g. "Created" is kept
   });
 
-  test('"Open file…" loads a .jsonl file\'s data into the view', async ({ page }) => {
-    const fixture = Buffer.from(
-      JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, columnOrder: [] }) + '\n' +
-      JSON.stringify({ type: 'issue', id: 'x1', num: 1, jira: null, fieldRefs: {}, values: { title: 'Imported issue' }, comments: [], history: [] }) + '\n'
-    );
-    page.once('dialog', d => d.accept());
-    await page.locator('[data-testid=open-file-input]').setInputFiles({ name: 'import.jsonl', mimeType: 'application/octet-stream', buffer: fixture });
-    await page.waitForTimeout(300);
-    await expect(h.titleCell(page, 1)).toContainText('Imported issue');
-  });
-
   test('"Import & merge…" unions an incoming file\'s issues with the current ones', async ({ page }) => {
     const fixture = Buffer.from(
       JSON.stringify({ type: 'fields', fields: {}, columnOrder: [] }) + '\n' +
@@ -213,11 +202,22 @@ test.describe('Full history log vs. latest-state export', () => {
     expect(i1.fieldRefs).toBeTruthy();
   });
 
-  test('a "full history" export additionally carries the append-only event log', async ({ page }) => {
+  test('a "full history" export ("Save project file..." in the Share menu) additionally carries the append-only event log', async ({ page }) => {
+    // Regression note: this used to just check the menu's own label text for
+    // the substring "full history" -- that copy moved on when the Share menu
+    // was restructured (the item is now "Save project file...", full-history
+    // behavior unchanged), so this checks the actual exported content instead.
     await h.gotoTracker(page);
     await page.locator('[data-testid=btn-export]').click();
-    const fullOption = page.getByText('full history', { exact: false });
-    expect(await fullOption.count()).toBeGreaterThan(0);
+    const [dl] = await Promise.all([
+      page.waitForEvent('download'),
+      page.locator('[data-testid=btn-export-jsonl]').click(),
+    ]);
+    const fs = require('fs');
+    const exportedText = fs.readFileSync(await dl.path(), 'utf8');
+    const i1 = JSON.parse(exportedText.split('\n').find(l => l.includes('"id":"i1"')));
+    expect(Array.isArray(i1.history)).toBe(true);
+    expect(i1.history.length).toBeGreaterThan(0);
   });
 });
 

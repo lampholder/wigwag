@@ -1627,3 +1627,165 @@ test.describe('Table card corners', () => {
     expect(radius).toBe('0px 0px 8px 8px');
   });
 });
+
+test.describe('App bar / Project bar / footer', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  test('the wordmark and a standalone "Import project from file..." entry point render in the app bar', async ({ page }) => {
+    await expect(page.getByText('Wigwag', { exact: true })).toBeVisible();
+    await expect(page.locator('[data-testid=btn-import-project-appbar]')).toHaveText('Import project from file…');
+  });
+
+  test('the footer shows format version, last-updated (once there is real history), and View source, with no issue count or filename', async ({ page }) => {
+    const footer = page.locator('text=Format v0.1.0').locator('..');
+    await expect(footer).toContainText('Format v0.1.0');
+    await expect(footer).toContainText('Updated');
+    await expect(footer).toContainText('{ } View source');
+    await expect(footer).not.toContainText('issues');
+  });
+
+  test('a genuinely blank project with no history yet omits the Updated segment entirely, rather than showing it empty', async ({ page }) => {
+    await h.openTrackerSwitcher(page);
+    await page.locator('[data-testid=btn-add-milestone]').click();
+    await page.locator('[data-testid=btn-new-blank-milestone]').click();
+    await page.locator('[data-testid=new-milestone-name-input]').fill('A truly blank project');
+    await page.locator('[data-testid=btn-create-milestone]').click();
+    await page.waitForTimeout(400);
+    const footer = page.locator('text=Format v0.1.0').locator('..');
+    await expect(footer).toContainText('Format v0.1.0');
+    await expect(footer).not.toContainText('Updated');
+    await expect(footer).toContainText('{ } View source');
+  });
+
+  test('the filter input is a fixed 340px, not the old 420px max-width', async ({ page }) => {
+    const width = await page.locator('[data-testid=filter-input]').evaluate(el => getComputedStyle(el.closest('div')).width);
+    expect(width).toBe('340px');
+  });
+
+  test('the Share button is outlined, not filled -- nothing in either bar is a solid/primary button', async ({ page }) => {
+    const bg = await page.locator('[data-testid=btn-export]').evaluate(el => getComputedStyle(el).backgroundColor);
+    expect(bg).toBe('rgb(255, 255, 255)');
+  });
+});
+
+test.describe('Share menu restructure', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  test('"Apply update..." replaces the old "Import & merge..." label on the same merge-into-current-project button', async ({ page }) => {
+    await expect(page.locator('[data-testid=btn-import-merge]')).toHaveText('Apply update…');
+  });
+
+  test('the Share menu lists Save project file / Copy to clipboard / Save as interactive HTML / Export as JSONL (squashed), in that order, with sub-copy on the first two', async ({ page }) => {
+    await page.locator('[data-testid=btn-export]').click();
+    const items = page.locator('[data-testid=btn-export-jsonl], [data-testid=btn-copy-to-clipboard], [data-testid=btn-export-html], [data-testid=btn-export-jsonl-squashed]');
+    await expect(items).toHaveCount(4);
+    const texts = (await items.allTextContents()).map(t => t.replace(/\s+/g, ' ').trim());
+    expect(texts[0]).toBe('Save project file… A .jsonl anyone can apply as an update');
+    expect(texts[1]).toBe('Copy to clipboard Paste straight into an email or chat');
+    expect(texts[2]).toBe('Save as interactive HTML…');
+    expect(texts[3]).toBe('Export as JSONL (squashed)');
+    // CSV is no longer in this menu at all -- moved to the project panel's EXPORT section.
+    await expect(page.locator('[data-testid=btn-export-csv]')).toHaveCount(0);
+  });
+
+  test('"Copy to clipboard" copies the same source text the View Source panel\'s Copy button does, and closes the menu', async ({ page }) => {
+    await page.locator('[data-testid=btn-export]').click();
+    await page.locator('[data-testid=btn-copy-to-clipboard]').click();
+    await expect(page.locator('[data-testid=btn-copy-to-clipboard]')).toHaveCount(0); // menu closed
+    const clipboardText = await page.evaluate(() => navigator.clipboard.readText());
+    expect(clipboardText).toContain('"type":"fields"');
+  });
+
+  test('"Save as interactive HTML..." still triggers the real HTML export, unchanged, just relabeled and relocated', async ({ page }) => {
+    const [download] = await Promise.all([
+      page.waitForEvent('download'),
+      page.locator('[data-testid=btn-export]').click().then(() => page.locator('[data-testid=btn-export-html]').click()),
+    ]);
+    expect(download.suggestedFilename()).toMatch(/\.html$/);
+  });
+
+  test('the project panel has an EXPORT section with a CSV button and explanatory copy, separate from Share', async ({ page }) => {
+    await page.locator('[data-testid=btn-notes]').click();
+    await page.waitForTimeout(300);
+    await expect(page.getByText('EXPORT', { exact: true })).toBeVisible();
+    const csvBtn = page.locator('[data-testid=btn-export-csv]');
+    await expect(csvBtn).toHaveText('Export as CSV…');
+    await expect(csvBtn.locator('..')).toContainText("A flat snapshot for spreadsheets. It can't be applied back as an update — use Share for that.");
+  });
+});
+
+test.describe('Project panel button + header hover', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  test('the header button is labelled "Project", not "Notes"', async ({ page }) => {
+    await expect(page.locator('[data-testid=btn-notes]')).toContainText('Project');
+    await expect(page.locator('[data-testid=btn-notes]')).not.toContainText('Notes');
+  });
+
+  test('hovering the switcher caret alone does not also highlight the title -- they are two independent targets, not one shared control', async ({ page }) => {
+    const title = page.locator('[data-testid=tracker-name-title]');
+    const caret = page.locator('[data-testid=btn-tracker-switcher]');
+    const titleBg = () => title.evaluate(el => getComputedStyle(el).backgroundColor);
+    const caretBg = () => caret.evaluate(el => getComputedStyle(el).backgroundColor);
+
+    const titleBefore = await titleBg();
+    await caret.hover();
+    await page.waitForTimeout(100);
+    expect(await titleBg()).toBe(titleBefore); // unchanged by hovering the caret
+    expect(await caretBg()).not.toBe(titleBefore); // the caret itself did pick up its own hover color
+
+    await page.mouse.move(10, 10); // clear the caret's own hover state first
+    await page.waitForTimeout(100);
+    const caretUnhovered = await caretBg();
+    await title.hover();
+    await page.waitForTimeout(100);
+    expect(await caretBg()).toBe(caretUnhovered); // unchanged by hovering the title
+  });
+});
+
+test.describe('Project dropdown anchor', () => {
+  test('the dropdown anchors near the project name\'s own position, not the header row\'s outer edge', async ({ page }) => {
+    await h.gotoTracker(page);
+    const titleBox = await page.locator('[data-testid=tracker-name-title]').boundingBox();
+    await page.locator('[data-testid=btn-tracker-switcher]').click();
+    await page.waitForTimeout(200);
+    const dropdownBox = await page.locator('[data-testid=milestone-row]').first().locator('..').boundingBox();
+    // Close to the title's own left edge (within a few px, accounting for
+    // the title's own padding) -- not flush with the page/header edge.
+    expect(Math.abs(dropdownBox.x - titleBox.x)).toBeLessThan(20);
+  });
+});
+
+test.describe('Post-Phase-1 fixes: Open file removed, Project button is a peer button', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  test('"Open file..." no longer exists -- Apply update.../Import project from file... cover the same ground', async ({ page }) => {
+    await expect(page.locator('[data-testid=btn-open-file]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=open-file-input]')).toHaveCount(0);
+    await expect(page.getByText('Open file…', { exact: true })).toHaveCount(0);
+  });
+
+  test('the Project button is a real button, styled and positioned as a peer of Apply update.../Share, not a small link under the title', async ({ page }) => {
+    const project = page.locator('[data-testid=btn-notes]');
+    const applyUpdate = page.locator('[data-testid=btn-import-merge]');
+    const share = page.locator('[data-testid=btn-export]');
+
+    expect(await project.evaluate(el => el.tagName)).toBe('BUTTON');
+    const [projectBox, applyBox, shareBox] = await Promise.all([
+      project.boundingBox(), applyUpdate.boundingBox(), share.boundingBox(),
+    ]);
+    expect(projectBox.y).toBe(applyBox.y); // same row
+    expect(applyBox.y).toBe(shareBox.y);
+    expect(projectBox.x).toBeLessThan(applyBox.x); // Project, then Apply update, then Share, in order
+    expect(applyBox.x).toBeLessThan(shareBox.x);
+
+    const projectStyle = await project.evaluate(el => getComputedStyle(el).border);
+    const applyStyle = await applyUpdate.evaluate(el => getComputedStyle(el).border);
+    expect(projectStyle).toBe(applyStyle); // same outlined-button treatment
+
+    // Still functions exactly as before.
+    await project.click();
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=notes-panel]')).toBeVisible();
+  });
+});

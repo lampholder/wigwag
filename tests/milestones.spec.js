@@ -39,40 +39,56 @@ test.describe('Tracker switcher', () => {
     await expect(page.locator('[data-testid=row]')).toHaveCount(9);
   });
 
-  test('clicking the header title edits the active milestone\'s name in place: Enter commits, Escape cancels, blur commits', async ({ page }) => {
+  // Rename moved off the header (inline edit) and into the project panel,
+  // behind a "Rename..." link, with deliberate friction: a stray blur must
+  // NOT commit (the opposite of the old inline-edit behavior) -- only the
+  // explicit Rename button or Enter does.
+  test('clicking the header title opens the project panel, not an inline editor', async ({ page }) => {
     const title = page.locator('[data-testid=tracker-name-title]');
-    const arrow = page.locator('[data-testid=btn-tracker-switcher]');
-    const input = page.locator('[data-testid=tracker-name-input]');
-
-    // Entering edit mode force-closes the dropdown if it was open.
-    await arrow.click();
-    await expect(page.locator('[data-testid=milestone-row]')).toHaveCount(1);
+    await expect(page.locator('[data-testid=tracker-name-input]')).toHaveCount(0);
     await title.click();
-    await expect(page.locator('[data-testid=milestone-row]')).toHaveCount(0);
-    await expect(input).toBeVisible();
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=notes-panel]')).toBeVisible();
+    await expect(page.locator('[data-testid=tracker-name-input]')).toHaveCount(0); // no inline editor exists anymore
+  });
+
+  test('renaming inside the project panel: Enter commits, Escape cancels, a stray blur does neither (deliberate friction)', async ({ page }) => {
+    const title = page.locator('[data-testid=tracker-name-title]');
+    await title.click();
+    await page.waitForTimeout(300);
+
+    await page.locator('[data-testid=notes-rename-btn]').click();
+    const input = page.locator('[data-testid=notes-rename-input]');
+    await expect(page.getByText('This name is stored in the file', { exact: false })).toBeVisible();
 
     await input.fill('Renamed via Enter');
     await page.keyboard.press('Enter');
     await page.waitForTimeout(200);
     await expect(title).toContainText('Renamed via Enter');
+    await expect(page.locator('[data-testid=notes-rename-input]')).toHaveCount(0); // back to reading mode
 
-    await title.click();
+    await page.locator('[data-testid=notes-rename-btn]').click();
     await input.fill('should be discarded');
     await page.keyboard.press('Escape');
     await page.waitForTimeout(150);
-    await expect(input).toHaveCount(0);
+    await expect(page.locator('[data-testid=notes-rename-input]')).toHaveCount(0);
     await expect(title).toContainText('Renamed via Enter');
 
-    await title.click();
-    await input.fill('Renamed via blur');
-    await page.mouse.click(700, 700);
-    await page.waitForTimeout(200);
-    await expect(title).toContainText('Renamed via blur');
+    await page.locator('[data-testid=notes-rename-btn]').click();
+    await input.fill('should NOT be committed by a stray click');
+    await page.locator('[data-testid=notes-panel]').click({ position: { x: 20, y: 300 } }); // stray click elsewhere in the panel, not Cancel/Rename
+    await page.waitForTimeout(150);
+    await expect(input).toBeVisible(); // still in the editing state -- blur alone did nothing
+    await expect(input).toHaveValue('should NOT be committed by a stray click'); // draft preserved, not lost either
 
-    // The dropdown itself carries no rename affordance -- only the header title does.
-    await arrow.click();
-    await expect(page.locator('[data-testid=milestone-rename-btn]')).toHaveCount(0);
-    await expect(page.locator('[data-testid=milestone-row]').first()).toContainText('Renamed via blur');
+    await page.locator('[data-testid=notes-rename-commit-btn]').click();
+    await page.waitForTimeout(150);
+    await expect(title).toContainText('should NOT be committed by a stray click');
+
+    await page.locator('[data-testid=notes-close-btn]').click();
+    await page.waitForTimeout(300);
+    await h.openTrackerSwitcher(page);
+    await expect(page.locator('[data-testid=milestone-row]').first()).toContainText('should NOT be committed by a stray click');
   });
 
   test('import from file creates a new milestone without touching the current one; re-importing the same file avoids an id collision', async ({ page }) => {
@@ -171,5 +187,47 @@ test.describe('Legacy storage migration', () => {
     await h.openSettings(page);
     await expect(page.locator('[data-testid=settings-github-repo]')).toHaveValue('acme/legacy-repo');
     await expect(page.locator('[data-testid=settings-identity-email]')).toHaveValue('legacy@example.com');
+  });
+
+  // Regression test: an internal rename once renamed the JS-side state
+  // property names (milestoneId/milestones -> projectId/projects) and, by
+  // accident, the *persisted* index blob's own JSON key names along with
+  // them. Real user data written under the old key names (activeMilestoneId/
+  // milestones) then silently failed to load -- the app fell back to a
+  // blank index, which then overwrote the real one on the next render. The
+  // wire format for this blob must never change without a real migration,
+  // independent of whatever the in-memory state properties are named.
+  test('the project-index blob\'s on-disk key names (activeMilestoneId/milestones) are read correctly and never rewritten to a different shape', async ({ page }) => {
+    const id = 'pre-existing-real-project-id';
+    await page.context().addInitScript(({ id }) => {
+      localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({
+        activeMilestoneId: id,
+        milestones: [{ id, name: 'My Real Project' }]
+      }));
+      localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
+        fieldDefs: { title: { label: 'Issue', type: 'text' } },
+        issues: [{ id: 'i1', uid: 'u1', num: 1, fieldRefs: {}, fieldLoading: {}, values: { title: 'My real issue' }, comments: [], history: [] }],
+        hiddenFieldIds: [], githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '',
+        projectNotes: '', projectComments: []
+      }));
+    }, { id });
+    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('My Real Project');
+    await expect(page.locator('[data-testid=row]')).toHaveCount(1);
+    await expect(page.locator('[data-testid=row]').first()).toContainText('My real issue');
+
+    // Force at least one re-render (any interaction triggers componentDidUpdate,
+    // which persists the index on every update) -- this is exactly the path
+    // that clobbered the blob last time.
+    await h.openSettings(page);
+
+    const indexRaw = await page.evaluate(() => localStorage.getItem('git_native_tracker_milestones_v1'));
+    const index = JSON.parse(indexRaw);
+    expect(index.activeMilestoneId).toBe(id);
+    expect(index.milestones).toEqual([{ id, name: 'My Real Project' }]);
+    expect(index.activeProjectId).toBeUndefined();
+    expect(index.projects).toBeUndefined();
   });
 });

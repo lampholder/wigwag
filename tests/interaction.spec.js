@@ -67,6 +67,24 @@ test.describe('Add field popover stays within the viewport', () => {
     expect(box.y).toBeGreaterThanOrEqual(0);
     expect(box.y + box.height).toBeLessThanOrEqual(400);
   });
+
+  // Regression: the popover's own div (width:230px + padding:12px + a 1px
+  // border, no box-sizing declared) rendered at 256px, 26px wider than
+  // the 230 computeAnchor()'s own right-edge clamp was told to account
+  // for -- so opening it from the "+" column at the table's right edge
+  // let it overflow off the actual screen by that same 26px.
+  test('opened from the "+" column at the table\'s right edge, the popover stays fully within the viewport width', async ({ page }) => {
+    await page.setViewportSize({ width: 900, height: 900 }); // narrow enough that the demo seed's columns overflow
+    await page.locator('[data-testid=table-scroll-wrap]').evaluate(el => { el.scrollLeft = el.scrollWidth; });
+    await page.waitForTimeout(150);
+
+    await page.locator('[data-testid=add-field-wrap] span').first().click();
+    const panel = page.getByText('NEW FIELD', { exact: true }).locator('..');
+    await expect(panel).toBeVisible();
+    const box = await panel.boundingBox();
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(900);
+  });
 });
 
 test.describe('Click any field to edit', () => {

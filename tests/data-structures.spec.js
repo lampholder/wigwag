@@ -110,13 +110,28 @@ test.describe('JSONL export/import', () => {
     await expect(page.locator('[data-testid=milestone-row]')).toHaveCount(1);
   });
 
-  test('"Paste…" next to Apply update merges pasted JSONL into the current project', async ({ page }) => {
+  test('"Apply update..." opens a From file.../Paste from text... choice, not a direct file picker', async ({ page }) => {
+    await expect(page.locator('[data-testid=btn-apply-update-from-file]')).toHaveCount(0);
+    await page.locator('[data-testid=btn-import-merge]').click();
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=btn-apply-update-from-file]')).toBeVisible();
+    await expect(page.locator('[data-testid=btn-apply-update-from-paste]')).toBeVisible();
+
+    // Outside click closes it without picking either.
+    await page.mouse.click(700, 400);
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=btn-apply-update-from-file]')).toHaveCount(0);
+  });
+
+  test('"Apply update..." → "Paste from text..." merges pasted JSONL into the current project', async ({ page }) => {
     const pastedJsonl = [
       JSON.stringify({ type: 'fields', fields: {}, columnOrder: [] }),
       JSON.stringify({ type: 'issue', id: 'pasted-merge-1', num: 200, fieldRefs: {}, values: { title: 'Pasted-in via merge' }, comments: [], history: [] })
     ].join('\n');
 
-    await page.locator('[data-testid=btn-paste-merge]').click();
+    await page.locator('[data-testid=btn-import-merge]').click();
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=btn-apply-update-from-paste]').click();
     await page.waitForTimeout(150);
     await expect(page.locator('[data-testid=paste-merge-modal]')).toBeVisible();
 

@@ -68,7 +68,7 @@ test.describe('JSONL export/import', () => {
     expect(count).toBe(10); // 9 seed issues + 1 merged in
   });
 
-  test('"Paste from text…" creates a new project from pasted JSONL, without touching the current one', async ({ page }) => {
+  test('"Paste from clipboard…" creates a new project from pasted JSONL, without touching the current one', async ({ page }) => {
     const pastedJsonl = [
       JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, id: 'pasted-proj', name: 'Pasted Project' }),
       JSON.stringify({ type: 'issue', id: 'p1', uid: 'pu1', num: 1, fieldRefs: {}, values: { title: 'Pasted issue' }, comments: [], history: [] })
@@ -110,7 +110,7 @@ test.describe('JSONL export/import', () => {
     await expect(page.locator('[data-testid=milestone-row]')).toHaveCount(1);
   });
 
-  test('"Apply update..." opens a From file.../Paste from text... choice, not a direct file picker', async ({ page }) => {
+  test('"Apply update..." opens a From file.../Paste from clipboard... choice, not a direct file picker', async ({ page }) => {
     await expect(page.locator('[data-testid=btn-apply-update-from-file]')).toHaveCount(0);
     await page.locator('[data-testid=btn-import-merge]').click();
     await page.waitForTimeout(150);
@@ -123,7 +123,7 @@ test.describe('JSONL export/import', () => {
     await expect(page.locator('[data-testid=btn-apply-update-from-file]')).toHaveCount(0);
   });
 
-  test('"Apply update..." → "Paste from text..." merges pasted JSONL into the current project', async ({ page }) => {
+  test('"Apply update..." → "Paste from clipboard..." merges pasted JSONL into the current project', async ({ page }) => {
     const pastedJsonl = [
       JSON.stringify({ type: 'fields', fields: {}, columnOrder: [] }),
       JSON.stringify({ type: 'issue', id: 'pasted-merge-1', num: 200, fieldRefs: {}, values: { title: 'Pasted-in via merge' }, comments: [], history: [] })

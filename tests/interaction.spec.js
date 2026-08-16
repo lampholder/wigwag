@@ -1250,6 +1250,61 @@ test.describe('Keep "add an item" reachable: full-height flex shell', () => {
     expect(radius).not.toBe('0px'); // rounded corners restored back at the top
   });
 
+  // Regression: the header used to square its corners off as soon as ANY
+  // scroll happened at all (scrollTop > 0), well before it actually
+  // reached its stuck position 13px down (12px margin-top + 1px
+  // border-top on the card it sits inside) -- its shape visibly popped
+  // square while still just sliding normally, well ahead of sticking,
+  // which read as a glitch ("slides up a little... before sticking").
+  test('the header keeps its rounded corners while merely sliding, only squaring off exactly when it actually sticks', async ({ page }) => {
+    const id = 'tall-project-radius';
+    await page.addInitScript(({ id }) => {
+      const issues = [];
+      for (let i = 1; i <= 60; i++) {
+        issues.push({ id: 'i' + i, uid: 'u' + i, num: i, fieldRefs: {}, fieldLoading: {}, values: { title: 'Issue number ' + i }, comments: [], history: [] });
+      }
+      localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({ activeMilestoneId: id, milestones: [{ id, name: 'Tall Project Radius' }] }));
+      localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
+        fieldDefs: { title: { label: 'Issue', type: 'text' } }, issues,
+        hiddenFieldIds: [], githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', projectNotes: '', projectComments: []
+      }));
+    }, { id });
+    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(400);
+
+    const wrap = page.locator('[data-testid=table-scroll-wrap]');
+    const header = page.locator('[data-testid=title-col-header]').locator('xpath=..');
+
+    // Just short of the stuck threshold: still visibly sliding, corners
+    // must still be rounded.
+    await wrap.evaluate(el => { el.scrollTop = 12; });
+    await page.waitForTimeout(200);
+    let radius = await header.evaluate(el => getComputedStyle(el).borderTopLeftRadius);
+    expect(radius).not.toBe('0px');
+    let wrapTop = await wrap.evaluate(el => el.getBoundingClientRect().top);
+    let headerTop = await header.evaluate(el => el.getBoundingClientRect().top);
+    expect(headerTop).not.toBe(wrapTop); // not stuck yet either
+
+    // At the threshold: now actually stuck, corners square off in the same instant.
+    await wrap.evaluate(el => { el.scrollTop = 13; });
+    await page.waitForTimeout(200);
+    radius = await header.evaluate(el => getComputedStyle(el).borderTopLeftRadius);
+    expect(radius).toBe('0px');
+    wrapTop = await wrap.evaluate(el => el.getBoundingClientRect().top);
+    headerTop = await header.evaluate(el => el.getBoundingClientRect().top);
+    expect(headerTop).toBe(wrapTop);
+  });
+
+  // Regression: neither boundary had a persistent visual separator --
+  // only scroll-dependent padding, which is invisible except right at the
+  // very top (filter bar) or the very bottom (add-item box) of the
+  // scrollable content. A partially-scrolled table left both boundaries
+  // looking like they'd merged into their neighbor.
+  test('the filter bar and the add-item box each have a permanent hairline separating them from the table pane, regardless of scroll position', async ({ page }) => {
+    await expect(page.locator('[data-testid=filter-input]').locator('xpath=../..')).toHaveCSS('border-bottom-width', '1px');
+    await expect(page.getByText('Control + Space').locator('xpath=../../..')).toHaveCSS('border-top-width', '1px');
+  });
+
   test('after adding an item, the box stays open and focused (not collapsed back to the Control+Space hint), so several adds in a row need no mouse', async ({ page }) => {
     await page.keyboard.down('Control'); await page.keyboard.press('Space'); await page.keyboard.up('Control');
     await page.waitForTimeout(150);

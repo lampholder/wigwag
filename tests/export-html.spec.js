@@ -119,6 +119,13 @@ test.describe('Export as HTML', () => {
     await recipientPage.keyboard.press('Enter');
     await recipientPage.waitForTimeout(200);
 
+    // The recipient is a genuinely fresh identity in this brand-new
+    // context -- their first edit hits the email gate, same as any other
+    // first-time editor. Submitting it lets the original edit through.
+    await recipientPage.locator('[data-testid=email-gate-input]').fill('recipient@example.com');
+    await recipientPage.locator('[data-testid=btn-submit-email-gate]').click();
+    await recipientPage.waitForTimeout(300);
+
     await recipientPage.reload();
     await recipientPage.waitForTimeout(500);
     await expect(h.fieldCell(recipientPage, 1, 'mitigation')).toHaveText(/Recipient-authored mitigation text/);
@@ -141,6 +148,13 @@ test.describe('Export as HTML', () => {
     await h.pasteText(recipientPage, 'Do not clobber me');
     await recipientPage.keyboard.press('Enter');
     await recipientPage.waitForTimeout(200);
+
+    // The recipient is a genuinely fresh identity in this brand-new
+    // context -- their first edit hits the email gate, same as any other
+    // first-time editor. Submitting it lets the original edit through.
+    await recipientPage.locator('[data-testid=email-gate-input]').fill('recipient@example.com');
+    await recipientPage.locator('[data-testid=btn-submit-email-gate]').click();
+    await recipientPage.waitForTimeout(300);
 
     // Reopen (same browser storage, not a fresh context -- this is the
     // "come back to it tomorrow" scenario, not "a different person").

@@ -1167,6 +1167,139 @@ test.describe('A too-wide table scrolls on its own, not the whole page', () => {
   });
 });
 
+test.describe('Keep "add an item" reachable: full-height flex shell', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  test('a short list stays content-height -- the table region does not grow to fill the viewport (flex-grow:0, not 1)', async ({ page }) => {
+    const flexGrow = await page.locator('[data-testid=table-scroll-wrap]').evaluate(el => getComputedStyle(el).flexGrow);
+    expect(flexGrow).toBe('0');
+
+    // The add-item box sits directly under the (short) table, not pushed
+    // down to the bottom of a tall viewport with a lake of empty space
+    // above it.
+    const lastRow = page.locator('[data-testid=row]').last();
+    const rowBox = await lastRow.boundingBox();
+    const addItemBox = await page.getByText('Control + Space').boundingBox();
+    expect(addItemBox.y - (rowBox.y + rowBox.height)).toBeLessThan(60);
+  });
+
+  test('a long list scrolls internally; the composer and footer stay visible without scrolling the page', async ({ page }) => {
+    const id = 'tall-project';
+    await page.addInitScript(({ id }) => {
+      const issues = [];
+      for (let i = 1; i <= 60; i++) {
+        issues.push({ id: 'i' + i, uid: 'u' + i, num: i, fieldRefs: {}, fieldLoading: {}, values: { title: 'Issue number ' + i }, comments: [], history: [] });
+      }
+      localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({ activeMilestoneId: id, milestones: [{ id, name: 'Tall Project' }] }));
+      localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
+        fieldDefs: { title: { label: 'Issue', type: 'text' } }, issues,
+        hiddenFieldIds: [], githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', projectNotes: '', projectComments: []
+      }));
+    }, { id });
+    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(400);
+
+    await expect(page.getByText('Control + Space')).toBeVisible();
+    await expect(page.getByText('{ } View source')).toBeVisible();
+    const wrap = page.locator('[data-testid=table-scroll-wrap]');
+    const scrollable = await wrap.evaluate(el => el.scrollHeight > el.clientHeight);
+    expect(scrollable).toBe(true);
+  });
+
+  test('the sticky column header stays flush at the top of the table pane once scrolled, with nothing rendering above it (regression: rounded top corners left a gap for scrolled rows to bleed through)', async ({ page }) => {
+    const id = 'tall-project-2';
+    await page.addInitScript(({ id }) => {
+      const issues = [];
+      for (let i = 1; i <= 60; i++) {
+        issues.push({ id: 'i' + i, uid: 'u' + i, num: i, fieldRefs: {}, fieldLoading: {}, values: { title: 'Issue number ' + i }, comments: [], history: [] });
+      }
+      localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({ activeMilestoneId: id, milestones: [{ id, name: 'Tall Project 2' }] }));
+      localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
+        fieldDefs: { title: { label: 'Issue', type: 'text' } }, issues,
+        hiddenFieldIds: [], githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', projectNotes: '', projectComments: []
+      }));
+    }, { id });
+    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(400);
+
+    const wrap = page.locator('[data-testid=table-scroll-wrap]');
+    const header = page.locator('[data-testid=title-col-header]').locator('xpath=..');
+
+    // Not yet scrolled: header still has its rounded top corners (matches
+    // the card's own rounded top).
+    let radius = await header.evaluate(el => getComputedStyle(el).borderTopLeftRadius);
+    expect(radius).not.toBe('0px');
+
+    await wrap.evaluate(el => { el.scrollTop = 300; });
+    await page.waitForTimeout(200);
+    const wrapTop = await wrap.evaluate(el => el.getBoundingClientRect().top);
+    const headerTopAt300 = await header.evaluate(el => el.getBoundingClientRect().top);
+    expect(headerTopAt300).toBe(wrapTop); // flush against the pane's own top, no gap
+
+    radius = await header.evaluate(el => getComputedStyle(el).borderTopLeftRadius);
+    expect(radius).toBe('0px'); // squared off while stuck -- no corner notch for content to peek through
+
+    await wrap.evaluate(el => { el.scrollTop = 700; });
+    await page.waitForTimeout(200);
+    const headerTopAt700 = await header.evaluate(el => el.getBoundingClientRect().top);
+    expect(headerTopAt700).toBe(headerTopAt300); // stays put at further scroll positions too
+
+    await wrap.evaluate(el => { el.scrollTop = 0; });
+    await page.waitForTimeout(200);
+    radius = await header.evaluate(el => getComputedStyle(el).borderTopLeftRadius);
+    expect(radius).not.toBe('0px'); // rounded corners restored back at the top
+  });
+
+  test('after adding an item, the box stays open and focused (not collapsed back to the Control+Space hint), so several adds in a row need no mouse', async ({ page }) => {
+    await page.keyboard.down('Control'); await page.keyboard.press('Space'); await page.keyboard.up('Control');
+    await page.waitForTimeout(150);
+    await page.keyboard.type('First keyboard item');
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(300);
+
+    const input = page.locator('[data-testid=add-item-input]');
+    await expect(input).toBeVisible();
+    const isFocused = await input.evaluate(el => el === document.activeElement);
+    expect(isFocused).toBe(true);
+    await expect(input).toHaveValue('');
+
+    await page.keyboard.type('Second keyboard item');
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=row]').filter({ hasText: 'First keyboard item' })).toHaveCount(1);
+    await expect(page.locator('[data-testid=row]').filter({ hasText: 'Second keyboard item' })).toHaveCount(1);
+  });
+
+  test('adding a new row below the fold scrolls the table pane down to it', async ({ page }) => {
+    const id = 'tall-project-3';
+    await page.addInitScript(({ id }) => {
+      const issues = [];
+      for (let i = 1; i <= 60; i++) {
+        issues.push({ id: 'i' + i, uid: 'u' + i, num: i, fieldRefs: {}, fieldLoading: {}, values: { title: 'Issue number ' + i }, comments: [], history: [] });
+      }
+      localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({ activeMilestoneId: id, milestones: [{ id, name: 'Tall Project 3' }] }));
+      localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
+        fieldDefs: { title: { label: 'Issue', type: 'text' } }, issues,
+        hiddenFieldIds: [], githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', projectNotes: '', projectComments: []
+      }));
+    }, { id });
+    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(400);
+
+    const wrap = page.locator('[data-testid=table-scroll-wrap]');
+    expect(await wrap.evaluate(el => el.scrollTop)).toBe(0);
+
+    await page.keyboard.down('Control'); await page.keyboard.press('Space'); await page.keyboard.up('Control');
+    await page.waitForTimeout(150);
+    await page.keyboard.type('Newly added row');
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(500);
+
+    expect(await wrap.evaluate(el => el.scrollTop)).toBeGreaterThan(0);
+    await expect(page.locator('[data-testid=row]').filter({ hasText: 'Newly added row' })).toBeVisible();
+  });
+});
+
 test.describe('Clearing an active sort', () => {
   test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
 
@@ -1815,6 +1948,13 @@ test.describe('Post-Phase-1 fixes: Open file removed, Project button is a peer b
 
 test.describe('App bar / Project bar stay fixed while the table scrolls', () => {
   test('both bars remain at the same position on screen after scrolling a tall table, and the identity dropdown still renders above them', async ({ page }) => {
+    // The root is now a full-height flex column (see "keep add an item
+    // reachable" handoff) -- the PAGE itself never scrolls at all
+    // (window.scrollY stays 0), only the table pane does internally.
+    // App bar/Project bar are flex-shrink:0 tiers above that one
+    // scrollable region, so they're never even covered by scrolled
+    // content in the first place -- no sticky trick needed for them
+    // anymore (that was the old scrolling-page model from Phase 2.2).
     const id = 'big-project';
     await page.addInitScript(({ id }) => {
       const issues = [];
@@ -1833,15 +1973,17 @@ test.describe('App bar / Project bar stay fixed while the table scrolls', () => 
     const wordmark = page.getByText('Wigwag', { exact: true });
     const before = await wordmark.boundingBox();
 
-    await page.mouse.wheel(0, 1500);
+    await page.locator('[data-testid=table-scroll-wrap]').evaluate(el => { el.scrollTop = 1500; });
     await page.waitForTimeout(200);
-    expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0); // sanity: the page actually scrolled
+    const scrollTop = await page.locator('[data-testid=table-scroll-wrap]').evaluate(el => el.scrollTop);
+    expect(scrollTop).toBeGreaterThan(0); // sanity: the table pane actually scrolled
+    expect(await page.evaluate(() => window.scrollY)).toBe(0); // the page itself never scrolls
 
     const after = await wordmark.boundingBox();
     expect(after.y).toBe(before.y); // App bar didn't move
     await expect(page.locator('[data-testid=tracker-name-title]')).toBeVisible(); // Project bar still on screen too
 
-    // Dropdowns anchored to the (now-sticky) bars still render correctly on top of scrolled table content.
+    // Dropdowns anchored to the bars still render correctly on top of scrolled table content.
     await page.locator('[data-testid=identity-pill]').click();
     await expect(page.locator('[data-testid=identity-option]').first()).toBeVisible();
   });

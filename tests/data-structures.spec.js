@@ -188,6 +188,60 @@ test.describe('Merge conflict detection and resolution', () => {
     // applyLinkedRules recomputed fresh from row 1's own (unchanged) linked GitHub data, not the incoming's stale guess.
     await expect(h.fieldCell(page, 1, 'type')).toHaveText(/Enhancement/);
   });
+
+  // Regression: only issue-level values/comments/history ever made it
+  // into a merge -- a column/field a collaborator added or changed in
+  // their own copy was silently dropped, even though it travels in the
+  // exported file's own "fields" line (buildSourceText already includes
+  // it; startMerge/applyMergedIssues just never read it back out).
+  test('a new field/column added by the incoming file actually lands, no issue-level conflict needed', async ({ page }) => {
+    const baseline = await exportBaseline(page);
+    const fieldsLine = baseline.find(l => l.type === 'fields');
+    fieldsLine.fields.severity = { label: 'Severity', type: 'select', options: [{ id: 'sev-high', label: 'High', color: 'red' }] };
+    const i3 = baseline.find(l => l.type === 'issue' && l.id === 'i3');
+    i3.values.severity = 'sev-high';
+    i3.history.push({ id: 'ext_severity', time: 'Aug 2', actor: 'jordan', email: 'jordan@example.com', text: 'Severity set to High', field: 'severity', value: 'sev-high', origin: 'authored', sortKey: Date.now() + 1000, sig: null, pubKey: null });
+    const incomingText = baseline.map(l => JSON.stringify(l)).join('\n');
+
+    await page.locator('[data-testid=merge-file-input]').setInputFiles({ name: 'incoming.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(incomingText) });
+    await page.waitForTimeout(400);
+
+    await expect(page.locator('[data-testid=merge-conflict-modal]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=col-header][data-col=severity]')).toBeVisible();
+    await expect(h.fieldCell(page, 3, 'severity')).toContainText('High');
+    const doc = await h.readActiveMilestoneDoc(page);
+    expect(doc.fieldDefs.severity).toBeTruthy();
+  });
+
+  test('an incoming field/column change still lands after resolving an unrelated conflict', async ({ page }) => {
+    const baseline = await exportBaseline(page);
+    const fieldsLine = baseline.find(l => l.type === 'fields');
+    fieldsLine.fields.severity = { label: 'Severity', type: 'select', options: [{ id: 'sev-high', label: 'High', color: 'red' }] };
+
+    // Local side changes RAG on row 7, incoming independently changes the
+    // same field -- forces the conflict-resolution path rather than the
+    // immediate apply.
+    await h.clickFieldToEdit(page, 7, 'rag');
+    await page.locator('div[style*="z-index: 70"]').getByText('On track').click();
+    await page.waitForTimeout(200);
+    const i7 = baseline.find(l => l.type === 'issue' && l.id === 'i7');
+    i7.values.rag = 'amber';
+    i7.history.push({ id: 'ext_h_severity', time: 'Aug 3', actor: 'jordan', email: 'jordan@example.com', text: 'RAG set to At risk', field: 'rag', value: 'amber', origin: 'authored', sortKey: Date.now() + 2000, sig: null, pubKey: null });
+    const incomingText = baseline.map(l => JSON.stringify(l)).join('\n');
+
+    await page.locator('[data-testid=merge-file-input]').setInputFiles({ name: 'incoming.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(incomingText) });
+    await page.waitForTimeout(400);
+    await expect(page.locator('[data-testid=merge-conflict-modal]')).toBeVisible();
+
+    await page.locator('[data-testid=merge-conflict-choose-incoming]').click();
+    await page.locator('[data-testid=merge-conflict-resolve]').click();
+    await page.waitForTimeout(300);
+
+    await expect(page.locator('[data-testid=merge-conflict-modal]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=col-header][data-col=severity]')).toBeVisible();
+    const doc = await h.readActiveMilestoneDoc(page);
+    expect(doc.fieldDefs.severity).toBeTruthy();
+  });
 });
 
 test.describe('Full history log vs. latest-state export', () => {

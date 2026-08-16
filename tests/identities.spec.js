@@ -469,3 +469,43 @@ test.describe('Gate first edit on identity email being set', () => {
     await expect(slideover.getByText('First comment')).toBeVisible();
   });
 });
+
+test.describe('Editable identity label', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  test('editing the label in the gear popover updates the pill and title prefix (namespacing), and persists', async ({ page }) => {
+    await h.openSettings(page);
+    await expect(page.locator('[data-testid=settings-identity-label]')).toHaveValue('Personal');
+    await page.locator('[data-testid=settings-identity-label]').fill('Acme Corp');
+    await page.waitForTimeout(200);
+    await page.mouse.click(10, 10);
+    await page.waitForTimeout(150);
+
+    await expect(page.locator('[data-testid=identity-pill]')).toContainText('Acme Corp');
+    await expect(page.locator('[data-testid=identity-title-prefix]')).toContainText('Acme Corp');
+
+    const idsRaw = await page.evaluate(() => localStorage.getItem('git_native_tracker_identities_v1'));
+    const ids = JSON.parse(idsRaw);
+    expect(ids.identities[0].label).toBe('Acme Corp');
+  });
+
+  test('editing the label does not change comment/history authorship, which stays derived from email', async ({ page }) => {
+    await h.openSettings(page);
+    await page.locator('[data-testid=settings-identity-label]').fill('Acme Corp');
+    await page.waitForTimeout(200);
+    await page.mouse.click(10, 10);
+    await page.waitForTimeout(150);
+
+    const slideover = await h.openSlideover(page, 1);
+    await slideover.locator('[data-testid=new-comment-input]').fill('A fresh comment');
+    await slideover.getByText('Post', { exact: true }).click();
+    await page.waitForTimeout(300);
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    const issue = doc.issues.find(i => i.num === 1);
+    const newComment = issue.comments.find(c => c.text === 'A fresh comment');
+    expect(newComment).toBeTruthy();
+    expect(newComment.author).not.toBe('Acme Corp');
+    expect(newComment.email).toBe('tom@example.com');
+  });
+});

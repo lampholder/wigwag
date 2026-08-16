@@ -1053,10 +1053,19 @@ test.describe('Comments: markdown rendering and append-only editing', () => {
   });
 
   test('without a matching identity, comments show no edit affordance at all', async ({ page }) => {
+    // Posting a NEW comment through the UI now requires an email set first
+    // (the first-edit gate), so a comment with no attributed identity can
+    // only exist as pre-existing/imported data -- seed it directly rather
+    // than trying to create it via new-comment-input, which the gate no
+    // longer lets through without an identity.
+    const doc = await h.readActiveMilestoneDoc(page);
+    const issue = doc.issues.find(i => i.num === 1);
+    issue.comments.push({ id: 'c-no-identity', author: 'anonymous', email: '', time: 'Jul 1', text: 'a comment with no identity set', sortKey: Date.now() });
+    await h.writeActiveMilestoneDoc(page, doc);
+    await page.reload();
+    await page.waitForTimeout(300);
+
     await h.openSlideover(page, 1);
-    await page.locator('[data-testid=new-comment-input]').fill('a comment with no identity set');
-    await page.locator('[data-testid=new-comment-input]').press('Control+Enter');
-    await page.waitForTimeout(200);
     await expect(page.locator('[data-testid=comment-edit-btn]')).toHaveCount(0);
   });
 

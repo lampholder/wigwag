@@ -11,7 +11,9 @@ const { test, expect } = require('@playwright/test');
 const h = require('./helpers');
 
 test.describe('Single identity: pill/prefix still render, migration labels it "Personal"', () => {
-  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+  // Uses gotoTrackerFreshIdentity (not gotoTracker) specifically because
+  // these tests care about the genuinely-no-email migrated state.
+  test.beforeEach(async ({ page }) => { await h.gotoTrackerFreshIdentity(page); });
 
   test('the pill and title prefix are visible immediately, even with only one (migrated) identity', async ({ page }) => {
     await expect(page.locator('[data-testid=identity-pill]')).toBeVisible();
@@ -21,9 +23,9 @@ test.describe('Single identity: pill/prefix still render, migration labels it "P
   });
 
   test('the migrated default identity is always labelled "Personal", regardless of whether an email was already set', async ({ page }) => {
-    // gotoTracker's demo seed never sets identityEmail, so this also covers
-    // the empty-email case; the label must still read "Personal", not be
-    // derived from an email local-part.
+    // gotoTrackerFreshIdentity's demo seed never sets identityEmail, so
+    // this also covers the empty-email case; the label must still read
+    // "Personal", not be derived from an email local-part.
     await page.locator('[data-testid=identity-pill]').click();
     const options = page.locator('[data-testid=identity-option]');
     await expect(options).toHaveCount(1);
@@ -374,5 +376,96 @@ test.describe('Per-identity signing keys', () => {
     expect(personal.signingPublicKeyJwk).toBeTruthy();
     expect(northwind.signingPublicKeyJwk).toBeTruthy();
     expect(JSON.stringify(personal.signingPublicKeyJwk)).not.toBe(JSON.stringify(northwind.signingPublicKeyJwk));
+  });
+});
+
+test.describe('Gate first edit on identity email being set', () => {
+  // gotoTrackerFreshIdentity's demo seed never sets identityEmail (unlike
+  // gotoTracker's own default, which now pre-seeds one so the rest of the
+  // suite isn't gated), so every test in this block starts from exactly
+  // the "brand new user" state the gate is meant to catch.
+  test.beforeEach(async ({ page }) => { await h.gotoTrackerFreshIdentity(page); });
+
+  test('creating the first issue opens the email gate; the issue is not created until it is submitted, then the action completes automatically', async ({ page }) => {
+    await page.keyboard.down('Control'); await page.keyboard.press('Space'); await page.keyboard.up('Control');
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=add-item-input]').fill('My first issue');
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(200);
+
+    await expect(page.locator('[data-testid=email-gate-modal]')).toBeVisible();
+    expect(await page.locator('[data-testid=row]').filter({ hasText: 'My first issue' }).count()).toBe(0);
+
+    await page.locator('[data-testid=email-gate-input]').fill('me@example.com');
+    await page.locator('[data-testid=btn-submit-email-gate]').click();
+    await page.waitForTimeout(300);
+
+    await expect(page.locator('[data-testid=email-gate-modal]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=row]').filter({ hasText: 'My first issue' })).toHaveCount(1);
+
+    const idsRaw = await page.evaluate(() => localStorage.getItem('git_native_tracker_identities_v1'));
+    const ids = JSON.parse(idsRaw);
+    expect(ids.identities[0].email).toBe('me@example.com');
+
+    // A second edit shouldn't re-prompt -- the email is now set.
+    await page.keyboard.down('Control'); await page.keyboard.press('Space'); await page.keyboard.up('Control');
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=add-item-input]').fill('Second issue');
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=email-gate-modal]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=row]').filter({ hasText: 'Second issue' })).toHaveCount(1);
+  });
+
+  test('Cancel on the gate leaves nothing created and the email still unset', async ({ page }) => {
+    await page.keyboard.down('Control'); await page.keyboard.press('Space'); await page.keyboard.up('Control');
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=add-item-input]').fill('Should not be created');
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(200);
+
+    await page.locator('[data-testid=btn-cancel-email-gate]').click();
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=email-gate-modal]')).toHaveCount(0);
+    expect(await page.locator('[data-testid=row]').filter({ hasText: 'Should not be created' }).count()).toBe(0);
+
+    const idsRaw = await page.evaluate(() => localStorage.getItem('git_native_tracker_identities_v1'));
+    const ids = JSON.parse(idsRaw);
+    expect(ids.identities[0].email).toBe('');
+  });
+
+  test('committing a real cell edit gates; clicking into a cell and away without changing it does not', async ({ page }) => {
+    // Row 1's title is GitHub-linked in the demo fixture (re-committing it
+    // unchanged still re-triggers the link branch, which is its own,
+    // separately-gated action) -- row 2 has a genuinely plain-text title,
+    // so it's the right one for a true "nothing was edited" no-op check.
+    await h.clickTitleToEdit(page, 2);
+    await page.waitForTimeout(150);
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=email-gate-modal]')).toHaveCount(0);
+
+    // A real change does gate.
+    await h.clickTitleToEdit(page, 2);
+    await h.typeAndCommit(page, 'Changed title');
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=email-gate-modal]')).toBeVisible();
+
+    await page.locator('[data-testid=email-gate-input]').fill('cell@example.com');
+    await page.locator('[data-testid=btn-submit-email-gate]').click();
+    await page.waitForTimeout(300);
+    await expect(h.titleCell(page, 2)).toContainText('Changed title');
+  });
+
+  test('adding a comment gates, and renaming the project gates', async ({ page }) => {
+    const slideover = await h.openSlideover(page, 1);
+    await slideover.locator('[data-testid=new-comment-input]').fill('First comment');
+    await slideover.getByText('Post', { exact: true }).click();
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=email-gate-modal]')).toBeVisible();
+    await page.locator('[data-testid=email-gate-input]').fill('commenter@example.com');
+    await page.locator('[data-testid=btn-submit-email-gate]').click();
+    await page.waitForTimeout(300);
+    await expect(slideover.getByText('First comment')).toBeVisible();
   });
 });

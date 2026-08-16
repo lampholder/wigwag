@@ -98,11 +98,41 @@ async function useFastTimers(page) {
   });
 }
 
+const DEMO_IDENTITY_EMAIL = 'tom@example.com';
+
+// Pre-seeds SECRETS_KEY's identityEmail before the app boots, so the
+// migration that synthesizes the demo user's "Personal" identity picks it
+// up already set -- the fixture represents an already-onboarded user, which
+// is what virtually the whole rest of the suite assumes (the first-edit
+// email gate would otherwise block every editing test). Tests that
+// specifically need a genuinely fresh, no-email identity (the gate itself)
+// use gotoTrackerFreshIdentity below instead.
+async function seedDemoIdentityEmail(page) {
+  await page.addInitScript((email) => {
+    const raw = localStorage.getItem('git_native_tracker_secrets_v1');
+    const secrets = raw ? JSON.parse(raw) : {};
+    if (!secrets.identityEmail) {
+      localStorage.setItem('git_native_tracker_secrets_v1', JSON.stringify(Object.assign({}, secrets, { identityEmail: email })));
+    }
+  }, DEMO_IDENTITY_EMAIL);
+}
+
 async function gotoTracker(page) {
   await useFastTimers(page);
+  await seedDemoIdentityEmail(page);
   await seedDemoMilestone(page);
   await page.goto(TRACKER_PATH, { waitUntil: 'networkidle' });
   await page.waitForTimeout(300); // initial render settle
+}
+
+// Same demo fixture as gotoTracker, but deliberately WITHOUT a pre-set
+// email -- for tests that need a genuinely first-time, ungated identity
+// (the first-edit email gate itself).
+async function gotoTrackerFreshIdentity(page) {
+  await useFastTimers(page);
+  await seedDemoMilestone(page);
+  await page.goto(TRACKER_PATH, { waitUntil: 'networkidle' });
+  await page.waitForTimeout(300);
 }
 
 // The tracker's own document (fieldDefs/issues/etc.) is persisted under a
@@ -463,4 +493,6 @@ module.exports = {
   setGithubRepoSync,
   setJiraProxyUrl,
   seedTwoIdentities,
+  gotoTrackerFreshIdentity,
+  DEMO_IDENTITY_EMAIL,
 };

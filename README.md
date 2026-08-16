@@ -174,3 +174,21 @@ Actively developed, single-file app, real headless-browser test coverage
 deliberately out of scope for now (see `docs/FORMAT.md`'s "Explicitly out
 of scope"): automatic conflict-resolution policies, and any cryptographic
 guarantee stronger than TOFU identity.
+
+### Future work: event-sourced state
+
+State is currently mutated directly (`this.setState()` calls scattered
+across ~20+ methods), with an append-only signed history log
+(`appendSignedHistory()`) written alongside as a separate, secondary side
+effect for display/audit purposes -- the history log is not itself the
+source of truth, and nothing reconstructs state from it. This came up
+concretely while scoping the "gate first edit on identity email" feature:
+there's no single low-level chokepoint all edits pass through, since
+`appendSignedHistory()` fires *after* the state it's describing has already
+changed. The architecturally cleaner answer would be a real event-sourced
+model -- an append-only log as the actual source of truth, with UI state as
+a derived projection -- which would also make gating, undo, and sync/merge
+correctness easier to reason about. That's a full rearchitecture, not a
+small addition, and deliberately not undertaken as part of the identity
+work; noting it here as a real future project rather than doing it
+piecemeal.

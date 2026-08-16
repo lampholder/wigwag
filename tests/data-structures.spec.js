@@ -67,6 +67,68 @@ test.describe('JSONL export/import', () => {
     const count = await page.locator('[data-testid=row]').count();
     expect(count).toBe(10); // 9 seed issues + 1 merged in
   });
+
+  test('"Paste from text…" creates a new project from pasted JSONL, without touching the current one', async ({ page }) => {
+    const pastedJsonl = [
+      JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, id: 'pasted-proj', name: 'Pasted Project' }),
+      JSON.stringify({ type: 'issue', id: 'p1', uid: 'pu1', num: 1, fieldRefs: {}, values: { title: 'Pasted issue' }, comments: [], history: [] })
+    ].join('\n');
+
+    await h.openTrackerSwitcher(page);
+    await page.locator('[data-testid=btn-add-milestone]').click();
+    await page.locator('[data-testid=btn-paste-milestone]').click();
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=paste-import-modal]')).toBeVisible();
+
+    await page.locator('[data-testid=paste-import-textarea]').fill(pastedJsonl);
+    await page.locator('[data-testid=btn-submit-paste-import]').click();
+    await page.waitForTimeout(400);
+
+    await expect(page.locator('[data-testid=paste-import-modal]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Pasted Project');
+    await expect(page.locator('[data-testid=row]')).toHaveCount(1);
+    await expect(page.locator('[data-testid=row]').first()).toContainText('Pasted issue');
+
+    await h.openTrackerSwitcher(page);
+    await expect(h.milestoneRow(page, 'Delivery tracker')).toBeVisible(); // the original demo project is still there, untouched
+  });
+
+  test('Cancel on the paste-import modal creates nothing, and typing into the textarea does not close it', async ({ page }) => {
+    await h.openTrackerSwitcher(page);
+    await page.locator('[data-testid=btn-add-milestone]').click();
+    await page.locator('[data-testid=btn-paste-milestone]').click();
+    await page.waitForTimeout(150);
+
+    await page.locator('[data-testid=paste-import-textarea]').fill('typed but not submitted');
+    await expect(page.locator('[data-testid=paste-import-modal]')).toBeVisible(); // clicking inside the modal must not bubble to an overlay-close
+
+    await page.locator('[data-testid=btn-cancel-paste-import]').click();
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=paste-import-modal]')).toHaveCount(0);
+
+    await h.openTrackerSwitcher(page);
+    await expect(page.locator('[data-testid=milestone-row]')).toHaveCount(1);
+  });
+
+  test('"Paste…" next to Apply update merges pasted JSONL into the current project', async ({ page }) => {
+    const pastedJsonl = [
+      JSON.stringify({ type: 'fields', fields: {}, columnOrder: [] }),
+      JSON.stringify({ type: 'issue', id: 'pasted-merge-1', num: 200, fieldRefs: {}, values: { title: 'Pasted-in via merge' }, comments: [], history: [] })
+    ].join('\n');
+
+    await page.locator('[data-testid=btn-paste-merge]').click();
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=paste-merge-modal]')).toBeVisible();
+
+    await page.locator('[data-testid=paste-merge-textarea]').fill(pastedJsonl);
+    await page.locator('[data-testid=btn-submit-paste-merge]').click();
+    await page.waitForTimeout(400);
+
+    await expect(page.locator('[data-testid=paste-merge-modal]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Delivery tracker'); // merged into the current project, not a new one
+    const count = await page.locator('[data-testid=row]').count();
+    expect(count).toBe(10); // 9 seed issues + 1 pasted-in
+  });
 });
 
 test.describe('Merge conflict detection and resolution', () => {

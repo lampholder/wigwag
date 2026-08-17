@@ -328,6 +328,14 @@ test.describe('Full history log vs. latest-state export', () => {
     expect(i1.fieldRefs).toBeUndefined();
   });
 
+  test('the View Source panel explains that history is an append-only log, not a values dump', async ({ page }) => {
+    await h.gotoTracker(page);
+    await page.getByText('{ } View source', { exact: true }).click();
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=source-view-caption]')).toContainText('Append-only log');
+    await expect(page.locator('[data-testid=source-view-caption]')).toContainText('history');
+  });
+
   test('a "full history" export ("Save project file..." in the Share menu) additionally carries the append-only event log', async ({ page }) => {
     // Regression note: this used to just check the menu's own label text for
     // the substring "full history" -- that copy moved on when the Share menu

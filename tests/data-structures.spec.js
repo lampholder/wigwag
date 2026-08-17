@@ -568,4 +568,50 @@ test.describe('Migration: backfilling history from pre-existing stored values', 
     expect(await entries.count()).toBe(0);
     await expect(page.getByText('No activity yet', { exact: false })).toBeVisible();
   });
+
+  // Regression: a field linked to GitHub/Jira BEFORE Batch 2 shipped has
+  // real history entries setting field+value (e.g. "Issue fetched from
+  // GitHub"), but none of them carry a fieldRef -- that property didn't
+  // exist on history entries yet. The old backfill only checked "does this
+  // field have ANY history at all" and skipped it, so deriveIssueFieldRefs
+  // found nothing and the link silently vanished (rendered as plain title
+  // text, losing owner/repo/num) even though the value itself displayed
+  // fine. Value coverage and fieldRef coverage must be backfilled
+  // independently.
+  test('a field with pre-existing value history but no fieldRef history (linked before fieldRef tracking existed) keeps its link, not just the title text', async ({ page }) => {
+    const id = 'pre-fieldref-tracking-project';
+    await page.context().addInitScript(({ id }) => {
+      localStorage.setItem('git_native_tracker_secrets_v1', JSON.stringify({ identityEmail: 'tom@example.com' }));
+      localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({
+        activeMilestoneId: id, milestones: [{ id, name: 'Pre fieldRef tracking' }]
+      }));
+      localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
+        fieldDefs: { title: { label: 'Issue', type: 'text' } },
+        issues: [{
+          id: 'i1', uid: 'u1', num: 1, fieldLoading: {},
+          values: { title: 'Fix the sidebar rendering bug' },
+          fieldRefs: { title: { system: 'github', owner: 'acme', repo: 'app', num: 42, labels: ['bug'] } },
+          comments: [],
+          history: [
+            { id: 'h1', time: 'Jul 1', actor: 'tom', email: 'tom@example.com', text: 'Created', field: null, origin: 'authored', sortKey: 1, sig: null, pubKey: null },
+            { id: 'h2', time: 'Jul 1', actor: 'tom', email: 'tom@example.com', text: 'Issue fetched from GitHub', field: 'title', value: 'Fix the sidebar rendering bug', origin: 'authored', sortKey: 2, sig: null, pubKey: null }
+          ]
+        }],
+        hiddenFieldIds: [], githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', projectNotes: '', projectComments: []
+      }));
+    }, { id });
+    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    const titleCell = h.titleCell(page, 1);
+    await expect(titleCell).toContainText('Fix the sidebar rendering bug');
+    await expect(titleCell.locator('a')).toHaveAttribute('href', 'https://github.com/acme/app/issues/42');
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    expect(h.latestFieldRef(doc.issues[0], 'title')).toMatchObject({ owner: 'acme', repo: 'app', num: 42 });
+
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+    await expect(titleCell.locator('a')).toHaveAttribute('href', 'https://github.com/acme/app/issues/42'); // idempotent
+  });
 });

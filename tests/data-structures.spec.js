@@ -146,7 +146,7 @@ test.describe('JSONL export/import', () => {
   });
 });
 
-test.describe('Merge conflict detection and resolution', () => {
+test.describe('Merge: union history, auto-resolve, lightweight notice', () => {
   test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
 
   // Builds an "incoming" fixture by taking a real export of the current
@@ -176,7 +176,13 @@ test.describe('Merge conflict detection and resolution', () => {
     await expect(h.fieldCell(page, 8, 'mitigation')).toContainText('Root cause identified');
   });
 
-  test('both sides changed the same field: surfaces a conflict, resolvable by picking a side', async ({ page }) => {
+  // Batch 4: merges never block on a conflict modal anymore. Both sides'
+  // history unions (nothing ever silently lost -- the losing edit is still
+  // sitting right there in that field's own history), and whichever entry
+  // has the higher sortKey naturally wins the derived display value. A
+  // lightweight, dismissible per-row notice flags that this happened,
+  // instead of stopping to ask.
+  test('both sides changed the same field: merges immediately (latest wins), flags a dismissible notice, and keeps both entries in history', async ({ page }) => {
     const baseline = await exportBaseline(page);
 
     // Local side changes RAG on row 7.
@@ -184,48 +190,35 @@ test.describe('Merge conflict detection and resolution', () => {
     await page.locator('div[style*="z-index: 70"]').getByText('On track').click();
     await page.waitForTimeout(200);
 
-    // Incoming side independently changes the same field from the same base.
+    // Incoming side independently changes the same field from the same
+    // base, with a later sortKey so it should win the derived value.
     const i7 = baseline.find(l => l.type === 'issue' && l.id === 'i7');
-    i7.history.push({ id: 'ext_h2', time: 'Aug 3', actor: 'jordan', email: 'jordan@example.com', text: 'RAG set to At risk', field: 'rag', value: 'amber', origin: 'authored', sortKey: Date.now() + 2000, sig: null, pubKey: null });
+    i7.history.push({ id: 'ext_h2', time: 'Aug 3', actor: 'jordan', email: 'jordan@example.com', text: 'RAG set to At risk', field: 'rag', value: 'amber', origin: 'authored', sortKey: Date.now() + 999999, sig: null, pubKey: null });
     const incomingText = baseline.map(l => JSON.stringify(l)).join('\n');
 
     await page.locator('[data-testid=merge-file-input]').setInputFiles({ name: 'incoming.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(incomingText) });
     await page.waitForTimeout(400);
 
-    await expect(page.locator('[data-testid=merge-conflict-modal]')).toBeVisible();
-    expect(await page.locator('[data-testid=merge-conflict-row]').count()).toBe(1);
-    await expect(page.locator('[data-testid=merge-conflict-row]')).toContainText('RAG');
-    await expect(page.locator('[data-testid=merge-conflict-row]')).toContainText('jordan@example.com');
-
-    await page.locator('[data-testid=merge-conflict-choose-incoming]').click();
-    await page.locator('[data-testid=merge-conflict-resolve]').click();
-    await page.waitForTimeout(300);
-
     await expect(page.locator('[data-testid=merge-conflict-modal]')).toHaveCount(0);
-    await expect(h.fieldCell(page, 7, 'rag')).toContainText('At risk');
-    const entries = await h.getHistoryEntriesFor(page, 'i7');
-    expect(entries.some(text => text.includes('resolved to') && text.includes('during merge'))).toBe(true);
-  });
+    await expect(h.fieldCell(page, 7, 'rag')).toContainText('At risk'); // higher sortKey wins, no prompt needed
 
-  test('cancelling a conflict leaves local state untouched', async ({ page }) => {
-    const baseline = await exportBaseline(page);
-    await h.clickFieldToEdit(page, 7, 'rag');
-    await page.locator('div[style*="z-index: 70"]').getByText('On track').click();
-    await page.waitForTimeout(200);
+    await expect(h.row(page, 7).locator('[data-testid=merge-notice-badge]')).toHaveCount(1);
+    await expect(h.row(page, 1).locator('[data-testid=merge-notice-badge]')).toHaveCount(0); // unaffected rows get none
 
-    const i7 = baseline.find(l => l.type === 'issue' && l.id === 'i7');
-    i7.history.push({ id: 'ext_h3', time: 'Aug 4', actor: 'jordan', email: 'jordan@example.com', text: 'RAG set to At risk', field: 'rag', value: 'amber', origin: 'authored', sortKey: Date.now() + 3000, sig: null, pubKey: null });
-    const incomingText = baseline.map(l => JSON.stringify(l)).join('\n');
+    const doc = await h.readActiveMilestoneDoc(page);
+    const i7After = doc.issues.find(i => i.id === 'i7');
+    const ragValues = i7After.history.filter(hh => hh.field === 'rag').map(hh => hh.value);
+    expect(ragValues).toContain('green'); // local edit ("On track") -- still recoverable
+    expect(ragValues).toContain('amber'); // incoming edit ("At risk") -- still recoverable, and the one currently shown
 
-    await page.locator('[data-testid=merge-file-input]').setInputFiles({ name: 'incoming.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(incomingText) });
+    // Clicking the badge opens the issue (where the full history -- both
+    // entries -- is one click away) and dismisses the notice.
+    await h.row(page, 7).locator('[data-testid=merge-notice-badge]').click();
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=slideover]')).toBeVisible();
+    await page.keyboard.press('Escape');
     await page.waitForTimeout(400);
-    await expect(page.locator('[data-testid=merge-conflict-modal]')).toBeVisible();
-
-    await page.locator('[data-testid=merge-conflict-cancel]').click();
-    await page.waitForTimeout(300);
-
-    await expect(page.locator('[data-testid=merge-conflict-modal]')).toHaveCount(0);
-    await expect(h.fieldCell(page, 7, 'rag')).toContainText('On track'); // local edit preserved, untouched by the cancelled merge
+    await expect(h.row(page, 7).locator('[data-testid=merge-notice-badge]')).toHaveCount(0);
   });
 
   test('comments union by content without duplication or loss', async ({ page }) => {
@@ -285,31 +278,28 @@ test.describe('Merge conflict detection and resolution', () => {
     expect(doc.fieldDefs.severity).toBeTruthy();
   });
 
-  test('an incoming field/column change still lands after resolving an unrelated conflict', async ({ page }) => {
+  test('an incoming field/column change still lands alongside an issue-level merge that also has an overlapping field', async ({ page }) => {
     const baseline = await exportBaseline(page);
     const fieldsLine = baseline.find(l => l.type === 'fields');
     fieldsLine.fields.severity = { label: 'Severity', type: 'select', options: [{ id: 'sev-high', label: 'High', color: 'red' }] };
 
-    // Local side changes RAG on row 7, incoming independently changes the
-    // same field -- forces the conflict-resolution path rather than the
-    // immediate apply.
+    // Local side changes RAG on row 7; incoming independently changes the
+    // same field -- both still land (union + latest-wins), just alongside
+    // the schema change, not gated behind it.
     await h.clickFieldToEdit(page, 7, 'rag');
     await page.locator('div[style*="z-index: 70"]').getByText('On track').click();
     await page.waitForTimeout(200);
     const i7 = baseline.find(l => l.type === 'issue' && l.id === 'i7');
-    i7.history.push({ id: 'ext_h_severity', time: 'Aug 3', actor: 'jordan', email: 'jordan@example.com', text: 'RAG set to At risk', field: 'rag', value: 'amber', origin: 'authored', sortKey: Date.now() + 2000, sig: null, pubKey: null });
+    i7.history.push({ id: 'ext_h_severity', time: 'Aug 3', actor: 'jordan', email: 'jordan@example.com', text: 'RAG set to At risk', field: 'rag', value: 'amber', origin: 'authored', sortKey: Date.now() + 999999, sig: null, pubKey: null });
     const incomingText = baseline.map(l => JSON.stringify(l)).join('\n');
 
     await page.locator('[data-testid=merge-file-input]').setInputFiles({ name: 'incoming.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(incomingText) });
     await page.waitForTimeout(400);
-    await expect(page.locator('[data-testid=merge-conflict-modal]')).toBeVisible();
-
-    await page.locator('[data-testid=merge-conflict-choose-incoming]').click();
-    await page.locator('[data-testid=merge-conflict-resolve]').click();
-    await page.waitForTimeout(300);
 
     await expect(page.locator('[data-testid=merge-conflict-modal]')).toHaveCount(0);
     await expect(page.locator('[data-testid=col-header][data-col=severity]')).toBeVisible();
+    await expect(h.fieldCell(page, 7, 'rag')).toContainText('At risk');
+    await expect(h.row(page, 7).locator('[data-testid=merge-notice-badge]')).toHaveCount(1);
     const doc = await h.readActiveMilestoneDoc(page);
     expect(doc.fieldDefs.severity).toBeTruthy();
   });

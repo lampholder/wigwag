@@ -102,7 +102,11 @@ test.describe('GitHub repo sync', () => {
     expect(gh.pushCount).toBeGreaterThanOrEqual(2);
   });
 
-  test('a genuine conflict pauses auto-push on cancel, and resumes it once resolved', async ({ page }) => {
+  // Batch 4: a same-field overlap on pull no longer pauses sync at all --
+  // the merge applies immediately (latest sortKey wins, nothing lost, a
+  // dismissible notice flags it), and auto-push keeps working normally
+  // right after, same as any other successful sync.
+  test('a same-field overlap on reconnect merges immediately (no pause), flags a notice, and auto-push keeps working', async ({ page }) => {
     const gh = h.mockGithubContentsApi(page, REPO);
 
     await h.gotoTracker(page);
@@ -115,7 +119,7 @@ test.describe('GitHub repo sync', () => {
     const baseline = fs.readFileSync(await dl.path(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
     const remote = JSON.parse(JSON.stringify(baseline));
     const i7r = remote.find(l => l.type === 'issue' && l.id === 'i7');
-    i7r.history.push({ id: 'remote_h1', time: 'Aug 2', actor: 'jordan', email: 'jordan@example.com', text: 'RAG set to At risk', field: 'rag', value: 'amber', origin: 'authored', sortKey: Date.now() + 5000, sig: null, pubKey: null });
+    i7r.history.push({ id: 'remote_h1', time: 'Aug 2', actor: 'jordan', email: 'jordan@example.com', text: 'RAG set to At risk', field: 'rag', value: 'amber', origin: 'authored', sortKey: Date.now() + 999999, sig: null, pubKey: null });
     gh.getResponses = [{ status: 200, sha: 'sha-remote-1', text: remote.map(l => JSON.stringify(l)).join('\n') }];
 
     await h.setGithubRepoSync(page, { repo: REPO, token: 'ghp_faketoken' });
@@ -127,32 +131,18 @@ test.describe('GitHub repo sync', () => {
 
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(500);
-    await expect(page.locator('[data-testid=merge-conflict-modal]')).toBeVisible();
 
-    await page.locator('[data-testid=merge-conflict-cancel]').click();
-    await page.waitForTimeout(300);
     await expect(page.locator('[data-testid=merge-conflict-modal]')).toHaveCount(0);
+    await expect(h.fieldCell(page, 7, 'rag')).toContainText('At risk'); // higher sortKey wins immediately
+    await expect(h.row(page, 7).locator('[data-testid=merge-notice-badge]')).toHaveCount(1);
+    await expect(page.locator('[data-testid=github-sync-status]')).toContainText('Synced');
 
-    // An unrelated edit made after cancelling must NOT auto-push --
-    // conflict-paused blocks it until the conflict is actually resolved.
-    await h.clickFieldToEdit(page, 3, 'rag');
-    await page.locator('div[style*="z-index: 70"]').getByText('On track').click();
-    await page.waitForTimeout(500); // past the (shrunk) push debounce
-    expect(gh.pushCount).toBe(0);
-
-    // Reconnecting resurfaces the same still-unresolved conflict; resolving
-    // it this time should let auto-push resume on the next edit.
-    await page.reload({ waitUntil: 'networkidle' });
-    await page.waitForTimeout(500);
-    await expect(page.locator('[data-testid=merge-conflict-modal]')).toBeVisible();
-    await page.locator('[data-testid=merge-conflict-resolve]').click();
-    await page.waitForTimeout(400);
-    await expect(page.locator('[data-testid=merge-conflict-modal]')).toHaveCount(0);
-
+    // Auto-push is not paused by any of this -- the next edit pushes normally.
+    const beforePush = gh.pushCount;
     await h.clickFieldToEdit(page, 4, 'rag');
     await page.locator('div[style*="z-index: 70"]').getByText('Off track').click();
     await page.waitForTimeout(500); // past the (shrunk) push debounce
-    expect(gh.pushCount).toBeGreaterThan(0);
+    expect(gh.pushCount).toBeGreaterThan(beforePush);
   });
 
   test('the header sync-status pill reflects connection state, and doubles as a retry/settings shortcut', async ({ page }) => {
@@ -170,7 +160,7 @@ test.describe('GitHub repo sync', () => {
     await expect(pill).toBeVisible();
     await expect(pill).toContainText('Synced');
 
-    // Clicking a synced pill opens Settings (it's not a conflict/error state).
+    // Clicking a synced pill opens Settings (it's not an error state).
     await expect(page.locator('[data-testid=settings-github-repo]')).toHaveCount(0);
     await pill.click();
     await page.waitForTimeout(200);
@@ -178,7 +168,8 @@ test.describe('GitHub repo sync', () => {
     await page.mouse.click(700, 700);
     await page.waitForTimeout(150);
 
-    // Drive it into conflict-paused via a genuine same-field conflict.
+    // Batch 4: a same-field overlap on reconnect no longer has a paused
+    // status at all -- it merges immediately and the pill stays "Synced".
     await page.locator('[data-testid=btn-export]').click();
     const [dl] = await Promise.all([
       page.waitForEvent('download'),
@@ -188,7 +179,7 @@ test.describe('GitHub repo sync', () => {
     const baseline = fs.readFileSync(await dl.path(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
     const remote = JSON.parse(JSON.stringify(baseline));
     const i7r = remote.find(l => l.type === 'issue' && l.id === 'i7');
-    i7r.history.push({ id: 'remote_h1', time: 'Aug 2', actor: 'jordan', email: 'jordan@example.com', text: 'RAG set to At risk', field: 'rag', value: 'amber', origin: 'authored', sortKey: Date.now() + 5000, sig: null, pubKey: null });
+    i7r.history.push({ id: 'remote_h1', time: 'Aug 2', actor: 'jordan', email: 'jordan@example.com', text: 'RAG set to At risk', field: 'rag', value: 'amber', origin: 'authored', sortKey: Date.now() + 999999, sig: null, pubKey: null });
     gh.getResponses.push({ status: 200, sha: 'sha-conflict-1', text: remote.map(l => JSON.stringify(l)).join('\n') });
 
     await h.clickFieldToEdit(page, 7, 'rag');
@@ -196,23 +187,10 @@ test.describe('GitHub repo sync', () => {
     await page.waitForTimeout(200);
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(500);
-    await expect(page.locator('[data-testid=merge-conflict-modal]')).toBeVisible();
 
-    await expect(pill).toContainText('Conflict');
-    await page.locator('[data-testid=merge-conflict-cancel]').click();
-    await page.waitForTimeout(300);
     await expect(page.locator('[data-testid=merge-conflict-modal]')).toHaveCount(0);
-    await expect(pill).toContainText('Conflict'); // stays paused after cancel
-
-    // Clicking a conflict-paused pill retries the connect, resurfacing the
-    // same unresolved conflict -- not Settings.
-    await pill.click();
-    await page.waitForTimeout(500);
-    await expect(page.locator('[data-testid=merge-conflict-modal]')).toBeVisible();
-
-    await page.locator('[data-testid=merge-conflict-resolve]').click();
-    await page.waitForTimeout(400);
     await expect(pill).toContainText('Synced');
+    await expect(h.row(page, 7).locator('[data-testid=merge-notice-badge]')).toHaveCount(1);
   });
 });
 

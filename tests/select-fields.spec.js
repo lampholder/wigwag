@@ -70,6 +70,11 @@ test.describe('Single-select', () => {
   test('a derived select change logs the option\'s label, not its raw storage id, and names the linked issue', async ({ page }) => {
     const doc = await h.readActiveMilestoneDoc(page);
     doc.fieldDefs.type.options = doc.fieldDefs.type.options.map((o, i) => ({ ...o, id: 'opt_' + (1000 + i) }));
+    // fieldDefs content is derived from projectHistory now -- clearing it
+    // here lets the next load's backfill resynthesize fresh entries from
+    // the (already-renamed) fieldDefs above, instead of the stale entry
+    // from the app's first-ever load reasserting the ORIGINAL option ids.
+    doc.projectHistory = [];
     await h.writeActiveMilestoneDoc(page, doc);
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(300);

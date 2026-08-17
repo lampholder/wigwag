@@ -615,3 +615,89 @@ test.describe('Migration: backfilling history from pre-existing stored values', 
     await expect(titleCell.locator('a')).toHaveAttribute('href', 'https://github.com/acme/app/issues/42'); // idempotent
   });
 });
+
+// Batch 3: fieldDefs becomes a derived projection of a new project-level
+// projectHistory log, the same pattern Batches 1-2 already established for
+// issue.values/issue.history. A field's very existence (the key set) stays
+// directly maintained (submitNewField/deleteField, unlogged, same reasoning
+// as issue deletion) -- only each existing field's CONTENT (label/type/
+// options/linkedSourceId/rule) is derived from the latest project-history
+// entry for that field.
+test.describe('Project-level schema history (Batch 3)', () => {
+  test('a project with fieldDefs but no projectHistory yet gets backfilled on load, and the backfill is idempotent across reloads', async ({ page }) => {
+    const id = 'legacy-schema-project';
+    await page.context().addInitScript(({ id }) => {
+      localStorage.setItem('git_native_tracker_secrets_v1', JSON.stringify({ identityEmail: 'tom@example.com' }));
+      localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({
+        activeMilestoneId: id, milestones: [{ id, name: 'Legacy Schema' }]
+      }));
+      localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
+        fieldDefs: {
+          title: { label: 'Issue', type: 'text' },
+          priority: { label: 'Priority', type: 'select', options: [{ id: 'p0', label: 'P0', color: 'red' }] }
+        },
+        // No projectHistory key at all -- pre-Batch-3 data.
+        issues: [], hiddenFieldIds: [], githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', projectNotes: '', projectComments: []
+      }));
+    }, { id });
+    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    const readDoc = () => page.evaluate((id) => JSON.parse(localStorage.getItem('git_native_tracker_v1:' + id)), id);
+    let doc = await readDoc();
+    expect(Array.isArray(doc.projectHistory)).toBe(true);
+    expect(doc.projectHistory.filter(h => h.origin === 'legacy-backfill').map(h => h.field).sort()).toEqual(['priority', 'title']);
+    expect(doc.fieldDefs.priority.label).toBe('Priority'); // display unaffected
+
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+    doc = await readDoc();
+    expect(doc.projectHistory.filter(h => h.origin === 'legacy-backfill')).toHaveLength(2); // stable, not re-added
+  });
+
+  test('renaming a field via the field editor persists through projectHistory, not a direct fieldDefs overwrite, and survives reload', async ({ page }) => {
+    await h.gotoTracker(page);
+    await h.openFieldEditor(page, 'rag');
+    const labelInput = page.locator('[data-testid=field-editor] input').first();
+    await labelInput.fill('Health');
+    await labelInput.dispatchEvent('change');
+    await page.waitForTimeout(200);
+    await page.mouse.click(50, 50);
+    await page.waitForTimeout(200);
+
+    await expect(page.locator('[data-testid=col-header][data-col="rag"]')).toContainText('Health');
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    const entry = h.latestFieldValue(
+      { history: doc.projectHistory },
+      'rag'
+    );
+    expect(entry.label).toBe('Health');
+
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=col-header][data-col="rag"]')).toContainText('Health');
+  });
+
+  test('a new field created via "+ add field" is described entirely through projectHistory and survives reload', async ({ page }) => {
+    await h.gotoTracker(page);
+    await page.locator('[data-testid=add-field-wrap] span').first().click();
+    await page.waitForTimeout(150);
+    await page.locator('input[placeholder="Field name"]').fill('Severity');
+    await page.locator('select').selectOption('select');
+    await page.locator('button', { hasText: 'Add field' }).click();
+    await page.waitForTimeout(200);
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    const newId = Object.keys(doc.fieldDefs).find(k => doc.fieldDefs[k].label === 'Severity');
+    expect(newId).toBeTruthy();
+    const entry = doc.projectHistory.slice().sort((a, b) => a.sortKey - b.sortKey).reverse().find(h => h.field === newId);
+    expect(entry).toBeTruthy();
+    expect(entry.value).toMatchObject({ label: 'Severity', type: 'select' });
+
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+    const doc2 = await h.readActiveMilestoneDoc(page);
+    expect(Object.keys(doc2.fieldDefs)).toContain(newId);
+  });
+});

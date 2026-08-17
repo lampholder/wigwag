@@ -187,3 +187,5 @@ continuing to work around it.
 - `.devcontainer/` itself is untracked in git (has been since before this
   session started) — not something introduced now, just noting it in case
   it looks surprising.
+- columns/field changes aren't making it across the share/apply update boundary. Make it so they do.
+- import new project and apply updates should have a mechanism to receive copy+pasted updates too

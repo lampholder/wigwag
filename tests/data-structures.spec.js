@@ -531,4 +531,38 @@ test.describe('Migration: backfilling history from pre-existing stored values', 
     // Only title (a real, non-default value) gets backfilled -- priority/tags are already default-shaped.
     expect(backfillEntries.map(hh => hh.field)).toEqual(['title']);
   });
+
+  test('backfill entries are used to derive field values but never appear in the user-facing Activity timeline', async ({ page }) => {
+    const id = 'legacy-backfill-activity';
+    await page.context().addInitScript(({ id }) => {
+      localStorage.setItem('git_native_tracker_secrets_v1', JSON.stringify({ identityEmail: 'tom@example.com' }));
+      localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({
+        activeMilestoneId: id, milestones: [{ id, name: 'Legacy Activity' }]
+      }));
+      localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
+        fieldDefs: {
+          title: { label: 'Issue', type: 'text' },
+          priority: { label: 'Priority', type: 'select', options: [{ id: 'p0', label: 'P0', color: 'red' }] }
+        },
+        issues: [{
+          id: 'i1', uid: 'u1', num: 1, fieldRefs: {}, fieldLoading: {},
+          values: { title: 'Legacy issue', priority: 'p0' },
+          comments: [],
+          history: [] // nothing real to derive from -- both fields get backfilled on load
+        }],
+        hiddenFieldIds: [], githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', projectNotes: '', projectComments: []
+      }));
+    }, { id });
+    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    const doc = await page.evaluate((id) => JSON.parse(localStorage.getItem('git_native_tracker_v1:' + id)), id);
+    expect(doc.issues[0].history.filter(hh => hh.origin === 'legacy-backfill')).toHaveLength(2);
+
+    const slideover = await h.openSlideover(page, 1);
+    await expect(page.getByText('ACTIVITY', { exact: true })).toBeVisible();
+    const entries = slideover.locator('[data-testid=activity-entry]');
+    expect(await entries.count()).toBe(0);
+    await expect(page.getByText('No activity yet', { exact: false })).toBeVisible();
+  });
 });

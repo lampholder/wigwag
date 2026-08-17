@@ -1,14 +1,14 @@
-# Tracker file format (v0.1.0)
+# Tracker file format (v0.2.0)
 
 > This document describes the format actually shipped by
 > `Git-native Project Tracker.html` — the single bundled app that is now
 > the real thing. `schema/tracker.schema.json` and `app/` are an earlier
 > prototype that explored a fuller lamport-clock event-sourcing design;
 > most of it (vector-clock-free pairwise merge, full-vs-squashed export)
-> carried over in spirit, but the concrete shapes below (`values`/
-> `fieldRefs`/`history`, not `fields`/`source.cached`/`events`) are what's
-> actually implemented, and the schema file predates the identity/signing
-> work entirely. Treat this file, not that one, as current.
+> carried over in spirit, but the concrete shapes below are what's actually
+> implemented, and the schema file predates both the identity/signing work
+> and the event-sourcing rework (see "History is the sole source of truth"
+> below) entirely. Treat this file, not that one, as current.
 
 A tracker is a single `.jsonl` file: one JSON object per line,
 newline-delimited. No indentation-sensitive structure, so it diffs
@@ -18,19 +18,86 @@ or Dropbox file.
 Every line has a `type` discriminator:
 
 - `fields` — exactly one per file, first line. Carries the milestone's own
-  metadata alongside the schema:
-  `{ type: 'fields', fields: {...fieldDefs}, id, name, projectNotes, projectComments }`.
+  metadata alongside the schema and its own append-only history:
+  `{ type: 'fields', fields: {...fieldDefs}, projectHistory, id, name, projectNotes, projectComments }`.
   `id`/`name` identify the milestone this file represents (see
   "Milestones" below); `projectNotes` (a markdown string) and
   `projectComments` (array of `{author, email, time, text, sortKey}`) are
   milestone-level, not per-issue — see "Project notes & comments" below.
-  All four are optional on the way in (an older or hand-written file
+  All of these are optional on the way in (an older or hand-written file
   without them still parses fine) and omitted on the way out when empty,
   so a file with no notes/comments doesn't carry empty placeholders.
   `columnOrder` may still be present on an *incoming* file for backward
   compatibility with older exports, but is never written by the app
   anymore — column order is cosmetic, see below.
-- `issue` — one per tracked issue, any order. `{ type: 'issue', id, uid, num, fieldRefs, values, comments, history }`.
+- `issue` — one per tracked issue, any order:
+  `{ type: 'issue', id, uid, num, comments, history }`. Note what's
+  *absent*: no `values`, no `fieldRefs` — see the next section.
+
+## History is the sole source of truth
+
+There is no separate materialized-vs-event-log split for issue data.
+`values` (a field's current value) and `fieldRefs` (GitHub/Jira link
+metadata) are not stored or exported at all — they're derived fresh,
+every time, from `history`, the append-only log, the same way
+`fieldDefs` (below) is derived from `fields`' own log. This is
+deliberate: two copies of a document can only diverge in ways that are
+*visible and mergeable* (more history entries) rather than in ways that
+are silent (a `values` object someone hand-edited, or that drifted from
+its own history through a bug). A history entry looks like:
+
+```json
+{
+  "id": "h_m5x2k1_ab12cd",
+  "time": "Aug 3, 2:14pm",
+  "actor": "tom",
+  "email": "tom@example.com",
+  "text": "Mitigation set to \"Root cause identified\"",
+  "field": "mitigation",
+  "value": "Root cause identified",
+  "origin": "authored",
+  "sortKey": 1738594440000,
+  "sig": "base64…",
+  "pubKey": { "kty": "EC", "crv": "P-256", "x": "…", "y": "…" }
+}
+```
+
+`field`/`value` are only present on entries that represent an actual field
+mutation — narrative-only entries (issue creation, a merge's "added from
+import" note) omit them. For a text/issue-type field that's linked to
+GitHub or Jira, the same entry additionally carries a `fieldRef` with the
+link metadata (see "Field provenance" below) — so a field's value and its
+link travel together on one entry, not as two separately-maintained
+pieces of state. Comments live in a separate `comments` array (an
+`{ id, author, time, text, sortKey }` per entry) — they're never contested
+on merge, only ever unioned.
+
+**Deriving a field's current value**: scan `history` for entries with that
+`field`, take the one with the highest `sortKey`, use its `value`. A field
+with no matching entry at all falls back to a type-appropriate default
+(`''` for text/issue, `null` for select/date, `[]` for multiselect) — the
+same fallback a brand-new field gets before anyone's ever touched it.
+Deriving `fieldRefs[colId]` works the same way but only considers entries
+that explicitly carry a `fieldRef` key (a plain-text edit over a
+previously-linked field logs `fieldRef: null` to correctly clear a stale
+link, rather than being silently skipped by the derivation).
+
+### Migrating older, values-shaped data
+
+Data written before this change (or arriving from an older export, an
+import, a paste, or a GitHub pull) may have real `values`/`fieldRefs` with
+gaps in `history` that don't fully reconstruct them. On load, any field
+with a real stored value but no history entry for it gets one synthesized
+entry backfilled in, tagged `origin: "legacy-backfill"` — this is what
+makes old data resolve correctly under derivation without a one-time
+destructive rewrite. Backfilled entries are excluded from the
+user-facing Activity timeline (they're migration bookkeeping, not
+something that actually happened) but do participate in derivation like
+any other entry. The same treatment applies independently for a field
+that already has *value* history but predates `fieldRef` tracking (an
+issue linked to GitHub before this shipped) — its link metadata gets its
+own backfill entry (value-less, ref-only) so the link isn't silently lost
+just because the field already "has history" in the narrower sense.
 
 ## Milestones: one file is one milestone, an installation holds many
 
@@ -47,6 +114,44 @@ current milestone's working copy in place, with a confirmation prompt).
 GitHub repo-sync target is also per-milestone (not global), specifically to
 avoid one milestone's auto-push clobbering another's repo the moment a
 second milestone is created — this was a deliberate fix, not an oversight.
+
+## Field definitions are also derived from a log
+
+`fieldDefs` (the schema — each field's label/type/options/bound-source/
+rule) works the same way `values` does, one level up: `fields` in a
+persisted/exported doc is the current, directly-maintained set of field
+*ids that exist* (adding or deleting a field/column is a direct,
+unlogged mutation — the same reasoning as issue deletion below: a
+removal is a structural fact, not something that benefits from being
+merge-friendly the way a value change does), but each existing field's
+*content* is derived from `projectHistory`, the fields line's own
+append-only log, the same shape as issue `history`:
+
+```json
+{
+  "id": "ph_x9k2_ab12",
+  "time": "Aug 3, 2:14pm",
+  "actor": "tom",
+  "email": "tom@example.com",
+  "text": "Renamed \"Status\" to \"Workflow Status\"",
+  "field": "status",
+  "value": { "label": "Workflow Status", "type": "select", "options": [...] },
+  "origin": "authored",
+  "sortKey": 1738594440000,
+  "sig": "base64…",
+  "pubKey": { ... }
+}
+```
+
+Note `value` here is the field's **entire new definition**, not a delta —
+renaming a field, adding an option, or changing its bound-source rule all
+log the field's complete resulting shape. Deriving a field's current
+content: scan `projectHistory` for entries with that `field` id, take the
+highest `sortKey`, use its `value`; a field with no matching entry (a
+migration gap) falls back to whatever's already in the persisted `fields`
+object for that key. The same `legacy-backfill` migration treatment as
+issue history applies here too, for schema data written before this
+shipped.
 
 ## Field types
 
@@ -73,11 +178,11 @@ into a real link, with no special markdown syntax required for either.
 
 **Known gap**: `projectNotes`/`projectComments` are carried through by
 "Open file…" (replaces the current milestone in place) and "Import from
-file…" (creates a new milestone), but **not** by "Import & merge…" — that
-path only reads and merges an incoming file's `issues`, silently ignoring
-anything on the `fields` line beyond the schema itself. Merging in a
-teammate's edited notes/project-comments doesn't currently work; only
-issue-level data does.
+file…" (creates a new milestone), but **not** by "Import & merge…"/"Apply
+update…" — that path only reads and merges an incoming file's issue data
+and schema, silently ignoring anything on the `fields` line beyond those.
+Merging in a teammate's edited notes/project-comments doesn't currently
+work; only issue-level data and the schema do.
 
 ## Cosmetic, per-browser preferences (never in the file)
 
@@ -107,9 +212,11 @@ re-exporting from).
 
 ## Field provenance: sourced vs. local vs. bound
 
-`fieldRefs[colId]` is a read-only, cached mirror of an external system
-(GitHub issue/PR or Jira ticket) that a field is linked to. Both systems now
-expose a maximalist field set, not just `{owner, repo, num, labels}`:
+A linked text/issue-type field's `fieldRef` (carried on the history entry
+that set its value — see "History is the sole source of truth" above) is
+a read-only, cached mirror of an external system (GitHub issue/PR or Jira
+ticket). Both systems now expose a maximalist field set, not just
+`{owner, repo, num, labels}`:
 
 - **GitHub**: `key` (`owner/repo#num`), `labels`, `description`, `status`
   (raw `state`, `'open'`/`'closed'`), `statusCategory` (normalized to the
@@ -133,7 +240,8 @@ Each system has a shared picker (`pickGithubFields`/`pickJiraFields`) that
 every field safely defaults (`''`/`[]`), so old, already-linked data missing
 newer fields (e.g. from before this expansion shipped) resolves cleanly
 rather than crashing — confirmed by a dedicated backward-compatibility test.
-`fieldRefs[colId]` is only ever overwritten wholesale by a refresh pull.
+A field's `fieldRef` is only ever overwritten wholesale by a refresh pull
+(a fresh history entry with a fresh `fieldRef`), never merged piecemeal.
 
 A field can additionally be **bound**: `fieldDefs[colId].linkedSourceId`
 names another field to read from, and `fieldDefs[colId].rule` is a small JS
@@ -149,35 +257,6 @@ plain truthy check or optional chaining, e.g.
 the other system, so guard accordingly. Recomputation happens automatically
 whenever the source field or the rule itself changes.
 
-## History is a signed, append-only per-issue log
-
-There's no separate materialized-vs-event-log split — `values` (the
-current, editable state) and `history` (append-only) are both present on
-every issue, and every mutation that changes `values` for a field also
-appends a `history` entry for it. A history entry looks like:
-
-```json
-{
-  "id": "h_m5x2k1_ab12cd",
-  "time": "Aug 3, 2:14pm",
-  "actor": "tom",
-  "email": "tom@example.com",
-  "text": "Mitigation set to \"Root cause identified\"",
-  "field": "mitigation",
-  "value": "Root cause identified",
-  "origin": "authored",
-  "sortKey": 1738594440000,
-  "sig": "base64…",
-  "pubKey": { "kty": "EC", "crv": "P-256", "x": "…", "y": "…" }
-}
-```
-
-`field`/`value` are only present on entries that represent an actual field
-mutation — narrative-only entries (issue creation, a merge's "added from
-import" note) omit them. Comments live in a separate `comments` array (an
-`{ id, author, time, text, sortKey }` per entry) — they're never contested
-on merge, only ever unioned.
-
 ### Bound/derived fields are logged too, but tagged
 
 `applyLinkedRules` compares a bound field's newly-computed value against
@@ -190,31 +269,32 @@ to Bug (derived from Title)"`).
 
 This exists specifically so that someone viewing the exported file without
 live GitHub/Jira access still sees *how* a bound field arrived at its
-current value, instead of just the bare materialized `values` cache with no
-explanation. It also means bound fields are fully reconstructable from the
-file alone, without needing to persist the raw fetched GitHub/Jira object
-anywhere.
+current value, instead of just a bare current value with no explanation.
+It also means bound fields are fully reconstructable from the file alone,
+without needing to persist the raw fetched GitHub/Jira object anywhere.
 
-Derived entries are excluded from merge-conflict detection (see below) —
-two independently computed values disagreeing isn't a human authorship
-conflict, it's just two computations that reconcile themselves the moment
-`applyLinkedRules` re-runs against the merged data.
+`derived`-origin entries are excluded when detecting a merge notice (see
+below) — two independently computed values disagreeing isn't a human
+authorship overlap, it's just two computations that reconcile themselves
+the moment `applyLinkedRules` re-runs against the merged data.
 
 ## Identity and signing
 
 On first use, the app lazily generates an ECDSA P-256 keypair via WebCrypto
 and stores it (as JWK) alongside other browser-local secrets — the private
 key is never exported, never appears in "View source" or any `.jsonl`
-export. The public key travels with every signed history entry.
+export. The public key travels with every signed history entry (issue-level
+and project-level alike).
 
 Every history entry is signed over a fixed-key-order JSON payload
-(`{issueId, id, field, value, text, time, sortKey, actor, email}`) using
-that key. Verifying a signature confirms an entry wasn't altered after the
-fact by whoever's file you're looking at now, and a **TOFU (trust-on-first-use)**
-identity store remembers which public key an email address used the first
-time it was seen locally — if a later import claims the same email but
-signs with a *different* key, that's flagged as a possible impersonation
-attempt.
+(`{issueId, id, field, value, text, time, sortKey, actor, email}` for
+issue-level entries; `{projectId, ...}` in place of `issueId` for
+project-level ones) using that key. Verifying a signature confirms an
+entry wasn't altered after the fact by whoever's file you're looking at
+now, and a **TOFU (trust-on-first-use)** identity store remembers which
+public key an email address used the first time it was seen locally — if
+a later import claims the same email but signs with a *different* key,
+that's flagged as a possible impersonation attempt.
 
 **This is explicitly not a security boundary.** The email is
 self-proclaimed, not verified by any authority; anyone can generate a fresh
@@ -227,53 +307,64 @@ adversary.
 ## Merge algorithm
 
 Merging is always **pairwise**: your local working copy vs. one incoming
-file ("Import & merge…"). There's no lamport clock or vector clock — every
-history entry already has a stable `id` and a real timestamp (`sortKey`),
-which is enough for id-diffing against shared history without needing a
-logical clock at all:
+file ("Import & merge…"/"Apply update…"). There's no lamport clock or
+vector clock — every history entry already has a stable `id` and a real
+timestamp (`sortKey`), which is enough for id-diffing against shared
+history without needing a logical clock at all. Merges apply
+**immediately** — nothing blocks on a human decision:
 
 1. Match issues across the two files by `id`.
 2. Issues present in only the incoming file are added directly, tagged
    with an **unsigned** system note ("Merged in from import") — nobody
    authored the union itself, so nothing to sign.
 3. Issues present only locally are left untouched.
-4. For issues in both files, per field: take that field's `origin:
-   "authored"` history entries on each side and diff by `id`.
-   - Both sides have entries the other doesn't → **genuine conflict**.
-     Both candidate values are surfaced (with attribution — actor, email,
-     time, pulled straight from the signed entries) in a resolution modal;
-     a human picks one per field.
-   - Only one side has new entries → **no conflict**, that side's value is
-     taken automatically.
-   - Neither side has new entries → already in agreement (or nobody's
-     ever set the field), nothing to do. Bound fields land here almost
-     always, since they rarely carry authored entries at all.
-5. Comments are unioned (deduplicated by `id`, or by a content-based
-   fallback key for pre-signing/seed entries that predate `id`).
-6. `history` is unioned the same way and re-sorted by `sortKey`.
-7. `applyLinkedRules` re-runs on every merged issue, so bound fields
+4. For issues in both files: `history` is unioned by entry `id` (a
+   content-based fallback key covers pre-signing/seed entries that
+   predate `id`) and re-sorted by `sortKey`; `comments` union the same
+   way. `values`/`fieldRefs` are re-derived fresh from the unioned
+   history — whichever entry has the higher `sortKey` naturally wins,
+   with no field-by-field staging step.
+5. The schema merges the same way, one level up: `projectHistory` unions
+   by entry id, `fieldDefs` re-derives from the result.
+6. `applyLinkedRules` re-runs on every merged issue, so bound fields
    recompute fresh from the merged data rather than trusting either side's
    stale derived guess.
-8. Any conflict a human resolves is logged as a **new signed** history
-   entry, attributed to whoever is running the merge right now — not
-   either original author, since neither of them made this specific call.
+7. **Nothing is ever silently lost.** A losing edit (lower `sortKey`) is
+   still sitting right there in that field's own history — recoverable
+   the same way any other edit is, by opening the issue.
+
+### The merge notice
+
+Per field, per issue, the app still checks whether *both* sides had
+`origin: "authored"` history entries the other hadn't seen (derived
+entries don't count — see above) — the same condition that used to gate a
+blocking conflict-resolution modal. Now it only drives a small,
+dismissible notice dot on the affected row's title cell, with a tooltip
+naming the field(s) and pointing at that issue's own history (already one
+click away via the row). Clicking it opens the issue and dismisses the
+notice; it's session-only, never persisted or exported, and unaffected
+rows show nothing.
 
 ## Export modes
 
-- **Full**: `history` as-is, every entry retained (`Export as JSONL (full
-  history)`).
+- **Full**: `history` (and `projectHistory`) as-is, every entry retained
+  (`Export as JSONL (full history)`).
 - **Squashed**: per field, only the latest `field`-tagged entry survives
-  (regardless of `origin`); narrative entries (creation, merge notes) and
-  `comments` are always kept in full, since they're content you'd lose,
-  not just a recomputable audit trail (`Export as JSONL (squashed)`).
+  (regardless of `origin`) in both `history` and `projectHistory`;
+  narrative entries (creation, merge notes) and `comments` are always kept
+  in full, since they're content you'd lose, not just a recomputable audit
+  trail (`Export as JSONL (squashed)`).
 
 ## Explicitly out of scope
 
 - Jira live-pull requires auth the app doesn't implement; only anonymous
   public GitHub reads are live-fetched. Jira fields work through a
   user-supplied proxy URL instead.
-- Automatic conflict-resolution policies (last-write-wins, etc.) — every
-  genuine conflict is resolved by a human, on purpose.
+- Automatic conflict-*prevention* policies beyond latest-sortKey-wins —
+  there's no locking or optimistic-concurrency check before a merge
+  applies; the lightweight notice is purely informational, after the fact.
+- Field/column deletion is a direct, unlogged mutation — not tombstoned or
+  recoverable from history, same as issue deletion.
 - Any cryptographic guarantee stronger than TOFU — see "Identity and
   signing" above. This was a deliberate design choice, not a gap to close
   later.

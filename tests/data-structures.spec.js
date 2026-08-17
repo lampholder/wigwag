@@ -166,7 +166,6 @@ test.describe('Merge conflict detection and resolution', () => {
   test('only one side changed a field: auto-taken, no conflict prompt', async ({ page }) => {
     const baseline = await exportBaseline(page);
     const i8 = baseline.find(l => l.type === 'issue' && l.id === 'i8');
-    i8.values.mitigation = 'Root cause identified, fix in review';
     i8.history.push({ id: 'ext_h1', time: 'Aug 2', actor: 'jordan', email: 'jordan@example.com', text: 'Mitigation set', field: 'mitigation', value: 'Root cause identified, fix in review', origin: 'authored', sortKey: Date.now() + 1000, sig: null, pubKey: null });
     const incomingText = baseline.map(l => JSON.stringify(l)).join('\n');
 
@@ -187,7 +186,6 @@ test.describe('Merge conflict detection and resolution', () => {
 
     // Incoming side independently changes the same field from the same base.
     const i7 = baseline.find(l => l.type === 'issue' && l.id === 'i7');
-    i7.values.rag = 'amber';
     i7.history.push({ id: 'ext_h2', time: 'Aug 3', actor: 'jordan', email: 'jordan@example.com', text: 'RAG set to At risk', field: 'rag', value: 'amber', origin: 'authored', sortKey: Date.now() + 2000, sig: null, pubKey: null });
     const incomingText = baseline.map(l => JSON.stringify(l)).join('\n');
 
@@ -216,7 +214,6 @@ test.describe('Merge conflict detection and resolution', () => {
     await page.waitForTimeout(200);
 
     const i7 = baseline.find(l => l.type === 'issue' && l.id === 'i7');
-    i7.values.rag = 'amber';
     i7.history.push({ id: 'ext_h3', time: 'Aug 4', actor: 'jordan', email: 'jordan@example.com', text: 'RAG set to At risk', field: 'rag', value: 'amber', origin: 'authored', sortKey: Date.now() + 3000, sig: null, pubKey: null });
     const incomingText = baseline.map(l => JSON.stringify(l)).join('\n');
 
@@ -254,7 +251,6 @@ test.describe('Merge conflict detection and resolution', () => {
     // computed to.
     const baseline = await exportBaseline(page);
     const i1 = baseline.find(l => l.type === 'issue' && l.id === 'i1');
-    i1.values.type = 'chore'; // pretend the incoming side's own recompute landed differently
     i1.history.push({ id: 'ext_derived', time: 'Aug 2', actor: 'jordan', email: 'jordan@example.com', text: 'Type set to Chore (derived from Issue)', field: 'type', value: 'chore', origin: 'derived', sortKey: Date.now() + 1000, sig: null, pubKey: null });
     const incomingText = baseline.map(l => JSON.stringify(l)).join('\n');
 
@@ -276,7 +272,6 @@ test.describe('Merge conflict detection and resolution', () => {
     const fieldsLine = baseline.find(l => l.type === 'fields');
     fieldsLine.fields.severity = { label: 'Severity', type: 'select', options: [{ id: 'sev-high', label: 'High', color: 'red' }] };
     const i3 = baseline.find(l => l.type === 'issue' && l.id === 'i3');
-    i3.values.severity = 'sev-high';
     i3.history.push({ id: 'ext_severity', time: 'Aug 2', actor: 'jordan', email: 'jordan@example.com', text: 'Severity set to High', field: 'severity', value: 'sev-high', origin: 'authored', sortKey: Date.now() + 1000, sig: null, pubKey: null });
     const incomingText = baseline.map(l => JSON.stringify(l)).join('\n');
 
@@ -302,7 +297,6 @@ test.describe('Merge conflict detection and resolution', () => {
     await page.locator('div[style*="z-index: 70"]').getByText('On track').click();
     await page.waitForTimeout(200);
     const i7 = baseline.find(l => l.type === 'issue' && l.id === 'i7');
-    i7.values.rag = 'amber';
     i7.history.push({ id: 'ext_h_severity', time: 'Aug 3', actor: 'jordan', email: 'jordan@example.com', text: 'RAG set to At risk', field: 'rag', value: 'amber', origin: 'authored', sortKey: Date.now() + 2000, sig: null, pubKey: null });
     const incomingText = baseline.map(l => JSON.stringify(l)).join('\n');
 
@@ -322,15 +316,16 @@ test.describe('Merge conflict detection and resolution', () => {
 });
 
 test.describe('Full history log vs. latest-state export', () => {
-  test('a "latest state only" export squashes to current values', async ({ page }) => {
+  test('the exported/viewed source has no separate values/fieldRefs object -- history is the sole source of truth', async ({ page }) => {
     await h.gotoTracker(page);
     await page.getByText('{ } View source', { exact: true }).click();
     await page.waitForTimeout(200);
     const sourceText = await page.locator('pre').textContent();
     const i1 = JSON.parse(sourceText.split('\n').find(l => l.includes('"id":"i1"')));
-    // today's only export mode already IS latest-state-only (values, not an event log) — this passes.
-    expect(i1.values).toBeTruthy();
-    expect(i1.fieldRefs).toBeTruthy();
+    expect(Array.isArray(i1.history)).toBe(true);
+    expect(i1.history.length).toBeGreaterThan(0);
+    expect(i1.values).toBeUndefined();
+    expect(i1.fieldRefs).toBeUndefined();
   });
 
   test('a "full history" export ("Save project file..." in the Share menu) additionally carries the append-only event log', async ({ page }) => {

@@ -85,7 +85,7 @@ test.describe('Single-select', () => {
     await h.waitForFieldResolved(page, 3, 'linked');
 
     const doc2 = await h.readActiveMilestoneDoc(page);
-    expect(doc2.issues.find(i => i.id === 'i3').values.type).toBe('opt_1000'); // stored value is still the raw id...
+    expect(h.latestFieldValue(doc2.issues.find(i => i.id === 'i3'), 'type')).toBe('opt_1000'); // stored value is still the raw id...
 
     const history = await h.getHistoryEntriesFor(page, 'i3');
     // ...but the history text reads the label, and names the linked issue
@@ -341,7 +341,7 @@ test.describe('Date fields', () => {
     await page.waitForTimeout(200);
     const sourceText = await page.locator('pre').textContent();
     const i1 = JSON.parse(sourceText.split('\n').find(l => l.includes('"id":"i1"')));
-    expect(i1.values[colId]).toBe('2026-08-10');
+    expect(h.latestFieldValue(i1, colId)).toBe('2026-08-10');
   });
 
   test('has no OPTIONS section or "Edit field…" menu item -- not bindable via a rule', async ({ page }) => {

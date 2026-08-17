@@ -323,7 +323,8 @@ test.describe('Remote lookups persist with the data', () => {
     await h.waitForFieldResolved(page, 3, 'mitigation');
 
     const doc = await h.readActiveMilestoneDoc(page);
-    expect(doc.issues.find(i => i.id === 'i3').fieldRefs.mitigation).toMatchObject({ owner: 'octocat', repo: 'Hello-World', num: '1' });
+    const issue = doc.issues.find(i => i.id === 'i3');
+    expect(h.latestFieldRef(issue, 'mitigation')).toMatchObject({ owner: 'octocat', repo: 'Hello-World', num: '1' });
   });
 
   test('the exported/viewed JSONL source carries fieldRefs too (regression: it used to read a removed property and silently drop this)', async ({ page }) => {
@@ -338,7 +339,7 @@ test.describe('Remote lookups persist with the data', () => {
     const i3Line = sourceText.split('\n').find(l => l.includes('"id":"i3"'));
     expect(i3Line).toBeTruthy();
     const parsed = JSON.parse(i3Line);
-    expect(parsed.fieldRefs.mitigation).toMatchObject({ owner: 'octocat', repo: 'Hello-World', num: '1' });
+    expect(h.latestFieldRef(parsed, 'mitigation')).toMatchObject({ owner: 'octocat', repo: 'Hello-World', num: '1' });
   });
 });
 

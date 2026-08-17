@@ -36,7 +36,6 @@ test.describe('GitHub repo sync', () => {
     const fs = require('fs');
     const lines = fs.readFileSync(await dl.path(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
     const i8 = lines.find(l => l.type === 'issue' && l.id === 'i8');
-    i8.values.mitigation = 'Root cause identified, fix in review';
     i8.history.push({ id: 'ext_h1', time: 'Aug 2', actor: 'jordan', email: 'jordan@example.com', text: 'Mitigation set', field: 'mitigation', value: 'Root cause identified, fix in review', origin: 'authored', sortKey: Date.now() + 1000, sig: null, pubKey: null });
     gh.getResponses = [{ status: 200, sha: 'sha1', text: lines.map(l => JSON.stringify(l)).join('\n') }];
 
@@ -84,7 +83,6 @@ test.describe('GitHub repo sync', () => {
     const baseline = fs.readFileSync(await dl.path(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
     const remote = JSON.parse(JSON.stringify(baseline));
     const i8 = remote.find(l => l.type === 'issue' && l.id === 'i8');
-    i8.values.mitigation = 'Root cause identified, fix in review';
     i8.history.push({ id: 'ext_h1', time: 'Aug 2', actor: 'jordan', email: 'jordan@example.com', text: 'Mitigation set', field: 'mitigation', value: 'Root cause identified, fix in review', origin: 'authored', sortKey: Date.now() + 1000, sig: null, pubKey: null });
 
     // First connect finds nothing yet, so it pushes -- but that push comes
@@ -117,7 +115,6 @@ test.describe('GitHub repo sync', () => {
     const baseline = fs.readFileSync(await dl.path(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
     const remote = JSON.parse(JSON.stringify(baseline));
     const i7r = remote.find(l => l.type === 'issue' && l.id === 'i7');
-    i7r.values.rag = 'amber';
     i7r.history.push({ id: 'remote_h1', time: 'Aug 2', actor: 'jordan', email: 'jordan@example.com', text: 'RAG set to At risk', field: 'rag', value: 'amber', origin: 'authored', sortKey: Date.now() + 5000, sig: null, pubKey: null });
     gh.getResponses = [{ status: 200, sha: 'sha-remote-1', text: remote.map(l => JSON.stringify(l)).join('\n') }];
 
@@ -191,7 +188,6 @@ test.describe('GitHub repo sync', () => {
     const baseline = fs.readFileSync(await dl.path(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
     const remote = JSON.parse(JSON.stringify(baseline));
     const i7r = remote.find(l => l.type === 'issue' && l.id === 'i7');
-    i7r.values.rag = 'amber';
     i7r.history.push({ id: 'remote_h1', time: 'Aug 2', actor: 'jordan', email: 'jordan@example.com', text: 'RAG set to At risk', field: 'rag', value: 'amber', origin: 'authored', sortKey: Date.now() + 5000, sig: null, pubKey: null });
     gh.getResponses.push({ status: 200, sha: 'sha-conflict-1', text: remote.map(l => JSON.stringify(l)).join('\n') });
 

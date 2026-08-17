@@ -102,7 +102,7 @@ test.describe('Jira linking', () => {
     await expect(anchor).toHaveAttribute('href', 'https://mock.atlassian.net/browse/TRK-999');
 
     const doc = await h.readActiveMilestoneDoc(page);
-    expect(doc.issues.find(i => i.num === 3).fieldRefs.title).toMatchObject({ system: 'jira', key: 'TRK-999' });
+    expect(h.latestFieldRef(doc.issues.find(i => i.num === 3), 'title')).toMatchObject({ system: 'jira', key: 'TRK-999' });
   });
 
   test('the linked field is stored with a system:"jira" tag carrying the full resolved shape', async ({ page }) => {
@@ -112,7 +112,7 @@ test.describe('Jira linking', () => {
     await h.waitForFieldResolved(page, 3, 'mitigation');
 
     const doc = await h.readActiveMilestoneDoc(page);
-    const ref = doc.issues.find(i => i.num === 3).fieldRefs.mitigation;
+    const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'mitigation');
     expect(ref).toMatchObject({
       system: 'jira', key: 'TRK-999', labels: ['bug', 'urgent'],
       description: 'A mocked description.', browseUrl: 'https://mock.atlassian.net/browse/TRK-999',
@@ -194,7 +194,7 @@ test.describe('Jira linking: expanded field set', () => {
     await h.waitForFieldResolved(page, 3, 'mitigation');
 
     const doc = await h.readActiveMilestoneDoc(page);
-    const ref = doc.issues.find(i => i.num === 3).fieldRefs.mitigation;
+    const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'mitigation');
     expect(ref).toMatchObject({
       status: 'In Progress', statusCategory: 'indeterminate', issueType: 'Bug', priority: 'High',
       assignee: 'Priya Sharma', reporter: 'Jordan Lee', dueDate: '2026-03-01',
@@ -286,7 +286,7 @@ test.describe('Jira linking: expanded field set', () => {
     await h.waitForFieldResolved(page, 3, 'mitigation');
 
     const doc = await h.readActiveMilestoneDoc(page);
-    const ref = doc.issues.find(i => i.num === 3).fieldRefs.mitigation;
+    const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'mitigation');
     expect(ref.key).toBe('TRK-1000'); // the explicit key param wins even though data.key is absent
     expect(ref.status).toBe('');
     expect(ref.components).toEqual([]);

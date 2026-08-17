@@ -151,6 +151,19 @@ async function writeActiveMilestoneDoc(page, doc) {
     localStorage.setItem('git_native_tracker_v1:' + idx.activeMilestoneId, JSON.stringify(doc));
   }, doc);
 }
+// values/fieldRefs are no longer persisted/exported directly -- history is
+// the sole source of truth. Mirrors the app's own deriveIssueFieldRefs:
+// latest history entry for this field that explicitly carries a fieldRef.
+function latestFieldRef(issue, colId) {
+  const entries = (issue.history || []).filter(hh => hh.field === colId && hh.fieldRef !== undefined);
+  if (!entries.length) return undefined;
+  return entries.reduce((a, b) => (b.sortKey > a.sortKey ? b : a)).fieldRef;
+}
+function latestFieldValue(issue, colId) {
+  const entries = (issue.history || []).filter(hh => hh.field === colId && hh.value !== undefined);
+  if (!entries.length) return undefined;
+  return entries.reduce((a, b) => (b.sortKey > a.sortKey ? b : a)).value;
+}
 
 async function openTrackerSwitcher(page) {
   await page.locator('[data-testid=btn-tracker-switcher]').click();
@@ -483,6 +496,8 @@ module.exports = {
   getHistoryEntriesFor,
   readActiveMilestoneDoc,
   writeActiveMilestoneDoc,
+  latestFieldRef,
+  latestFieldValue,
   openTrackerSwitcher,
   milestoneRow,
   mockGithubApi,

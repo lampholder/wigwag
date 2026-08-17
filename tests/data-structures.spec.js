@@ -370,3 +370,165 @@ test.describe('Graceful degradation without live access', () => {
     expect(text).not.toContain('Loading');
   });
 });
+
+// Event-sourcing Batch 1: issue.values becomes a derived projection of
+// issue.history (deriveIssueValues()), the same pattern latestCommentsById()
+// already uses for comments. This is the migration/backfill gate the rest
+// of the initiative depends on -- get it right here before anything else
+// (write-path cutover, project-level history, merge simplification) relies
+// on derivation being correct.
+test.describe('Field values are derived from history', () => {
+  test('a field with full, proper history displays the latest entry\'s value, not necessarily whatever the deprecated values object nominally says', async ({ page }) => {
+    const id = 'derived-values-project';
+    await page.context().addInitScript(({ id }) => {
+      localStorage.setItem('git_native_tracker_secrets_v1', JSON.stringify({ identityEmail: 'tom@example.com' }));
+      localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({
+        activeMilestoneId: id, milestones: [{ id, name: 'Derived Values' }]
+      }));
+      localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
+        fieldDefs: {
+          title: { label: 'Issue', type: 'text' },
+          status: { label: 'Status', type: 'select', options: [{ id: 's1', label: 'Open', color: 'blue' }, { id: 's2', label: 'Closed', color: 'green' }] }
+        },
+        issues: [{
+          id: 'i1', uid: 'u1', num: 1, fieldRefs: {}, fieldLoading: {},
+          // Stored value deliberately stale/wrong -- history is the real source now.
+          values: { title: 'Stale stored title', status: 's1' },
+          comments: [],
+          history: [
+            { id: 'h1', time: 'Jul 1', actor: 'tom', email: 'tom@example.com', text: 'Created', field: null, origin: 'authored', sortKey: 1, sig: null, pubKey: null },
+            { id: 'h2', time: 'Jul 2', actor: 'tom', email: 'tom@example.com', text: 'Title set', field: 'title', value: 'Real current title', origin: 'authored', sortKey: 2, sig: null, pubKey: null },
+            { id: 'h3', time: 'Jul 3', actor: 'tom', email: 'tom@example.com', text: 'Status set to Open', field: 'status', value: 's1', origin: 'authored', sortKey: 3, sig: null, pubKey: null },
+            { id: 'h4', time: 'Jul 4', actor: 'tom', email: 'tom@example.com', text: 'Status set to Closed', field: 'status', value: 's2', origin: 'authored', sortKey: 4, sig: null, pubKey: null }
+          ]
+        }],
+        hiddenFieldIds: [], githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', projectNotes: '', projectComments: []
+      }));
+    }, { id });
+    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    await expect(h.titleCell(page, 1)).toContainText('Real current title');
+    await expect(h.fieldCell(page, 1, 'status')).toContainText('Closed');
+  });
+
+  test('a field with no history entries at all falls back to the type-appropriate default (not the stale stored value)', async ({ page }) => {
+    const id = 'derived-values-empty-history';
+    await page.context().addInitScript(({ id }) => {
+      localStorage.setItem('git_native_tracker_secrets_v1', JSON.stringify({ identityEmail: 'tom@example.com' }));
+      localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({
+        activeMilestoneId: id, milestones: [{ id, name: 'Empty History' }]
+      }));
+      localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
+        fieldDefs: { title: { label: 'Issue', type: 'text' }, tags: { label: 'Tags', type: 'multiselect', options: [{ id: 't1', label: 'Bug', color: 'red' }] } },
+        // No issues at all -- creating one fresh exercises buildDefaultValues(),
+        // the exact fallback deriveIssueValues() must match for an untouched field.
+        issues: [],
+        hiddenFieldIds: [], githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', projectNotes: '', projectComments: []
+      }));
+    }, { id });
+    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    // identityEmail was already seeded in secrets above, which migration
+    // picks up -- the identity already has an email, so no gate to handle.
+    await page.keyboard.down('Control'); await page.keyboard.press('Space'); await page.keyboard.up('Control');
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=add-item-input]').fill('Fresh issue');
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(300);
+
+    await expect(h.fieldCell(page, 1, 'tags')).toContainText('—');
+  });
+});
+
+test.describe('Migration: backfilling history from pre-existing stored values', () => {
+  test('a field with a real stored value but zero history entries gets a backfill entry, displays correctly, and the backfill is idempotent across reloads', async ({ page }) => {
+    const id = 'legacy-backfill-project';
+    await page.context().addInitScript(({ id }) => {
+      localStorage.setItem('git_native_tracker_secrets_v1', JSON.stringify({ identityEmail: 'tom@example.com' }));
+      localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({
+        activeMilestoneId: id, milestones: [{ id, name: 'Legacy Data' }]
+      }));
+      localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
+        fieldDefs: {
+          title: { label: 'Issue', type: 'text' },
+          priority: { label: 'Priority', type: 'select', options: [{ id: 'p0', label: 'P0', color: 'red' }] },
+          tags: { label: 'Tags', type: 'multiselect', options: [{ id: 't1', label: 'Bug', color: 'red' }] }
+        },
+        issues: [{
+          id: 'i1', uid: 'u1', num: 1, fieldRefs: {}, fieldLoading: {},
+          values: { title: 'Legacy issue', priority: 'p0', tags: ['t1'] },
+          comments: [],
+          history: [] // pre-history-tracking data -- nothing to derive from yet
+        }],
+        hiddenFieldIds: [], githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', projectNotes: '', projectComments: []
+      }));
+    }, { id });
+    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    // Displays correctly immediately, backfilled from the stored values.
+    await expect(h.titleCell(page, 1)).toContainText('Legacy issue');
+    await expect(h.fieldCell(page, 1, 'priority')).toContainText('P0');
+    await expect(h.fieldCell(page, 1, 'tags')).toContainText('Bug');
+
+    const readDoc = () => page.evaluate((id) => JSON.parse(localStorage.getItem('git_native_tracker_v1:' + id)), id);
+    let doc = await readDoc();
+    let backfillEntries = doc.issues[0].history.filter(hh => hh.origin === 'legacy-backfill');
+    expect(backfillEntries).toHaveLength(3);
+    expect(backfillEntries.map(hh => hh.field).sort()).toEqual(['priority', 'tags', 'title']);
+
+    // Idempotent across reloads -- and crucially, this ALSO proves the
+    // backfill was actually persisted after the first load, not just held
+    // in memory (a real bug caught during implementation:
+    // componentDidUpdate never fires for the constructor's own initial
+    // state mutation, so an explicit persist() is required right after
+    // backfilling on boot; without it, a reload re-reads the original
+    // gapped data and this count would still be right, but only by
+    // recomputing from scratch every time rather than genuinely
+    // converging -- see the next assertion for the real tell).
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+    doc = await readDoc();
+    backfillEntries = doc.issues[0].history.filter(hh => hh.origin === 'legacy-backfill');
+    expect(backfillEntries).toHaveLength(3);
+
+    // Normal editing still works after backfill (write paths unchanged this batch).
+    await h.clickTitleToEdit(page, 1);
+    await h.typeAndCommit(page, 'Edited after backfill');
+    await page.waitForTimeout(300);
+    await expect(h.titleCell(page, 1)).toContainText('Edited after backfill');
+  });
+
+  test('a field whose stored value already matches its type-appropriate default is not backfilled (nothing meaningful to preserve)', async ({ page }) => {
+    const id = 'legacy-backfill-defaultish';
+    await page.context().addInitScript(({ id }) => {
+      localStorage.setItem('git_native_tracker_secrets_v1', JSON.stringify({ identityEmail: 'tom@example.com' }));
+      localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({
+        activeMilestoneId: id, milestones: [{ id, name: 'Defaultish' }]
+      }));
+      localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
+        fieldDefs: {
+          title: { label: 'Issue', type: 'text' },
+          priority: { label: 'Priority', type: 'select', options: [{ id: 'p0', label: 'P0', color: 'red' }] },
+          tags: { label: 'Tags', type: 'multiselect', options: [{ id: 't1', label: 'Bug', color: 'red' }] }
+        },
+        issues: [{
+          id: 'i1', uid: 'u1', num: 1, fieldRefs: {}, fieldLoading: {},
+          values: { title: 'Untouched issue', priority: null, tags: [] }, // priority/tags never actually set
+          comments: [],
+          history: []
+        }],
+        hiddenFieldIds: [], githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', projectNotes: '', projectComments: []
+      }));
+    }, { id });
+    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    const doc = await page.evaluate((id) => JSON.parse(localStorage.getItem('git_native_tracker_v1:' + id)), id);
+    const backfillEntries = doc.issues[0].history.filter(hh => hh.origin === 'legacy-backfill');
+    // Only title (a real, non-default value) gets backfilled -- priority/tags are already default-shaped.
+    expect(backfillEntries.map(hh => hh.field)).toEqual(['title']);
+  });
+});

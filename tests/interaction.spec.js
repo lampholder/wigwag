@@ -520,7 +520,7 @@ test.describe('Refresh: row / whole table', () => {
     expect(maxConcurrent).toBeLessThanOrEqual(1);
   });
 
-  test('the refresh-all glyph lives in the table\'s top-left corner and greys out when nothing in the milestone is linked', async ({ page }) => {
+  test('the refresh-all glyph lives in the toolbar, left of Apply update…, and greys out when nothing in the milestone is linked', async ({ page }) => {
     const icon = page.locator('[data-testid=btn-refresh-all]');
     await expect(icon).toHaveCSS('cursor', 'pointer'); // seed data has linked issues
     const enabledColor = await icon.evaluate(el => getComputedStyle(el).color);
@@ -1190,7 +1190,7 @@ test.describe('Keep "add an item" reachable: full-height flex shell', () => {
   test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
 
   test('a short list stays content-height -- the table region does not grow to fill the viewport (flex-grow:0, not 1)', async ({ page }) => {
-    const flexGrow = await page.locator('[data-testid=table-scroll-wrap]').evaluate(el => getComputedStyle(el).flexGrow);
+    const flexGrow = await page.locator('[data-testid=table-region]').evaluate(el => getComputedStyle(el).flexGrow);
     expect(flexGrow).toBe('0');
 
     // The add-item box sits directly under the (short) table, not pushed
@@ -1200,6 +1200,62 @@ test.describe('Keep "add an item" reachable: full-height flex shell', () => {
     const rowBox = await lastRow.boundingBox();
     const addItemBox = await page.getByText('Control + Space').boundingBox();
     expect(addItemBox.y - (rowBox.y + rowBox.height)).toBeLessThan(60);
+  });
+
+  // Design handoff (README §10, "Bottom fade" / "Overflow-conditional
+  // spacer"): both only exist when the table actually overflows, so a
+  // short table sits the same 16px above the add-item bar as it does
+  // below the filter box either way.
+  test('the bottom fade and its scroll padding only appear once the table actually overflows', async ({ page }) => {
+    const shortId = 'short-project-fade';
+    await page.addInitScript(({ id }) => {
+      localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({ activeMilestoneId: id, milestones: [{ id, name: 'Short Project' }] }));
+      localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
+        fieldDefs: { title: { label: 'Issue', type: 'text' } },
+        issues: [{ id: 'i1', uid: 'u1', num: 1, fieldRefs: {}, fieldLoading: {}, values: { title: 'Only issue' }, comments: [], history: [] }],
+        hiddenFieldIds: [], githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', projectNotes: '', projectComments: []
+      }));
+    }, { id: shortId });
+    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(400);
+
+    const wrap = page.locator('[data-testid=table-scroll-wrap]');
+    // The fade lives outside the scrolling element -- a sibling inside the
+    // non-scrolling wrapper -- specifically so it doesn't scroll away with
+    // the content it's fading (see the wrapper's own position:relative
+    // check below).
+    const fade = page.locator('div[style*="linear-gradient"]');
+
+    // A single-row project does not overflow.
+    await expect(fade).toHaveCount(0);
+    expect(await wrap.evaluate(el => getComputedStyle(el).paddingBottom)).toBe('0px');
+
+    const id = 'tall-project-fade';
+    await page.addInitScript(({ id }) => {
+      const issues = [];
+      for (let i = 1; i <= 60; i++) {
+        issues.push({ id: 'i' + i, uid: 'u' + i, num: i, fieldRefs: {}, fieldLoading: {}, values: { title: 'Issue number ' + i }, comments: [], history: [] });
+      }
+      localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({ activeMilestoneId: id, milestones: [{ id, name: 'Tall Project' }] }));
+      localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
+        fieldDefs: { title: { label: 'Issue', type: 'text' } }, issues,
+        hiddenFieldIds: [], githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', projectNotes: '', projectComments: []
+      }));
+    }, { id });
+    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(400);
+
+    await expect(fade).toHaveCount(1);
+    expect(await wrap.evaluate(el => getComputedStyle(el).paddingBottom)).toBe('14px');
+    expect(await fade.evaluate(el => getComputedStyle(el.parentElement).position)).toBe('relative');
+
+    // The fade stays pinned to the scroll viewport's bottom edge, not the
+    // scrolled content -- its bounding box shouldn't move when scrolling.
+    const beforeScroll = await fade.boundingBox();
+    await wrap.evaluate(el => { el.scrollTop = 200; });
+    await page.waitForTimeout(150);
+    const afterScroll = await fade.boundingBox();
+    expect(afterScroll.y).toBe(beforeScroll.y);
   });
 
   test('a long list scrolls internally; the composer and footer stay visible without scrolling the page', async ({ page }) => {

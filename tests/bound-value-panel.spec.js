@@ -203,6 +203,24 @@ test.describe('Bound value panel: row-based conditions', () => {
     expect(ops).toEqual(['is', 'is not', 'contains', 'does not contain', 'starts with', 'matches regex', 'is not empty', 'is empty']);
   });
 
+  test('subject options are prefixed with their source, so a selected item stays identifiable once the dropdown is closed', async ({ page }) => {
+    await openRowsFor(page, 'priority', 'Issue');
+    await page.locator('[data-testid=rule-add-row]').click();
+    await page.waitForTimeout(150);
+    const row = page.locator('[data-testid=rule-row]').first();
+    const subjectSelect = row.locator('[data-testid=rule-row-subject]');
+
+    const githubLabels = subjectSelect.locator('option[value="source.github\\?.status"]');
+    const jiraLabels = subjectSelect.locator('option[value="source.jira\\?.status"]');
+    await expect(githubLabels).toHaveText('GitHub: Status');
+    await expect(jiraLabels).toHaveText('Jira: Status');
+
+    // The closed <select>'s own displayed text carries the same prefix
+    // (an <optgroup> label alone only shows while the list is open).
+    await subjectSelect.selectOption('source.jira?.status');
+    expect(await subjectSelect.evaluate(el => el.options[el.selectedIndex].textContent)).toBe('Jira: Status');
+  });
+
   test('an end-to-end match updates the real cell, and a non-match falls through to the fallback', async ({ page }) => {
     await openRowsFor(page, 'priority', 'Issue');
     await page.locator('[data-testid=rule-add-row]').click();

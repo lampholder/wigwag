@@ -221,6 +221,42 @@ test.describe('Bound value panel: row-based conditions', () => {
     expect(await subjectSelect.evaluate(el => el.options[el.selectedIndex].textContent)).toBe('Jira: Status');
   });
 
+  test('"Source is GitHub" / "Source is Jira" let a row branch on which system the linked issue actually is', async ({ page }) => {
+    await openRowsFor(page, 'priority', 'Issue');
+    await page.locator('[data-testid=rule-add-row]').click();
+    await page.waitForTimeout(150);
+    const row = page.locator('[data-testid=rule-row]').first();
+    await fillCriterion(page, row, { subject: '!!source.github', op: 'isTrue' });
+    await row.locator('[data-testid=rule-row-then]').selectOption({ label: 'P0' });
+    await page.locator('[data-testid=rule-fallback-then]').selectOption({ label: 'P2' });
+    await page.waitForTimeout(300);
+
+    await page.locator('[data-testid=rule-builder] >> text=✕').first().click();
+    await page.waitForTimeout(400);
+    await page.mouse.click(50, 50);
+    await page.waitForTimeout(200);
+
+    // row 1 is GitHub-linked (see the end-to-end match test below): "Source
+    // is GitHub" matches, so it gets P0 rather than falling to fallback.
+    await expect(h.fieldCell(page, 1, 'priority')).toHaveText('P0');
+
+    // Flip the same criterion to "Source is Jira" -- the same GitHub-linked
+    // row now fails to match (buildSource sets source.jira to null for a
+    // GitHub-linked row) and falls through to the fallback instead.
+    await h.openFieldEditor(page, 'priority');
+    await page.locator('[data-testid=field-editor-open-rules]').click();
+    await page.waitForTimeout(400);
+    const row2 = page.locator('[data-testid=rule-row]').first();
+    await row2.locator('[data-testid=rule-row-subject]').selectOption('!!source.jira');
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=rule-builder] >> text=✕').first().click();
+    await page.waitForTimeout(400);
+    await page.mouse.click(50, 50);
+    await page.waitForTimeout(200);
+
+    await expect(h.fieldCell(page, 1, 'priority')).toHaveText('P2');
+  });
+
   test('an end-to-end match updates the real cell, and a non-match falls through to the fallback', async ({ page }) => {
     await openRowsFor(page, 'priority', 'Issue');
     await page.locator('[data-testid=rule-add-row]').click();

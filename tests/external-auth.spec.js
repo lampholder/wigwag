@@ -155,8 +155,6 @@ test.describe('Jira linking', () => {
 
     await h.openFieldEditor(page, 'type');
     await h.setBoundSourceAndRule(page, 'Related', 'source.jira.labels.includes("urgent") ? "bug" : "chore"');
-    await page.mouse.click(700, 700);
-    await page.waitForTimeout(200);
 
     await expect(h.fieldCell(page, 3, 'type')).toHaveText(/Bug/);
   });
@@ -208,27 +206,36 @@ test.describe('Jira linking: expanded field set', () => {
 
     await h.openFieldEditor(page, 'type');
     await h.setBoundSourceAndRule(page, 'Related', 'source.jira.status === "In Progress" ? "bug" : "chore"');
-    await page.mouse.click(700, 700);
-    await page.waitForTimeout(200);
 
     await expect(h.fieldCell(page, 3, 'type')).toHaveText(/Bug/);
   });
 
-  test('the rule editor\'s live source preview shows the expanded field set', async ({ page }) => {
+  // The rule builder no longer has a raw-JSON debug preview (the design
+  // handoff replaced it with the results table, which shows what every
+  // row actually computes, not a static example) -- an advanced-mode
+  // expression reading the specific fields is how these now get exercised.
+  test('the rule editor\'s advanced expression can read the expanded Jira field set', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'TRK-999');
     await page.keyboard.press('Enter');
     await h.waitForFieldResolved(page, 3, 'linked');
 
-    await h.openFieldEditor(page, 'priority');
+    await h.openFieldEditor(page, 'mitigation');
     await page.locator('[data-testid=field-editor-source-select]').selectOption({ label: 'Related' });
     await page.waitForTimeout(150);
-    const preview = JSON.parse(await page.locator('[data-testid=field-editor-source-preview]').textContent());
-    expect(preview.jira).toMatchObject({
-      status: 'In Progress', priority: 'High', assignee: 'Priya Sharma', reporter: 'Jordan Lee',
-      dueDate: '2026-03-01', project: 'TRK',
-    });
-    expect(preview.github).toBeNull(); // linked to Jira, not GitHub -- the other system is falsey, not an empty shape
+    await page.locator('[data-testid=field-editor-open-rules]').click();
+    await page.waitForTimeout(400);
+    await page.locator('[data-testid=rule-edit-expression]').click();
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=rule-advanced-textarea]').fill(
+      '(source.github ? "gh" : "no-gh") + "|" + [source.jira.status, source.jira.priority, source.jira.assignee, source.jira.reporter, source.jira.dueDate, source.jira.project].join(",")'
+    );
+    await page.waitForTimeout(300);
+
+    // The results table truncates its Result column to 60 chars -- keep
+    // the assertion within that so it isn't itself clipped by "…".
+    const row3 = page.locator('[data-testid=rule-preview-row]').nth(2); // issue num 3 is the seed's 3rd row
+    await expect(row3).toContainText('no-gh|In Progress,High,Priya Sharma');
   });
 
   test('source.jira / source.github are null (not an empty-shaped object) unless the link is actually that system', async ({ page }) => {
@@ -240,14 +247,22 @@ test.describe('Jira linking: expanded field set', () => {
     await page.keyboard.press('Enter');
     await h.waitForFieldResolved(page, 3, 'linked');
 
-    await h.openFieldEditor(page, 'priority');
+    await h.openFieldEditor(page, 'mitigation');
     await page.locator('[data-testid=field-editor-source-select]').selectOption({ label: 'Related' });
     await page.waitForTimeout(150);
-    let preview = JSON.parse(await page.locator('[data-testid=field-editor-source-preview]').textContent());
-    expect(preview.github).toMatchObject({ status: 'open', issueType: 'Issue' });
-    expect(preview.jira).toBeNull();
-    await page.mouse.click(700, 700);
+    await page.locator('[data-testid=field-editor-open-rules]').click();
+    await page.waitForTimeout(400);
+    await page.locator('[data-testid=rule-edit-expression]').click();
     await page.waitForTimeout(150);
+    await page.locator('[data-testid=rule-advanced-textarea]').fill(
+      '(source.github ? "gh:" + source.github.status + "," + source.github.issueType : "no-gh") + "|" + (source.jira ? "jira" : "no-jira")'
+    );
+    await page.waitForTimeout(300);
+    let row3 = page.locator('[data-testid=rule-preview-row]').nth(2);
+    await expect(row3).toContainText('gh:open,Issue|no-jira');
+
+    await page.locator('[data-testid=rule-builder] >> text=✕').first().click();
+    await page.waitForTimeout(400);
 
     // Relink the same field to Jira instead -- github flips to null, jira becomes the object.
     await h.clickFieldToEdit(page, 3, 'linked');
@@ -255,12 +270,11 @@ test.describe('Jira linking: expanded field set', () => {
     await page.keyboard.press('Enter');
     await h.waitForFieldResolved(page, 3, 'linked');
 
-    await h.openFieldEditor(page, 'priority');
-    await page.locator('[data-testid=field-editor-source-select]').selectOption({ label: 'Related' });
-    await page.waitForTimeout(150);
-    preview = JSON.parse(await page.locator('[data-testid=field-editor-source-preview]').textContent());
-    expect(preview.jira).toMatchObject({ status: 'In Progress' });
-    expect(preview.github).toBeNull();
+    await h.openFieldEditor(page, 'mitigation');
+    await page.locator('[data-testid=field-editor-open-rules]').click();
+    await page.waitForTimeout(400);
+    row3 = page.locator('[data-testid=rule-preview-row]').nth(2);
+    await expect(row3).toContainText('no-gh|jira');
   });
 
   test('an old-shaped fixture missing the new fields still resolves cleanly (backward compatible)', async ({ page }) => {

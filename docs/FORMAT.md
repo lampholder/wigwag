@@ -257,6 +257,23 @@ plain truthy check or optional chaining, e.g.
 the other system, so guard accordingly. Recomputation happens automatically
 whenever the source field or the rule itself changes.
 
+`fieldDefs[colId].rule` is the single source of truth the engine actually
+evaluates — everything below is purely how it gets authored. A field bound
+via the Bound Value panel (WHEN/THEN condition rows, rather than a
+hand-written expression) additionally carries `fieldDefs[colId].ruleRows`
+(an array of `{ subject, op, operand, then }`) and `ruleFallback` (the
+OTHERWISE value), which compile to that same `rule` string
+(`compileRuleRows`). `ruleRows`/`ruleFallback` are the *authored* form kept
+alongside the compiled expression for round-trip editing; a field with no
+`ruleRows` (`undefined`, or explicitly `null` after "Edit directly") is in
+hand-written-expression mode — the row editor has nothing to show, so the
+panel falls back to a raw textarea over `rule` itself. Rebuilding a
+hand-written expression back into rows always starts from zero conditions
+and seeds the fallback with `null` (or `[]` for a multiselect target),
+**never the field's first configured option** — a real option is something
+the user must explicitly choose, not something rebuilding silently writes
+onto every linked row.
+
 ### Bound/derived fields are logged too, but tagged
 
 `applyLinkedRules` compares a bound field's newly-computed value against

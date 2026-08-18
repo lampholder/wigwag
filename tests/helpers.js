@@ -436,17 +436,33 @@ async function openFieldEditor(page, colId) {
 }
 
 // Binds a field's rule to the given source (by its dropdown label, e.g.
-// "Issue" for Title or "Related" for the 'linked' field) and rule text, via
-// the field editor's BOUND SOURCE select + RULE textarea. Assumes the field
-// editor is already open (see openFieldEditor).
+// "Issue" for Title or "Related" for the 'linked' field) and rule text.
+// Binding a source opens straight into the rule-builder panel's row
+// editor (not advanced mode) -- "Edit directly" switches to the raw
+// expression textarea, which is what this helper always wants since it's
+// given a hand-written expression string. Assumes the field editor is
+// already open (see openFieldEditor). Closes the rule-builder panel
+// itself before returning -- unlike the old inline textarea (a small
+// centered modal a caller could dismiss with a tuned "click elsewhere"
+// coordinate), this panel is full-height and 1040px wide, so an arbitrary
+// outside-click coordinate a caller might use is liable to land ON the
+// panel instead of its overlay.
 async function setBoundSourceAndRule(page, sourceLabel, ruleText) {
   await page.locator('[data-testid=field-editor-source-select]').selectOption({ label: sourceLabel });
   await page.waitForTimeout(150);
-  const textarea = page.locator('[data-testid=field-editor-rule-textarea]');
+  await page.locator('[data-testid=field-editor-open-rules]').click();
+  await page.waitForTimeout(400);
+  if (await page.locator('[data-testid=rule-edit-expression]').count()) {
+    await page.locator('[data-testid=rule-edit-expression]').click();
+    await page.waitForTimeout(150);
+  }
+  const textarea = page.locator('[data-testid=rule-advanced-textarea]');
   await textarea.click();
   await textarea.fill(ruleText);
   await page.keyboard.press('Tab');
   await page.waitForTimeout(150);
+  await page.locator('[data-testid=rule-builder] >> text=✕').first().click();
+  await page.waitForTimeout(400);
 }
 
 // The header's own inline sort-arrow icon only appears once a column is

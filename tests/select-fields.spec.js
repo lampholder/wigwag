@@ -42,8 +42,6 @@ test.describe('Single-select', () => {
     // fields like Mitigation are valid rule targets but not valid sources.
     await h.openFieldEditor(page, 'type');
     await h.setBoundSourceAndRule(page, 'Related', 'source.github.labels.includes("bug") ? "bug" : "enhancement"');
-    await page.mouse.click(700, 700);
-    await page.waitForTimeout(200);
 
     // Link row 3's Related field (type 'issue') to a real GitHub issue
     // carrying a "bug" label (fixture #3, not #1 which has no labels).
@@ -81,8 +79,6 @@ test.describe('Single-select', () => {
 
     await h.openFieldEditor(page, 'type');
     await h.setBoundSourceAndRule(page, 'Related', 'source.github.labels.includes("bug") ? "bug" : "enhancement"');
-    await page.mouse.click(700, 700);
-    await page.waitForTimeout(200);
 
     await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/3');
@@ -178,8 +174,6 @@ test.describe('Multi-select', () => {
   test('can be bound to a field via the rule DSL', async ({ page }) => {
     await h.openFieldEditor(page, 'teams');
     await h.setBoundSourceAndRule(page, 'Issue', 'source.github.labels.includes("bug") ? ["platform"] : []');
-    await page.mouse.click(700, 700);
-    await page.waitForTimeout(200);
     // row 7's title is already github-linked with labels: ['bug'], and its
     // teams (seeded as just ["web"]) does NOT already include Platform — so
     // this only passes if the rule mechanism actually ran, not by
@@ -195,6 +189,12 @@ test.describe('Multi-select', () => {
   test('rule helper text includes a return-type hint ("Return an array of option ids or labels.")', async ({ page }) => {
     await h.openFieldEditor(page, 'teams');
     await page.locator('[data-testid=field-editor-source-select]').selectOption({ label: 'Issue' });
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=field-editor-open-rules]').click();
+    await page.waitForTimeout(400);
+    // a freshly-bound field opens in the row editor, not advanced mode --
+    // the return-type hint lives alongside the raw expression textarea.
+    await page.locator('[data-testid=rule-edit-expression]').click();
     await page.waitForTimeout(150);
     await expect(page.getByText('Return an array of option ids or labels.', { exact: true })).toBeVisible();
   });
@@ -220,41 +220,51 @@ test.describe('Text fields', () => {
     expect(full).toBe(await span.textContent());
   });
 
-  test('is bindable via BOUND SOURCE, same as select/multiselect', async ({ page }) => {
+  test('is bindable via BOUND SOURCE, and the entry point moves from "Set up…" to "Edit rules…" once bound', async ({ page }) => {
     await h.openFieldEditor(page, 'mitigation');
     expect(await page.getByText('BOUND SOURCE', { exact: true }).count()).toBe(1);
-    // rule textarea only appears once a source is actually bound
-    expect(await page.locator('[data-testid=field-editor-rule-textarea]').count()).toBe(0);
+    // not yet bound -- the entry point says so, and offers to set it up
+    await expect(page.locator('[data-testid=field-editor]')).toContainText('Not bound');
+    expect(await page.locator('[data-testid=field-editor-open-rules]').textContent()).toBe('Set up…');
+
     await page.locator('[data-testid=field-editor-source-select]').selectOption({ label: 'Issue' });
     await page.waitForTimeout(150);
-    expect(await page.locator('[data-testid=field-editor-rule-textarea]').count()).toBe(1);
+    await expect(page.locator('[data-testid=field-editor]')).not.toContainText('Not bound');
+    expect(await page.locator('[data-testid=field-editor-open-rules]').textContent()).toBe('Edit rules…');
   });
 
   test('rule helper text includes a return-type hint ("Return a string.")', async ({ page }) => {
     await h.openFieldEditor(page, 'mitigation');
     await page.locator('[data-testid=field-editor-source-select]').selectOption({ label: 'Issue' });
     await page.waitForTimeout(150);
+    await page.locator('[data-testid=field-editor-open-rules]').click();
+    await page.waitForTimeout(400);
+    // a freshly-bound field opens in the row editor, not advanced mode --
+    // the return-type hint lives alongside the raw expression textarea.
+    await page.locator('[data-testid=rule-edit-expression]').click();
+    await page.waitForTimeout(150);
     await expect(page.getByText('Return a string.', { exact: true })).toBeVisible();
   });
 
-  test('once bound, shows a pretty-printed preview of the actual source object instead of prose', async ({ page }) => {
+  test('once bound, the results table reflects the real linked source data for every row, not just prose', async ({ page }) => {
     await h.openFieldEditor(page, 'mitigation');
-    // no preview before a source is picked
-    expect(await page.locator('[data-testid=field-editor-source-preview]').count()).toBe(0);
-
     await page.locator('[data-testid=field-editor-source-select]').selectOption({ label: 'Issue' });
     await page.waitForTimeout(150);
-    const preview = page.locator('[data-testid=field-editor-source-preview]');
-    await expect(preview).toBeVisible();
-    const text = await preview.textContent();
-    const parsed = JSON.parse(text); // must be valid, parseable JSON
-    expect(parsed).toHaveProperty('isLinked');
-    expect(parsed).toHaveProperty('github');
-    expect(parsed).toHaveProperty('jira');
-    // seed row 1's title IS github-linked, so the preview should reflect a
-    // real linked example, not just the empty default shape.
-    expect(parsed.isLinked).toBe(true);
-    expect(parsed.github.labels).toContain('enhancement');
+    await page.locator('[data-testid=field-editor-open-rules]').click();
+    await page.waitForTimeout(400);
+    // before any expression/rows exist, every row reads as linked-but-blank
+    await expect(page.locator('[data-testid=rule-preview-row]').first()).toContainText('blank');
+
+    await page.locator('[data-testid=rule-edit-expression]').click();
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=rule-advanced-textarea]').fill('source.isLinked ? "linked:" + source.github.labels.join(",") : "unlinked"');
+    await page.waitForTimeout(300);
+
+    // seed row 1's title IS github-linked, so the results table should
+    // reflect a real linked example, not just the empty default shape.
+    const row1 = page.locator('[data-testid=rule-preview-row]').first();
+    await expect(row1).toContainText('linked:');
+    await expect(row1).toContainText('enhancement');
   });
 });
 

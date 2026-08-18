@@ -91,7 +91,34 @@ test.describe('Tracker switcher', () => {
     await expect(page.locator('[data-testid=milestone-row]').first()).toContainText('should NOT be committed by a stray click');
   });
 
-  test('import from file creates a new milestone without touching the current one; re-importing the same file avoids an id collision', async ({ page }) => {
+  test('importing a file for a genuinely new project creates a separate milestone without touching the current one', async ({ page }) => {
+    const pastedJsonl = [
+      JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, id: 'genuinely-new-project', name: 'Genuinely New' }),
+      JSON.stringify({ type: 'issue', id: 'gn1', uid: 'ugn1', num: 1, fieldRefs: {}, values: { title: 'New project issue' }, comments: [], history: [] })
+    ].join('\n');
+
+    await h.openTrackerSwitcher(page);
+    await page.locator('[data-testid=btn-add-milestone]').click();
+    const [fc] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      page.locator('[data-testid=btn-import-milestone]').click(),
+    ]);
+    await fc.setFiles({ name: 'new-project.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(pastedJsonl) });
+    await page.waitForTimeout(400);
+    await expect(page.locator('[data-testid=row]')).toHaveCount(1);
+    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Genuinely New');
+
+    await h.openTrackerSwitcher(page);
+    await expect(page.locator('[data-testid=milestone-row]')).toHaveCount(2);
+    await expect(h.milestoneRow(page, 'Delivery tracker')).toBeVisible(); // original untouched
+  });
+
+  // Regression / deliberate behavior change: re-importing a file that
+  // matches a project already present locally used to silently fork a
+  // same-name duplicate under a fresh random id. It now warns first, and
+  // on confirm applies it as an update to the existing project instead --
+  // no duplicate, nothing silently forked.
+  test('re-importing an already-known project warns, then merges into the existing project rather than forking a duplicate', async ({ page }) => {
     await page.locator('[data-testid=btn-export]').click();
     const [dl] = await Promise.all([
       page.waitForEvent('download'),
@@ -100,6 +127,9 @@ test.describe('Tracker switcher', () => {
     const fs = require('fs');
     const exportedText = fs.readFileSync(await dl.path(), 'utf8');
 
+    // Cancelling the warning does nothing at all.
+    let dialogMsg = null;
+    page.once('dialog', async d => { dialogMsg = d.message(); await d.dismiss(); });
     await h.openTrackerSwitcher(page);
     await page.locator('[data-testid=btn-add-milestone]').click();
     const [fc1] = await Promise.all([
@@ -108,19 +138,31 @@ test.describe('Tracker switcher', () => {
     ]);
     await fc1.setFiles({ name: 'reimport.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(exportedText) });
     await page.waitForTimeout(400);
-    await expect(page.locator('[data-testid=row]')).toHaveCount(9); // imported milestone has the same 9 issues
+    expect(dialogMsg).toContain('already have');
+    await expect(page.locator('[data-testid=row]')).toHaveCount(9); // unchanged, cancelling did nothing
+    // The switcher/add-project dropdown is still open from before (the
+    // toggle button re-opened by openTrackerSwitcher stays open -- clicking
+    // it again would just toggle it CLOSED, not reopen it fresh) -- it's
+    // already open here, so check directly rather than re-toggling.
+    await expect(page.locator('[data-testid=milestone-row]')).toHaveCount(1); // still just the one project
+    await page.mouse.click(700, 400); // outside click closes the dropdown
+    await page.waitForTimeout(150);
 
+    // Confirming merges into the existing project -- still just the one
+    // milestone, no duplicate created. The add-project panel is already
+    // expanded from before (that toggle state survives the switcher
+    // closing/reopening) -- clicking "+ Add project" again would collapse
+    // it, so don't.
+    page.once('dialog', d => d.accept());
     await h.openTrackerSwitcher(page);
-    await expect(page.locator('[data-testid=milestone-row]')).toHaveCount(2);
-    await page.locator('[data-testid=btn-add-milestone]').click();
     const [fc2] = await Promise.all([
       page.waitForEvent('filechooser'),
       page.locator('[data-testid=btn-import-milestone]').click(),
     ]);
     await fc2.setFiles({ name: 'reimport2.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(exportedText) });
     await page.waitForTimeout(400);
-    await h.openTrackerSwitcher(page);
-    await expect(page.locator('[data-testid=milestone-row]')).toHaveCount(3); // no id collision -- a 3rd, distinct milestone
+    await expect(page.locator('[data-testid=row]')).toHaveCount(9); // merged, not duplicated -- still 9
+    await expect(page.locator('[data-testid=milestone-row]')).toHaveCount(1); // dropdown still open from before, check directly
   });
 
   test('connecting milestone A to a GitHub repo, then creating a blank milestone B, does not touch A\'s repo', async ({ page }) => {

@@ -62,6 +62,10 @@ test.describe('JSONL export/import', () => {
       JSON.stringify({ type: 'fields', fields: {}, columnOrder: [] }) + '\n' +
       JSON.stringify({ type: 'issue', id: 'new1', num: 100, jira: null, fieldRefs: {}, values: { title: 'Merged-in issue' }, comments: [], history: [] }) + '\n'
     );
+    // The fixture carries no project id, so it reads as a brand new project
+    // to apply-update's own mismatch warning -- accept it, same as a real
+    // user confirming they mean to merge it into the current one anyway.
+    page.once('dialog', d => d.accept());
     await page.locator('[data-testid=merge-file-input]').setInputFiles({ name: 'incoming.jsonl', mimeType: 'application/octet-stream', buffer: fixture });
     await page.waitForTimeout(300);
     const count = await page.locator('[data-testid=row]').count();
@@ -135,6 +139,9 @@ test.describe('JSONL export/import', () => {
     await page.waitForTimeout(150);
     await expect(page.locator('[data-testid=paste-merge-modal]')).toBeVisible();
 
+    // No project id in the pasted text -- accept the resulting "brand new
+    // project" mismatch warning, same as "Import & merge..." above.
+    page.once('dialog', d => d.accept());
     await page.locator('[data-testid=paste-merge-textarea]').fill(pastedJsonl);
     await page.locator('[data-testid=btn-submit-paste-merge]').click();
     await page.waitForTimeout(400);
@@ -143,6 +150,93 @@ test.describe('JSONL export/import', () => {
     await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Delivery tracker'); // merged into the current project, not a new one
     const count = await page.locator('[data-testid=row]').count();
     expect(count).toBe(10); // 9 seed issues + 1 pasted-in
+  });
+});
+
+// "Import project from file..." and "Apply update..." now share the same
+// underlying parse-then-decide path (handleImportParsed/
+// handleApplyUpdateParsed), diverging only in which project a match gets
+// applied to and which direction is the "surprising" one worth a warning.
+test.describe('Import / Apply-update: shared project-identity warnings', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  // Regression: the app-bar's standalone "Import project from file..."
+  // button called into a file input that only existed in the DOM while a
+  // deeply-nested project-switcher dropdown happened to be open, so
+  // clicking it from anywhere else silently did nothing at all.
+  test('the app-bar "Import project from file..." button actually opens a file picker', async ({ page }) => {
+    const [chooser] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      page.locator('[data-testid=btn-import-project-appbar]').click(),
+    ]);
+    expect(chooser).toBeTruthy();
+  });
+
+  test('"Apply update..." warns before merging in a file for a project that does not match the one currently open, and proceeds on confirm', async ({ page }) => {
+    const foreignJsonl = [
+      JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, projectHistory: [], id: 'foreign-project-id', name: 'Foreign Project' }),
+      JSON.stringify({ type: 'issue', id: 'f1', uid: 'uf1', num: 1, comments: [], history: [{ id: 'fh1', time: new Date().toISOString(), actor: 'Tester', email: 't@example.com', text: 'title set', field: 'title', value: 'Foreign issue', origin: 'authored', sortKey: Date.now(), sig: null, pubKey: null }] })
+    ].join('\n');
+
+    let dialogMsg = null;
+    page.once('dialog', async d => { dialogMsg = d.message(); await d.dismiss(); });
+    await page.locator('[data-testid=btn-import-merge]').click();
+    await page.waitForTimeout(150);
+    const [chooser1] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      page.locator('[data-testid=btn-apply-update-from-file]').click(),
+    ]);
+    await chooser1.setFiles({ name: 'foreign.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(foreignJsonl) });
+    await page.waitForTimeout(400);
+    expect(dialogMsg).toContain('brand new project');
+    await expect(page.locator('[data-testid=row]')).toHaveCount(9); // dismissed -- nothing merged
+
+    page.once('dialog', d => d.accept());
+    await page.locator('[data-testid=btn-import-merge]').click();
+    await page.waitForTimeout(150);
+    const [chooser2] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      page.locator('[data-testid=btn-apply-update-from-file]').click(),
+    ]);
+    await chooser2.setFiles({ name: 'foreign2.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(foreignJsonl) });
+    await page.waitForTimeout(400);
+    await expect(page.locator('[data-testid=row]')).toHaveCount(10); // confirmed -- merged into the current project
+    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Delivery tracker'); // apply-update never switches projects
+  });
+
+  test('"Import project from file..." for a file matching a DIFFERENT existing (non-active) project warns, then switches to and merges into that project', async ({ page }) => {
+    await h.openTrackerSwitcher(page);
+    await page.locator('[data-testid=btn-add-milestone]').click();
+    await page.locator('[data-testid=btn-new-blank-milestone]').click();
+    await page.locator('[data-testid=new-milestone-name-input]').fill('Other Project');
+    await page.locator('[data-testid=btn-create-milestone]').click();
+    await page.waitForTimeout(300);
+    const otherProjectId = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1')).activeMilestoneId);
+
+    await h.openTrackerSwitcher(page);
+    await h.milestoneRow(page, 'Delivery tracker').click();
+    await page.waitForTimeout(300);
+
+    const updateForOther = [
+      JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, projectHistory: [], id: otherProjectId, name: 'Other Project' }),
+      JSON.stringify({ type: 'issue', id: 'op1', uid: 'uop1', num: 1, comments: [], history: [{ id: 'oph1', time: new Date().toISOString(), actor: 'Tester', email: 't@example.com', text: 'title set', field: 'title', value: 'Landed on the other project', origin: 'authored', sortKey: Date.now(), sig: null, pubKey: null }] })
+    ].join('\n');
+
+    let dialogMsg = null;
+    page.once('dialog', async d => { dialogMsg = d.message(); await d.accept(); });
+    const [chooser] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      page.locator('[data-testid=btn-import-project-appbar]').click(),
+    ]);
+    await chooser.setFiles({ name: 'other-update.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(updateForOther) });
+    await page.waitForTimeout(500);
+
+    expect(dialogMsg).toContain('already have');
+    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Other Project'); // switched to it
+    await expect(page.locator('[data-testid=row]')).toContainText('Landed on the other project');
+
+    await h.openTrackerSwitcher(page);
+    await expect(page.locator('[data-testid=milestone-row]')).toHaveCount(2); // no duplicate created
   });
 });
 

@@ -89,7 +89,7 @@ test.describe('Bound value panel: row-based conditions', () => {
     await row.locator('[data-testid=rule-row-then]').selectOption({ label: 'P0' });
     await page.waitForTimeout(300);
 
-    await expect(page.locator('[data-testid=rule-expression]')).toContainText('source.github?.labels?.some(x => String(x).toLowerCase() === "bug")');
+    await expect(page.locator('[data-testid=rule-expression]')).toContainText('source.github?.labels?.some(x => S(x) === "bug")');
     // The compiled expression shows the option's LABEL ("P0"), not its
     // internal storage id ("p0") -- applyComputedToField matches either,
     // so this is display-only.
@@ -266,7 +266,7 @@ test.describe('Bound value panel: ANDing multiple criteria within one row', () =
     await page.waitForTimeout(300);
 
     await expect(page.locator('[data-testid=rule-expression]')).toContainText(
-      '(source.github?.labels?.some(x => String(x).toLowerCase() === "bug")) && (!!(source.text ?? "").length)'
+      '(source.github?.labels?.some(x => S(x) === "bug")) && (!!(source.text ?? "").length)'
     );
   });
 
@@ -488,6 +488,26 @@ test.describe('Bound value panel: advanced (hand-written expression) mode', () =
     await page.locator('[data-testid=field-editor-open-rules]').click();
     await page.waitForTimeout(400);
     await expect(page.getByText('Return an option id or label.', { exact: true })).toBeVisible();
+  });
+
+  // S(x) (string-coerce + lowercase, for a safe case-insensitive compare)
+  // is part of the DSL's public surface, not just an implementation
+  // detail of the row compiler -- it must be usable directly in a
+  // hand-written expression, and documented where advanced mode explains
+  // source/values.
+  test('S(x) is documented in the advanced-mode hint and usable directly in a hand-written expression', async ({ page }) => {
+    await h.openFieldEditor(page, 'type');
+    await page.locator('[data-testid=field-editor-open-rules]').click();
+    await page.waitForTimeout(400);
+    await expect(page.locator('[data-testid=rule-builder]')).toContainText('S(x)');
+
+    await page.locator('[data-testid=rule-advanced-textarea]').fill('S(source.github.status) === "closed" ? "bug" : "chore"');
+    await page.waitForTimeout(300);
+    expect(await page.locator('[data-testid=rule-error]').count()).toBe(0);
+    // row 1's seed status isn't "closed" -- confirms S() actually ran
+    // (compared, lowercased) rather than the expression erroring out
+    // silently and falling back to undefined.
+    await expect(page.locator('[data-testid=rule-preview-row]').first()).toContainText('Chore');
   });
 });
 

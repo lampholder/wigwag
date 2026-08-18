@@ -333,9 +333,7 @@ test.describe('Remote lookups persist with the data', () => {
     await page.keyboard.press('Enter');
     await h.waitForFieldResolved(page, 3, 'mitigation');
 
-    await page.getByText('{ } View source', { exact: true }).click();
-    await page.waitForTimeout(200);
-    const sourceText = await page.locator('pre').textContent();
+    const sourceText = await h.readSourceViewText(page);
     const i3Line = sourceText.split('\n').find(l => l.includes('"id":"i3"'));
     expect(i3Line).toBeTruthy();
     const parsed = JSON.parse(i3Line);
@@ -1223,12 +1221,14 @@ test.describe('Keep "add an item" reachable: full-height flex shell', () => {
     // The fade lives outside the scrolling element -- a sibling inside the
     // non-scrolling wrapper -- specifically so it doesn't scroll away with
     // the content it's fading (see the wrapper's own position:relative
-    // check below).
+    // check below). The overflow spacer is a margin-bottom on the table
+    // card itself, not padding on the scroll wrap.
     const fade = page.locator('div[style*="linear-gradient"]');
+    const card = wrap.locator('> div').first();
 
     // A single-row project does not overflow.
     await expect(fade).toHaveCount(0);
-    expect(await wrap.evaluate(el => getComputedStyle(el).paddingBottom)).toBe('0px');
+    expect(await card.evaluate(el => getComputedStyle(el).marginBottom)).toBe('0px');
 
     const id = 'tall-project-fade';
     await page.addInitScript(({ id }) => {
@@ -1246,7 +1246,7 @@ test.describe('Keep "add an item" reachable: full-height flex shell', () => {
     await page.waitForTimeout(400);
 
     await expect(fade).toHaveCount(1);
-    expect(await wrap.evaluate(el => getComputedStyle(el).paddingBottom)).toBe('14px');
+    expect(await card.evaluate(el => getComputedStyle(el).marginBottom)).toBe('14px');
     expect(await fade.evaluate(el => getComputedStyle(el.parentElement).position)).toBe('relative');
 
     // The fade stays pinned to the scroll viewport's bottom edge, not the
@@ -1300,8 +1300,11 @@ test.describe('Keep "add an item" reachable: full-height flex shell', () => {
     const wrap = page.locator('[data-testid=table-scroll-wrap]');
     const header = page.locator('[data-testid=title-col-header]').locator('xpath=..');
 
-    // Not yet scrolled: header still has its rounded top corners (matches
-    // the card's own rounded top).
+    // Header keeps its rounded top corners at rest -- and, per the design
+    // handoff, keeps them at every scroll position too (small corner-patch
+    // overlays hide the seam instead of squaring the header off, so nothing
+    // visibly changes shape as it engages/disengages -- a prior version
+    // toggled the radius here, which read as the header "moving").
     let radius = await header.evaluate(el => getComputedStyle(el).borderTopLeftRadius);
     expect(radius).not.toBe('0px');
 
@@ -1312,7 +1315,7 @@ test.describe('Keep "add an item" reachable: full-height flex shell', () => {
     expect(headerTopAt300).toBe(wrapTop); // flush against the pane's own top, no gap
 
     radius = await header.evaluate(el => getComputedStyle(el).borderTopLeftRadius);
-    expect(radius).toBe('0px'); // squared off while stuck -- no corner notch for content to peek through
+    expect(radius).not.toBe('0px'); // still rounded while stuck -- corner patches hide the seam
 
     await wrap.evaluate(el => { el.scrollTop = 700; });
     await page.waitForTimeout(200);
@@ -1322,16 +1325,18 @@ test.describe('Keep "add an item" reachable: full-height flex shell', () => {
     await wrap.evaluate(el => { el.scrollTop = 0; });
     await page.waitForTimeout(200);
     radius = await header.evaluate(el => getComputedStyle(el).borderTopLeftRadius);
-    expect(radius).not.toBe('0px'); // rounded corners restored back at the top
+    expect(radius).not.toBe('0px'); // still rounded back at the top
   });
 
-  // Regression: the header used to square its corners off as soon as ANY
-  // scroll happened at all (scrollTop > 0), well before it actually
-  // reached its stuck position 13px down (12px margin-top + 1px
-  // border-top on the card it sits inside) -- its shape visibly popped
-  // square while still just sliding normally, well ahead of sticking,
-  // which read as a glitch ("slides up a little... before sticking").
-  test('the header keeps its rounded corners while merely sliding, only squaring off exactly when it actually sticks', async ({ page }) => {
+  // Regression: the header used to visibly square its corners off the
+  // instant it became sticky-stuck, a real shape change right at the
+  // engage point that read as the header itself moving/glitching. Per the
+  // design handoff, the header's radius never changes at all -- small
+  // aria-hidden corner-patch squares at each top corner (matching the
+  // card's own background/border) hide the seam that would otherwise
+  // appear between the always-rounded sticky header and the square-cornered
+  // card underneath it, so scrolling produces zero visible shape change.
+  test('the header keeps its rounded corners at every scroll position -- no corner-radius change, ever, on scroll', async ({ page }) => {
     const id = 'tall-project-radius';
     await page.addInitScript(({ id }) => {
       const issues = [];
@@ -1349,35 +1354,32 @@ test.describe('Keep "add an item" reachable: full-height flex shell', () => {
 
     const wrap = page.locator('[data-testid=table-scroll-wrap]');
     const header = page.locator('[data-testid=title-col-header]').locator('xpath=..');
+    const radiusAtRest = await header.evaluate(el => getComputedStyle(el).borderRadius);
 
-    // Just short of the stuck threshold: still visibly sliding, corners
-    // must still be rounded.
-    await wrap.evaluate(el => { el.scrollTop = 12; });
-    await page.waitForTimeout(200);
-    let radius = await header.evaluate(el => getComputedStyle(el).borderTopLeftRadius);
-    expect(radius).not.toBe('0px');
-    let wrapTop = await wrap.evaluate(el => el.getBoundingClientRect().top);
-    let headerTop = await header.evaluate(el => el.getBoundingClientRect().top);
-    expect(headerTop).not.toBe(wrapTop); // not stuck yet either
+    for (const scrollTop of [12, 13, 14, 50, 300]) {
+      await wrap.evaluate((el, v) => { el.scrollTop = v; }, scrollTop);
+      await page.waitForTimeout(150);
+      const radius = await header.evaluate(el => getComputedStyle(el).borderRadius);
+      expect(radius).toBe(radiusAtRest); // identical shape throughout -- no pop, no jump
+    }
 
-    // At the threshold: now actually stuck, corners square off in the same instant.
+    // The threshold where sticky actually engages still moves the header
+    // to the pane's own top with zero gap -- only the geometric position
+    // changes, never the shape.
     await wrap.evaluate(el => { el.scrollTop = 13; });
-    await page.waitForTimeout(200);
-    radius = await header.evaluate(el => getComputedStyle(el).borderTopLeftRadius);
-    expect(radius).toBe('0px');
-    wrapTop = await wrap.evaluate(el => el.getBoundingClientRect().top);
-    headerTop = await header.evaluate(el => el.getBoundingClientRect().top);
+    await page.waitForTimeout(150);
+    const wrapTop = await wrap.evaluate(el => el.getBoundingClientRect().top);
+    const headerTop = await header.evaluate(el => el.getBoundingClientRect().top);
     expect(headerTop).toBe(wrapTop);
   });
 
-  // Regression: neither boundary had a persistent visual separator --
-  // only scroll-dependent padding, which is invisible except right at the
-  // very top (filter bar) or the very bottom (add-item box) of the
-  // scrollable content. A partially-scrolled table left both boundaries
-  // looking like they'd merged into their neighbor.
-  test('the filter bar and the add-item box each have a permanent hairline separating them from the table pane, regardless of scroll position', async ({ page }) => {
-    await expect(page.locator('[data-testid=filter-input]').locator('xpath=../..')).toHaveCSS('border-bottom-width', '1px');
-    await expect(page.getByText('Control + Space').locator('xpath=../../..')).toHaveCSS('border-top-width', '1px');
+  // The design handoff removed the permanent hairlines a prior fix had
+  // added between the filter bar / add-item box and the table pane -- the
+  // bottom fade gradient (already covered elsewhere) is the intended
+  // boundary signal instead of a hard divider line.
+  test('the filter bar and the add-item box have no divider line against the table pane', async ({ page }) => {
+    await expect(page.locator('[data-testid=filter-input]').locator('xpath=../..')).toHaveCSS('border-bottom-width', '0px');
+    await expect(page.getByText('Control + Space').locator('xpath=../../..')).toHaveCSS('border-top-width', '0px');
   });
 
   test('after adding an item, the box stays open and focused (not collapsed back to the Control+Space hint), so several adds in a row need no mouse', async ({ page }) => {
@@ -1507,9 +1509,7 @@ test.describe('Sort persistence', () => {
     await h.sortByColumn(page, 'rag', 'ascending');
     await page.waitForTimeout(150);
 
-    await page.getByText('{ } View source', { exact: true }).click();
-    await page.waitForTimeout(200);
-    const sourceText = await page.locator('pre').textContent();
+    const sourceText = await h.readSourceViewText(page);
     expect(sourceText).not.toContain('"sort"');
   });
 });
@@ -1679,9 +1679,7 @@ test.describe('Column order', () => {
     await moveColumnToStart(page, 'rag');
     await page.waitForTimeout(150);
 
-    await page.getByText('{ } View source', { exact: true }).click();
-    await page.waitForTimeout(200);
-    const sourceText = await page.locator('pre').textContent();
+    const sourceText = await h.readSourceViewText(page);
     expect(sourceText).not.toContain('columnOrder');
     const fieldsLine = sourceText.split('\n').find(l => l.includes('"type":"fields"'));
     expect(fieldsLine).toBeTruthy();
@@ -1764,9 +1762,7 @@ test.describe('Column resize', () => {
     const widened = await h.colHeader(page, 'rag').boundingBox();
     const widenedPx = String(Math.round(widened.width));
 
-    await page.getByText('{ } View source', { exact: true }).click();
-    await page.waitForTimeout(200);
-    const sourceText = await page.locator('pre').textContent();
+    const sourceText = await h.readSourceViewText(page);
     expect(sourceText.includes(widenedPx)).toBe(false);
     expect(sourceText).not.toContain('columnWidths');
   });
@@ -1884,9 +1880,7 @@ test.describe('Wrap vs truncate per column', () => {
     await expect(h.titleCell(page, 1).locator('span').first()).toHaveCSS('white-space', 'normal');
     await expect(h.fieldCell(page, 2, 'mitigation').locator('span span').first()).toHaveCSS('white-space', 'normal');
 
-    await page.getByText('{ } View source', { exact: true }).click();
-    await page.waitForTimeout(200);
-    const sourceText = await page.locator('pre').textContent();
+    const sourceText = await h.readSourceViewText(page);
     expect(sourceText).not.toContain('columnWrap');
     expect(sourceText).not.toContain('titleWrap');
   });

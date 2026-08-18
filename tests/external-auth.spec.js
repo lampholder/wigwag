@@ -51,9 +51,7 @@ test.describe('GitHub token', () => {
     expect(storage.main).not.toContain('shouldNeverLeak');
     expect(storage.secrets).toContain('shouldNeverLeak');
 
-    await page.locator('text={ } View source').click();
-    await page.waitForTimeout(200);
-    const sourceText = await page.locator('pre').textContent();
+    const sourceText = await h.readSourceViewText(page);
     expect(sourceText).not.toContain('shouldNeverLeak');
   });
 

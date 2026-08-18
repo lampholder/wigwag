@@ -184,9 +184,7 @@ test.describe('Project notes', () => {
     const doc = await h.readActiveMilestoneDoc(page);
     expect(doc.projectNotes).toBe('Contact priya@lant.uk please.');
 
-    await page.getByText('{ } View source', { exact: true }).click();
-    await page.waitForTimeout(200);
-    const sourceText = await page.locator('pre').textContent();
+    const sourceText = await h.readSourceViewText(page);
     const fieldsLine = sourceText.split('\n').find(l => l.includes('"type":"fields"'));
     expect(fieldsLine).toContain('"projectNotes"');
     expect(fieldsLine).toContain('priya@lant.uk');

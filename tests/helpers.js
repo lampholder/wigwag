@@ -139,6 +139,22 @@ async function gotoTrackerFreshIdentity(page) {
 // per-milestone key resolved via a small index -- see the milestone-switcher
 // storage layout. Tests that used to read the bare 'git_native_tracker_v1'
 // key directly should go through these instead.
+// The inline View Source panel pretty-prints each record for readability
+// (design handoff §9) -- display is deliberately not the clipboard
+// content, so reading real compact JSONL for assertions means opening the
+// panel and using its own Copy button (same buildSourceText() output the
+// Share menu's "Copy to clipboard" produces), not scraping the <pre>'s
+// rendered text.
+async function readSourceViewText(page) {
+  await page.getByText('{ } View source', { exact: true }).click();
+  await page.waitForTimeout(200);
+  await page.locator('[data-testid=btn-source-view-copy]').click();
+  const text = await page.evaluate(() => navigator.clipboard.readText());
+  await page.locator('[data-testid=source-view] >> text=✕').click();
+  await page.waitForTimeout(150);
+  return text;
+}
+
 async function readActiveMilestoneDoc(page) {
   return page.evaluate(() => {
     const idx = JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1'));
@@ -496,6 +512,7 @@ module.exports = {
   getHistoryEntriesFor,
   readActiveMilestoneDoc,
   writeActiveMilestoneDoc,
+  readSourceViewText,
   latestFieldRef,
   latestFieldValue,
   openTrackerSwitcher,

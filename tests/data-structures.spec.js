@@ -308,9 +308,7 @@ test.describe('Merge: union history, auto-resolve, lightweight notice', () => {
 test.describe('Full history log vs. latest-state export', () => {
   test('the exported/viewed source has no separate values/fieldRefs object -- history is the sole source of truth', async ({ page }) => {
     await h.gotoTracker(page);
-    await page.getByText('{ } View source', { exact: true }).click();
-    await page.waitForTimeout(200);
-    const sourceText = await page.locator('pre').textContent();
+    const sourceText = await h.readSourceViewText(page);
     const i1 = JSON.parse(sourceText.split('\n').find(l => l.includes('"id":"i1"')));
     expect(Array.isArray(i1.history)).toBe(true);
     expect(i1.history.length).toBeGreaterThan(0);

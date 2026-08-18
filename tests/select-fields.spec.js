@@ -342,9 +342,7 @@ test.describe('Date fields', () => {
     const colId = await addDateField(page, 'Due date');
     await setDate(page, colId, 1, '2026-08-10');
 
-    await page.getByText('{ } View source', { exact: true }).click();
-    await page.waitForTimeout(200);
-    const sourceText = await page.locator('pre').textContent();
+    const sourceText = await h.readSourceViewText(page);
     const i1 = JSON.parse(sourceText.split('\n').find(l => l.includes('"id":"i1"')));
     expect(h.latestFieldValue(i1, colId)).toBe('2026-08-10');
   });

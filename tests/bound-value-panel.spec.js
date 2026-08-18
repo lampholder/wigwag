@@ -175,6 +175,181 @@ test.describe('Bound value panel: row-based conditions', () => {
   });
 });
 
+test.describe('Bound value panel: ANDing multiple criteria within one row', () => {
+  test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
+
+  async function openRowsFor(page, colId, sourceLabel) {
+    await h.openFieldEditor(page, colId);
+    await page.locator('[data-testid=field-editor-open-rules]').click();
+    await page.waitForTimeout(400);
+    await page.locator('[data-testid=rule-builder-source-select]').selectOption({ label: sourceLabel });
+    await page.waitForTimeout(300);
+  }
+
+  test('a new row starts with exactly one criterion and no "AND" separator', async ({ page }) => {
+    await openRowsFor(page, 'priority', 'Issue');
+    await page.locator('[data-testid=rule-add-row]').click();
+    await page.waitForTimeout(150);
+    expect(await page.locator('[data-testid=rule-criterion]').count()).toBe(1);
+    expect(await page.locator('[data-testid=rule-criterion-remove]').count()).toBe(0); // nothing to remove with only one
+  });
+
+  test('"+ AND condition" adds a second criterion, compiled with && and parenthesized', async ({ page }) => {
+    await openRowsFor(page, 'priority', 'Issue');
+    await page.locator('[data-testid=rule-add-row]').click();
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=rule-add-criterion]').click();
+    await page.waitForTimeout(150);
+    expect(await page.locator('[data-testid=rule-criterion]').count()).toBe(2);
+
+    const crit1 = page.locator('[data-testid=rule-criterion]').nth(0);
+    await crit1.locator('[data-testid=rule-row-subject]').selectOption('source.github?.labels');
+    await crit1.locator('[data-testid=rule-row-op]').selectOption('includes');
+    await crit1.locator('[data-testid=rule-row-operand]').fill('bug');
+    await page.waitForTimeout(150);
+
+    const crit2 = page.locator('[data-testid=rule-criterion]').nth(1);
+    await crit2.locator('[data-testid=rule-row-subject]').selectOption('source.text');
+    await crit2.locator('[data-testid=rule-row-op]').selectOption('isNotEmpty');
+    await page.waitForTimeout(150);
+    // isNotEmpty takes no operand -- confirm it doesn't leave a stray input.
+    expect(await crit2.locator('[data-testid=rule-row-operand]').count()).toBe(0);
+
+    await page.locator('[data-testid=rule-row-then]').first().selectOption({ label: 'P1' });
+    await page.waitForTimeout(300);
+
+    await expect(page.locator('[data-testid=rule-expression]')).toContainText(
+      '(source.github?.labels?.some(x => String(x).toLowerCase() === "bug")) && (!!(source.text ?? "").length)'
+    );
+  });
+
+  test('both criteria must hold for the row to match; either one failing falls through', async ({ page }) => {
+    await openRowsFor(page, 'priority', 'Issue');
+    await page.locator('[data-testid=rule-add-row]').click();
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=rule-add-criterion]').click();
+    await page.waitForTimeout(150);
+
+    const crit1 = page.locator('[data-testid=rule-criterion]').nth(0);
+    await crit1.locator('[data-testid=rule-row-subject]').selectOption('source.github?.labels');
+    await crit1.locator('[data-testid=rule-row-op]').selectOption('includes');
+    await crit1.locator('[data-testid=rule-row-operand]').fill('bug');
+    await page.waitForTimeout(150);
+
+    const crit2 = page.locator('[data-testid=rule-criterion]').nth(1);
+    await crit2.locator('[data-testid=rule-row-subject]').selectOption('source.text');
+    await crit2.locator('[data-testid=rule-row-op]').selectOption('contains');
+    await crit2.locator('[data-testid=rule-row-operand]').fill('Sidebar');
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=rule-row-then]').first().selectOption({ label: 'P0' });
+    await page.waitForTimeout(300);
+
+    // Row 7 has the "bug" label but its title doesn't contain "Sidebar" --
+    // one criterion true, one false, the AND as a whole must fail.
+    const buggyRow = page.locator('[data-testid=rule-preview-row]').nth(6);
+    await expect(buggyRow).toContainText('otherwise');
+    await expect(buggyRow).toContainText('blank');
+
+    // Row 1's title DOES contain "Sidebar" but has no "bug" label -- same
+    // AND, same failure, for the opposite reason.
+    const sidebarRow = page.locator('[data-testid=rule-preview-row]').nth(0);
+    await expect(sidebarRow).toContainText('otherwise');
+    await expect(sidebarRow).toContainText('blank');
+  });
+
+  test('a satisfiable AND matches and applies the real value to the cell', async ({ page }) => {
+    await openRowsFor(page, 'priority', 'Issue');
+    await page.locator('[data-testid=rule-add-row]').click();
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=rule-add-criterion]').click();
+    await page.waitForTimeout(150);
+
+    const crit1 = page.locator('[data-testid=rule-criterion]').nth(0);
+    await crit1.locator('[data-testid=rule-row-subject]').selectOption('source.github?.labels');
+    await crit1.locator('[data-testid=rule-row-op]').selectOption('includes');
+    await crit1.locator('[data-testid=rule-row-operand]').fill('bug');
+    await page.waitForTimeout(150);
+
+    const crit2 = page.locator('[data-testid=rule-criterion]').nth(1);
+    await crit2.locator('[data-testid=rule-row-subject]').selectOption('source.text');
+    await crit2.locator('[data-testid=rule-row-op]').selectOption('isNotEmpty');
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=rule-row-then]').first().selectOption({ label: 'P1' });
+    await page.waitForTimeout(300);
+
+    const buggyRow = page.locator('[data-testid=rule-preview-row]').nth(6);
+    await expect(buggyRow).toContainText('when 1');
+    await expect(buggyRow).toContainText('P1');
+
+    await page.locator('[data-testid=rule-builder] >> text=✕').first().click();
+    await page.waitForTimeout(400);
+    await page.mouse.click(50, 50);
+    await page.waitForTimeout(200);
+    await expect(h.fieldCell(page, 7, 'priority')).toHaveText('P1');
+  });
+
+  test('removing a criterion via its own ✕ leaves the row intact; the per-criterion ✕ disappears once only one is left', async ({ page }) => {
+    await openRowsFor(page, 'priority', 'Issue');
+    await page.locator('[data-testid=rule-add-row]').click();
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=rule-add-criterion]').click();
+    await page.waitForTimeout(150);
+    expect(await page.locator('[data-testid=rule-criterion]').count()).toBe(2);
+
+    await page.locator('[data-testid=rule-criterion]').nth(1).locator('[data-testid=rule-criterion-remove]').click();
+    await page.waitForTimeout(300);
+    expect(await page.locator('[data-testid=rule-criterion]').count()).toBe(1);
+    expect(await page.locator('[data-testid=rule-row]').count()).toBe(1); // the row itself survives
+    expect(await page.locator('[data-testid=rule-criterion-remove]').count()).toBe(0);
+  });
+
+  test('removing a row\'s only criterion removes the whole row, same as the row-level ✕', async ({ page }) => {
+    await openRowsFor(page, 'priority', 'Issue');
+    await page.locator('[data-testid=rule-add-row]').click();
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=rule-add-row]').click(); // a second, unrelated row so removal is unambiguous
+    await page.waitForTimeout(150);
+    expect(await page.locator('[data-testid=rule-row]').count()).toBe(2);
+
+    await page.locator('[data-testid=rule-row]').first().locator('[data-testid=rule-row-remove]').click();
+    await page.waitForTimeout(300);
+    expect(await page.locator('[data-testid=rule-row]').count()).toBe(1);
+  });
+
+  test('a pre-existing single-criterion rule (legacy flat shape, no .criteria array) still opens and edits correctly', async ({ page }) => {
+    const doc = await h.readActiveMilestoneDoc(page);
+    doc.fieldDefs.priority.linkedSourceId = 'title';
+    doc.fieldDefs.priority.ruleRows = [{ subject: 'source.github?.labels', op: 'includes', operand: 'bug', then: 'p0' }];
+    doc.fieldDefs.priority.ruleFallback = null;
+    doc.fieldDefs.priority.rule = 'source.github?.labels?.some(x => String(x).toLowerCase() === "bug")\n  ? "p0"\n  : null';
+    doc.projectHistory = doc.projectHistory || [];
+    doc.projectHistory.push({
+      id: 'legacy-rule-seed', time: new Date().toISOString(), actor: 'Seed', email: '',
+      text: 'seeded legacy rule shape', field: 'priority', value: doc.fieldDefs.priority,
+      origin: 'authored', sortKey: Date.now(), sig: null, pubKey: null
+    });
+    await h.writeActiveMilestoneDoc(page, doc);
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(400);
+
+    await h.openFieldEditor(page, 'priority');
+    await page.locator('[data-testid=field-editor-open-rules]').click();
+    await page.waitForTimeout(400);
+
+    expect(await page.locator('[data-testid=rule-criterion]').count()).toBe(1);
+    const crit = page.locator('[data-testid=rule-criterion]').first();
+    expect(await crit.locator('[data-testid=rule-row-subject]').inputValue()).toBe('source.github?.labels');
+    expect(await crit.locator('[data-testid=rule-row-operand]').inputValue()).toBe('bug');
+
+    // Editing it (adding a second AND condition) must not lose the
+    // original criterion -- confirms the legacy shape upgrades cleanly.
+    await page.locator('[data-testid=rule-add-criterion]').click();
+    await page.waitForTimeout(200);
+    expect(await page.locator('[data-testid=rule-criterion]').count()).toBe(2);
+    await expect(page.locator('[data-testid=rule-expression]')).toContainText('"bug"');
+  });
+});
+
 test.describe('Bound value panel: the null-fallback rule (do not seed the first option)', () => {
   test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
 

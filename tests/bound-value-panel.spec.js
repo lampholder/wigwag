@@ -9,6 +9,26 @@
 const { test, expect } = require('@playwright/test');
 const h = require('./helpers');
 
+// Opens the rule builder for colId and binds it to sourceLabel -- lands on
+// the row editor (rows mode) for a freshly-bound field.
+async function openRowsFor(page, colId, sourceLabel) {
+  await h.openFieldEditor(page, colId);
+  await page.locator('[data-testid=field-editor-open-rules]').click();
+  await page.waitForTimeout(400);
+  await page.locator('[data-testid=rule-builder-source-select]').selectOption({ label: sourceLabel });
+  await page.waitForTimeout(300);
+}
+
+// Fills one criterion's subject/operator/operand within a
+// [data-testid=rule-criterion] locator. operand is optional (operator-only
+// checks like isNotEmpty take none).
+async function fillCriterion(page, criterionLocator, { subject, op, operand }) {
+  await criterionLocator.locator('[data-testid=rule-row-subject]').selectOption(subject);
+  await criterionLocator.locator('[data-testid=rule-row-op]').selectOption(op);
+  if (operand !== undefined) await criterionLocator.locator('[data-testid=rule-row-operand]').fill(operand);
+  await page.waitForTimeout(150);
+}
+
 test.describe('Bound value panel: entry point', () => {
   test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
 
@@ -47,14 +67,6 @@ test.describe('Bound value panel: entry point', () => {
 
 test.describe('Bound value panel: row-based conditions', () => {
   test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
-
-  async function openRowsFor(page, colId, sourceLabel) {
-    await h.openFieldEditor(page, colId);
-    await page.locator('[data-testid=field-editor-open-rules]').click();
-    await page.waitForTimeout(400);
-    await page.locator('[data-testid=rule-builder-source-select]').selectOption({ label: sourceLabel });
-    await page.waitForTimeout(300);
-  }
 
   test('a freshly-bound field opens straight into the row editor with zero conditions, not advanced mode', async ({ page }) => {
     await openRowsFor(page, 'priority', 'Issue');
@@ -178,14 +190,6 @@ test.describe('Bound value panel: row-based conditions', () => {
 test.describe('Bound value panel: ANDing multiple criteria within one row', () => {
   test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
 
-  async function openRowsFor(page, colId, sourceLabel) {
-    await h.openFieldEditor(page, colId);
-    await page.locator('[data-testid=field-editor-open-rules]').click();
-    await page.waitForTimeout(400);
-    await page.locator('[data-testid=rule-builder-source-select]').selectOption({ label: sourceLabel });
-    await page.waitForTimeout(300);
-  }
-
   test('a new row starts with exactly one criterion and no "AND" separator', async ({ page }) => {
     await openRowsFor(page, 'priority', 'Issue');
     await page.locator('[data-testid=rule-add-row]').click();
@@ -203,15 +207,10 @@ test.describe('Bound value panel: ANDing multiple criteria within one row', () =
     expect(await page.locator('[data-testid=rule-criterion]').count()).toBe(2);
 
     const crit1 = page.locator('[data-testid=rule-criterion]').nth(0);
-    await crit1.locator('[data-testid=rule-row-subject]').selectOption('source.github?.labels');
-    await crit1.locator('[data-testid=rule-row-op]').selectOption('includes');
-    await crit1.locator('[data-testid=rule-row-operand]').fill('bug');
-    await page.waitForTimeout(150);
+    await fillCriterion(page, crit1, { subject: 'source.github?.labels', op: 'includes', operand: 'bug' });
 
     const crit2 = page.locator('[data-testid=rule-criterion]').nth(1);
-    await crit2.locator('[data-testid=rule-row-subject]').selectOption('source.text');
-    await crit2.locator('[data-testid=rule-row-op]').selectOption('isNotEmpty');
-    await page.waitForTimeout(150);
+    await fillCriterion(page, crit2, { subject: 'source.text', op: 'isNotEmpty' });
     // isNotEmpty takes no operand -- confirm it doesn't leave a stray input.
     expect(await crit2.locator('[data-testid=rule-row-operand]').count()).toBe(0);
 
@@ -231,16 +230,10 @@ test.describe('Bound value panel: ANDing multiple criteria within one row', () =
     await page.waitForTimeout(150);
 
     const crit1 = page.locator('[data-testid=rule-criterion]').nth(0);
-    await crit1.locator('[data-testid=rule-row-subject]').selectOption('source.github?.labels');
-    await crit1.locator('[data-testid=rule-row-op]').selectOption('includes');
-    await crit1.locator('[data-testid=rule-row-operand]').fill('bug');
-    await page.waitForTimeout(150);
+    await fillCriterion(page, crit1, { subject: 'source.github?.labels', op: 'includes', operand: 'bug' });
 
     const crit2 = page.locator('[data-testid=rule-criterion]').nth(1);
-    await crit2.locator('[data-testid=rule-row-subject]').selectOption('source.text');
-    await crit2.locator('[data-testid=rule-row-op]').selectOption('contains');
-    await crit2.locator('[data-testid=rule-row-operand]').fill('Sidebar');
-    await page.waitForTimeout(150);
+    await fillCriterion(page, crit2, { subject: 'source.text', op: 'contains', operand: 'Sidebar' });
     await page.locator('[data-testid=rule-row-then]').first().selectOption({ label: 'P0' });
     await page.waitForTimeout(300);
 
@@ -265,15 +258,10 @@ test.describe('Bound value panel: ANDing multiple criteria within one row', () =
     await page.waitForTimeout(150);
 
     const crit1 = page.locator('[data-testid=rule-criterion]').nth(0);
-    await crit1.locator('[data-testid=rule-row-subject]').selectOption('source.github?.labels');
-    await crit1.locator('[data-testid=rule-row-op]').selectOption('includes');
-    await crit1.locator('[data-testid=rule-row-operand]').fill('bug');
-    await page.waitForTimeout(150);
+    await fillCriterion(page, crit1, { subject: 'source.github?.labels', op: 'includes', operand: 'bug' });
 
     const crit2 = page.locator('[data-testid=rule-criterion]').nth(1);
-    await crit2.locator('[data-testid=rule-row-subject]').selectOption('source.text');
-    await crit2.locator('[data-testid=rule-row-op]').selectOption('isNotEmpty');
-    await page.waitForTimeout(150);
+    await fillCriterion(page, crit2, { subject: 'source.text', op: 'isNotEmpty' });
     await page.locator('[data-testid=rule-row-then]').first().selectOption({ label: 'P1' });
     await page.waitForTimeout(300);
 

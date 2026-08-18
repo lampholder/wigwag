@@ -90,12 +90,60 @@ test.describe('Bound value panel: row-based conditions', () => {
     await page.waitForTimeout(300);
 
     await expect(page.locator('[data-testid=rule-expression]')).toContainText('source.github?.labels?.some(x => String(x).toLowerCase() === "bug")');
-    await expect(page.locator('[data-testid=rule-expression]')).toContainText('"p0"');
+    // The compiled expression shows the option's LABEL ("P0"), not its
+    // internal storage id ("p0") -- applyComputedToField matches either,
+    // so this is display-only.
+    await expect(page.locator('[data-testid=rule-expression]')).toContainText('"P0"');
 
     await row.locator('[data-testid=rule-row-remove]').click();
     await page.waitForTimeout(200);
     expect(await page.locator('[data-testid=rule-row]').count()).toBe(0);
     await expect(page.locator('[data-testid=rule-expression]')).toHaveText('null');
+  });
+
+  // Regression: THEN is stored as the option's internal id (needed so the
+  // THEN picker shows the right current selection), but compiling that id
+  // straight into the expression made it unreadable -- "opt_1786483538357"
+  // instead of "Backlog". The compiled/displayed expression, the OTHERWISE
+  // fallback, and multiselect's array of ids must all show labels instead,
+  // and the real applied value must still resolve correctly either way.
+  test('the compiled expression shows option LABELS, not internal storage ids, for THEN and OTHERWISE', async ({ page }) => {
+    await openRowsFor(page, 'priority', 'Issue');
+    await page.locator('[data-testid=rule-add-row]').click();
+    await page.waitForTimeout(150);
+    const row = page.locator('[data-testid=rule-row]').first();
+    await fillCriterion(page, row, { subject: 'source.github?.labels', op: 'includes', operand: 'bug' });
+    await row.locator('[data-testid=rule-row-then]').selectOption({ label: 'P0' });
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=rule-fallback-then]').selectOption({ label: 'P2' });
+    await page.waitForTimeout(300);
+
+    const expr = await page.locator('[data-testid=rule-expression]').textContent();
+    expect(expr).toContain('"P0"');
+    expect(expr).toContain('"P2"');
+    expect(expr).not.toContain('"p0"');
+    expect(expr).not.toContain('"p2"');
+
+    // The real values still resolve correctly -- applyComputedToField
+    // matches a computed value against an option's id OR its label.
+    await page.locator('[data-testid=rule-builder] >> text=✕').first().click();
+    await page.waitForTimeout(400);
+    await page.mouse.click(50, 50);
+    await page.waitForTimeout(200);
+    await expect(h.fieldCell(page, 7, 'priority')).toHaveText('P0'); // has the "bug" label
+    await expect(h.fieldCell(page, 1, 'priority')).toHaveText('P2'); // falls through to the fallback
+  });
+
+  test('a multiselect THEN also compiles to an array of labels, not ids', async ({ page }) => {
+    await openRowsFor(page, 'teams', 'Issue');
+    await page.locator('[data-testid=rule-add-row]').click();
+    await page.waitForTimeout(150);
+    const row = page.locator('[data-testid=rule-row]').first();
+    await fillCriterion(page, row, { subject: 'source.github?.labels', op: 'includes', operand: 'bug' });
+    await row.getByText('Platform', { exact: true }).click();
+    await page.waitForTimeout(300);
+
+    await expect(page.locator('[data-testid=rule-expression]')).toContainText('["Platform"]');
   });
 
   test('reordering condition rows with ↑/↓ changes which one wins first', async ({ page }) => {

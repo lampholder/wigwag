@@ -1,0 +1,33 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Wigwag",
+  "version": "0.1.0",
+  "identifier": "uk.lant.wigwag",
+  "build": {
+    "frontendDist": "dist",
+    "beforeBuildCommand": "node copy-dist.js",
+    "beforeDevCommand": "node copy-dist.js"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Wigwag",
+        "width": 1280,
+        "height": 800
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["appimage", "deb"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png"
+    ]
+  }
+}

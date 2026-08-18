@@ -10,7 +10,8 @@
   "scripts": {
     "test": "playwright test",
     "jira-proxy": "node jira-proxy.js",
-    "github-oauth-proxy": "node github-oauth-proxy.js"
+    "github-oauth-proxy": "node github-oauth-proxy.js",
+    "tauri": "tauri"
   },
   "keywords": [],
   "author": "",
@@ -18,6 +19,7 @@
   "type": "commonjs",
   "devDependencies": {
     "@playwright/test": "^1.62.1",
+    "@tauri-apps/cli": "^2.11.4",
     "playwright": "^1.62.1"
   }
 }

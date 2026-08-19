@@ -1494,7 +1494,7 @@ test.describe('Sort persistence', () => {
     await page.locator('[data-testid=new-milestone-name-input]').fill('Other milestone');
     await page.locator('[data-testid=btn-create-milestone]').click();
     await page.waitForTimeout(300);
-    await expect(page.locator('[data-testid=col-header]')).toHaveCount(0); // blank milestone, nothing to sort by
+    await expect(page.locator('[data-testid=col-header] [title="Sort"]')).toHaveCount(0); // a different (blank-template) milestone, no sort carried over
 
     await h.openTrackerSwitcher(page);
     await h.milestoneRow(page, 'Delivery tracker').click();
@@ -1600,7 +1600,7 @@ test.describe('Column value filters', () => {
     await page.locator('[data-testid=new-milestone-name-input]').fill('Other milestone');
     await page.locator('[data-testid=btn-create-milestone]').click();
     await page.waitForTimeout(300);
-    await expect(page.locator('[data-testid=col-header]')).toHaveCount(0); // blank milestone, nothing to filter
+    await expect(page.locator('[data-testid=col-header] [title="Filtered"]')).toHaveCount(0); // a different (blank-template) milestone, no filter carried over
 
     await h.openTrackerSwitcher(page);
     await h.milestoneRow(page, 'Delivery tracker').click();

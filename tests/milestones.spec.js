@@ -21,7 +21,7 @@ test.describe('Tracker switcher', () => {
     await expect(page.locator('[data-testid=milestone-row]')).toHaveCount(0);
   });
 
-  test('creating a blank milestone switches to it with no columns and no issues; switching back leaves the original untouched', async ({ page }) => {
+  test('creating a blank milestone switches to it with the starter field template and no issues; switching back leaves the original untouched', async ({ page }) => {
     await h.openTrackerSwitcher(page);
     await page.locator('[data-testid=btn-add-milestone]').click();
     await page.locator('[data-testid=btn-new-blank-milestone]').click();
@@ -30,7 +30,10 @@ test.describe('Tracker switcher', () => {
     await page.waitForTimeout(400);
 
     await expect(page.locator('[data-testid=row]')).toHaveCount(0);
-    await expect(page.locator('[data-testid=col-header]')).toHaveCount(0); // genuinely blank -- not the seed demo schema
+    // Not the demo seed's own schema (Type/Related/Delivery teams/Mitigation)
+    // -- the starter template instead (see blankProjectFieldDefs()).
+    const headers = await page.locator('[data-testid=col-header]').allTextContents();
+    expect(headers.map(h => h.replace(/\W+$/, '').trim())).toEqual(['Priority', 'Remedy', 'RAG', 'Status']);
     await expect(page.locator('body')).toContainText('Second milestone');
 
     await h.openTrackerSwitcher(page);

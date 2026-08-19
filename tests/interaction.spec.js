@@ -971,6 +971,34 @@ test.describe('Activity history', () => {
     expect(history.some(t => t === 'Delivery teams: added Infra')).toBe(true);
   });
 
+  // Regression: Date.now() has ~1ms resolution, so two history entries
+  // written back-to-back in the same synchronous call (creating an issue
+  // logs "Created" then immediately links a pasted GitHub URL) could get
+  // the IDENTICAL sortKey, leaving their relative order to chance (a tied
+  // stable sort falls back to insertion order, which isn't always
+  // actually-chronological once merges get involved) -- "Created" could
+  // end up sorted as if it happened after something that came later. A
+  // shared monotonic counter (nextSortKey()) makes that impossible: every
+  // sortKey this app hands out is now strictly increasing.
+  test('Created always sorts as the oldest entry, even when logged in the same tick as a second entry', async ({ page }) => {
+    await page.keyboard.down('Control');
+    await page.keyboard.press('Space');
+    await page.keyboard.up('Control');
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=add-item-input]').fill('https://github.com/octocat/Hello-World/issues/1');
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(600);
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    const issue = doc.issues[doc.issues.length - 1];
+    const created = issue.history.find(h => h.text === 'Created');
+    const linked = issue.history.find(h => h.text.startsWith('Linked'));
+    expect(created).toBeTruthy();
+    expect(linked).toBeTruthy();
+    expect(created.sortKey).toBeLessThan(linked.sortKey); // strictly less, never tied
+    expect(issue.history.slice().sort((a, b) => a.sortKey - b.sortKey)[0].text).toBe('Created'); // oldest overall
+  });
+
   test('select/multiselect field changes show a coloured pill in the activity timeline, not plain text', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'priority');
     await page.waitForTimeout(150);

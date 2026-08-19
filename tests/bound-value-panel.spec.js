@@ -178,6 +178,37 @@ test.describe('Bound value panel: row-based conditions', () => {
     await expect(row7After).toContainText('P2');
   });
 
+  test('condition rows are drag-reorderable via a dedicated handle, not just ↑/↓', async ({ page }) => {
+    await openRowsFor(page, 'priority', 'Issue');
+    for (let i = 0; i < 3; i++) {
+      await page.locator('[data-testid=rule-add-row]').click();
+      await page.waitForTimeout(150);
+    }
+    const rows = page.locator('[data-testid=rule-row]');
+    await rows.nth(0).locator('[data-testid=rule-row-then]').selectOption({ label: 'P0' });
+    await rows.nth(1).locator('[data-testid=rule-row-then]').selectOption({ label: 'P1' });
+    await rows.nth(2).locator('[data-testid=rule-row-then]').selectOption({ label: 'P2' });
+    await page.waitForTimeout(200);
+
+    // Drag the first row's handle onto the third row -- real HTML5
+    // draggable/dragstart, the same mechanism (and same style of test) as
+    // the column-header drag-reorder regression in interaction.spec.js.
+    await rows.nth(0).locator('[data-testid=rule-row-drag-handle]').dragTo(rows.nth(2));
+    await page.waitForTimeout(300);
+
+    const after = await rows.locator('[data-testid=rule-row-then]').evaluateAll(els => els.map(e => e.value));
+    expect(after).not.toEqual(['p0', 'p1', 'p2']);
+    expect([...after].sort()).toEqual(['p0', 'p1', 'p2']); // same three rows, just reordered -- none lost or duplicated
+
+    await page.reload();
+    await page.waitForTimeout(300);
+    await h.openFieldEditor(page, 'priority');
+    await page.locator('[data-testid=field-editor-open-rules]').click();
+    await page.waitForTimeout(400);
+    const afterReload = await page.locator('[data-testid=rule-row-then]').evaluateAll(els => els.map(e => e.value));
+    expect(afterReload).toEqual(after); // persisted through the same rule-commit path ↑/↓ uses
+  });
+
   test('the THEN picker offers the field\'s configured options for a select field', async ({ page }) => {
     await openRowsFor(page, 'priority', 'Issue');
     await page.locator('[data-testid=rule-add-row]').click();

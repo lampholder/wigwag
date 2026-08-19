@@ -588,9 +588,52 @@ test.describe('Comment-indicator column', () => {
 
   test('a row with comments shows a count badge and the latest comment as a tooltip', async ({ page }) => {
     // seed row 2 has exactly one comment: "Confirmed on staging, filed with the sync team."
+    // Never having been opened, it's unread -- the badge's count IS the
+    // total here, which is what makes this also the "starts unread" case.
     const indicator = h.row(page, 2).locator('[data-testid=comment-indicator]');
     await expect(indicator.locator('[data-testid=comment-count-badge]')).toHaveText('1');
     await expect(indicator).toHaveAttribute('title', 'Confirmed on staging, filed with the sync team.');
+  });
+
+  // The badge shows UNREAD comments, not the total -- opening the issue
+  // (viewing its Activity) marks every comment on it read. The icon
+  // itself stays blue regardless (it means "has comments at all"), only
+  // the badge disappears once nothing is unread.
+  test('opening the slide-over marks that row\'s comments read: the badge clears, the icon stays blue', async ({ page }) => {
+    const indicator = h.row(page, 2).locator('[data-testid=comment-indicator]');
+    const icon = indicator.locator('svg');
+    await expect(indicator.locator('[data-testid=comment-count-badge]')).toHaveText('1');
+    const blueColor = await icon.evaluate(el => getComputedStyle(el).color);
+
+    await h.openSlideover(page, 2);
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(400);
+
+    await expect(indicator.locator('[data-testid=comment-count-badge]')).toHaveCount(0);
+    expect(await icon.evaluate(el => getComputedStyle(el).color)).toBe(blueColor); // still "has comments"
+
+    // Reloading doesn't forget it was read -- persisted per identity.
+    await page.reload();
+    await page.waitForTimeout(400);
+    await expect(h.row(page, 2).locator('[data-testid=comment-count-badge]')).toHaveCount(0);
+  });
+
+  test('a genuinely new comment on an already-read row shows up as unread again', async ({ page }) => {
+    await h.openSlideover(page, 2);
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(400);
+    await expect(h.row(page, 2).locator('[data-testid=comment-count-badge]')).toHaveCount(0);
+
+    // Simulate a collaborator's new comment landing (e.g. via sync/merge)
+    // without this browser having opened the issue again.
+    const doc = await h.readActiveMilestoneDoc(page);
+    const iss = doc.issues.find(i => i.num === 2);
+    iss.comments.push({ id: 'c-new', author: 'jordan', email: 'jordan@example.com', time: 'just now', text: 'A brand new comment', sortKey: Date.now() + 999999 });
+    await h.writeActiveMilestoneDoc(page, doc);
+    await page.reload();
+    await page.waitForTimeout(400);
+
+    await expect(h.row(page, 2).locator('[data-testid=comment-count-badge]')).toHaveText('1');
   });
 
   test('clicking it opens the slide-over for that issue', async ({ page }) => {

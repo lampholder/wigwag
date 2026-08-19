@@ -39,6 +39,21 @@ test.describe('Tracker switcher', () => {
     await expect(page.locator('[data-testid=row]')).toHaveCount(9);
   });
 
+  test('projects are listed alphabetically, not in creation order', async ({ page }) => {
+    for (const name of ['Zebra project', 'Apple project', 'Mango project']) {
+      await h.openTrackerSwitcher(page);
+      await page.locator('[data-testid=btn-add-milestone]').click();
+      await page.locator('[data-testid=btn-new-blank-milestone]').click();
+      await page.locator('[data-testid=new-milestone-name-input]').fill(name);
+      await page.locator('[data-testid=btn-create-milestone]').click();
+      await page.waitForTimeout(300);
+    }
+    await h.openTrackerSwitcher(page);
+    const names = await page.locator('[data-testid=milestone-row]').allInnerTexts();
+    const trimmed = names.map(n => n.trim().split('\n')[0]);
+    expect(trimmed).toEqual(['Apple project', 'Delivery tracker', 'Mango project', 'Zebra project']);
+  });
+
   // Rename moved off the header (inline edit) and into the project panel,
   // behind a "Rename..." link, with deliberate friction: a stray blur must
   // NOT commit (the opposite of the old inline-edit behavior) -- only the

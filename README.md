@@ -3,7 +3,7 @@
 A GitHub-Projects-style issue tracker that isn't siloed: the data is plain
 JSONL you can put in git, email, or drop in a shared folder, and the app
 itself is a single self-contained HTML file — no server, no build step, no
-account. Open `Git-native Project Tracker.html` directly (double-click, or
+account. Open `wigwag.html` directly (double-click, or
 `npx http-server` if you'd rather serve it) and it works.
 
 **This file is the real app.** It's a bundled artifact — markup, styles,
@@ -51,7 +51,7 @@ this file the normal way will corrupt it. `docs/FORMAT.md` documents the
 ## Try it
 
 ```
-open "Git-native Project Tracker.html"   # or just double-click it
+open "wigwag.html"   # or just double-click it
 ```
 
 Click "Open file…" and pick `example/milestone.jsonl` for a worked example
@@ -148,7 +148,7 @@ minutes) that this is the actual bar, not an aspiration.
 
 ## Layout
 
-- **`Git-native Project Tracker.html`** — the real app. Read
+- **`wigwag.html`** — the real app. Read
   `docs/EDITING.md` before changing it.
 - **`docs/EDITING.md`** — how the bundled-artifact format works internally
   and the only safe workflow for changing it. Read this first.

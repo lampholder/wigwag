@@ -27,7 +27,7 @@ vanilla JS in `app/` (`app/index.html`, `app/app.js`, `app/style.css`) — that
 code is now superseded/legacy. Partway through, the user asked to switch to
 enhancing a much fuller Claude-Design-generated mockup instead:
 
-- **`Git-native Project Tracker.html` is now the real app** and the one
+- **`wigwag.html` is now the real app** and the one
   being actively worked on. It's a *self-contained bundled artifact* — one
   giant HTML file with React + a small custom templating runtime
   ("dc-runtime") + the actual app template/logic, all embedded as
@@ -37,7 +37,7 @@ enhancing a much fuller Claude-Design-generated mockup instead:
 - `app/` and `Git-native project tracker.zip` (the original design-handoff
   export) are left in place but not the current focus.
 
-## How to patch `Git-native Project Tracker.html`
+## How to patch `wigwag.html`
 
 Do **not** try to edit this file with a normal text editor / Edit tool — the
 template markup and JS logic live inside a JSON-string-encoded
@@ -156,7 +156,7 @@ continuing to work around it.
    (async () => {
      const browser = await chromium.launch();
      const page = await browser.newPage();
-     await page.goto('file:///workspace/Git-native Project Tracker.html');
+     await page.goto('file:///workspace/wigwag.html');
      // or serve it over http:// via `python3 -m http.server`, localhost is
      // already in allowed-domains.txt
      await page.screenshot({ path: '/tmp/.../check.png' });
@@ -183,7 +183,7 @@ continuing to work around it.
 - `git log --oneline`: `622824b stuff` (initial import) →
   `b4db614 working rapid prototype` (the GitHub-fetch patch, #1 above,
   committed by the user). Patches #2 and #3 above are **uncommitted** as of
-  writing — check `git status`/`git diff "Git-native Project Tracker.html"`.
+  writing — check `git status`/`git diff "wigwag.html"`.
 - `.devcontainer/` itself is untracked in git (has been since before this
   session started) — not something introduced now, just noting it in case
   it looks surprising.

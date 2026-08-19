@@ -9,7 +9,7 @@
 // user should see.
 const fs = require('fs');
 const path = require('path');
-const TRACKER_PATH = '/Git-native%20Project%20Tracker.html';
+const TRACKER_PATH = '/wigwag.html';
 
 const DEMO_MILESTONE_ID = 'demo-milestone';
 const DEMO_MILESTONE_NAME = 'Delivery tracker';

@@ -1,7 +1,7 @@
 # Tracker file format (v0.2.0)
 
 > This document describes the format actually shipped by
-> `Git-native Project Tracker.html` — the single bundled app that is now
+> `wigwag.html` — the single bundled app that is now
 > the real thing. `schema/tracker.schema.json` and `app/` are an earlier
 > prototype that explored a fuller lamport-clock event-sourcing design;
 > most of it (vector-clock-free pairwise merge, full-vs-squashed export)

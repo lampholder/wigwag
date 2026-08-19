@@ -5,8 +5,8 @@
 const fs = require('fs');
 const path = require('path');
 
-const src = path.join(__dirname, '..', 'Git-native Project Tracker.html');
+const src = path.join(__dirname, '..', 'wigwag.html');
 const destDir = path.join(__dirname, 'dist');
 fs.mkdirSync(destDir, { recursive: true });
 fs.copyFileSync(src, path.join(destDir, 'index.html'));
-console.log('copied "Git-native Project Tracker.html" -> src-tauri/dist/index.html');
+console.log('copied "wigwag.html" -> src-tauri/dist/index.html');

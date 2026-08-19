@@ -1,4 +1,4 @@
-# Working on `Git-native Project Tracker.html`
+# Working on `wigwag.html`
 
 This is the authoritative, current guide to the file's internal structure
 and the only safe way to change it. `todo.md` (repo root) is an earlier,

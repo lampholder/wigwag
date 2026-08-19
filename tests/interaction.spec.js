@@ -2068,6 +2068,23 @@ test.describe('Share menu restructure', () => {
     await expect(csvBtn).toHaveText('Export as CSV…');
     await expect(csvBtn.locator('..')).toContainText("A flat snapshot for spreadsheets. It can't be applied back as an update — use Share for that.");
   });
+
+  test('"Export as CSV…" downloads a real CSV: header row of visible column labels, select/multiselect resolved to labels', async ({ page }) => {
+    await page.locator('[data-testid=btn-notes]').click();
+    await page.waitForTimeout(300);
+    const [dl] = await Promise.all([
+      page.waitForEvent('download'),
+      page.locator('[data-testid=btn-export-csv]').click(),
+    ]);
+    expect(dl.suggestedFilename()).toMatch(/^Delivery tracker .*\.csv$/);
+    const fs = require('fs');
+    const lines = fs.readFileSync(await dl.path(), 'utf8').split('\r\n');
+    expect(lines[0]).toBe('Issue,Type,Priority,Related,RAG,Delivery teams,Mitigation');
+    expect(lines.length).toBe(10); // header + 9 seed issues
+    // row 1: a select (Type/Priority/RAG) resolved to its label, a
+    // multiselect (Delivery teams) joined with "; ", not raw storage ids.
+    expect(lines[1]).toBe('Sidebar sizing does not stick between application starts,Enhancement,P2,,On track,Platform; Ops; Mobile,');
+  });
 });
 
 test.describe('Project panel button + header hover', () => {

@@ -164,10 +164,12 @@ test.describe('Import / Apply-update: shared project-identity warnings', () => {
   // button called into a file input that only existed in the DOM while a
   // deeply-nested project-switcher dropdown happened to be open, so
   // clicking it from anywhere else silently did nothing at all.
-  test('the app-bar "Import project from file..." button actually opens a file picker', async ({ page }) => {
+  test('the app-bar "Import project…" button opens a From file/Paste menu, and "From file…" opens a real file picker', async ({ page }) => {
+    await page.locator('[data-testid=btn-import-project-appbar]').click();
+    await page.waitForTimeout(150);
     const [chooser] = await Promise.all([
       page.waitForEvent('filechooser'),
-      page.locator('[data-testid=btn-import-project-appbar]').click(),
+      page.locator('[data-testid=btn-import-project-from-file]').click(),
     ]);
     expect(chooser).toBeTruthy();
   });
@@ -224,9 +226,11 @@ test.describe('Import / Apply-update: shared project-identity warnings', () => {
 
     let dialogMsg = null;
     page.once('dialog', async d => { dialogMsg = d.message(); await d.accept(); });
+    await page.locator('[data-testid=btn-import-project-appbar]').click();
+    await page.waitForTimeout(150);
     const [chooser] = await Promise.all([
       page.waitForEvent('filechooser'),
-      page.locator('[data-testid=btn-import-project-appbar]').click(),
+      page.locator('[data-testid=btn-import-project-from-file]').click(),
     ]);
     await chooser.setFiles({ name: 'other-update.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(updateForOther) });
     await page.waitForTimeout(500);

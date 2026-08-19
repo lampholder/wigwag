@@ -518,8 +518,9 @@ test.describe('Refresh: row / whole table', () => {
     expect(maxConcurrent).toBeLessThanOrEqual(1);
   });
 
-  test('the refresh-all glyph lives in the toolbar, left of Apply update…, and greys out when nothing in the milestone is linked', async ({ page }) => {
+  test('the "Refresh linked issues" button lives in the toolbar, left of Apply update…, and greys out when nothing in the milestone is linked', async ({ page }) => {
     const icon = page.locator('[data-testid=btn-refresh-all]');
+    await expect(icon).toHaveText('Refresh linked issues'); // says what it does, not just an icon
     await expect(icon).toHaveCSS('cursor', 'pointer'); // seed data has linked issues
     const enabledColor = await icon.evaluate(el => getComputedStyle(el).color);
 
@@ -1897,9 +1898,27 @@ test.describe('Table card corners', () => {
 test.describe('App bar / Project bar / footer', () => {
   test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
 
-  test('the wordmark and a standalone "Import project from file..." entry point render in the app bar', async ({ page }) => {
+  test('the wordmark and a standalone "Import project…" entry point render in the app bar', async ({ page }) => {
     await expect(page.getByText('Wigwag', { exact: true })).toBeVisible();
-    await expect(page.locator('[data-testid=btn-import-project-appbar]')).toHaveText('Import project from file…');
+    await expect(page.locator('[data-testid=btn-import-project-appbar]')).toHaveText('Import project…');
+  });
+
+  test('"Import project…" offers From file… and Paste from clipboard…, same shape as Apply update…', async ({ page }) => {
+    await page.locator('[data-testid=btn-import-project-appbar]').click();
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=btn-import-project-from-file]')).toHaveText('From file…');
+    await expect(page.locator('[data-testid=btn-import-project-from-paste]')).toHaveText('Paste from clipboard…');
+  });
+
+  test('"Import project…" is sized the same as Apply update…, and the identity pill is enlarged to match', async ({ page }) => {
+    const importBtn = page.locator('[data-testid=btn-import-project-appbar]');
+    const applyUpdate = page.locator('[data-testid=btn-import-merge]');
+    const pill = page.locator('[data-testid=identity-pill]');
+    const [importBox, applyBox, pillBoxBefore] = await Promise.all([
+      importBtn.boundingBox(), applyUpdate.boundingBox(), pill.boundingBox(),
+    ]);
+    expect(importBox.height).toBe(applyBox.height);
+    expect(pillBoxBefore.height).toBe(importBox.height); // balanced against the now-taller import button
   });
 
   test('the footer shows format version, last-updated (once there is real history), and View source, with no issue count or filename', async ({ page }) => {

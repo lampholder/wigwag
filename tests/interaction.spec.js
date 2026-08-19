@@ -2089,6 +2089,68 @@ test.describe('Post-Phase-1 fixes: Open file removed, Project button is a peer b
   });
 });
 
+test.describe('Delete project (project panel danger zone)', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  test('deletes the current project, confirms first, and switches to another project for the same identity', async ({ page }) => {
+    await h.openTrackerSwitcher(page);
+    await page.locator('[data-testid=btn-add-milestone]').click();
+    await page.locator('[data-testid=btn-new-blank-milestone]').click();
+    await page.locator('[data-testid=new-milestone-name-input]').fill('Second Project');
+    await page.locator('[data-testid=btn-create-milestone]').click();
+    await page.waitForTimeout(300);
+
+    await h.openTrackerSwitcher(page);
+    await h.milestoneRow(page, 'Delivery tracker').click();
+    await page.waitForTimeout(300);
+
+    let dialogMsg = null;
+    page.once('dialog', async d => { dialogMsg = d.message(); await d.accept(); });
+    await page.locator('[data-testid=btn-notes]').click();
+    await page.waitForTimeout(400);
+    await page.locator('[data-testid=btn-delete-project]').click();
+    await page.waitForTimeout(400);
+
+    expect(dialogMsg).toContain('Delivery tracker');
+    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Second Project');
+    await h.openTrackerSwitcher(page);
+    await expect(page.locator('[data-testid=milestone-row]')).toHaveCount(1);
+    await expect(page.locator('[data-testid=milestone-row]')).toContainText('Second Project');
+
+    // The deleted project's own doc and per-project prefs are gone, not just
+    // dropped from the index -- nothing left over to leak or resurrect.
+    const stillThere = await page.evaluate(() => {
+      const keys = Object.keys(localStorage).filter(k => k.startsWith('git_native_tracker_v1:'));
+      return keys.some(k => localStorage.getItem(k).includes('Delivery tracker'));
+    });
+    expect(stillThere).toBe(false);
+  });
+
+  test('dismissing the confirm leaves the project untouched', async ({ page }) => {
+    page.once('dialog', d => d.dismiss());
+    await page.locator('[data-testid=btn-notes]').click();
+    await page.waitForTimeout(400);
+    await page.locator('[data-testid=btn-delete-project]').click();
+    await page.waitForTimeout(300);
+
+    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Delivery tracker');
+    await expect(page.locator('[data-testid=row]')).toHaveCount(9);
+  });
+
+  test('deleting the only remaining project lands on a fresh blank one, not a dead end', async ({ page }) => {
+    page.once('dialog', d => d.accept());
+    await page.locator('[data-testid=btn-notes]').click();
+    await page.waitForTimeout(400);
+    await page.locator('[data-testid=btn-delete-project]').click();
+    await page.waitForTimeout(400);
+
+    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('New project');
+    await expect(page.locator('[data-testid=row]')).toHaveCount(0);
+    await h.openTrackerSwitcher(page);
+    await expect(page.locator('[data-testid=milestone-row]')).toHaveCount(1);
+  });
+});
+
 test.describe('App bar / Project bar stay fixed while the table scrolls', () => {
   test('both bars remain at the same position on screen after scrolling a tall table, and the identity dropdown still renders above them', async ({ page }) => {
     // The root is now a full-height flex column (see "keep add an item

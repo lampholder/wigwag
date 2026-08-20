@@ -134,6 +134,49 @@ test.describe('Multiple identities: pill, dropdown, title prefix', () => {
   });
 });
 
+// Regression: IDENTITIES_KEY's activeIdentityId and PROJECTS_KEY's
+// activeMilestoneId (further overridden per-tab by the session-scoped
+// project pointer) are persisted independently and can disagree at boot --
+// e.g. one tab last switched identity without changing project, while
+// another tab's own sessionStorage remembers a project under a different
+// identity entirely. Every INTERACTIVE switch path (switchIdentity,
+// switchProject via the tracker switcher, which only ever lists the
+// active identity's own projects) already keeps these in sync; only the
+// boot-time restoration didn't, producing a header naming one identity
+// while showing a project owned by another -- and gating (email/token/
+// signing key) resolved against the wrong identity as a result.
+test.describe('Active identity reconciles with the active project at boot (regression)', () => {
+  test('a mismatched activeIdentityId/activeMilestoneId at boot is corrected to whichever identity actually owns the active project', async ({ page }) => {
+    await h.seedTwoIdentities(page, {
+      activeIdentityId: 'identity-a', // Personal
+      projects: [
+        { id: 'project-b1', name: 'Project B1', identityId: 'identity-b' }, // becomes activeMilestoneId -- owned by Northwind, not Personal
+        { id: 'project-a', name: 'Project A', identityId: 'identity-a' },
+      ],
+    });
+    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(400);
+
+    // Corrected to Northwind (the project's real owner), not left as the
+    // stale Personal/Project B1 pairing.
+    await expect(page.locator('[data-testid=identity-pill]')).toContainText('Northwind');
+    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Project B1');
+
+    // The correction is real, not just cosmetic -- gating resolves against
+    // Northwind's own email, so an authored action (renaming the project)
+    // doesn't need to re-prompt for an email that identity already has.
+    await page.locator('[data-testid=btn-notes]').click();
+    await page.waitForTimeout(300);
+    await page.locator('[data-testid=notes-rename-btn]').click();
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=notes-rename-input]').fill('Renamed B1');
+    await page.locator('[data-testid=notes-rename-commit-btn]').click();
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=email-gate-input]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Renamed B1');
+  });
+});
+
 test.describe('Settings › Identities panel', () => {
   test.beforeEach(async ({ page }) => {
     await h.seedTwoIdentities(page);

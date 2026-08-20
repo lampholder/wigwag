@@ -2388,29 +2388,29 @@ test.describe('No flash of full-screen modal overlays on page load', () => {
   });
 });
 
-// Three complementary, persistent signals that rows continue below the
-// fold (design handoff: more_rows_indicator.zip): a "N more below" pill
-// (magnitude + jump-to-end shortcut), a "Showing X of Y" caption next to
-// the filter box (proportion, at rest), and an always-visible themed
-// scrollbar (ambient). See measureTableOverflow()'s own comments for the
-// two counting traps (rect-based measurement, not offsetTop; clamp to
-// zero at the very end of the scroll range).
+// Persistent signals that rows continue below the fold (design handoff:
+// more_rows_indicator.zip): a "N more below" pill (magnitude + jump-to-end
+// shortcut) and an always-visible themed scrollbar (ambient). The
+// handoff's third signal, a "Showing X of Y" row-count caption next to the
+// filter box, was dropped per explicit request after landing -- rowsTotal
+// tracking was removed along with it since nothing else read it. See
+// measureTableOverflow()'s own comments for the two counting traps
+// (rect-based measurement, not offsetTop; clamp to zero at the very end of
+// the scroll range).
 test.describe('Signalling rows below the fold', () => {
-  test('a short viewport shows the pill and a "Showing X of Y" caption; a tall one shows neither, just "N issues"', async ({ page }) => {
+  test('a short viewport shows the pill; a tall one does not', async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 500 });
     await h.gotoTracker(page);
     await page.waitForTimeout(300);
 
     await expect(page.locator('[data-testid=more-below-pill]')).toBeVisible();
-    await expect(page.locator('[data-testid=row-count-caption]')).toHaveText(/^Showing \d+ of 9$/);
 
     await page.setViewportSize({ width: 1280, height: 1400 });
     await page.waitForTimeout(300);
     await expect(page.locator('[data-testid=more-below-pill]')).toHaveCount(0);
-    await expect(page.locator('[data-testid=row-count-caption]')).toHaveText('9 issues');
   });
 
-  test('clicking the pill scrolls to the end, the pill disappears, and the caption flips to "N issues"; scrolling back up brings it back', async ({ page }) => {
+  test('clicking the pill scrolls to the end and the pill disappears; scrolling back up brings it back', async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 500 });
     await h.gotoTracker(page);
     await page.waitForTimeout(300);
@@ -2418,14 +2418,13 @@ test.describe('Signalling rows below the fold', () => {
     await page.locator('[data-testid=more-below-pill]').click();
     await page.waitForTimeout(600);
     await expect(page.locator('[data-testid=more-below-pill]')).toHaveCount(0);
-    await expect(page.locator('[data-testid=row-count-caption]')).toHaveText('9 issues');
 
     await page.locator('[data-testid=table-scroll-wrap]').evaluate(el => { el.scrollTop = 0; });
     await page.waitForTimeout(300);
     await expect(page.locator('[data-testid=more-below-pill]')).toBeVisible();
   });
 
-  test('the row count reflects the active filter, and the count decreases while scrolling', async ({ page }) => {
+  test('the pill count decreases while scrolling and disappears once a filter removes the overflow', async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 500 });
     await h.gotoTracker(page);
     await page.waitForTimeout(300);
@@ -2440,7 +2439,6 @@ test.describe('Signalling rows below the fold', () => {
     await page.locator('[data-testid=filter-input]').fill('nonexistent-keyword-zzz');
     await page.waitForTimeout(300);
     await expect(page.locator('[data-testid=more-below-pill]')).toHaveCount(0); // nothing left to overflow
-    await expect(page.locator('[data-testid=row-count-caption]')).toHaveText('0 issues');
   });
 
   test('the table scroll container uses a themed, always-visible (non-overlay) scrollbar', async ({ page }) => {

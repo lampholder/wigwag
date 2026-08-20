@@ -186,6 +186,43 @@ async function openTrackerSwitcher(page) {
   await page.waitForTimeout(150);
 }
 
+// "+ Add project" creates a project directly ("Untitled"/"Untitled N"),
+// with no naming step and no import options of its own -- those live only
+// in the dedicated app-bar "Import project..." menu now (see
+// openImportProjectMenu below). Assumes the switcher dropdown is already
+// open (openTrackerSwitcher).
+async function addBlankProject(page) {
+  await page.locator('[data-testid=btn-add-milestone]').click();
+  await page.waitForTimeout(400);
+}
+
+// Renames whichever project is currently active, via the real
+// project-panel rename flow a user would use -- for tests that need a
+// specific, distinguishable name rather than the auto "Untitled" one.
+async function renameActiveProject(page, name) {
+  await page.locator('[data-testid=btn-notes]').click();
+  await page.waitForTimeout(300);
+  await page.locator('[data-testid=notes-rename-btn]').click();
+  await page.waitForTimeout(150);
+  await page.locator('[data-testid=notes-rename-input]').fill(name);
+  await page.locator('[data-testid=notes-rename-commit-btn]').click();
+  await page.waitForTimeout(200);
+  await page.locator('[data-testid=notes-close-btn]').click();
+  await page.waitForTimeout(200);
+}
+
+async function createNamedBlankProject(page, name) {
+  await addBlankProject(page);
+  await renameActiveProject(page, name);
+}
+
+// The one dedicated entry point for file/paste project import (app bar,
+// not the switcher dropdown).
+async function openImportProjectMenu(page) {
+  await page.locator('[data-testid=btn-import-project-appbar]').click();
+  await page.waitForTimeout(150);
+}
+
 function milestoneRow(page, name) {
   return page.locator('[data-testid=milestone-row]').filter({ hasText: name });
 }
@@ -550,6 +587,10 @@ module.exports = {
   latestFieldRef,
   latestFieldValue,
   openTrackerSwitcher,
+  addBlankProject,
+  renameActiveProject,
+  createNamedBlankProject,
+  openImportProjectMenu,
   milestoneRow,
   mockGithubApi,
   mockGithubContentsApi,

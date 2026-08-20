@@ -525,10 +525,7 @@ test.describe('Refresh: row / whole table', () => {
     const enabledColor = await icon.evaluate(el => getComputedStyle(el).color);
 
     await h.openTrackerSwitcher(page);
-    await page.locator('[data-testid=btn-add-milestone]').click();
-    await page.locator('[data-testid=btn-new-blank-milestone]').click();
-    await page.locator('[data-testid=new-milestone-name-input]').fill('No links here');
-    await page.locator('[data-testid=btn-create-milestone]').click();
+    await h.createNamedBlankProject(page, 'No links here');
     await page.waitForTimeout(300);
 
     await expect(icon).toHaveCSS('cursor', 'default');
@@ -655,8 +652,10 @@ test.describe('Comment-indicator column', () => {
     await page.locator('[data-testid=new-comment-input]').press('Control+Enter');
     await page.waitForTimeout(200);
 
+    // Not unread -- it's the current user's own comment (see the
+    // dedicated regression test below), so the badge stays absent.
     const badge = h.row(page, 1).locator('[data-testid=comment-indicator] [data-testid=comment-count-badge]');
-    await expect(badge).toHaveText('1');
+    await expect(badge).toHaveCount(0);
 
     await page.locator('[data-testid=comment-edit-btn]').first().click();
     await page.waitForTimeout(150);
@@ -668,8 +667,32 @@ test.describe('Comment-indicator column', () => {
     // The append-only log now has 2 raw entries for this one comment...
     const doc = await h.readActiveMilestoneDoc(page);
     expect(doc.issues[0].comments.length).toBe(2);
-    // ...but the badge still counts it as a single visible note.
-    await expect(badge).toHaveText('1');
+    // ...but the badge still counts it as a single visible (and already
+    // read) note, not a newly unread one.
+    await expect(badge).toHaveCount(0);
+  });
+
+  // Regression: the unread-comment watermark only used to advance when
+  // the slide-over was OPENED (markCommentsRead), which happens before
+  // a comment you then type even exists -- so your own just-posted
+  // comment counted as unread until you closed and reopened the panel.
+  test('posting your own comment does not count as unread', async ({ page }) => {
+    await h.openSettings(page);
+    await page.locator('[data-testid=settings-identity-email]').fill('me@example.com');
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(150);
+
+    await h.openSlideover(page, 1);
+    await page.locator('[data-testid=new-comment-input]').fill('my own comment');
+    await page.locator('[data-testid=new-comment-input]').press('Control+Enter');
+    await page.waitForTimeout(200);
+
+    const badge = h.row(page, 1).locator('[data-testid=comment-indicator] [data-testid=comment-count-badge]');
+    await expect(badge).toHaveCount(0); // not unread while still open
+
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(400);
+    await expect(badge).toHaveCount(0); // still not unread after closing
   });
 });
 
@@ -1588,10 +1611,7 @@ test.describe('Sort persistence', () => {
     await expect(h.colHeader(page, 'rag').locator('[title="Sort"]')).toBeVisible();
 
     await h.openTrackerSwitcher(page);
-    await page.locator('[data-testid=btn-add-milestone]').click();
-    await page.locator('[data-testid=btn-new-blank-milestone]').click();
-    await page.locator('[data-testid=new-milestone-name-input]').fill('Other milestone');
-    await page.locator('[data-testid=btn-create-milestone]').click();
+    await h.createNamedBlankProject(page, 'Other milestone');
     await page.waitForTimeout(300);
     await expect(page.locator('[data-testid=col-header] [title="Sort"]')).toHaveCount(0); // a different (blank-template) milestone, no sort carried over
 
@@ -1694,10 +1714,7 @@ test.describe('Column value filters', () => {
     await expect(page.locator('[data-testid=row]')).toHaveCount(3);
 
     await h.openTrackerSwitcher(page);
-    await page.locator('[data-testid=btn-add-milestone]').click();
-    await page.locator('[data-testid=btn-new-blank-milestone]').click();
-    await page.locator('[data-testid=new-milestone-name-input]').fill('Other milestone');
-    await page.locator('[data-testid=btn-create-milestone]').click();
+    await h.createNamedBlankProject(page, 'Other milestone');
     await page.waitForTimeout(300);
     await expect(page.locator('[data-testid=col-header] [title="Filtered"]')).toHaveCount(0); // a different (blank-template) milestone, no filter carried over
 
@@ -1746,10 +1763,7 @@ test.describe('Column order', () => {
     const moved = await page.locator('[data-testid=col-header]').evaluateAll(els => els.map(e => e.dataset.col));
 
     await h.openTrackerSwitcher(page);
-    await page.locator('[data-testid=btn-add-milestone]').click();
-    await page.locator('[data-testid=btn-new-blank-milestone]').click();
-    await page.locator('[data-testid=new-milestone-name-input]').fill('Other milestone');
-    await page.locator('[data-testid=btn-create-milestone]').click();
+    await h.createNamedBlankProject(page, 'Other milestone');
     await page.waitForTimeout(300);
 
     await h.openTrackerSwitcher(page);
@@ -1872,10 +1886,7 @@ test.describe('Column resize', () => {
     const widenedOnFirst = await h.colHeader(page, 'rag').boundingBox();
 
     await h.openTrackerSwitcher(page);
-    await page.locator('[data-testid=btn-add-milestone]').click();
-    await page.locator('[data-testid=btn-new-blank-milestone]').click();
-    await page.locator('[data-testid=new-milestone-name-input]').fill('Other milestone');
-    await page.locator('[data-testid=btn-create-milestone]').click();
+    await h.createNamedBlankProject(page, 'Other milestone');
     await page.waitForTimeout(300);
 
     await h.openTrackerSwitcher(page);
@@ -2030,10 +2041,7 @@ test.describe('App bar / Project bar / footer', () => {
 
   test('a genuinely blank project with no history yet omits the Updated segment entirely, rather than showing it empty', async ({ page }) => {
     await h.openTrackerSwitcher(page);
-    await page.locator('[data-testid=btn-add-milestone]').click();
-    await page.locator('[data-testid=btn-new-blank-milestone]').click();
-    await page.locator('[data-testid=new-milestone-name-input]').fill('A truly blank project');
-    await page.locator('[data-testid=btn-create-milestone]').click();
+    await h.createNamedBlankProject(page, 'A truly blank project');
     await page.waitForTimeout(400);
     const footer = page.locator('text=Format v0.1.0').locator('..');
     await expect(footer).toContainText('Format v0.1.0');
@@ -2106,12 +2114,35 @@ test.describe('Share menu restructure', () => {
     ]);
     expect(dl.suggestedFilename()).toMatch(/^Delivery tracker .*\.csv$/);
     const fs = require('fs');
-    const lines = fs.readFileSync(await dl.path(), 'utf8').split('\r\n');
+    const raw = fs.readFileSync(await dl.path(), 'utf8');
+    expect(raw.charCodeAt(0)).toBe(0xFEFF); // UTF-8 BOM -- otherwise Excel misdecodes non-ASCII (emoji etc) as mojibake
+    const lines = raw.slice(1).split('\r\n');
     expect(lines[0]).toBe('Issue,Type,Priority,Related,RAG,Delivery teams,Mitigation');
     expect(lines.length).toBe(10); // header + 9 seed issues
     // row 1: a select (Type/Priority/RAG) resolved to its label, a
     // multiselect (Delivery teams) joined with "; ", not raw storage ids.
     expect(lines[1]).toBe('Sidebar sizing does not stick between application starts,Enhancement,P2,,On track,Platform; Ops; Mobile,');
+  });
+
+  // Regression: without a UTF-8 BOM, Excel (which does not sniff encoding
+  // for a plain .csv) assumes the system ANSI codepage and renders emoji /
+  // accented characters as mojibake even though the underlying bytes were
+  // already valid UTF-8. The BOM is the standard signal that fixes this.
+  test('the CSV carries a UTF-8 BOM so non-ASCII text (emoji, accents) survives a real Excel import, not just a UTF-8-aware reader', async ({ page }) => {
+    await h.clickTitleToEdit(page, 1);
+    await h.typeAndCommit(page, 'Rocket emoji test \u{1F680} and accents café');
+    await page.waitForTimeout(200);
+
+    await page.locator('[data-testid=btn-notes]').click();
+    await page.waitForTimeout(300);
+    const [dl] = await Promise.all([
+      page.waitForEvent('download'),
+      page.locator('[data-testid=btn-export-csv]').click(),
+    ]);
+    const fs = require('fs');
+    const raw = fs.readFileSync(await dl.path(), 'utf8');
+    expect(raw.charCodeAt(0)).toBe(0xFEFF);
+    expect(raw).toContain('Rocket emoji test \u{1F680} and accents café');
   });
 });
 
@@ -2258,10 +2289,7 @@ test.describe('Delete project (project panel danger zone)', () => {
 
   test('deletes the current project, confirms first, and switches to another project for the same identity', async ({ page }) => {
     await h.openTrackerSwitcher(page);
-    await page.locator('[data-testid=btn-add-milestone]').click();
-    await page.locator('[data-testid=btn-new-blank-milestone]').click();
-    await page.locator('[data-testid=new-milestone-name-input]').fill('Second Project');
-    await page.locator('[data-testid=btn-create-milestone]').click();
+    await h.createNamedBlankProject(page, 'Second Project');
     await page.waitForTimeout(300);
 
     await h.openTrackerSwitcher(page);

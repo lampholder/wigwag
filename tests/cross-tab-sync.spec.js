@@ -18,10 +18,7 @@ test.describe('Cross-tab sync', () => {
     await pageB.waitForTimeout(300);
 
     await h.openTrackerSwitcher(page);
-    await page.locator('[data-testid=btn-add-milestone]').click();
-    await page.locator('[data-testid=btn-new-blank-milestone]').click();
-    await page.locator('[data-testid=new-milestone-name-input]').fill('Cross-tab test');
-    await page.locator('[data-testid=btn-create-milestone]').click();
+    await h.createNamedBlankProject(page, 'Cross-tab test');
     await page.waitForTimeout(300);
 
     await h.openTrackerSwitcher(pageB);
@@ -91,10 +88,7 @@ test.describe('Cross-tab sync', () => {
   // still falls back to the shared pointer as a reasonable default.
   test('reloading a tab stays on its own project, even if another tab made a different one active', async ({ page, context }) => {
     await h.openTrackerSwitcher(page);
-    await page.locator('[data-testid=btn-add-milestone]').click();
-    await page.locator('[data-testid=btn-new-blank-milestone]').click();
-    await page.locator('[data-testid=new-milestone-name-input]').fill('Second Project');
-    await page.locator('[data-testid=btn-create-milestone]').click();
+    await h.createNamedBlankProject(page, 'Second Project');
     await page.waitForTimeout(400);
 
     const pageB = await context.newPage();
@@ -117,6 +111,33 @@ test.describe('Cross-tab sync', () => {
     await pageC.goto(h.TRACKER_PATH);
     await pageC.waitForTimeout(300);
     await expect(pageC.locator('[data-testid=tracker-name-title]')).toHaveText('Delivery tracker');
+  });
+
+  // Regression: persistProjectIndex() ran unconditionally on every
+  // componentDidUpdate in every tab, and its payload embeds
+  // activeMilestoneId -- genuinely different per tab by design (each
+  // tracks its own active project). Two tabs open on different active
+  // projects therefore never converged on a byte-identical write, so
+  // every render in either tab produced a real 'storage' event in the
+  // other: a continuous, CPU-burning infinite loop, confirmed live via
+  // an instrumented two-tab repro. It also caused real data loss here
+  // specifically: a stale echo from a tab that hadn't yet seen a rename
+  // could land in localStorage after the real rename write and revert
+  // it, which is what this test exercises (create then immediately
+  // rename -- two closely-spaced writes -- while another tab is open on
+  // a different project the whole time).
+  test('creating then immediately renaming a project in one tab reliably reaches another tab with the final name, not a stale echo', async ({ page, context }) => {
+    const pageB = await context.newPage();
+    await pageB.goto(h.TRACKER_PATH);
+    await pageB.waitForTimeout(300);
+
+    await h.openTrackerSwitcher(page);
+    await h.createNamedBlankProject(page, 'Cross-tab test');
+    await page.waitForTimeout(300);
+
+    await h.openTrackerSwitcher(pageB);
+    await expect(h.milestoneRow(pageB, 'Cross-tab test')).toHaveCount(1);
+    await expect(h.milestoneRow(pageB, 'Untitled')).toHaveCount(0); // not a stale pre-rename echo
   });
 });
 
@@ -154,9 +175,12 @@ test.describe('Cross-tab sync: identities', () => {
     await page.locator('[data-testid=btn-create-identity]').click();
 
     // createIdentity is async (generates a real ECDSA keypair before
-    // switching) -- poll instead of assuming a fixed wait is enough.
+    // switching) -- poll instead of assuming a fixed wait is enough. 8s
+    // (40x200ms) still flaked under a long single-worker full-suite run
+    // (browser/CPU contention after ~15min of continuous test churn, not
+    // reproducible standalone) -- widened for real headroom under load.
     let ids = null;
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 100; i++) {
       ids = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_identities_v1')));
       if (ids.identities.length === 3) break;
       await page.waitForTimeout(200);

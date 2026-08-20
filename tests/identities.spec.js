@@ -414,10 +414,7 @@ test.describe('Project switcher only lists the active identity\'s own projects',
 
   test('a newly created blank project is tagged with the active identity and disappears from the switcher after switching away', async ({ page }) => {
     await h.openTrackerSwitcher(page);
-    await page.locator('[data-testid=btn-add-milestone]').click();
-    await page.locator('[data-testid=btn-new-blank-milestone]').click();
-    await page.locator('[data-testid=new-milestone-name-input]').fill('Personal-only project');
-    await page.locator('[data-testid=btn-create-milestone]').click();
+    await h.createNamedBlankProject(page, 'Personal-only project');
     await page.waitForTimeout(400);
     await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Personal-only project');
 

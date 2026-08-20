@@ -94,9 +94,8 @@ test.describe('JSONL export/import', () => {
       JSON.stringify({ type: 'issue', id: 'p1', uid: 'pu1', num: 1, fieldRefs: {}, values: { title: 'Pasted issue' }, comments: [], history: [] })
     ].join('\n');
 
-    await h.openTrackerSwitcher(page);
-    await page.locator('[data-testid=btn-add-milestone]').click();
-    await page.locator('[data-testid=btn-paste-milestone]').click();
+    await h.openImportProjectMenu(page);
+    await page.locator('[data-testid=btn-import-project-from-paste]').click();
     await page.waitForTimeout(150);
     await expect(page.locator('[data-testid=paste-import-modal]')).toBeVisible();
 
@@ -114,9 +113,8 @@ test.describe('JSONL export/import', () => {
   });
 
   test('Cancel on the paste-import modal creates nothing, and typing into the textarea does not close it', async ({ page }) => {
-    await h.openTrackerSwitcher(page);
-    await page.locator('[data-testid=btn-add-milestone]').click();
-    await page.locator('[data-testid=btn-paste-milestone]').click();
+    await h.openImportProjectMenu(page);
+    await page.locator('[data-testid=btn-import-project-from-paste]').click();
     await page.waitForTimeout(150);
 
     await page.locator('[data-testid=paste-import-textarea]').fill('typed but not submitted');
@@ -528,10 +526,7 @@ test.describe('Import / Apply-update: shared project-identity warnings', () => {
 
   test('"Import project from file..." for a file matching a DIFFERENT existing (non-active) project warns, then switches to and merges into that project', async ({ page }) => {
     await h.openTrackerSwitcher(page);
-    await page.locator('[data-testid=btn-add-milestone]').click();
-    await page.locator('[data-testid=btn-new-blank-milestone]').click();
-    await page.locator('[data-testid=new-milestone-name-input]').fill('Other Project');
-    await page.locator('[data-testid=btn-create-milestone]').click();
+    await h.createNamedBlankProject(page, 'Other Project');
     await page.waitForTimeout(300);
     const otherProjectId = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1')).activeMilestoneId);
 

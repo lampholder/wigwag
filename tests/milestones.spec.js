@@ -23,10 +23,7 @@ test.describe('Tracker switcher', () => {
 
   test('creating a blank milestone switches to it with the starter field template and no issues; switching back leaves the original untouched', async ({ page }) => {
     await h.openTrackerSwitcher(page);
-    await page.locator('[data-testid=btn-add-milestone]').click();
-    await page.locator('[data-testid=btn-new-blank-milestone]').click();
-    await page.locator('[data-testid=new-milestone-name-input]').fill('Second milestone');
-    await page.locator('[data-testid=btn-create-milestone]').click();
+    await h.createNamedBlankProject(page, 'Second milestone');
     await page.waitForTimeout(400);
 
     await expect(page.locator('[data-testid=row]')).toHaveCount(0);
@@ -45,16 +42,34 @@ test.describe('Tracker switcher', () => {
   test('projects are listed alphabetically, not in creation order', async ({ page }) => {
     for (const name of ['Zebra project', 'Apple project', 'Mango project']) {
       await h.openTrackerSwitcher(page);
-      await page.locator('[data-testid=btn-add-milestone]').click();
-      await page.locator('[data-testid=btn-new-blank-milestone]').click();
-      await page.locator('[data-testid=new-milestone-name-input]').fill(name);
-      await page.locator('[data-testid=btn-create-milestone]').click();
+      await h.createNamedBlankProject(page, name);
       await page.waitForTimeout(300);
     }
     await h.openTrackerSwitcher(page);
     const names = await page.locator('[data-testid=milestone-row]').allInnerTexts();
     const trimmed = names.map(n => n.trim().split('\n')[0]);
     expect(trimmed).toEqual(['Apple project', 'Delivery tracker', 'Mango project', 'Zebra project']);
+  });
+
+  // "+ Add project" used to open a panel (blank/naming/import-file/paste)
+  // -- it now just creates a project immediately, named "Untitled" (then
+  // "Untitled 2", "Untitled 3", ...) since import is already handled by
+  // the dedicated app-bar "Import project..." menu.
+  test('"+ Add project" creates a project named "Untitled", then "Untitled 2" etc, with no naming step or import options', async ({ page }) => {
+    await h.openTrackerSwitcher(page);
+    await h.addBlankProject(page);
+    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Untitled');
+    await expect(page.locator('[data-testid=row]')).toHaveCount(0);
+
+    await h.openTrackerSwitcher(page);
+    await h.addBlankProject(page);
+    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Untitled 2');
+
+    await h.openTrackerSwitcher(page);
+    await expect(page.locator('[data-testid=new-milestone-name-input]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=btn-import-milestone]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=btn-paste-milestone]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=milestone-row]')).toHaveCount(3); // Delivery tracker, Untitled, Untitled 2
   });
 
   // Rename moved off the header (inline edit) and into the project panel,
@@ -115,11 +130,10 @@ test.describe('Tracker switcher', () => {
       JSON.stringify({ type: 'issue', id: 'gn1', uid: 'ugn1', num: 1, fieldRefs: {}, values: { title: 'New project issue' }, comments: [], history: [] })
     ].join('\n');
 
-    await h.openTrackerSwitcher(page);
-    await page.locator('[data-testid=btn-add-milestone]').click();
+    await h.openImportProjectMenu(page);
     const [fc] = await Promise.all([
       page.waitForEvent('filechooser'),
-      page.locator('[data-testid=btn-import-milestone]').click(),
+      page.locator('[data-testid=btn-import-project-from-file]').click(),
     ]);
     await fc.setFiles({ name: 'new-project.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(pastedJsonl) });
     await page.waitForTimeout(400);
@@ -148,39 +162,33 @@ test.describe('Tracker switcher', () => {
     // Cancelling the warning does nothing at all.
     let dialogMsg = null;
     page.once('dialog', async d => { dialogMsg = d.message(); await d.dismiss(); });
-    await h.openTrackerSwitcher(page);
-    await page.locator('[data-testid=btn-add-milestone]').click();
+    await h.openImportProjectMenu(page);
     const [fc1] = await Promise.all([
       page.waitForEvent('filechooser'),
-      page.locator('[data-testid=btn-import-milestone]').click(),
+      page.locator('[data-testid=btn-import-project-from-file]').click(),
     ]);
     await fc1.setFiles({ name: 'reimport.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(exportedText) });
     await page.waitForTimeout(400);
     expect(dialogMsg).toContain('already have');
     await expect(page.locator('[data-testid=row]')).toHaveCount(9); // unchanged, cancelling did nothing
-    // The switcher/add-project dropdown is still open from before (the
-    // toggle button re-opened by openTrackerSwitcher stays open -- clicking
-    // it again would just toggle it CLOSED, not reopen it fresh) -- it's
-    // already open here, so check directly rather than re-toggling.
+    await h.openTrackerSwitcher(page);
     await expect(page.locator('[data-testid=milestone-row]')).toHaveCount(1); // still just the one project
     await page.mouse.click(700, 400); // outside click closes the dropdown
     await page.waitForTimeout(150);
 
     // Confirming merges into the existing project -- still just the one
-    // milestone, no duplicate created. The add-project panel is already
-    // expanded from before (that toggle state survives the switcher
-    // closing/reopening) -- clicking "+ Add project" again would collapse
-    // it, so don't.
+    // milestone, no duplicate created.
     page.once('dialog', d => d.accept());
-    await h.openTrackerSwitcher(page);
+    await h.openImportProjectMenu(page);
     const [fc2] = await Promise.all([
       page.waitForEvent('filechooser'),
-      page.locator('[data-testid=btn-import-milestone]').click(),
+      page.locator('[data-testid=btn-import-project-from-file]').click(),
     ]);
     await fc2.setFiles({ name: 'reimport2.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(exportedText) });
     await page.waitForTimeout(400);
     await expect(page.locator('[data-testid=row]')).toHaveCount(9); // merged, not duplicated -- still 9
-    await expect(page.locator('[data-testid=milestone-row]')).toHaveCount(1); // dropdown still open from before, check directly
+    await h.openTrackerSwitcher(page);
+    await expect(page.locator('[data-testid=milestone-row]')).toHaveCount(1);
   });
 
   test('connecting milestone A to a GitHub repo, then creating a blank milestone B, does not touch A\'s repo', async ({ page }) => {
@@ -195,10 +203,7 @@ test.describe('Tracker switcher', () => {
     const getCountAfterA = gh.getCount;
 
     await h.openTrackerSwitcher(page);
-    await page.locator('[data-testid=btn-add-milestone]').click();
-    await page.locator('[data-testid=btn-new-blank-milestone]').click();
-    await page.locator('[data-testid=new-milestone-name-input]').fill('Milestone B');
-    await page.locator('[data-testid=btn-create-milestone]').click();
+    await h.createNamedBlankProject(page, 'Milestone B');
     await page.waitForTimeout(500); // past the (shrunk) push debounce, if it were (wrongly) armed
 
     expect(gh.pushCount).toBe(pushCountAfterA); // B never pushed to A's repo

@@ -156,10 +156,7 @@ test.describe('Project notes', () => {
     await closeNotes(page);
 
     await h.openTrackerSwitcher(page);
-    await page.locator('[data-testid=btn-add-milestone]').click();
-    await page.locator('[data-testid=btn-new-blank-milestone]').click();
-    await page.locator('[data-testid=new-milestone-name-input]').fill('Other milestone');
-    await page.locator('[data-testid=btn-create-milestone]').click();
+    await h.createNamedBlankProject(page, 'Other milestone');
     await page.waitForTimeout(300);
 
     await openNotes(page);

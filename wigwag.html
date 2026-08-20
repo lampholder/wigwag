@@ -3,12 +3,21 @@
 <head>
   <script>try { var __wm = localStorage.getItem('wigwag.appearance'); if (__wm === 'dark' || __wm === 'light') document.documentElement.setAttribute('data-appearance', __wm); } catch (e) {}</script>
   <script>(function() {
-    function hide(el) { el.style.setProperty('display', 'none', 'important'); }
-    function scan() { var els = document.querySelectorAll('[data-testid$="-overlay"]'); for (var i = 0; i < els.length; i++) hide(els[i]); }
-    var obs = new MutationObserver(scan);
-    obs.observe(document, { childList: true, subtree: true, attributes: true });
-    scan();
-    window.__wigwagStopHidingOverlays = function() { obs.disconnect(); };
+    function ensureStyle() {
+      if (document.getElementById('__wigwag_prehide_style')) return;
+      var style = document.createElement('style');
+      style.id = '__wigwag_prehide_style';
+      style.textContent = '[data-testid$="-overlay"] { display: none !important; }';
+      (document.head || document.documentElement).appendChild(style);
+    }
+    ensureStyle();
+    var obs = new MutationObserver(ensureStyle);
+    obs.observe(document, { childList: true, subtree: true });
+    window.__wigwagStopHidingOverlays = function() {
+      obs.disconnect();
+      var style = document.getElementById('__wigwag_prehide_style');
+      if (style) style.remove();
+    };
   })();</script>
   <script>document.addEventListener('DOMContentLoaded', function() { window.__wigwagOwnSource = '<!DOCTYPE html>\n' + document.documentElement.outerHTML; });</script>
   <meta charset="utf-8">

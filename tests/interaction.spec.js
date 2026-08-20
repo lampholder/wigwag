@@ -2358,17 +2358,30 @@ test.describe('App bar / Project bar stay fixed while the table scrolls', () => 
 // unpacker to fetch React from unpkg.com and the app to actually mount --
 // none of them are ever legitimately open at boot. Root cause: the
 // unpacker wholesale-replaces <head>'s children partway through boot, so a
-// static CSS rule placed there doesn't survive; the fix instead uses a
-// MutationObserver (a JS object, not a DOM node, so it isn't affected by
-// that replacement) installed as the very first thing on the page to force
-// each overlay hidden the instant it appears, until componentDidMount
-// (which only runs once React has genuinely taken over) disconnects it.
-// This polls on a coarse (15ms) interval rather than reacting to every
-// mutation -- a microtask-timed observer here would race the app's own
-// hiding observer and could flag a sub-millisecond, never-actually-painted
-// window as a false positive. 15ms comfortably still catches the original
-// several-hundred-ms regression while ignoring anything below roughly one
-// animation frame, which is what "visually flashes" actually means.
+// static CSS rule placed there doesn't survive on its own; fixed with a
+// self-healing <style> tag (re-inserted by a MutationObserver -- a JS
+// object, not a DOM node, so it isn't affected by that replacement -- any
+// time it's found missing) hiding every overlay via an external stylesheet
+// rule, until componentDidMount (once React has genuinely taken over)
+// disconnects the observer and removes the style tag for good.
+//
+// That stylesheet approach replaced an earlier, BROKEN version of this fix
+// that hid each overlay by directly mutating el.style.display on it --
+// confirmed via a live repro to corrupt the framework's own rendering
+// bookkeeping (it appears to reuse a persistent DOM node per <sc-if>
+// block rather than recreate it, and diffs against what it last set that
+// node's style to; an external mutation of the same property desyncs that
+// record from the real DOM, so a later legitimate "show" skips re-applying
+// display and leaves the node permanently stuck unstyled/mispositioned).
+// The second test below guards specifically against that regression class.
+//
+// The flash-detection test polls on a coarse (15ms) interval rather than
+// reacting to every mutation -- a microtask-timed observer here would race
+// the app's own hiding observer and could flag a sub-millisecond,
+// never-actually-painted window as a false positive. 15ms comfortably
+// still catches the original several-hundred-ms regression while ignoring
+// anything below roughly one animation frame, which is what "visually
+// flashes" actually means.
 test.describe('No flash of full-screen modal overlays on page load', () => {
   test('no [data-testid$="-overlay"] element is ever observed visible before the app legitimately opens one', async ({ page }) => {
     await page.addInitScript(() => {
@@ -2385,6 +2398,59 @@ test.describe('No flash of full-screen modal overlays on page load', () => {
 
     const flashes = await page.evaluate(() => window.__overlayFlashLog);
     expect(flashes).toEqual([]);
+  });
+
+  test('every overlay still renders correctly (centered, display:flex) once the app has mounted -- the flash fix must not corrupt later legitimate use', async ({ page }) => {
+    await h.gotoTrackerFreshIdentity(page);
+    await page.waitForTimeout(400);
+
+    async function checkCentered(overlayTestId, modalTestId) {
+      const box = await page.locator('[data-testid=' + modalTestId + ']').boundingBox();
+      const viewport = page.viewportSize();
+      expect(Math.abs((box.x + box.width / 2) - viewport.width / 2)).toBeLessThan(30);
+      const display = await page.locator('[data-testid=' + overlayTestId + ']').evaluate(el => getComputedStyle(el).display);
+      expect(display).toBe('flex');
+    }
+
+    // Email gate.
+    await h.clickFieldToEdit(page, 1, 'mitigation');
+    await page.waitForTimeout(150);
+    await page.keyboard.type('trigger gate');
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(300);
+    await checkCentered('email-gate-overlay', 'email-gate-modal');
+    await page.locator('[data-testid=btn-cancel-email-gate]').click();
+    await page.waitForTimeout(200);
+
+    // Paste-merge overlay -- and, critically, the actual originally-reported
+    // bug: renaming the project (which lives behind the notes-overlay) still
+    // works, including a second, later trip through the email gate.
+    await page.locator('[data-testid=btn-import-merge]').click();
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=btn-apply-update-from-paste]').click();
+    await page.waitForTimeout(200);
+    await checkCentered('paste-merge-overlay', 'paste-merge-modal');
+    await page.locator('[data-testid=btn-cancel-paste-merge]').click();
+    await page.waitForTimeout(200);
+    await page.keyboard.press('Escape');
+
+    await page.locator('[data-testid=btn-notes]').click();
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=notes-panel]')).toBeVisible();
+    await page.locator('[data-testid=notes-rename-btn]').click();
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=notes-rename-input]').fill('Renamed After Mount');
+    await page.locator('[data-testid=notes-rename-commit-btn]').click();
+    await page.waitForTimeout(300);
+    if (await page.locator('[data-testid=email-gate-input]').count()) {
+      await checkCentered('email-gate-overlay', 'email-gate-modal');
+      await page.locator('[data-testid=email-gate-input]').fill('fresh@example.com');
+      await page.locator('[data-testid=btn-submit-email-gate]').click();
+      await page.waitForTimeout(300);
+    }
+    await page.locator('[data-testid=notes-close-btn]').click();
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Renamed After Mount');
   });
 });
 

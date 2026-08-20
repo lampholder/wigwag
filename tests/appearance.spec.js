@@ -148,3 +148,27 @@ test.describe('Appearance control', () => {
     await expect(page.locator('[data-testid=appearance-icon-system]')).toBeHidden();
   });
 });
+
+// `background: transparent` never reaches a browser-autofilled field --
+// WebKit paints the autofill background/text colour outside the normal
+// background/color properties entirely. The fix (inset box-shadow +
+// -webkit-text-fill-color) can't be triggered via a real autofill in a
+// headless test (no saved autofill profile/heuristics to trigger), so
+// this checks the rule itself is present and theme-aware, as a
+// regression guard against it quietly getting dropped later.
+test('a :-webkit-autofill override exists, theme-aware via the token layer', async ({ page }) => {
+  await h.gotoTracker(page);
+  const rule = await page.evaluate(() => {
+    for (const sheet of document.styleSheets) {
+      try {
+        for (const r of sheet.cssRules) {
+          if (r.selectorText && r.selectorText.includes('-webkit-autofill')) return r.cssText;
+        }
+      } catch (e) {}
+    }
+    return null;
+  });
+  expect(rule).toBeTruthy();
+  expect(rule).toContain('var(--surface)');
+  expect(rule).toContain('-webkit-text-fill-color: var(--text-primary)');
+});

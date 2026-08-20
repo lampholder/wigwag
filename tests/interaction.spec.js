@@ -1035,6 +1035,25 @@ test.describe('Activity history', () => {
     await expect(entries.first()).toContainText('Just a plain comment');
   });
 
+  test('a text-field history entry visually distinguishes the field name from the rest of the sentence', async ({ page }) => {
+    await h.clickFieldToEdit(page, 3, 'mitigation');
+    await h.typeAndCommit(page, 'a distinguishing note');
+    await page.waitForTimeout(200);
+
+    const slideover = await h.openSlideover(page, 3);
+    const entry = slideover.locator('[data-testid=activity-entry]').filter({ hasText: 'Mitigation set to' });
+    const label = entry.locator('b', { hasText: 'Mitigation' });
+    await expect(label).toBeVisible();
+    await expect(entry).toContainText('a distinguishing note');
+
+    // A pill entry (already visually distinct on its own) doesn't also get
+    // a redundant bolded field-name span.
+    const pillEntry = slideover.locator('[data-testid=activity-entry]').filter({ hasText: 'Priority set to' });
+    if (await pillEntry.count()) {
+      await expect(pillEntry.locator('b', { hasText: 'Priority' })).toHaveCount(0);
+    }
+  });
+
   test('new history/comment entries carry a real timestamp, not a static "Now"/"Just now" placeholder', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'priority');
     await page.waitForTimeout(150);
@@ -2139,6 +2158,47 @@ test.describe('Project panel button + header hover', () => {
   });
 });
 
+// Regression: Refresh linked issues used to render in an accent-blue text
+// color (chroma 0.03) while its three toolbar-row siblings all used
+// neutral near-black grays (chroma <=0.007) -- it read as a different kind
+// of button (primary/CTA) when it isn't one. Its hover also shifted color
+// and used a bespoke background token instead of the shared surface-hover
+// the other three use. Fixed to share one neutral base color and one hover
+// treatment across all four; Refresh's legitimate disabled/grayed-out
+// state (nothing to refresh) is untouched.
+test.describe('Toolbar row button styling is consistent', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  test('Project, Refresh linked issues, Apply update…, and Share all share the same resolved text color', async ({ page }) => {
+    const ids = ['btn-notes', 'btn-refresh-all', 'btn-import-merge', 'btn-export'];
+    const colors = await page.evaluate((ids) => ids.map(id => getComputedStyle(document.querySelector('[data-testid="' + id + '"]')).color), ids);
+    expect(new Set(colors).size).toBe(1);
+  });
+
+  test('Refresh linked issues still visually grays out when there is nothing to refresh', async ({ page }) => {
+    // Seed data's one linked issue (row 1) is what makes the button
+    // enabled at all -- delete it and confirm the disabled/grayed styling
+    // machinery still exists and differs from the shared enabled color,
+    // not accidentally unified away along with the rest of the button.
+    const enabledColor = await page.locator('[data-testid=btn-refresh-all]').evaluate(el => getComputedStyle(el).color);
+
+    // fieldRefs is a derived projection (re-computed from each issue's own
+    // history on load, not read from the persisted doc directly -- see
+    // deriveIssueFieldRefs) -- strip the history entries that carry a
+    // fieldRef instead of the (non-persisted) fieldRefs field itself.
+    const doc = await h.readActiveMilestoneDoc(page);
+    doc.issues.forEach(iss => { iss.history = iss.history.filter(hh => !hh.fieldRef); });
+    await h.writeActiveMilestoneDoc(page, doc);
+    await page.reload();
+    await page.waitForTimeout(300);
+
+    const disabledColor = await page.locator('[data-testid=btn-refresh-all]').evaluate(el => getComputedStyle(el).color);
+    const disabledCursor = await page.locator('[data-testid=btn-refresh-all]').evaluate(el => getComputedStyle(el).cursor);
+    expect(disabledCursor).toBe('default');
+    expect(disabledColor).not.toBe(enabledColor);
+  });
+});
+
 test.describe('Project dropdown anchor', () => {
   test('the dropdown anchors near the project name\'s own position, not the header row\'s outer edge', async ({ page }) => {
     await h.gotoTracker(page);
@@ -2288,5 +2348,42 @@ test.describe('App bar / Project bar stay fixed while the table scrolls', () => 
     // Dropdowns anchored to the bars still render correctly on top of scrolled table content.
     await page.locator('[data-testid=identity-pill]').click();
     await expect(page.locator('[data-testid=identity-option]').first()).toBeVisible();
+  });
+});
+
+// Regression: every full-screen modal scrim ([data-testid$="-overlay"]:
+// email-gate, paste-import, paste-merge, identities, notes) used to render
+// visible for a real, human-noticeable stretch (measured 400ms-1.5s in a
+// live repro) on page load/reload, for as long as it took the __bundler
+// unpacker to fetch React from unpkg.com and the app to actually mount --
+// none of them are ever legitimately open at boot. Root cause: the
+// unpacker wholesale-replaces <head>'s children partway through boot, so a
+// static CSS rule placed there doesn't survive; the fix instead uses a
+// MutationObserver (a JS object, not a DOM node, so it isn't affected by
+// that replacement) installed as the very first thing on the page to force
+// each overlay hidden the instant it appears, until componentDidMount
+// (which only runs once React has genuinely taken over) disconnects it.
+// This polls on a coarse (15ms) interval rather than reacting to every
+// mutation -- a microtask-timed observer here would race the app's own
+// hiding observer and could flag a sub-millisecond, never-actually-painted
+// window as a false positive. 15ms comfortably still catches the original
+// several-hundred-ms regression while ignoring anything below roughly one
+// animation frame, which is what "visually flashes" actually means.
+test.describe('No flash of full-screen modal overlays on page load', () => {
+  test('no [data-testid$="-overlay"] element is ever observed visible before the app legitimately opens one', async ({ page }) => {
+    await page.addInitScript(() => {
+      window.__overlayFlashLog = [];
+      function anyVisibleOverlay() {
+        return Array.from(document.querySelectorAll('[data-testid$="-overlay"]'))
+          .some(el => getComputedStyle(el).display !== 'none');
+      }
+      const iv = setInterval(() => { if (anyVisibleOverlay()) window.__overlayFlashLog.push(Date.now()); }, 15);
+      setTimeout(() => clearInterval(iv), 2000);
+    });
+    await h.gotoTracker(page);
+    await page.waitForTimeout(2100);
+
+    const flashes = await page.evaluate(() => window.__overlayFlashLog);
+    expect(flashes).toEqual([]);
   });
 });

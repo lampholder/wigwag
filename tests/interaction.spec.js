@@ -2387,3 +2387,75 @@ test.describe('No flash of full-screen modal overlays on page load', () => {
     expect(flashes).toEqual([]);
   });
 });
+
+// Three complementary, persistent signals that rows continue below the
+// fold (design handoff: more_rows_indicator.zip): a "N more below" pill
+// (magnitude + jump-to-end shortcut), a "Showing X of Y" caption next to
+// the filter box (proportion, at rest), and an always-visible themed
+// scrollbar (ambient). See measureTableOverflow()'s own comments for the
+// two counting traps (rect-based measurement, not offsetTop; clamp to
+// zero at the very end of the scroll range).
+test.describe('Signalling rows below the fold', () => {
+  test('a short viewport shows the pill and a "Showing X of Y" caption; a tall one shows neither, just "N issues"', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 500 });
+    await h.gotoTracker(page);
+    await page.waitForTimeout(300);
+
+    await expect(page.locator('[data-testid=more-below-pill]')).toBeVisible();
+    await expect(page.locator('[data-testid=row-count-caption]')).toHaveText(/^Showing \d+ of 9$/);
+
+    await page.setViewportSize({ width: 1280, height: 1400 });
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=more-below-pill]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=row-count-caption]')).toHaveText('9 issues');
+  });
+
+  test('clicking the pill scrolls to the end, the pill disappears, and the caption flips to "N issues"; scrolling back up brings it back', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 500 });
+    await h.gotoTracker(page);
+    await page.waitForTimeout(300);
+
+    await page.locator('[data-testid=more-below-pill]').click();
+    await page.waitForTimeout(600);
+    await expect(page.locator('[data-testid=more-below-pill]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=row-count-caption]')).toHaveText('9 issues');
+
+    await page.locator('[data-testid=table-scroll-wrap]').evaluate(el => { el.scrollTop = 0; });
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=more-below-pill]')).toBeVisible();
+  });
+
+  test('the row count reflects the active filter, and the count decreases while scrolling', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 500 });
+    await h.gotoTracker(page);
+    await page.waitForTimeout(300);
+
+    const before = await page.locator('[data-testid=more-below-pill]').innerText();
+
+    await page.locator('[data-testid=table-scroll-wrap]').evaluate(el => { el.scrollTop = el.scrollHeight / 2; });
+    await page.waitForTimeout(300);
+    const mid = await page.locator('[data-testid=more-below-pill]').innerText();
+    expect(mid).not.toBe(before); // decremented, not static
+
+    await page.locator('[data-testid=filter-input]').fill('nonexistent-keyword-zzz');
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=more-below-pill]')).toHaveCount(0); // nothing left to overflow
+    await expect(page.locator('[data-testid=row-count-caption]')).toHaveText('0 issues');
+  });
+
+  test('the table scroll container uses a themed, always-visible (non-overlay) scrollbar', async ({ page }) => {
+    await h.gotoTracker(page);
+    const rule = await page.evaluate(() => {
+      for (const sheet of document.styleSheets) {
+        try {
+          for (const r of sheet.cssRules) {
+            if (r.selectorText === '[data-testid="table-scroll-wrap"]') return r.cssText;
+          }
+        } catch (e) {}
+      }
+      return null;
+    });
+    expect(rule).toBeTruthy();
+    expect(rule).toContain('scrollbar-width: thin');
+  });
+});

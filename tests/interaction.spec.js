@@ -1097,7 +1097,7 @@ test.describe('Comments: markdown rendering and append-only editing', () => {
     await expect(page.locator('[data-testid=comment-md]').first()).toContainText('click me');
   });
 
-  test('editing your own comment appends a new append-only entry rather than mutating the original, and shows an "(edited)" badge', async ({ page }) => {
+  test('editing your own comment appends a new append-only entry and auto-redacts the prior revision, and shows an "(edited)" badge', async ({ page }) => {
     await setIdentity(page, 'me@example.com');
     await h.openSlideover(page, 1);
     await page.locator('[data-testid=new-comment-input]').fill('original text');
@@ -1114,12 +1114,21 @@ test.describe('Comments: markdown rendering and append-only editing', () => {
     await expect(page.locator('[data-testid=comment-md]').first()).toContainText('updated text');
     await expect(page.locator('body')).toContainText('(edited)');
 
+    // The edit is appended, not a mutation of the original entry -- but
+    // since the UI never showed past revisions anyway, editing also
+    // auto-redacts the prior one (see "Comment signing & redaction" in
+    // data-structures.spec.js): the original entry survives as a
+    // content-free tombstone, not with its old text intact.
     const doc = await h.readActiveMilestoneDoc(page);
     const comments = doc.issues[0].comments;
-    expect(comments.length).toBe(2); // original entry untouched, edit appended
-    expect(comments.some(c => c.text === 'original text')).toBe(true);
-    expect(comments.some(c => c.text === 'updated text')).toBe(true);
+    expect(comments.length).toBe(2); // tombstoned original + live edit, not just 1 survivor
     expect(comments[0].id).toBe(comments[1].id); // same comment, same id across both entries
+
+    const tombstone = comments.find(c => c.redacted);
+    const live = comments.find(c => !c.redacted);
+    expect(tombstone).toBeTruthy();
+    expect(tombstone.text).toBeUndefined();
+    expect(live.text).toBe('updated text');
   });
 
   test('Escape cancels an in-progress edit without changing the stored comment', async ({ page }) => {

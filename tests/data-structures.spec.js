@@ -299,6 +299,180 @@ test.describe('Redaction (two-signature squashing)', () => {
   });
 });
 
+// Comments (issue-level and project-level) get the same two-signature
+// scheme as history entries. Unlike field history, a comment auto-redacts
+// its own prior revision on every edit -- the UI never showed past
+// revisions anyway (latestCommentsById always collapsed to the newest), so
+// nothing user-visible is lost by not keeping the old text around. Manual
+// "Redact" is also available on demand, for content nobody ever edited but
+// that still shouldn't be kept (e.g. an accidentally-pasted secret).
+test.describe('Comment signing & redaction', () => {
+  test.beforeEach(async ({ page }) => {
+    await h.mockGithubApi(page);
+    await h.gotoTracker(page);
+    await h.openSettings(page);
+    await page.locator('[data-testid=settings-identity-email]').fill('me@example.com');
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(200);
+  });
+
+  async function verifyCommentBoth(page, entry, issueId) {
+    return page.evaluate(async ({ entry, issueId }) => {
+      const SIGN_ALG = { name: 'ECDSA', namedCurve: 'P-256' };
+      function bytesFromBase64(b64) {
+        const bin = atob(b64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        return bytes;
+      }
+      async function verify(payloadStr, sigBase64, pubKeyJwk) {
+        if (!sigBase64 || !pubKeyJwk) return false;
+        const key = await crypto.subtle.importKey('jwk', pubKeyJwk, SIGN_ALG, false, ['verify']);
+        return await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, bytesFromBase64(sigBase64), new TextEncoder().encode(payloadStr));
+      }
+      const key = issueId ? 'issueId' : 'projectId';
+      const idVal = issueId || entry.projectId;
+      const fullPayload = JSON.stringify({ [key]: idVal, id: entry.id, text: entry.text, time: entry.time, sortKey: entry.sortKey, author: entry.author, email: entry.email || '' });
+      const redactedPayload = JSON.stringify({ [key]: idVal, id: entry.id, time: entry.time, sortKey: entry.sortKey, author: entry.author, email: entry.email || '' });
+      return {
+        fullOk: entry.sig ? await verify(fullPayload, entry.sig, entry.pubKey) : null,
+        redactedOk: await verify(redactedPayload, entry.sigRedacted, entry.pubKey)
+      };
+    }, { entry, issueId });
+  }
+
+  test('a freshly-posted issue comment carries both signatures, and both independently verify', async ({ page }) => {
+    await h.openSlideover(page, 1);
+    await page.locator('[data-testid=new-comment-input]').fill('a real comment');
+    await page.keyboard.press('Control+Enter');
+    await page.waitForTimeout(300);
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    const issue = doc.issues[0];
+    const entry = issue.comments[issue.comments.length - 1];
+    expect(entry.sig).toBeTruthy();
+    expect(entry.sigRedacted).toBeTruthy();
+    expect(entry.sig).not.toBe(entry.sigRedacted);
+
+    const { fullOk, redactedOk } = await verifyCommentBoth(page, entry, issue.id);
+    expect(fullOk).toBe(true);
+    expect(redactedOk).toBe(true);
+  });
+
+  test('editing a comment auto-redacts its prior revision -- the tombstone\'s sigRedacted still verifies cold', async ({ page }) => {
+    await h.openSlideover(page, 1);
+    await page.locator('[data-testid=new-comment-input]').fill('first draft');
+    await page.keyboard.press('Control+Enter');
+    await page.waitForTimeout(300);
+
+    await page.locator('[data-testid=comment-edit-btn]').first().click();
+    await page.locator('[data-testid=comment-edit-input]').fill('edited draft');
+    await page.locator('[data-testid=comment-edit-save]').click();
+    await page.waitForTimeout(300);
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    const issue = doc.issues[0];
+    const commentId = issue.comments[issue.comments.length - 1].id;
+    const revisions = issue.comments.filter(c => c.id === commentId);
+    expect(revisions.length).toBe(2);
+
+    const tombstone = revisions.find(c => c.redacted);
+    const live = revisions.find(c => !c.redacted);
+    expect(tombstone).toBeTruthy();
+    expect(tombstone.text).toBeUndefined();
+    expect(tombstone.sig).toBeUndefined();
+    expect(tombstone.sigRedacted).toBeTruthy();
+    expect(live.text).toBe('edited draft');
+
+    const { redactedOk } = await verifyCommentBoth(page, tombstone, issue.id);
+    expect(redactedOk).toBe(true);
+
+    // The edit never shows the prior revision in the UI -- only the
+    // current text renders, no stray "redacted" placeholder for it.
+    await expect(page.locator('[data-testid=comment-md]').first()).toContainText('edited draft');
+    await expect(page.locator('[data-testid=activity-redacted-placeholder]')).toHaveCount(0);
+  });
+
+  test('manually redacting a comment via the UI tombstones it and shows a placeholder, without crashing the activity feed', async ({ page }) => {
+    await h.openSlideover(page, 1);
+    await page.locator('[data-testid=new-comment-input]').fill('oops a secret');
+    await page.keyboard.press('Control+Enter');
+    await page.waitForTimeout(300);
+
+    page.once('dialog', d => d.accept());
+    await page.locator('[data-testid=activity-redact-btn]').first().click();
+    await page.waitForTimeout(300);
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    const issue = doc.issues[0];
+    const entry = issue.comments[issue.comments.length - 1];
+    expect(entry.redacted).toBe(true);
+    expect(entry.text).toBeUndefined();
+
+    await expect(page.locator('[data-testid=activity-redacted-placeholder]')).toHaveCount(1);
+    // No crash: the rest of the activity feed still renders.
+    await expect(page.locator('[data-testid=activity-entry]').first()).toBeVisible();
+  });
+
+  test('manually redacting a field-history entry via the UI tombstones it and does not throw building its activity pill', async ({ page }) => {
+    await h.clickFieldToEdit(page, 1, 'mitigation');
+    await h.typeAndCommit(page, 'sensitive mitigation detail');
+    await page.waitForTimeout(300);
+    await h.openSlideover(page, 1);
+    await page.waitForTimeout(200);
+
+    page.once('dialog', d => d.accept());
+    await page.locator('[data-testid=activity-redact-btn]').first().click();
+    await page.waitForTimeout(300);
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    const entry = doc.issues[0].history.find(hh => hh.field === 'mitigation');
+    expect(entry.redacted).toBe(true);
+    expect(entry.text).toBeUndefined();
+    expect(entry.value).toBeUndefined();
+
+    await expect(page.locator('[data-testid=activity-redacted-placeholder]').first()).toBeVisible();
+  });
+
+  test('legacy history/comments without an id (predating this feature) are neither editable nor redactable', async ({ page }) => {
+    // The demo fixture's own seed entries predate the `id` field entirely.
+    await h.openSlideover(page, 1);
+    await page.waitForTimeout(200);
+    // Only the fresh entries created in other tests get action buttons;
+    // on a pristine issue there is nothing to redact yet.
+    await expect(page.locator('[data-testid=activity-redact-btn]')).toHaveCount(0);
+  });
+
+  test('a freshly-posted project comment gets a stable id and both signatures, and can be manually redacted', async ({ page }) => {
+    await page.locator('[data-testid=btn-notes]').click();
+    await page.waitForTimeout(300);
+    await page.locator('[data-testid=project-comment-input]').fill('a project-wide note');
+    await page.locator('[data-testid=project-comment-post-btn]').click();
+    await page.waitForTimeout(300);
+
+    let doc = await h.readActiveMilestoneDoc(page);
+    let entry = doc.projectComments[doc.projectComments.length - 1];
+    expect(entry.id).toBeTruthy();
+    expect(entry.sig).toBeTruthy();
+    expect(entry.sigRedacted).toBeTruthy();
+
+    const projectId = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1')).activeMilestoneId);
+    const { fullOk, redactedOk } = await verifyCommentBoth(page, { ...entry, projectId }, null);
+    expect(fullOk).toBe(true);
+    expect(redactedOk).toBe(true);
+
+    page.once('dialog', d => d.accept());
+    await page.locator('[data-testid=project-comment-redact-btn]').first().click();
+    await page.waitForTimeout(300);
+
+    doc = await h.readActiveMilestoneDoc(page);
+    entry = doc.projectComments.find(c => c.id === entry.id);
+    expect(entry.redacted).toBe(true);
+    expect(entry.text).toBeUndefined();
+    await expect(page.locator('[data-testid=project-comment-redacted-placeholder]')).toHaveCount(1);
+  });
+});
+
 // "Import project from file..." and "Apply update..." now share the same
 // underlying parse-then-decide path (handleImportParsed/
 // handleApplyUpdateParsed), diverging only in which project a match gets

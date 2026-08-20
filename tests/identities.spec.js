@@ -106,7 +106,15 @@ test.describe('Multiple identities: pill, dropdown, title prefix', () => {
     await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Project B2');
   });
 
-  test('switching to an identity with zero projects shows no issues and none of the previous identity\'s data (uses switchProject\'s existing no-doc-found fallback, same one a not-yet-persisted project id already falls back to)', async ({ page }) => {
+  // Regression: switching to an identity with zero projects used to call
+  // switchProject(null), leaving state.projectId genuinely null -- the UI's
+  // various "meta ? meta.name : 'Untitled'" fallbacks then rendered a name
+  // that LOOKED like a real, renamable project but wasn't backed by any
+  // project object, so trying to rename it silently did nothing (nothing
+  // ever matched state.projectId). Fixed the same way deleteProject()
+  // already handles losing an identity's last project: auto-create a real
+  // blank one instead of leaving projectId null.
+  test('switching to an identity with zero projects creates a real, immediately-renamable blank project -- not a phantom "Untitled" placeholder', async ({ page }) => {
     await h.seedTwoIdentities(page, {
       projects: [
         { id: 'project-a', name: 'Project A', identityId: 'identity-a' },
@@ -123,6 +131,26 @@ test.describe('Multiple identities: pill, dropdown, title prefix', () => {
     // across the switch.
     await expect(page.locator('[data-testid=row]')).toHaveCount(0);
     await expect(page.getByText('Project A', { exact: true })).toHaveCount(0);
+
+    // A real, named project exists -- not the null-projectId fallback.
+    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('New project');
+    const idx = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1')));
+    const active = idx.milestones.find(m => m.id === idx.activeMilestoneId);
+    expect(active).toBeTruthy();
+    expect(active.identityId).toBe('identity-b'); // Northwind, not left/mis-tagged to Personal
+
+    // And it's genuinely renamable -- the actual bug report.
+    await page.locator('[data-testid=btn-notes]').click();
+    await page.waitForTimeout(300);
+    await page.locator('[data-testid=notes-rename-btn]').click();
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=notes-rename-input]').fill('Wigwag');
+    await page.locator('[data-testid=notes-rename-commit-btn]').click();
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=notes-panel]')).toContainText('Wigwag');
+    await page.locator('[data-testid=notes-close-btn]').click();
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Wigwag');
   });
 
   test('clicking "Manage identities..." closes the dropdown and opens the Identities panel', async ({ page }) => {

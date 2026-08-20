@@ -304,9 +304,10 @@ async function mockJiraProxy(page, fixtures, proxyUrl = 'http://localhost:8934')
 }
 
 // Settings moved off its own standalone gear button and into the identity
-// dropdown (a "Settings..." link, above "Manage identities...") -- this
+// dropdown (a "Settings..." link on the active identity's own card) -- this
 // helper hides that two-click path so every existing call site (there are
-// many) keeps working unchanged.
+// many) keeps working unchanged. Opening always resets to the Identity
+// section (see openSettingsSection below for the other three).
 async function openSettings(page) {
   await page.locator('[data-testid=identity-pill]').click();
   await page.waitForTimeout(150);
@@ -314,23 +315,40 @@ async function openSettings(page) {
   await page.waitForTimeout(150);
 }
 
-async function setGithubToken(page, token) {
+// Settings is now a two-pane modal split into Identity/github/sync/
+// integrations sections -- most fields only exist in the DOM once their
+// own section is selected. Opens Settings (always landing on Identity
+// first) then, if a different section is requested, clicks over to it.
+async function openSettingsSection(page, sectionId) {
   await openSettings(page);
+  if (sectionId && sectionId !== 'identity') {
+    await page.locator('[data-testid=settings-nav-item][data-section-id=' + sectionId + ']').click();
+    await page.waitForTimeout(120);
+  }
+}
+
+async function setGithubToken(page, token) {
+  await openSettingsSection(page, 'github');
   await page.locator('[data-testid=settings-github-token]').fill(token);
-  await page.mouse.click(10, 10); // outside Settings -- its panel is tall enough to reach (700,700) on some layouts
+  await page.mouse.click(10, 10); // outside Settings -- its full-screen backdrop closes it from anywhere
   await page.waitForTimeout(150);
 }
 
-// Configures the tracker's own repo-sync (Settings > GITHUB REPO SYNC),
-// distinct from setGithubToken's issue-linking-only use above (the token
-// field is dual-purpose and shared by both).
+// Configures the tracker's own repo-sync (Settings > Sync > GITHUB REPO
+// SYNC), distinct from setGithubToken's issue-linking-only use above (the
+// token field is dual-purpose and shared by both, but now lives in the
+// GitHub access section while repo/path/branch live in Sync).
 async function setGithubRepoSync(page, { repo, path, branch, token } = {}) {
-  await openSettings(page);
+  await openSettingsSection(page, 'github');
   if (token !== undefined) await page.locator('[data-testid=settings-github-token]').fill(token);
-  if (repo !== undefined) await page.locator('[data-testid=settings-github-repo]').fill(repo);
-  if (path !== undefined) await page.locator('[data-testid=settings-github-repo-path]').fill(path);
-  if (branch !== undefined) await page.locator('[data-testid=settings-github-repo-branch]').fill(branch);
-  await page.mouse.click(10, 10); // outside Settings -- its panel is tall enough to reach (700,700) on some layouts
+  if (repo !== undefined || path !== undefined || branch !== undefined) {
+    await page.locator('[data-testid=settings-nav-item][data-section-id=sync]').click();
+    await page.waitForTimeout(120);
+    if (repo !== undefined) await page.locator('[data-testid=settings-github-repo]').fill(repo);
+    if (path !== undefined) await page.locator('[data-testid=settings-github-repo-path]').fill(path);
+    if (branch !== undefined) await page.locator('[data-testid=settings-github-repo-branch]').fill(branch);
+  }
+  await page.mouse.click(10, 10); // outside Settings -- its full-screen backdrop closes it from anywhere
   await page.waitForTimeout(150);
 }
 
@@ -375,9 +393,9 @@ function mockGithubContentsApi(page, repo, path = 'tracker.jsonl') {
 }
 
 async function setJiraProxyUrl(page, url) {
-  await openSettings(page);
+  await openSettingsSection(page, 'integrations');
   await page.locator('[data-testid=settings-jira-proxy-url]').fill(url);
-  await page.mouse.click(10, 10); // outside Settings -- its panel is tall enough to reach (700,700) on some layouts
+  await page.mouse.click(10, 10); // outside Settings -- its full-screen backdrop closes it from anywhere
   await page.waitForTimeout(150);
 }
 
@@ -537,6 +555,7 @@ module.exports = {
   mockGithubContentsApi,
   mockJiraProxy,
   openSettings,
+  openSettingsSection,
   setGithubToken,
   setGithubRepoSync,
   setJiraProxyUrl,

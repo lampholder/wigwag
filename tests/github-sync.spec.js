@@ -217,7 +217,7 @@ test.describe('GitHub OAuth sign-in popup handshake', () => {
   test('a correctly-nonced message from the configured proxy origin fills in the token', async ({ page }) => {
     await h.gotoTracker(page);
     const lastOpenedUrl = await stubWindowOpen(page);
-    await h.openSettings(page);
+    await h.openSettingsSection(page, 'github');
     await page.locator('[data-testid=settings-github-oauth-client-id]').fill('Iv1.testclientid');
     // Same origin the test server itself runs on, so a same-page
     // postMessage's real event.origin matches what the handler expects.
@@ -239,7 +239,7 @@ test.describe('GitHub OAuth sign-in popup handshake', () => {
   test('a message with the wrong state nonce is ignored', async ({ page }) => {
     await h.gotoTracker(page);
     await stubWindowOpen(page);
-    await h.openSettings(page);
+    await h.openSettingsSection(page, 'github');
     await page.locator('[data-testid=settings-github-oauth-client-id]').fill('Iv1.testclientid');
     await page.locator('[data-testid=settings-github-oauth-proxy-url]').fill('http://localhost:8935');
     await page.locator('[data-testid=btn-github-signin]').click();
@@ -253,7 +253,7 @@ test.describe('GitHub OAuth sign-in popup handshake', () => {
   test('a correctly-nonced message from an unexpected origin is ignored', async ({ page }) => {
     await h.gotoTracker(page);
     const lastOpenedUrl = await stubWindowOpen(page);
-    await h.openSettings(page);
+    await h.openSettingsSection(page, 'github');
     await page.locator('[data-testid=settings-github-oauth-client-id]').fill('Iv1.testclientid');
     // Configured proxy is on a DIFFERENT origin than this test page actually
     // runs on -- a same-page postMessage's real event.origin can never match

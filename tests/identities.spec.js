@@ -1,12 +1,20 @@
-// Spec section: Multi-identity (Phase 2 of the identity/IA design handoff)
+// Spec section: Multi-identity (Phase 2 of the identity/IA design handoff),
+// plus the identity-scoped Settings redesign on top of it (settings.zip):
 //   - An identity is a named bundle: label, email, state repo, signing key,
-//     host token, bridge root. Projects belong to an identity.
+//     GitHub token, Jira proxy. Projects belong to an identity.
 //   - The pill and title prefix always render, even with exactly one
 //     identity (deliberate deviation from the README/prototype, which only
 //     show them at 2+ -- otherwise there's no entry point at all to the
-//     concept of identities, since "Manage identities..." only lives in
-//     the pill's own dropdown). The dropdown's SWITCH IDENTITY list simply
+//     concept of identities). The dropdown's SWITCH IDENTITY list simply
 //     has one row in that case, not a different layout.
+//   - Settings is a single surface, unambiguously scoped to the active
+//     identity: a two-pane modal (Identity/GitHub access/Sync/Integrations
+//     sections) reached via a "Settings…" button attached to the active
+//     identity's own card in the pill dropdown. The separate "Manage
+//     identities" panel this used to duplicate is gone -- its read-only
+//     facts (signing key, project count, default-identity toggle) moved
+//     into the modal's Identity section, and "+ Add identity…" moved
+//     inline into the dropdown itself.
 const { test, expect } = require('@playwright/test');
 const h = require('./helpers');
 
@@ -34,7 +42,7 @@ test.describe('Single identity: pill/prefix still render, migration labels it "P
   });
 
   test('migration preserves the JIRA PROXY URL default for a user who never set their own (regression: it was silently dropped to empty once the gear popover started reading the migrated identity record)', async ({ page }) => {
-    await h.openSettings(page);
+    await h.openSettingsSection(page, 'integrations');
     await expect(page.locator('[data-testid=settings-jira-proxy-url]')).toHaveValue('http://localhost:8934');
   });
 });
@@ -52,7 +60,7 @@ test.describe('Multiple identities: pill, dropdown, title prefix', () => {
     await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Project A');
   });
 
-  test('opening the dropdown lists both identities with state repo/project counts, a checkmark on the active one, the note line, and Manage identities...', async ({ page }) => {
+  test('opening the dropdown lists both identities with state repo/project counts, a checkmark on the active one, the note line, and a Settings… button on the active card', async ({ page }) => {
     await page.locator('[data-testid=identity-pill]').click();
     const options = page.locator('[data-testid=identity-option]');
     await expect(options).toHaveCount(2);
@@ -64,7 +72,7 @@ test.describe('Multiple identities: pill, dropdown, title prefix', () => {
     expect(texts[1]).toContain('2 projects');
     await expect(options.first().locator('text=✓')).toBeVisible(); // active identity checked
     await expect(page.getByText('Switching reloads the project list and everything you write is attributed to that address.')).toBeVisible();
-    await expect(page.locator('[data-testid=btn-manage-identities]')).toContainText('Manage identities…');
+    await expect(page.locator('[data-testid=btn-open-settings]')).toContainText('Settings…');
   });
 
   test('clicking outside the open dropdown closes it', async ({ page }) => {
@@ -153,12 +161,64 @@ test.describe('Multiple identities: pill, dropdown, title prefix', () => {
     await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Wigwag');
   });
 
-  test('clicking "Manage identities..." closes the dropdown and opens the Identities panel', async ({ page }) => {
+  test('clicking "Settings…" on the active card closes the dropdown and opens the Settings modal on the Identity section', async ({ page }) => {
     await page.locator('[data-testid=identity-pill]').click();
-    await page.locator('[data-testid=btn-manage-identities]').click();
+    await page.locator('[data-testid=btn-open-settings]').click();
     await page.waitForTimeout(150);
     await expect(page.locator('[data-testid=identity-option]')).toHaveCount(0);
-    await expect(page.locator('[data-testid=identities-panel]')).toBeVisible();
+    await expect(page.locator('[data-testid=settings-modal]')).toBeVisible();
+    await expect(page.locator('[data-testid=settings-identity-email]')).toBeVisible();
+  });
+
+  // The active identity's own row in SWITCH IDENTITY is inert -- it reads
+  // as state (orientation, alongside the checkmark), not a control, since
+  // clicking your current identity would otherwise be a visible no-op.
+  test('the active identity\'s own row in SWITCH IDENTITY is inert: cursor:default, no re-trigger', async ({ page }) => {
+    await page.locator('[data-testid=identity-pill]').click();
+    const activeOption = page.locator('[data-testid=identity-option]').filter({ hasText: 'Personal' });
+    await expect(activeOption).toHaveCSS('cursor', 'default');
+
+    const before = await page.evaluate(() => localStorage.getItem('git_native_tracker_identities_v1'));
+    await activeOption.click();
+    await page.waitForTimeout(200);
+    const after = await page.evaluate(() => localStorage.getItem('git_native_tracker_identities_v1'));
+    expect(after).toBe(before); // no state change from clicking the already-active row
+    await expect(page.locator('[data-testid=identity-option]')).toHaveCount(2); // dropdown stays open, didn't "switch"
+  });
+
+  // "+ Add identity…" moved from the deleted Identities panel into the
+  // dropdown itself -- a two-field inline form, not a modal.
+  test('"+ Add identity…" reveals an inline label/email form in the dropdown; Cancel discards it without creating anything', async ({ page }) => {
+    await page.locator('[data-testid=identity-pill]').click();
+    await expect(page.locator('[data-testid=add-identity-form]')).toHaveCount(0);
+    await page.locator('[data-testid=btn-add-identity]').click();
+    await expect(page.locator('[data-testid=add-identity-form]')).toBeVisible();
+    await page.locator('[data-testid=new-identity-label-input]').fill('Acme Co');
+    await page.locator('[data-testid=btn-cancel-add-identity]').click();
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=add-identity-form]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=identity-option]')).toHaveCount(2);
+  });
+
+  test('creating a new identity via the inline form generates its own signing key, switches to it, and lands on its empty (zero-project) state', async ({ page }) => {
+    await page.locator('[data-testid=identity-pill]').click();
+    await page.locator('[data-testid=btn-add-identity]').click();
+    await page.locator('[data-testid=new-identity-label-input]').fill('Acme Co');
+    await page.locator('[data-testid=new-identity-email-input]').fill('me@acme.test');
+    await page.locator('[data-testid=btn-create-identity]').click();
+    await page.waitForTimeout(400);
+
+    await expect(page.locator('[data-testid=identity-pill]')).toContainText('Acme Co');
+    await expect(page.locator('[data-testid=row]')).toHaveCount(0);
+
+    const idsRaw = await page.evaluate(() => localStorage.getItem('git_native_tracker_identities_v1'));
+    const ids = JSON.parse(idsRaw);
+    const created = ids.identities.find(i => i.label === 'Acme Co');
+    expect(created).toBeTruthy();
+    expect(created.email).toBe('me@acme.test');
+    expect(created.signingPublicKeyJwk).toBeTruthy();
+    expect(created.signingPrivateKeyJwk).toBeTruthy();
+    expect(ids.activeIdentityId).toBe(created.id);
   });
 });
 
@@ -205,92 +265,125 @@ test.describe('Active identity reconciles with the active project at boot (regre
   });
 });
 
-test.describe('Settings › Identities panel', () => {
+// The old "Manage identities" panel duplicated these same facts read-only
+// in a second surface; deleted, and the facts moved into the Settings
+// modal's own Identity section (the "THIS IDENTITY" grid: signing key,
+// project count, default-identity toggle) plus what the dropdown's active
+// card already shows (label, email, state repo, project count).
+test.describe('Settings modal: Identity section', () => {
   test.beforeEach(async ({ page }) => {
     await h.seedTwoIdentities(page);
     await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
     await page.waitForTimeout(400);
+    await h.openSettings(page);
+  });
+
+  test('header identifies which identity Settings applies to, and the "THIS IDENTITY" grid shows signing key / project count / default-identity state', async ({ page }) => {
+    const body = page.locator('[data-testid=settings-body]');
+    await expect(page.locator('[data-testid=settings-modal]')).toContainText('SETTINGS FOR');
+    await expect(page.locator('[data-testid=settings-modal]')).toContainText('Personal');
+    await expect(page.locator('[data-testid=settings-modal]')).toContainText('tom@personal.com');
+
+    await expect(body).toContainText('Signing key');
+    // componentDidMount's own ensureIdentity() call already generated one
+    // for the active identity by the time Settings opens (see "Per-identity
+    // signing keys" below) -- "None yet" only shows for an identity that
+    // has never been made active.
+    await expect(body).toContainText('Generated in this browser');
+    await expect(body).toContainText('1 project');
+    await expect(body).toContainText('DEFAULT IDENTITY'); // Personal starts as default
+    await expect(page.locator('[data-testid=btn-make-default]')).toHaveCount(0); // no-op on the already-default identity, so not even shown
+  });
+
+  test('"Make default" works on a non-default identity, and swaps which one shows the pill', async ({ page }) => {
+    await page.mouse.click(10, 10);
+    await page.waitForTimeout(150);
     await page.locator('[data-testid=identity-pill]').click();
-    await page.locator('[data-testid=btn-manage-identities]').click();
-    await page.waitForTimeout(200);
-  });
-
-  test('lists a read-only card per identity: dot, label, IN USE HERE/DEFAULT badges, email, and the state repo/projects/signing key/host token/bridge root grid', async ({ page }) => {
-    const cards = page.locator('[data-testid=identity-card]');
-    await expect(cards).toHaveCount(2);
-
-    const first = cards.first();
-    await expect(first).toContainText('Personal');
-    await expect(first).toContainText('IN USE HERE');
-    await expect(first).toContainText('DEFAULT');
-    await expect(first).toContainText('tom@personal.com');
-    await expect(first).toContainText('tom/personal-state');
-    await expect(first).toContainText('1 project');
-    await expect(first).toContainText('—'); // signing key/host token/bridge root all unset in this seed
-
-    const second = cards.nth(1);
-    await expect(second).toContainText('Northwind');
-    await expect(second).not.toContainText('IN USE HERE');
-    await expect(second).not.toContainText('DEFAULT');
-    await expect(second).toContainText('tom@northwind.com');
-    await expect(second).toContainText('2 projects');
-  });
-
-  test('"Make default" is disabled (no-op, dimmed) on the already-default identity but works on another', async ({ page }) => {
-    const makeDefaultBtns = page.locator('[data-testid=btn-make-default]');
-    // Personal starts as default -- its own button should not be clickable.
-    await expect(page.locator('[data-testid=identity-card]').first()).toContainText('DEFAULT');
-    await makeDefaultBtns.nth(1).click();
-    await page.waitForTimeout(150);
-    await expect(page.locator('[data-testid=identity-card]').nth(1)).toContainText('DEFAULT');
-    await expect(page.locator('[data-testid=identity-card]').first()).not.toContainText('DEFAULT');
-  });
-
-  test('"+ Add identity" reveals a label/email form; Cancel discards it without creating anything', async ({ page }) => {
-    await expect(page.locator('[data-testid=add-identity-form]')).toHaveCount(0);
-    await page.locator('[data-testid=btn-add-identity]').click();
-    await expect(page.locator('[data-testid=add-identity-form]')).toBeVisible();
-    await page.locator('[data-testid=new-identity-label-input]').fill('Acme Co');
-    await page.locator('[data-testid=btn-cancel-add-identity]').click();
-    await page.waitForTimeout(150);
-    await expect(page.locator('[data-testid=add-identity-form]')).toHaveCount(0);
-    await expect(page.locator('[data-testid=identity-card]')).toHaveCount(2);
-  });
-
-  test('creating a new identity generates its own signing key, switches to it, and lands on its empty (zero-project) state', async ({ page }) => {
-    await page.locator('[data-testid=btn-add-identity]').click();
-    await page.locator('[data-testid=new-identity-label-input]').fill('Acme Co');
-    await page.locator('[data-testid=new-identity-email-input]').fill('me@acme.test');
-    await page.locator('[data-testid=btn-create-identity]').click();
+    await page.locator('[data-testid=identity-option]').nth(1).click(); // -> Northwind (not default)
     await page.waitForTimeout(400);
+    await h.openSettings(page);
 
-    await expect(page.locator('[data-testid=identity-card]')).toHaveCount(3);
-    await expect(page.locator('[data-testid=identity-pill]')).toContainText('Acme Co');
-    await expect(page.locator('[data-testid=row]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=btn-make-default]')).toBeVisible();
+    await page.locator('[data-testid=btn-make-default]').click();
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=settings-body]')).toContainText('DEFAULT IDENTITY');
+    await expect(page.locator('[data-testid=btn-make-default]')).toHaveCount(0);
 
     const idsRaw = await page.evaluate(() => localStorage.getItem('git_native_tracker_identities_v1'));
-    const ids = JSON.parse(idsRaw);
-    const created = ids.identities.find(i => i.label === 'Acme Co');
-    expect(created).toBeTruthy();
-    expect(created.email).toBe('me@acme.test');
-    expect(created.signingPublicKeyJwk).toBeTruthy();
-    expect(created.signingPrivateKeyJwk).toBeTruthy();
-    expect(ids.activeIdentityId).toBe(created.id);
+    expect(JSON.parse(idsRaw).defaultIdentityId).toBe('identity-b');
   });
 
-  test('the panel closes via the X button and via clicking the overlay', async ({ page }) => {
-    await expect(page.locator('[data-testid=identities-panel]')).toBeVisible();
-    await page.locator('[data-testid=identities-close-btn]').click();
+  test('the modal closes via the X button and via clicking the backdrop', async ({ page }) => {
+    await expect(page.locator('[data-testid=settings-modal]')).toBeVisible();
+    await page.locator('[data-testid=settings-close-btn]').click();
     await page.waitForTimeout(150);
-    await expect(page.locator('[data-testid=identities-panel]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=settings-modal]')).toHaveCount(0);
 
-    await page.locator('[data-testid=identity-pill]').click();
-    await page.locator('[data-testid=btn-manage-identities]').click();
+    await h.openSettings(page);
+    await expect(page.locator('[data-testid=settings-modal]')).toBeVisible();
+    await page.locator('[data-testid=settings-overlay]').click({ position: { x: 10, y: 10 } });
     await page.waitForTimeout(150);
-    await expect(page.locator('[data-testid=identities-panel]')).toBeVisible();
-    await page.locator('[data-testid=identities-overlay]').click({ position: { x: 10, y: 10 } });
+    await expect(page.locator('[data-testid=settings-modal]')).toHaveCount(0);
+  });
+});
+
+test.describe('Settings modal: section navigation', () => {
+  test.beforeEach(async ({ page }) => {
+    await h.gotoTracker(page);
+    await h.openSettings(page);
+  });
+
+  test('opens on the Identity section by default; each of the 4 sections shows its own fields and hides the others\' ', async ({ page }) => {
+    await expect(page.locator('[data-testid=settings-identity-email]')).toBeVisible();
+    await expect(page.locator('[data-testid=settings-github-token]')).toHaveCount(0);
+
+    await page.locator('[data-testid=settings-nav-item][data-section-id=github]').click();
+    await page.waitForTimeout(120);
+    await expect(page.locator('[data-testid=settings-github-token]')).toBeVisible();
+    await expect(page.locator('[data-testid=settings-identity-email]')).toHaveCount(0);
+
+    await page.locator('[data-testid=settings-nav-item][data-section-id=sync]').click();
+    await page.waitForTimeout(120);
+    await expect(page.locator('[data-testid=settings-state-repo]')).toBeVisible();
+    await expect(page.locator('[data-testid=settings-github-repo]')).toBeVisible();
+    await expect(page.locator('[data-testid=settings-github-token]')).toHaveCount(0);
+
+    await page.locator('[data-testid=settings-nav-item][data-section-id=integrations]').click();
+    await page.waitForTimeout(120);
+    await expect(page.locator('[data-testid=settings-jira-proxy-url]')).toBeVisible();
+    await expect(page.locator('[data-testid=settings-state-repo]')).toHaveCount(0);
+  });
+
+  test('a section shows a small accent dot once it has something configured', async ({ page }) => {
+    const githubNav = page.locator('[data-testid=settings-nav-item][data-section-id=github]');
+    const syncNav = page.locator('[data-testid=settings-nav-item][data-section-id=sync]');
+    await expect(githubNav.locator('span[style*="border-radius"]')).toHaveCount(0);
+    await expect(syncNav.locator('span[style*="border-radius"]')).toHaveCount(0);
+
+    await page.locator('[data-testid=settings-nav-item][data-section-id=github]').click();
+    await page.waitForTimeout(120);
+    await page.locator('[data-testid=settings-github-token]').fill('ghp_configured');
+    await page.waitForTimeout(200);
+    await expect(githubNav.locator('span[style*="border-radius"]')).toHaveCount(1);
+
+    // Sync counts as configured from EITHER the state repo or the GitHub
+    // repo-sync field -- not a leftover, never-written internal field (a
+    // latent bug in the original design prototype, not ported).
+    await page.locator('[data-testid=settings-nav-item][data-section-id=sync]').click();
+    await page.waitForTimeout(120);
+    await page.locator('[data-testid=settings-state-repo]').fill('tom/my-state');
+    await page.waitForTimeout(200);
+    await expect(syncNav.locator('span[style*="border-radius"]')).toHaveCount(1);
+  });
+
+  test('reopening Settings from the "Settings…" button always resets to the Identity section', async ({ page }) => {
+    await page.locator('[data-testid=settings-nav-item][data-section-id=integrations]').click();
+    await page.waitForTimeout(120);
+    await page.mouse.click(10, 10);
     await page.waitForTimeout(150);
-    await expect(page.locator('[data-testid=identities-panel]')).toHaveCount(0);
+
+    await h.openSettings(page);
+    await expect(page.locator('[data-testid=settings-identity-email]')).toBeVisible();
   });
 });
 
@@ -336,7 +429,7 @@ test.describe('Project switcher only lists the active identity\'s own projects',
   });
 });
 
-test.describe('Gear Settings popover is scoped to the active identity', () => {
+test.describe('Settings is scoped to the active identity', () => {
   test.beforeEach(async ({ page }) => {
     await h.seedTwoIdentities(page);
     await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
@@ -346,6 +439,8 @@ test.describe('Gear Settings popover is scoped to the active identity', () => {
   test('YOUR EMAIL/GITHUB TOKEN/JIRA PROXY URL/STATE REPO show the active identity\'s own values, and swap when switching identity', async ({ page }) => {
     await h.openSettings(page);
     await expect(page.locator('[data-testid=settings-identity-email]')).toHaveValue('tom@personal.com');
+    await page.locator('[data-testid=settings-nav-item][data-section-id=sync]').click();
+    await page.waitForTimeout(120);
     await expect(page.locator('[data-testid=settings-state-repo]')).toHaveValue('tom/personal-state');
     await page.mouse.click(10, 10);
     await page.waitForTimeout(150);
@@ -356,12 +451,16 @@ test.describe('Gear Settings popover is scoped to the active identity', () => {
 
     await h.openSettings(page);
     await expect(page.locator('[data-testid=settings-identity-email]')).toHaveValue('tom@northwind.com');
+    await page.locator('[data-testid=settings-nav-item][data-section-id=sync]').click();
+    await page.waitForTimeout(120);
     await expect(page.locator('[data-testid=settings-state-repo]')).toHaveValue('');
   });
 
   test('editing YOUR EMAIL and STATE REPO writes through to the active identity\'s own record, and survives a switch away and back', async ({ page }) => {
     await h.openSettings(page);
     await page.locator('[data-testid=settings-identity-email]').fill('tom-changed@personal.com');
+    await page.locator('[data-testid=settings-nav-item][data-section-id=sync]').click();
+    await page.waitForTimeout(120);
     await page.locator('[data-testid=settings-state-repo]').fill('tom/renamed-state');
     await page.waitForTimeout(200);
 
@@ -382,23 +481,25 @@ test.describe('Gear Settings popover is scoped to the active identity', () => {
 
     await h.openSettings(page);
     await expect(page.locator('[data-testid=settings-identity-email]')).toHaveValue('tom-changed@personal.com');
+    await page.locator('[data-testid=settings-nav-item][data-section-id=sync]').click();
+    await page.waitForTimeout(120);
     await expect(page.locator('[data-testid=settings-state-repo]')).toHaveValue('tom/renamed-state');
   });
 
-  test('the Identities panel card reflects an edit made in the gear popover (host token mask, state repo)', async ({ page }) => {
-    await h.openSettings(page);
-    await page.locator('[data-testid=settings-github-token]').fill('ghp_newtoken');
-    await page.locator('[data-testid=settings-state-repo]').fill('tom/from-gear');
+  // The old "Identities panel" card duplicated these facts read-only in a
+  // second surface; now the only other place a state-repo edit shows up is
+  // the identity-pill dropdown's own header card, which this checks
+  // instead.
+  test('editing STATE REPO in Settings is reflected in the identity-pill dropdown\'s own header card', async ({ page }) => {
+    await h.openSettingsSection(page, 'sync');
+    await page.locator('[data-testid=settings-state-repo]').fill('tom/from-settings');
     await page.waitForTimeout(200);
     await page.mouse.click(10, 10);
     await page.waitForTimeout(150);
 
     await page.locator('[data-testid=identity-pill]').click();
-    await page.locator('[data-testid=btn-manage-identities]').click();
-    await page.waitForTimeout(200);
-    const first = page.locator('[data-testid=identity-card]').first();
-    await expect(first).toContainText('tom/from-gear');
-    await expect(first).toContainText('••••••••');
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=identity-pill-wrap]')).toContainText('tom/from-settings');
   });
 });
 
@@ -544,7 +645,7 @@ test.describe('Gate first edit on identity email being set', () => {
 test.describe('Editable identity label', () => {
   test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
 
-  test('editing the label in the gear popover updates the pill and title prefix (namespacing), and persists', async ({ page }) => {
+  test('editing the label in Settings updates the pill and title prefix (namespacing), and persists', async ({ page }) => {
     await h.openSettings(page);
     await expect(page.locator('[data-testid=settings-identity-label]')).toHaveValue('Personal');
     await page.locator('[data-testid=settings-identity-label]').fill('Acme Corp');

@@ -59,7 +59,7 @@ test.describe('GitHub token', () => {
     await h.setGithubToken(page, 'ghp_persisted');
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
-    await h.openSettings(page);
+    await h.openSettingsSection(page, 'github');
     await expect(page.locator('[data-testid=settings-github-token]')).toHaveValue('ghp_persisted');
   });
 });

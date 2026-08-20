@@ -119,3 +119,88 @@ test.describe('Cross-tab sync', () => {
     await expect(pageC.locator('[data-testid=tracker-name-title]')).toHaveText('Delivery tracker');
   });
 });
+
+// Regression: the identities list (IDENTITIES_KEY) never had the same live
+// cross-tab sync as everything above -- persistIdentities() runs
+// unconditionally on every componentDidUpdate (any state change at all,
+// in any tab) and writes whatever THAT tab's own in-memory state.identities
+// currently holds. A tab that's been open since before another tab
+// created/renamed/re-emailed an identity had no way to find out, so its
+// next incidental update (even something unrelated) silently overwrote the
+// shared identity list with its own stale snapshot -- confirmed live, more
+// than once, as genuine data loss. Fixed the same way every other shared-
+// but-per-tab-cached piece of state already is, plus a revision check
+// (every write stamped with Date.now(); an incoming sync whose revision
+// isn't strictly newer than the last one this tab has already seen or
+// written itself is dropped) since rapid interaction in either tab can
+// otherwise queue several echo writes whose delivery order across tabs
+// isn't guaranteed to match write order.
+test.describe('Cross-tab sync: identities', () => {
+  test.beforeEach(async ({ page }) => {
+    await h.seedTwoIdentities(page);
+    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(400);
+  });
+
+  test('an identity created in one tab appears live in another tab\'s dropdown, and survives an unrelated update in that other tab', async ({ page, context }) => {
+    const pageB = await context.newPage();
+    await pageB.goto(h.TRACKER_PATH);
+    await pageB.waitForTimeout(400);
+
+    await page.locator('[data-testid=identity-pill]').click();
+    await page.locator('[data-testid=btn-add-identity]').click();
+    await page.locator('[data-testid=new-identity-label-input]').fill('Acme Corp');
+    await page.locator('[data-testid=new-identity-email-input]').fill('me@acme.test');
+    await page.locator('[data-testid=btn-create-identity]').click();
+
+    // createIdentity is async (generates a real ECDSA keypair before
+    // switching) -- poll instead of assuming a fixed wait is enough.
+    let ids = null;
+    for (let i = 0; i < 40; i++) {
+      ids = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_identities_v1')));
+      if (ids.identities.length === 3) break;
+      await page.waitForTimeout(200);
+    }
+    expect(ids.identities.length).toBe(3);
+    await pageB.waitForTimeout(300);
+
+    // Tab B's own dropdown shows it live, no reload.
+    await pageB.locator('[data-testid=identity-pill]').click();
+    await pageB.waitForTimeout(150);
+    await expect(pageB.locator('[data-testid=identity-option]')).toHaveCount(3);
+
+    // An unrelated update in tab B (open/close its own dropdown) used to
+    // be exactly the moment a stale tab clobbered the shared list back
+    // down -- confirm it survives.
+    await pageB.keyboard.press('Escape');
+    await pageB.waitForTimeout(300);
+    const idsAfter = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_identities_v1')));
+    expect(idsAfter.identities.length).toBe(3);
+    expect(idsAfter.identities.some(i => i.label === 'Acme Corp')).toBe(true);
+  });
+
+  test('editing the active identity\'s email in one tab is reflected in shared storage without another tab reverting it', async ({ page, context }) => {
+    const pageB = await context.newPage();
+    await pageB.goto(h.TRACKER_PATH);
+    await pageB.waitForTimeout(400);
+
+    // Tab B touches something unrelated first (its own dropdown), then
+    // settles -- simulating the "stale-ish but not idle-forever" tab.
+    await pageB.locator('[data-testid=identity-pill]').click();
+    await pageB.waitForTimeout(150);
+    await pageB.keyboard.press('Escape');
+    await pageB.waitForTimeout(500);
+
+    await page.locator('[data-testid=identity-pill]').click();
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=btn-open-settings]').click();
+    await page.waitForTimeout(200);
+    await page.locator('[data-testid=settings-identity-email]').fill('tom-changed@personal.com');
+    await page.waitForTimeout(500);
+
+    const idsRaw = await page.evaluate(() => localStorage.getItem('git_native_tracker_identities_v1'));
+    const ids = JSON.parse(idsRaw);
+    const personal = ids.identities.find(i => i.id === 'identity-a');
+    expect(personal.email).toBe('tom-changed@personal.com');
+  });
+});

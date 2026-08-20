@@ -2123,6 +2123,13 @@ test.describe('Project panel button + header hover', () => {
     await expect(page.locator('[data-testid=btn-notes]')).not.toContainText('Notes');
   });
 
+  test('the identity prefix and the project name are the same font size', async ({ page }) => {
+    const prefixSize = await page.locator('[data-testid=identity-title-prefix]').evaluate(el => getComputedStyle(el).fontSize);
+    const titleSize = await page.locator('[data-testid=tracker-name-title]').evaluate(el => getComputedStyle(el).fontSize);
+    expect(titleSize).toBe(prefixSize);
+    expect(titleSize).toBe('20px');
+  });
+
   // Regression note: Phase 1 (Batch 4) originally made title/caret hover
   // fully independently, per the design handoff README's explicit "never a
   // shared wrapper hover" guidance. User feedback during Phase 2 overrode

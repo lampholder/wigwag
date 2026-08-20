@@ -204,14 +204,16 @@ test.describe('Tracker switcher', () => {
     expect(gh.pushCount).toBe(pushCountAfterA); // B never pushed to A's repo
     expect(gh.getCount).toBe(getCountAfterA); // B never reconnected to A's repo either
 
-    await h.openSettings(page);
+    await h.openSettingsSection(page, 'sync');
     await expect(page.locator('[data-testid=settings-github-repo]')).toHaveValue(''); // B has no repo of its own
+    await page.locator('[data-testid=settings-close-btn]').click();
+    await page.waitForTimeout(150);
 
     // Switch back to A and confirm it kept its own repo config the whole time.
     await h.openTrackerSwitcher(page);
     await h.milestoneRow(page, 'Delivery tracker').click();
     await page.waitForTimeout(300);
-    await h.openSettings(page);
+    await h.openSettingsSection(page, 'sync');
     await expect(page.locator('[data-testid=settings-github-repo]')).toHaveValue(REPO_A);
   });
 });
@@ -245,8 +247,10 @@ test.describe('Legacy storage migration', () => {
     await expect(page.locator('[data-testid=milestone-row]').first()).toContainText('Delivery tracker');
 
     await h.openSettings(page);
-    await expect(page.locator('[data-testid=settings-github-repo]')).toHaveValue('acme/legacy-repo');
     await expect(page.locator('[data-testid=settings-identity-email]')).toHaveValue('legacy@example.com');
+    await page.locator('[data-testid=settings-nav-item][data-section-id=sync]').click();
+    await page.waitForTimeout(120);
+    await expect(page.locator('[data-testid=settings-github-repo]')).toHaveValue('acme/legacy-repo');
   });
 
   // Regression test: an internal rename once renamed the JS-side state
@@ -346,13 +350,18 @@ test.describe('Legacy storage migration', () => {
     await page.waitForTimeout(200);
     const identitiesAfter = await page.evaluate(() => localStorage.getItem('git_native_tracker_identities_v1'));
     const projectIndexAfter = await page.evaluate(() => localStorage.getItem('git_native_tracker_milestones_v1'));
-    expect(identitiesAfter).toBe(before);
+    // Every persistIdentities() write is stamped with a fresh `rev`
+    // (cross-tab staleness rejection, see cross-tab-sync.spec.js) so a
+    // re-render legitimately changes that one field even with no other
+    // change -- compare everything else byte-identical.
+    const stripRev = json => { const o = JSON.parse(json); delete o.rev; return o; };
+    expect(stripRev(identitiesAfter)).toEqual(stripRev(before));
     expect(JSON.parse(projectIndexAfter)).toEqual(projectIndex);
 
     // Idempotent: reload should not re-migrate or duplicate identities.
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
     const identitiesAfterReload = await page.evaluate(() => localStorage.getItem('git_native_tracker_identities_v1'));
-    expect(identitiesAfterReload).toBe(before);
+    expect(stripRev(identitiesAfterReload)).toEqual(stripRev(before));
   });
 });

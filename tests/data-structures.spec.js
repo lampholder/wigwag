@@ -37,7 +37,12 @@ test.describe('JSONL export/import', () => {
     expect(download.suggestedFilename()).toContain(expectedStamp);
   });
 
-  test('a squashed export keeps only the latest per-field entry, but keeps narrative/comment entries', async ({ page }) => {
+  // Regression: a squashed entry used to just vanish -- no trace it ever
+  // existed. It's now a content-free tombstone instead (redacted:true,
+  // no text/value/fieldRef, sigRedacted carried over) -- see the
+  // "Redaction (two-signature squashing)" describe block below for the
+  // signature side of this.
+  test('a squashed export keeps only the latest per-field entry live, but tombstones the ones it drops -- narrative/comment entries are untouched', async ({ page }) => {
     // Generate two RAG edits on row 1 so there's an intermediate entry to squash away.
     await h.clickFieldToEdit(page, 1, 'rag');
     await page.locator('div[style*="z-index: 70"]').getByText('At risk').click();
@@ -53,7 +58,18 @@ test.describe('JSONL export/import', () => {
     const fs = require('fs');
     const lines = fs.readFileSync(await download.path(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
     const issue1 = lines.find(l => l.type === 'issue' && l.id === 'i1');
-    expect(issue1.history.filter(hh => hh.field === 'rag').length).toBe(1);
+    const ragEntries = issue1.history.filter(hh => hh.field === 'rag');
+    // Seed data already has one RAG entry ("On track"); the two UI edits
+    // add "At risk" then "Off track" -- 3 raw entries total, only the
+    // last survives live, the other two are tombstoned, not vanished.
+    expect(ragEntries.length).toBe(3);
+    const live = ragEntries.filter(hh => !hh.redacted);
+    const tombstones = ragEntries.filter(hh => hh.redacted);
+    expect(live.length).toBe(1);
+    expect(tombstones.length).toBe(2);
+    expect(tombstones.every(t => t.text === undefined)).toBe(true);
+    expect(tombstones.every(t => t.value === undefined)).toBe(true);
+    expect(tombstones.every(t => !!t.sigRedacted || t.sigRedacted === null)).toBe(true); // real edits carry sigRedacted; the seed's own entry has none (never signed) and that's honestly reflected as null
     expect(issue1.history.some(hh => !hh.field)).toBe(true); // e.g. "Created" is kept
   });
 
@@ -150,6 +166,136 @@ test.describe('JSONL export/import', () => {
     await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Delivery tracker'); // merged into the current project, not a new one
     const count = await page.locator('[data-testid=row]').count();
     expect(count).toBe(10); // 9 seed issues + 1 pasted-in
+  });
+});
+
+// Matrix-inspired: every history entry gets TWO signatures -- sig (over
+// the full entry, including text/value) and sigRedacted (over a
+// content-free subset: id/field/time/sortKey/actor/email/origin, no
+// text/value). Squashing an entry now keeps that redacted subset +
+// sigRedacted as a tombstone instead of dropping the entry outright, so
+// the tombstone still verifies as authentically signed by its author
+// forever, even with the actual content gone. sig (the full-content
+// signature) is the one that's SUPPOSED to become unverifiable once
+// content is dropped -- that's the honest record redaction happened,
+// not a bug.
+test.describe('Redaction (two-signature squashing)', () => {
+  test.beforeEach(async ({ page }) => {
+    await h.mockGithubApi(page);
+    await h.gotoTracker(page);
+    await h.openSettings(page);
+    await page.locator('[data-testid=settings-identity-email]').fill('me@example.com');
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(200);
+  });
+
+  // Shared low-level verify, mirroring the app's own signablePayload/
+  // redactedPayload shapes exactly -- if either drifts out of sync with
+  // this, that's a real bug this test should catch.
+  async function verifyBoth(page, entry, issueId) {
+    return page.evaluate(async ({ entry, issueId }) => {
+      const SIGN_ALG = { name: 'ECDSA', namedCurve: 'P-256' };
+      function bytesFromBase64(b64) {
+        const bin = atob(b64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        return bytes;
+      }
+      async function verify(payloadStr, sigBase64, pubKeyJwk) {
+        if (!sigBase64 || !pubKeyJwk) return false;
+        const key = await crypto.subtle.importKey('jwk', pubKeyJwk, SIGN_ALG, false, ['verify']);
+        return await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, bytesFromBase64(sigBase64), new TextEncoder().encode(payloadStr));
+      }
+      const fullPayload = JSON.stringify({ issueId, id: entry.id, field: entry.field || null, value: entry.value === undefined ? null : entry.value, text: entry.text, time: entry.time, sortKey: entry.sortKey, actor: entry.actor, email: entry.email || '' });
+      const redactedPayload = JSON.stringify({ issueId, id: entry.id, field: entry.field || null, time: entry.time, sortKey: entry.sortKey, actor: entry.actor, email: entry.email || '', origin: entry.origin || 'authored' });
+      return {
+        fullOk: entry.sig ? await verify(fullPayload, entry.sig, entry.pubKey) : null,
+        redactedOk: await verify(redactedPayload, entry.sigRedacted, entry.pubKey)
+      };
+    }, { entry, issueId });
+  }
+
+  test('a freshly-authored entry carries both signatures, and both independently verify', async ({ page }) => {
+    await h.clickFieldToEdit(page, 1, 'mitigation');
+    await h.typeAndCommit(page, 'a real note');
+    await page.waitForTimeout(300);
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    const entry = doc.issues[0].history.find(hh => hh.field === 'mitigation');
+    expect(entry.sig).toBeTruthy();
+    expect(entry.sigRedacted).toBeTruthy();
+    expect(entry.sig).not.toBe(entry.sigRedacted); // genuinely different signatures, not the same value twice
+
+    const { fullOk, redactedOk } = await verifyBoth(page, entry, doc.issues[0].id);
+    expect(fullOk).toBe(true);
+    expect(redactedOk).toBe(true);
+  });
+
+  test('squashing turns a superseded entry into a tombstone: content-free, but sigRedacted still verifies with no access to the original', async ({ page }) => {
+    await h.clickFieldToEdit(page, 1, 'mitigation');
+    await h.typeAndCommit(page, 'first note');
+    await page.waitForTimeout(300);
+    await h.clickFieldToEdit(page, 1, 'mitigation');
+    await h.typeAndCommit(page, 'second note');
+    await page.waitForTimeout(300);
+
+    await page.locator('[data-testid=btn-export]').click();
+    const [dl] = await Promise.all([
+      page.waitForEvent('download'),
+      page.locator('[data-testid=btn-export-jsonl-squashed]').click(),
+    ]);
+    const fs = require('fs');
+    const lines = fs.readFileSync(await dl.path(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+    const issueLine = lines.find(l => l.type === 'issue' && l.id === 'i1');
+    const mitigationEntries = issueLine.history.filter(hh => hh.field === 'mitigation');
+    expect(mitigationEntries.length).toBe(2); // tombstone + live, not just 1 survivor
+
+    const tombstone = mitigationEntries.find(hh => hh.redacted);
+    const live = mitigationEntries.find(hh => !hh.redacted);
+    expect(tombstone).toBeTruthy();
+    expect(live.text).toBe('Mitigation set to "second note"');
+
+    // The tombstone genuinely has no content left.
+    expect(tombstone.text).toBeUndefined();
+    expect(tombstone.value).toBeUndefined();
+    expect(tombstone.fieldRef).toBeUndefined();
+    expect(tombstone.sig).toBeUndefined(); // the full-content signature has nothing left to check itself against
+    expect(tombstone.sigRedacted).toBeTruthy();
+
+    // The whole point: re-verify sigRedacted from scratch, cold, using only
+    // what's in this squashed file -- no reference to the pre-squash entry.
+    const { redactedOk } = await verifyBoth(page, tombstone, 'i1');
+    expect(redactedOk).toBe(true);
+  });
+
+  test('narrative entries (no field) are never tombstoned -- squashing always keeps them whole', async ({ page }) => {
+    const doc = await h.readActiveMilestoneDoc(page);
+    const created = doc.issues[0].history.find(hh => !hh.field);
+    expect(created).toBeTruthy();
+
+    await page.locator('[data-testid=btn-export]').click();
+    const [dl] = await Promise.all([
+      page.waitForEvent('download'),
+      page.locator('[data-testid=btn-export-jsonl-squashed]').click(),
+    ]);
+    const fs = require('fs');
+    const lines = fs.readFileSync(await dl.path(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+    const issueLine = lines.find(l => l.type === 'issue' && l.id === 'i1');
+    const stillThere = issueLine.history.find(hh => hh.id === created.id);
+    expect(stillThere).toBeTruthy();
+    expect(stillThere.redacted).toBeFalsy();
+  });
+
+  test('project-level (schema) history entries also get both signatures', async ({ page }) => {
+    await h.openFieldEditor(page, 'priority');
+    await page.locator('[data-testid=field-editor] input').first().fill('Priority level');
+    await page.locator('button', { hasText: 'Done' }).click();
+    await page.waitForTimeout(300);
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    const entry = doc.projectHistory.filter(hh => hh.field === 'priority').slice(-1)[0];
+    expect(entry.sig).toBeTruthy();
+    expect(entry.sigRedacted).toBeTruthy();
   });
 });
 

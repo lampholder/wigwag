@@ -225,6 +225,53 @@ test.describe('GitHub repo sync', () => {
     await expect(pill).toContainText('Synced');
     await expect(h.row(page, 7).locator('[data-testid=merge-notice-badge]')).toHaveCount(1);
   });
+
+  // The footer mirrors the header pill's own sync state (same
+  // githubSyncVisible/githubSyncStatus this reads from) but adds the
+  // actual owner/repo/path destination, and swaps its glyph for a
+  // spinner while a push/pull is actually in flight.
+  test('the footer shows a GitHub glyph + owner/repo/path once connected, swaps to a spinner while syncing, and opens the Project panel on click', async ({ page }) => {
+    const gh = h.mockGithubContentsApi(page, REPO);
+    gh.getResponses = [{ status: 404 }];
+    const footer = page.locator('[data-testid=footer-github-sync]');
+
+    await h.gotoTracker(page);
+    await expect(footer).toHaveCount(0); // no repo configured yet -- nothing to show
+
+    // Slow the PUT down so the syncing (spinner) state is actually
+    // observable, not just a flash.
+    let resolvePut;
+    const putGate = new Promise(r => { resolvePut = r; });
+    await page.route(`https://api.github.com/repos/${REPO}/contents/tracker.jsonl`, async (route) => {
+      if (route.request().method() === 'PUT') {
+        await putGate;
+        gh.pushCount++;
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ content: { sha: 'sha-1' } }) });
+        return;
+      }
+      await route.fulfill({ status: 404, contentType: 'application/json', body: '{}' });
+    });
+
+    await h.setGithubRepoSync(page, { repo: REPO, token: 'ghp_faketoken' });
+    // Not 'networkidle' -- the PUT below is deliberately held open to
+    // observe the syncing state, so the network is never idle yet.
+    await page.reload({ waitUntil: 'load' });
+    await page.waitForTimeout(500);
+
+    await expect(footer).toBeVisible();
+    await expect(page.locator('[data-testid=footer-github-sync-path]')).toHaveText(REPO + '/tracker.jsonl');
+    await expect(page.locator('[data-testid=footer-github-sync-spinner]')).toBeVisible(); // push still gated, in flight
+
+    resolvePut();
+    await h.waitUntil(() => Promise.resolve(gh.pushCount >= 1));
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=footer-github-sync-spinner]')).toHaveCount(0); // settled back to the static glyph
+
+    await footer.click();
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=notes-panel]')).toBeVisible();
+    await expect(page.locator('[data-testid=settings-github-repo]')).toBeVisible();
+  });
 });
 
 test.describe('GitHub OAuth sign-in popup handshake', () => {

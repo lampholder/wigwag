@@ -166,7 +166,7 @@ test.describe('GitHub repo sync', () => {
     await expect(page.locator('[data-testid=merge-conflict-modal]')).toHaveCount(0);
     await expect(h.fieldCell(page, 7, 'rag')).toContainText('At risk'); // higher sortKey wins immediately
     await expect(h.row(page, 7).locator('[data-testid=merge-notice-badge]')).toHaveCount(1);
-    await expect(page.locator('[data-testid=github-sync-status]')).toContainText('Synced');
+    await expect(page.locator('[data-testid=footer-github-sync]')).toContainText('just now'); // still syncing fine, not paused
 
     // Auto-push is not paused by any of this -- the next edit pushes normally.
     const beforePush = gh.pushCount;
@@ -176,61 +176,10 @@ test.describe('GitHub repo sync', () => {
     expect(gh.pushCount).toBeGreaterThan(beforePush);
   });
 
-  test('the header sync-status pill reflects connection state, and doubles as a retry/settings shortcut', async ({ page }) => {
-    const gh = h.mockGithubContentsApi(page, REPO);
-    gh.getResponses = [{ status: 404 }];
-    const pill = page.locator('[data-testid=github-sync-status]');
-
-    await h.gotoTracker(page);
-    await expect(pill).toHaveCount(0); // no repo configured yet -- nothing to show
-
-    await h.setGithubRepoSync(page, { repo: REPO, token: 'ghp_faketoken' });
-    await page.reload({ waitUntil: 'networkidle' });
-    await h.waitUntil(() => Promise.resolve(gh.pushCount >= 1));
-    await page.waitForTimeout(300);
-    await expect(pill).toBeVisible();
-    await expect(pill).toContainText('Synced');
-
-    // Clicking a synced pill opens the Project panel, where sync config
-    // lives (it's not an error state, so not a retry). The panel covers
-    // 87.5vw from the right (not a small centered modal), so closing it
-    // needs the real close button, not an outside click.
-    await expect(page.locator('[data-testid=settings-github-repo]')).toHaveCount(0);
-    await pill.click();
-    await page.waitForTimeout(200);
-    await expect(page.locator('[data-testid=settings-github-repo]')).toBeVisible();
-    await h.closeProjectPanel(page);
-
-    // Batch 4: a same-field overlap on reconnect no longer has a paused
-    // status at all -- it merges immediately and the pill stays "Synced".
-    await page.locator('[data-testid=btn-export]').click();
-    const [dl] = await Promise.all([
-      page.waitForEvent('download'),
-      page.locator('[data-testid=btn-export-jsonl]').click(),
-    ]);
-    const fs = require('fs');
-    const baseline = fs.readFileSync(await dl.path(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
-    const remote = JSON.parse(JSON.stringify(baseline));
-    const i7r = remote.find(l => l.type === 'issue' && l.id === 'i7');
-    i7r.history.push({ id: 'remote_h1', time: 'Aug 2', actor: 'jordan', email: 'jordan@example.com', text: 'RAG set to At risk', field: 'rag', value: 'amber', origin: 'authored', sortKey: Date.now() + 999999, sig: null, pubKey: null });
-    gh.getResponses.push({ status: 200, sha: 'sha-conflict-1', text: remote.map(l => JSON.stringify(l)).join('\n') });
-
-    await h.clickFieldToEdit(page, 7, 'rag');
-    await page.locator('div[style*="z-index: 70"]').getByText('On track').click();
-    await page.waitForTimeout(200);
-    await page.reload({ waitUntil: 'networkidle' });
-    await page.waitForTimeout(500);
-
-    await expect(page.locator('[data-testid=merge-conflict-modal]')).toHaveCount(0);
-    await expect(pill).toContainText('Synced');
-    await expect(h.row(page, 7).locator('[data-testid=merge-notice-badge]')).toHaveCount(1);
-  });
-
-  // The footer mirrors the header pill's own sync state (same
-  // githubSyncVisible/githubSyncStatus this reads from) but adds the
-  // actual owner/repo/path destination, and swaps its glyph for a
-  // spinner while a push/pull is actually in flight.
-  test('the footer shows a GitHub glyph + owner/repo/path once connected, swaps to a spinner while syncing, and opens the Project panel on click', async ({ page }) => {
+  // The footer is the only sync-status indicator now (the header pill it
+  // used to duplicate was removed -- same status/color/click-to-retry,
+  // this just adds the actual destination and how long ago it synced).
+  test('the footer shows a GitHub glyph + owner/repo/path as its rightmost item, with how long ago it synced, swaps to a spinner while syncing, and opens the file on GitHub on click', async ({ page }) => {
     const gh = h.mockGithubContentsApi(page, REPO);
     gh.getResponses = [{ status: 404 }];
     const footer = page.locator('[data-testid=footer-github-sync]');
@@ -266,11 +215,22 @@ test.describe('GitHub repo sync', () => {
     await h.waitUntil(() => Promise.resolve(gh.pushCount >= 1));
     await page.waitForTimeout(300);
     await expect(page.locator('[data-testid=footer-github-sync-spinner]')).toHaveCount(0); // settled back to the static glyph
+    await expect(footer).toContainText('just now'); // how long ago it synced, at the very end
 
-    await footer.click();
-    await page.waitForTimeout(200);
-    await expect(page.locator('[data-testid=notes-panel]')).toBeVisible();
-    await expect(page.locator('[data-testid=settings-github-repo]')).toBeVisible();
+    // Rightmost item in the footer -- further right than View source.
+    const viewSourceBox = await page.locator('text=View source').boundingBox();
+    const footerBox = await footer.boundingBox();
+    expect(footerBox.x).toBeGreaterThan(viewSourceBox.x);
+
+    // Clicking it opens the actual file on GitHub in a new tab (a blank
+    // branch resolves via the literal "HEAD" ref).
+    const [newPage] = await Promise.all([
+      page.context().waitForEvent('page'),
+      footer.click(),
+    ]);
+    await newPage.waitForLoadState().catch(() => {});
+    expect(newPage.url()).toBe(`https://github.com/${REPO}/blob/HEAD/tracker.jsonl`);
+    await newPage.close();
   });
 });
 

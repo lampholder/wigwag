@@ -1,4 +1,4 @@
-# Tracker file format (v0.2.0)
+# Tracker file format (v1)
 
 > This document describes the format actually shipped by
 > `wigwag.html` — the single bundled app that is now
@@ -19,7 +19,7 @@ Every line has a `type` discriminator:
 
 - `fields` — exactly one per file, first line. Carries the milestone's own
   metadata alongside the schema and its own append-only history:
-  `{ type: 'fields', fields: {...fieldDefs}, projectHistory, id, name, projectNotes, projectComments }`.
+  `{ type: 'fields', formatVersion, generator, fields: {...fieldDefs}, projectHistory, id, name, projectNotes, projectComments }`.
   `id`/`name` identify the milestone this file represents (see
   "Milestones" below); `projectNotes` (a markdown string) and
   `projectComments` (array of `{author, email, time, text, sortKey}`) are
@@ -30,6 +30,16 @@ Every line has a `type` discriminator:
   `columnOrder` may still be present on an *incoming* file for backward
   compatibility with older exports, but is never written by the app
   anymore — column order is cosmetic, see below.
+  `formatVersion` (a plain integer, currently `1`) is the single source of
+  truth for this document's own `v1` header and the app's own footer
+  ("Format v1") alike — one number, everywhere, so they can't drift out
+  of sync with each other. It only changes when the JSONL *shape* itself
+  changes in a way real migration code needs to branch on
+  (`if (formatVersion >= 2)`). `generator` (currently always `'wigwag'`)
+  identifies which tool wrote the file, so a hand-authored or
+  third-party-written file can be told apart from a real export. Both are
+  absent on files written before this was added, and optional on the way
+  in for exactly that reason.
 - `issue` — one per tracked issue, any order:
   `{ type: 'issue', id, uid, num, comments, history }`. Note what's
   *absent*: no `values`, no `fieldRefs` — see the next section.

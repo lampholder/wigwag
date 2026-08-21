@@ -29,7 +29,11 @@ test.describe('GitHub sync leader election across tabs', () => {
 
     expect(ghB.getCount).toBe(0);
     expect(ghB.pushCount).toBe(0);
-    await expect(pageB.locator('body')).toContainText('Synced');
+    // The footer only shows a relative sync time once actually synced --
+    // the follower mirrors the leader's published status without ever
+    // syncing itself, so this reflects that mirrored state, not a real
+    // sync of its own.
+    await expect(pageB.locator('[data-testid=footer-github-sync]')).toContainText('just now');
 
     // An edit in the follower tab still gets saved locally, but the
     // follower itself must not be the one to push it.

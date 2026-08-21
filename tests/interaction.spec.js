@@ -2058,8 +2058,8 @@ test.describe('App bar / Project bar / footer', () => {
   });
 
   test('the footer shows format version, last-updated (once there is real history), and View source, with no issue count or filename', async ({ page }) => {
-    const footer = page.locator('text=Format v0.1.0').locator('..');
-    await expect(footer).toContainText('Format v0.1.0');
+    const footer = page.locator('[data-testid=app-footer]');
+    await expect(footer).toContainText('Format v1');
     await expect(footer).toContainText('Updated');
     await expect(footer).toContainText('{ } View source');
     await expect(footer).not.toContainText('issues');
@@ -2069,8 +2069,8 @@ test.describe('App bar / Project bar / footer', () => {
     await h.openTrackerSwitcher(page);
     await h.createNamedBlankProject(page, 'A truly blank project');
     await page.waitForTimeout(400);
-    const footer = page.locator('text=Format v0.1.0').locator('..');
-    await expect(footer).toContainText('Format v0.1.0');
+    const footer = page.locator('[data-testid=app-footer]');
+    await expect(footer).toContainText('Format v1');
     await expect(footer).not.toContainText('Updated');
     await expect(footer).toContainText('{ } View source');
   });

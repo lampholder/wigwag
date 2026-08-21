@@ -18,6 +18,39 @@ test.describe('JSONL export/import', () => {
     expect(download.suggestedFilename()).toMatch(/\.jsonl$/);
   });
 
+  // formatVersion is a plain integer (branchable, e.g. `if (formatVersion
+  // >= 2)`), deliberately separate from the human-assigned spec label
+  // shown in the footer -- it only changes when the JSONL shape itself
+  // needs migration code, not on every documentation revision. generator
+  // identifies which tool wrote the file.
+  test('the exported fields line carries formatVersion and generator, and a file missing them still round-trips fine', async ({ page }) => {
+    const fs = require('fs');
+    await page.locator('[data-testid=btn-export]').click();
+    const [dl] = await Promise.all([
+      page.waitForEvent('download'),
+      page.locator('[data-testid=btn-export-jsonl]').click(),
+    ]);
+    const lines = fs.readFileSync(await dl.path(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+    const fieldsLine = lines.find(l => l.type === 'fields');
+    expect(fieldsLine.formatVersion).toBe(1);
+    expect(fieldsLine.generator).toBe('wigwag');
+
+    // An older-shaped file with neither field must still import cleanly.
+    const withoutVersion = lines.map(l => {
+      if (l.type !== 'fields') return l;
+      const { formatVersion, generator, ...rest } = l;
+      return rest;
+    });
+    await h.openImportProjectMenu(page);
+    const [fc] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      page.locator('[data-testid=btn-import-project-from-file]').click(),
+    ]);
+    await fc.setFiles({ name: 'no-version.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(withoutVersion.map(l => JSON.stringify(l)).join('\n')) });
+    await page.waitForTimeout(400);
+    await expect(page.locator('[data-testid=row]')).toHaveCount(9);
+  });
+
   test('the export filename\'s timestamp is the last actual change, not the moment Export was clicked', async ({ page }) => {
     const doc = await h.readActiveMilestoneDoc(page);
     const knownTs = new Date('2024-03-15T09:41:00.000Z').getTime();

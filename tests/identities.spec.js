@@ -60,13 +60,12 @@ test.describe('Multiple identities: pill, dropdown, title prefix', () => {
     await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Project A');
   });
 
-  test('opening the dropdown lists both identities with state repo/project counts, a checkmark on the active one, the note line, and a Settings… button on the active card', async ({ page }) => {
+  test('opening the dropdown lists both identities with project counts, a checkmark on the active one, the note line, and a Settings… button on the active card', async ({ page }) => {
     await page.locator('[data-testid=identity-pill]').click();
     const options = page.locator('[data-testid=identity-option]');
     await expect(options).toHaveCount(2);
     const texts = (await options.allTextContents()).map(t => t.replace(/\s+/g, ' ').trim());
     expect(texts[0]).toContain('Personal');
-    expect(texts[0]).toContain('tom/personal-state');
     expect(texts[0]).toContain('1 project');
     expect(texts[1]).toContain('Northwind');
     expect(texts[1]).toContain('2 projects');
@@ -338,7 +337,7 @@ test.describe('Settings modal: section navigation', () => {
     await h.openSettings(page);
   });
 
-  test('opens on the Identity section by default; each of the 4 sections shows its own fields and hides the others\' ', async ({ page }) => {
+  test('opens on the Identity section by default; each of the 3 sections shows its own fields and hides the others\' ', async ({ page }) => {
     await expect(page.locator('[data-testid=settings-identity-email]')).toBeVisible();
     await expect(page.locator('[data-testid=settings-github-token]')).toHaveCount(0);
 
@@ -347,38 +346,25 @@ test.describe('Settings modal: section navigation', () => {
     await expect(page.locator('[data-testid=settings-github-token]')).toBeVisible();
     await expect(page.locator('[data-testid=settings-identity-email]')).toHaveCount(0);
 
-    await page.locator('[data-testid=settings-nav-item][data-section-id=sync]').click();
-    await page.waitForTimeout(120);
-    await expect(page.locator('[data-testid=settings-state-repo]')).toBeVisible();
-    await expect(page.locator('[data-testid=settings-github-repo]')).toBeVisible();
-    await expect(page.locator('[data-testid=settings-github-token]')).toHaveCount(0);
+    // Sync (repo/path/branch/token override) lives in the Project panel
+    // now, not Settings -- there's no third settings section for it.
+    await expect(page.locator('[data-testid=settings-nav-item][data-section-id=sync]')).toHaveCount(0);
 
     await page.locator('[data-testid=settings-nav-item][data-section-id=integrations]').click();
     await page.waitForTimeout(120);
     await expect(page.locator('[data-testid=settings-jira-proxy-url]')).toBeVisible();
-    await expect(page.locator('[data-testid=settings-state-repo]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=settings-github-token]')).toHaveCount(0);
   });
 
   test('a section shows a small accent dot once it has something configured', async ({ page }) => {
     const githubNav = page.locator('[data-testid=settings-nav-item][data-section-id=github]');
-    const syncNav = page.locator('[data-testid=settings-nav-item][data-section-id=sync]');
     await expect(githubNav.locator('span[style*="border-radius"]')).toHaveCount(0);
-    await expect(syncNav.locator('span[style*="border-radius"]')).toHaveCount(0);
 
     await page.locator('[data-testid=settings-nav-item][data-section-id=github]').click();
     await page.waitForTimeout(120);
     await page.locator('[data-testid=settings-github-token]').fill('ghp_configured');
     await page.waitForTimeout(200);
     await expect(githubNav.locator('span[style*="border-radius"]')).toHaveCount(1);
-
-    // Sync counts as configured from EITHER the state repo or the GitHub
-    // repo-sync field -- not a leftover, never-written internal field (a
-    // latent bug in the original design prototype, not ported).
-    await page.locator('[data-testid=settings-nav-item][data-section-id=sync]').click();
-    await page.waitForTimeout(120);
-    await page.locator('[data-testid=settings-state-repo]').fill('tom/my-state');
-    await page.waitForTimeout(200);
-    await expect(syncNav.locator('span[style*="border-radius"]')).toHaveCount(1);
   });
 
   test('reopening Settings from the "Settings…" button always resets to the Identity section', async ({ page }) => {
@@ -438,12 +424,13 @@ test.describe('Settings is scoped to the active identity', () => {
     await page.waitForTimeout(400);
   });
 
-  test('YOUR EMAIL/GITHUB TOKEN/JIRA PROXY URL/STATE REPO show the active identity\'s own values, and swap when switching identity', async ({ page }) => {
+  test('YOUR EMAIL/GITHUB TOKEN/JIRA PROXY URL show the active identity\'s own values, and swap when switching identity', async ({ page }) => {
     await h.openSettings(page);
     await expect(page.locator('[data-testid=settings-identity-email]')).toHaveValue('tom@personal.com');
-    await page.locator('[data-testid=settings-nav-item][data-section-id=sync]').click();
+    await page.locator('[data-testid=settings-nav-item][data-section-id=github]').click();
     await page.waitForTimeout(120);
-    await expect(page.locator('[data-testid=settings-state-repo]')).toHaveValue('tom/personal-state');
+    await expect(page.locator('[data-testid=settings-github-token]')).toHaveValue('');
+    await page.locator('[data-testid=settings-github-token]').fill('ghp_personal');
     await page.mouse.click(10, 10);
     await page.waitForTimeout(150);
 
@@ -453,24 +440,24 @@ test.describe('Settings is scoped to the active identity', () => {
 
     await h.openSettings(page);
     await expect(page.locator('[data-testid=settings-identity-email]')).toHaveValue('tom@northwind.com');
-    await page.locator('[data-testid=settings-nav-item][data-section-id=sync]').click();
+    await page.locator('[data-testid=settings-nav-item][data-section-id=github]').click();
     await page.waitForTimeout(120);
-    await expect(page.locator('[data-testid=settings-state-repo]')).toHaveValue('');
+    await expect(page.locator('[data-testid=settings-github-token]')).toHaveValue(''); // Northwind's own (unset), not Personal's
   });
 
-  test('editing YOUR EMAIL and STATE REPO writes through to the active identity\'s own record, and survives a switch away and back', async ({ page }) => {
+  test('editing YOUR EMAIL and GITHUB TOKEN writes through to the active identity\'s own record, and survives a switch away and back', async ({ page }) => {
     await h.openSettings(page);
     await page.locator('[data-testid=settings-identity-email]').fill('tom-changed@personal.com');
-    await page.locator('[data-testid=settings-nav-item][data-section-id=sync]').click();
+    await page.locator('[data-testid=settings-nav-item][data-section-id=github]').click();
     await page.waitForTimeout(120);
-    await page.locator('[data-testid=settings-state-repo]').fill('tom/renamed-state');
+    await page.locator('[data-testid=settings-github-token]').fill('ghp_renamed');
     await page.waitForTimeout(200);
 
     let idsRaw = await page.evaluate(() => localStorage.getItem('git_native_tracker_identities_v1'));
     let ids = JSON.parse(idsRaw);
     let personal = ids.identities.find(i => i.id === 'identity-a');
     expect(personal.email).toBe('tom-changed@personal.com');
-    expect(personal.stateRepo).toBe('tom/renamed-state');
+    expect(personal.githubToken).toBe('ghp_renamed');
 
     await page.mouse.click(10, 10);
     await page.waitForTimeout(150);
@@ -483,25 +470,9 @@ test.describe('Settings is scoped to the active identity', () => {
 
     await h.openSettings(page);
     await expect(page.locator('[data-testid=settings-identity-email]')).toHaveValue('tom-changed@personal.com');
-    await page.locator('[data-testid=settings-nav-item][data-section-id=sync]').click();
+    await page.locator('[data-testid=settings-nav-item][data-section-id=github]').click();
     await page.waitForTimeout(120);
-    await expect(page.locator('[data-testid=settings-state-repo]')).toHaveValue('tom/renamed-state');
-  });
-
-  // The old "Identities panel" card duplicated these facts read-only in a
-  // second surface; now the only other place a state-repo edit shows up is
-  // the identity-pill dropdown's own header card, which this checks
-  // instead.
-  test('editing STATE REPO in Settings is reflected in the identity-pill dropdown\'s own header card', async ({ page }) => {
-    await h.openSettingsSection(page, 'sync');
-    await page.locator('[data-testid=settings-state-repo]').fill('tom/from-settings');
-    await page.waitForTimeout(200);
-    await page.mouse.click(10, 10);
-    await page.waitForTimeout(150);
-
-    await page.locator('[data-testid=identity-pill]').click();
-    await page.waitForTimeout(150);
-    await expect(page.locator('[data-testid=identity-pill-wrap]')).toContainText('tom/from-settings');
+    await expect(page.locator('[data-testid=settings-github-token]')).toHaveValue('ghp_renamed');
   });
 });
 

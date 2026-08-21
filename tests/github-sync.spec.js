@@ -24,6 +24,37 @@ test.describe('GitHub repo sync', () => {
     expect(pushed).toContain('"type":"fields"');
   });
 
+  // The token is layered: a project's own token (set in its own panel --
+  // e.g. a fine-grained PAT scoped to just that repo) wins if set,
+  // otherwise pushes/pulls fall back to the identity's default token.
+  test('repo sync uses the project\'s own token override if set, otherwise falls back to the identity\'s default token', async ({ page }) => {
+    const gh = h.mockGithubContentsApi(page, REPO);
+    gh.getResponses = [{ status: 404 }];
+
+    await h.gotoTracker(page);
+    await h.setGithubRepoSync(page, { repo: REPO, token: 'ghp_identity_default' });
+    await page.reload({ waitUntil: 'networkidle' });
+    await h.waitUntil(() => Promise.resolve(gh.pushCount >= 1));
+    expect(gh.lastAuthHeader).toBe('Bearer ghp_identity_default');
+
+    // Set a project-level override -- the next push must use IT, not the
+    // identity default.
+    await h.setGithubRepoSync(page, { tokenOverride: 'ghp_project_override' });
+    await h.clickFieldToEdit(page, 1, 'mitigation');
+    await h.typeAndCommit(page, 'trigger another push');
+    await page.waitForTimeout(500); // past the (shrunk) push debounce
+    await h.waitUntil(() => Promise.resolve(gh.pushCount >= 2));
+    expect(gh.lastAuthHeader).toBe('Bearer ghp_project_override');
+
+    // Clearing the override reverts to the identity default again.
+    await h.setGithubRepoSync(page, { tokenOverride: '' });
+    await h.clickFieldToEdit(page, 2, 'mitigation');
+    await h.typeAndCommit(page, 'trigger a third push');
+    await page.waitForTimeout(500);
+    await h.waitUntil(() => Promise.resolve(gh.pushCount >= 3));
+    expect(gh.lastAuthHeader).toBe('Bearer ghp_identity_default');
+  });
+
   test('reconnecting adopts a non-conflicting remote change via the existing merge path', async ({ page }) => {
     const gh = h.mockGithubContentsApi(page, REPO);
 
@@ -160,13 +191,15 @@ test.describe('GitHub repo sync', () => {
     await expect(pill).toBeVisible();
     await expect(pill).toContainText('Synced');
 
-    // Clicking a synced pill opens Settings (it's not an error state).
+    // Clicking a synced pill opens the Project panel, where sync config
+    // lives (it's not an error state, so not a retry). The panel covers
+    // 87.5vw from the right (not a small centered modal), so closing it
+    // needs the real close button, not an outside click.
     await expect(page.locator('[data-testid=settings-github-repo]')).toHaveCount(0);
     await pill.click();
     await page.waitForTimeout(200);
     await expect(page.locator('[data-testid=settings-github-repo]')).toBeVisible();
-    await page.mouse.click(700, 700);
-    await page.waitForTimeout(150);
+    await h.closeProjectPanel(page);
 
     // Batch 4: a same-field overlap on reconnect no longer has a paused
     // status at all -- it merges immediately and the pill stays "Synced".

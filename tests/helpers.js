@@ -70,14 +70,14 @@ async function seedTwoIdentities(page, opts = {}) {
   ];
   const blankDoc = {
     fieldDefs: { title: { label: 'Issue', type: 'text' } }, issues: [], hiddenFieldIds: [],
-    githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', projectNotes: '', projectComments: []
+    githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', githubTokenOverride: '', projectNotes: '', projectComments: []
   };
   await page.addInitScript(({ idA, idB, activeIdentityId, projects, blankDoc, docs }) => {
     localStorage.setItem('git_native_tracker_identities_v1', JSON.stringify({
       activeIdentityId, defaultIdentityId: idA,
       identities: [
-        { id: idA, label: 'Personal', email: 'tom@personal.com', githubToken: '', jiraProxyUrl: '', stateRepo: 'tom/personal-state', signingPublicKeyJwk: null, signingPrivateKeyJwk: null },
-        { id: idB, label: 'Northwind', email: 'tom@northwind.com', githubToken: '', jiraProxyUrl: '', stateRepo: '', signingPublicKeyJwk: null, signingPrivateKeyJwk: null },
+        { id: idA, label: 'Personal', email: 'tom@personal.com', githubToken: '', jiraProxyUrl: '', signingPublicKeyJwk: null, signingPrivateKeyJwk: null },
+        { id: idB, label: 'Northwind', email: 'tom@northwind.com', githubToken: '', jiraProxyUrl: '', signingPublicKeyJwk: null, signingPrivateKeyJwk: null },
       ],
       lastActiveProjectByIdentity: {}
     }));
@@ -352,10 +352,10 @@ async function openSettings(page) {
   await page.waitForTimeout(150);
 }
 
-// Settings is now a two-pane modal split into Identity/github/sync/
-// integrations sections -- most fields only exist in the DOM once their
-// own section is selected. Opens Settings (always landing on Identity
-// first) then, if a different section is requested, clicks over to it.
+// Settings is a two-pane modal split into Identity/github/integrations
+// sections -- most fields only exist in the DOM once their own section is
+// selected. Opens Settings (always landing on Identity first) then, if a
+// different section is requested, clicks over to it.
 async function openSettingsSection(page, sectionId) {
   await openSettings(page);
   if (sectionId && sectionId !== 'identity') {
@@ -371,22 +371,36 @@ async function setGithubToken(page, token) {
   await page.waitForTimeout(150);
 }
 
-// Configures the tracker's own repo-sync (Settings > Sync > GITHUB REPO
-// SYNC), distinct from setGithubToken's issue-linking-only use above (the
-// token field is dual-purpose and shared by both, but now lives in the
-// GitHub access section while repo/path/branch live in Sync).
-async function setGithubRepoSync(page, { repo, path, branch, token } = {}) {
-  await openSettingsSection(page, 'github');
-  if (token !== undefined) await page.locator('[data-testid=settings-github-token]').fill(token);
-  if (repo !== undefined || path !== undefined || branch !== undefined) {
-    await page.locator('[data-testid=settings-nav-item][data-section-id=sync]').click();
-    await page.waitForTimeout(120);
+async function openProjectPanel(page) {
+  await page.locator('[data-testid=btn-notes]').click();
+  await page.waitForTimeout(300);
+}
+async function closeProjectPanel(page) {
+  await page.locator('[data-testid=notes-close-btn]').click();
+  await page.waitForTimeout(200);
+}
+
+// Configures the tracker's own repo-sync -- repo/path/branch/token
+// override live in the active PROJECT's own panel (GITHUB SYNC section,
+// per-project since a different project may sync to a different repo);
+// the identity-level default token (used by any project that doesn't set
+// its own override) still lives in Settings > GitHub access.
+async function setGithubRepoSync(page, { repo, path, branch, token, tokenOverride } = {}) {
+  if (token !== undefined) {
+    await openSettingsSection(page, 'github');
+    await page.locator('[data-testid=settings-github-token]').fill(token);
+    await page.mouse.click(10, 10); // outside Settings -- its full-screen backdrop closes it from anywhere
+    await page.waitForTimeout(150);
+  }
+  if (repo !== undefined || path !== undefined || branch !== undefined || tokenOverride !== undefined) {
+    await openProjectPanel(page);
     if (repo !== undefined) await page.locator('[data-testid=settings-github-repo]').fill(repo);
     if (path !== undefined) await page.locator('[data-testid=settings-github-repo-path]').fill(path);
     if (branch !== undefined) await page.locator('[data-testid=settings-github-repo-branch]').fill(branch);
+    if (tokenOverride !== undefined) await page.locator('[data-testid=settings-github-token-override]').fill(tokenOverride);
+    await page.waitForTimeout(150);
+    await closeProjectPanel(page);
   }
-  await page.mouse.click(10, 10); // outside Settings -- its full-screen backdrop closes it from anywhere
-  await page.waitForTimeout(150);
 }
 
 // Mocks the Contents API endpoint the repo-sync feature itself talks to
@@ -399,9 +413,10 @@ async function setGithubRepoSync(page, { repo, path, branch, token } = {}) {
 // back as e.g. 409 before reverting to normal 200s. Returns live counters
 // and the raw bodies of every PUT actually sent, for assertions.
 function mockGithubContentsApi(page, repo, path = 'tracker.jsonl') {
-  const state = { getCount: 0, pushCount: 0, pushes: [], getResponses: [], pushStatusOverride: null };
+  const state = { getCount: 0, pushCount: 0, pushes: [], getResponses: [], pushStatusOverride: null, lastAuthHeader: null };
   page.route(`https://api.github.com/repos/${repo}/contents/${path}`, async (route) => {
     const method = route.request().method();
+    state.lastAuthHeader = route.request().headers()['authorization'] || null;
     if (method === 'GET') {
       const idx = Math.min(state.getCount, state.getResponses.length - 1);
       const resp = state.getResponses[idx];
@@ -597,6 +612,8 @@ module.exports = {
   mockJiraProxy,
   openSettings,
   openSettingsSection,
+  openProjectPanel,
+  closeProjectPanel,
   setGithubToken,
   setGithubRepoSync,
   setJiraProxyUrl,

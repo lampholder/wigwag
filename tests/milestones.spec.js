@@ -211,16 +211,15 @@ test.describe('Tracker switcher', () => {
     expect(gh.pushCount).toBe(pushCountAfterA); // B never pushed to A's repo
     expect(gh.getCount).toBe(getCountAfterA); // B never reconnected to A's repo either
 
-    await h.openSettingsSection(page, 'sync');
+    await h.openProjectPanel(page);
     await expect(page.locator('[data-testid=settings-github-repo]')).toHaveValue(''); // B has no repo of its own
-    await page.locator('[data-testid=settings-close-btn]').click();
-    await page.waitForTimeout(150);
+    await h.closeProjectPanel(page);
 
     // Switch back to A and confirm it kept its own repo config the whole time.
     await h.openTrackerSwitcher(page);
     await h.milestoneRow(page, 'Delivery tracker').click();
     await page.waitForTimeout(300);
-    await h.openSettingsSection(page, 'sync');
+    await h.openProjectPanel(page);
     await expect(page.locator('[data-testid=settings-github-repo]')).toHaveValue(REPO_A);
   });
 });
@@ -255,8 +254,10 @@ test.describe('Legacy storage migration', () => {
 
     await h.openSettings(page);
     await expect(page.locator('[data-testid=settings-identity-email]')).toHaveValue('legacy@example.com');
-    await page.locator('[data-testid=settings-nav-item][data-section-id=sync]').click();
-    await page.waitForTimeout(120);
+    await page.locator('[data-testid=settings-close-btn]').click();
+    await page.waitForTimeout(150);
+
+    await h.openProjectPanel(page);
     await expect(page.locator('[data-testid=settings-github-repo]')).toHaveValue('acme/legacy-repo');
   });
 
@@ -343,7 +344,6 @@ test.describe('Legacy storage migration', () => {
     expect(identity.email).toBe('thomas@lant.uk');
     expect(identity.githubToken).toBe('ghp_realtoken');
     expect(identity.jiraProxyUrl).toBe('http://localhost:8934');
-    expect(identity.stateRepo).toBe('');
     expect(identities.activeIdentityId).toBe(identity.id);
     expect(identities.defaultIdentityId).toBe(identity.id);
 

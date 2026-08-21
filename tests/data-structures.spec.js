@@ -432,6 +432,32 @@ test.describe('Comment signing & redaction', () => {
     await expect(page.locator('[data-testid=activity-redacted-placeholder]').first()).toBeVisible();
   });
 
+  // The "Created" entry has no field/value at all -- nothing it actually
+  // redacts (see redactHistoryEntry: it only ever clears text/value/
+  // fieldRef, and Created never had any) -- so offering a Redact button
+  // on it was confusing, not functional. Every other entry keeps it.
+  // Uses a freshly-created issue (not a seed row) so it has a real
+  // "Created" entry with a real id -- the seed fixture's own history
+  // predates ids entirely (see "legacy history... neither redactable"
+  // above), so it can't tell a suppressed Created apart from an
+  // already-unredactable legacy entry.
+  test('the "Created" entry has no Redact button, but other entries on the same issue still do', async ({ page }) => {
+    await page.keyboard.down('Control');
+    await page.keyboard.press('Space');
+    await page.keyboard.up('Control');
+    await page.waitForTimeout(150);
+    await page.keyboard.type('A fresh issue for the redact check');
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(300);
+
+    await h.openSlideover(page, 10); // appended after the 9 seed rows
+    await page.waitForTimeout(200);
+
+    await expect(page.getByText('Created', { exact: true })).toBeVisible();
+    // one redact button for the real Title-set entry; none for Created
+    await expect(page.locator('[data-testid=activity-redact-btn]')).toHaveCount(1);
+  });
+
   test('legacy history/comments without an id (predating this feature) are neither editable nor redactable', async ({ page }) => {
     // The demo fixture's own seed entries predate the `id` field entirely.
     await h.openSlideover(page, 1);

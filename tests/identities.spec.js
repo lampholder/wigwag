@@ -288,8 +288,13 @@ test.describe('Settings modal: Identity section', () => {
     // componentDidMount's own ensureIdentity() call already generated one
     // for the active identity by the time Settings opens (see "Per-identity
     // signing keys" below) -- "None yet" only shows for an identity that
-    // has never been made active.
-    await expect(body).toContainText('Generated in this browser');
+    // has never been made active. The real public key (its x-coordinate)
+    // is shown, not a placeholder label -- a base64url string, so no
+    // spaces or "None yet"/"Generated" wording.
+    const signingKeyValue = await page.locator('[data-testid=settings-body]').locator('text=Signing key').locator('xpath=following-sibling::span[1]').innerText();
+    expect(signingKeyValue).not.toContain('None yet');
+    expect(signingKeyValue).not.toContain(' ');
+    expect(signingKeyValue.length).toBeGreaterThan(20);
     await expect(body).toContainText('1 project');
     await expect(body).toContainText('DEFAULT IDENTITY'); // Personal starts as default
     await expect(page.locator('[data-testid=btn-make-default]')).toHaveCount(0); // no-op on the already-default identity, so not even shown

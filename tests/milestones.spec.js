@@ -51,14 +51,16 @@ test.describe('Tracker switcher', () => {
     expect(trimmed).toEqual(['Apple project', 'Delivery tracker', 'Mango project', 'Zebra project']);
   });
 
-  // "+ Add project" used to open a panel (blank/naming/import-file/paste)
-  // -- it now just creates a project immediately, named "Untitled" (then
-  // "Untitled 2", "Untitled 3", ...) since import is already handled by
-  // the dedicated app-bar "Import project..." menu.
-  test('"+ Add project" creates a project named "Untitled", then "Untitled 2" etc, with no naming step or import options', async ({ page }) => {
+  // "+ New project" (previously labelled "+ Add project") used to open a
+  // panel (blank/naming/import-file/paste) -- it now just creates a
+  // project immediately, named "Untitled" (then "Untitled 2",
+  // "Untitled 3", ...) since import is already handled by the dedicated
+  // app-bar "Import project..." menu.
+  test('"+ New project" creates a project named "Untitled 1", then "Untitled 2" etc, with no naming step or import options', async ({ page }) => {
     await h.openTrackerSwitcher(page);
+    await expect(page.locator('[data-testid=btn-add-milestone]')).toHaveText('+ New project');
     await h.addBlankProject(page);
-    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Untitled');
+    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Untitled 1');
     await expect(page.locator('[data-testid=row]')).toHaveCount(0);
 
     await h.openTrackerSwitcher(page);
@@ -69,7 +71,7 @@ test.describe('Tracker switcher', () => {
     await expect(page.locator('[data-testid=new-milestone-name-input]')).toHaveCount(0);
     await expect(page.locator('[data-testid=btn-import-milestone]')).toHaveCount(0);
     await expect(page.locator('[data-testid=btn-paste-milestone]')).toHaveCount(0);
-    await expect(page.locator('[data-testid=milestone-row]')).toHaveCount(3); // Delivery tracker, Untitled, Untitled 2
+    await expect(page.locator('[data-testid=milestone-row]')).toHaveCount(3); // Delivery tracker, Untitled 1, Untitled 2
   });
 
   // Rename moved off the header (inline edit) and into the project panel,

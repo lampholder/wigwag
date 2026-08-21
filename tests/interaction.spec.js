@@ -1496,6 +1496,32 @@ test.describe('Keep "add an item" reachable: full-height flex shell', () => {
     expect(headerTop).toBe(wrapTop);
   });
 
+  // Regression: with no rows below it, the header IS the whole visible
+  // card, so its own border-radius correctly becomes all four corners
+  // (not just the top two) -- but the row has no overflow:hidden, so the
+  // 56px row-number gutter cell (the only header child with its own
+  // opaque background) has to independently replicate whichever corners
+  // it sits on, or its own square corner visually covers the row's
+  // rounded one there. It only ever picked up the top-left corner
+  // (matching the normal, rows-present case), so the bottom-left corner
+  // read as square even on a genuinely empty table.
+  test('the header\'s bottom-left corner is rounded (not knocked square) when the table has no issues', async ({ page }) => {
+    const id = 'empty-project';
+    await page.addInitScript(({ id }) => {
+      localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({ activeMilestoneId: id, milestones: [{ id, name: 'Empty Project' }] }));
+      localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
+        fieldDefs: { title: { label: 'Issue', type: 'text' } }, issues: [],
+        hiddenFieldIds: [], githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', projectNotes: '', projectComments: ''
+      }));
+    }, { id });
+    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(400);
+
+    const gutter = page.locator('[data-testid=header-row-number-gutter]');
+    const radius = await gutter.evaluate(el => getComputedStyle(el).borderBottomLeftRadius);
+    expect(radius).not.toBe('0px');
+  });
+
   // The design handoff removed the permanent hairlines a prior fix had
   // added between the filter bar / add-item box and the table pane -- the
   // bottom fade gradient (already covered elsewhere) is the intended
@@ -2374,14 +2400,16 @@ test.describe('Delete project (project panel danger zone)', () => {
     await h.milestoneRow(page, 'Delivery tracker').click();
     await page.waitForTimeout(300);
 
-    let dialogMsg = null;
-    page.once('dialog', async d => { dialogMsg = d.message(); await d.accept(); });
     await page.locator('[data-testid=btn-notes]').click();
     await page.waitForTimeout(400);
     await page.locator('[data-testid=btn-delete-project]').click();
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=delete-project-modal]')).toContainText('Delivery tracker');
+    await page.locator('[data-testid=delete-project-name-input]').fill('Delivery tracker');
+    await page.locator('[data-testid=btn-confirm-delete-project]').click();
     await page.waitForTimeout(400);
 
-    expect(dialogMsg).toContain('Delivery tracker');
+    await expect(page.locator('[data-testid=delete-project-modal]')).toHaveCount(0);
     await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Second Project');
     await h.openTrackerSwitcher(page);
     await expect(page.locator('[data-testid=milestone-row]')).toHaveCount(1);
@@ -2396,22 +2424,71 @@ test.describe('Delete project (project panel danger zone)', () => {
     expect(stillThere).toBe(false);
   });
 
-  test('dismissing the confirm leaves the project untouched', async ({ page }) => {
-    page.once('dialog', d => d.dismiss());
+  // Regression / deliberate behavior change: a native window.confirm() was
+  // one click away from an irreversible delete, easy to fire by reflex.
+  // Now (GitHub-style) it requires typing the project's exact name --
+  // wrong or partial text (or none at all) must not delete anything, and
+  // the button reads as disabled until it matches.
+  test('deleting requires typing the exact project name -- wrong text does nothing, and the button looks disabled until it matches', async ({ page }) => {
     await page.locator('[data-testid=btn-notes]').click();
     await page.waitForTimeout(400);
     await page.locator('[data-testid=btn-delete-project]').click();
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(200);
 
+    const confirmBtn = page.locator('[data-testid=btn-confirm-delete-project]');
+    await expect(confirmBtn).toHaveCSS('cursor', 'not-allowed');
+
+    // Clicking with nothing typed does nothing at all.
+    await confirmBtn.click();
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=delete-project-modal]')).toBeVisible();
+    await expect(page.locator('[data-testid=row]')).toHaveCount(9);
+
+    // Wrong/partial text does nothing either.
+    await page.locator('[data-testid=delete-project-name-input]').fill('Delivery track');
+    await confirmBtn.click();
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=delete-project-modal]')).toBeVisible();
+    await expect(page.locator('[data-testid=row]')).toHaveCount(9);
+
+    // The exact name enables it and deletes.
+    await page.locator('[data-testid=delete-project-name-input]').fill('Delivery tracker');
+    await expect(confirmBtn).toHaveCSS('cursor', 'pointer');
+    await confirmBtn.click();
+    await page.waitForTimeout(400);
+    await expect(page.locator('[data-testid=delete-project-modal]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=row]')).toHaveCount(0); // deleted -- landed on a fresh blank project
+  });
+
+  test('Cancel (or Escape) leaves the project untouched', async ({ page }) => {
+    await page.locator('[data-testid=btn-notes]').click();
+    await page.waitForTimeout(400);
+    await page.locator('[data-testid=btn-delete-project]').click();
+    await page.waitForTimeout(200);
+    await page.locator('[data-testid=delete-project-name-input]').fill('Delivery tracker');
+    await page.locator('[data-testid=btn-cancel-delete-project]').click();
+    await page.waitForTimeout(200);
+
+    await expect(page.locator('[data-testid=delete-project-modal]')).toHaveCount(0);
     await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Delivery tracker');
     await expect(page.locator('[data-testid=row]')).toHaveCount(9);
+
+    // Escape closes just the confirm modal, not the whole project panel.
+    await page.locator('[data-testid=btn-delete-project]').click();
+    await page.waitForTimeout(200);
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=delete-project-modal]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=notes-panel]')).toBeVisible();
   });
 
   test('deleting the only remaining project lands on a fresh blank one, not a dead end', async ({ page }) => {
-    page.once('dialog', d => d.accept());
     await page.locator('[data-testid=btn-notes]').click();
     await page.waitForTimeout(400);
     await page.locator('[data-testid=btn-delete-project]').click();
+    await page.waitForTimeout(200);
+    await page.locator('[data-testid=delete-project-name-input]').fill('Delivery tracker');
+    await page.locator('[data-testid=btn-confirm-delete-project]').click();
     await page.waitForTimeout(400);
 
     await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('New project');

@@ -2144,6 +2144,84 @@ test.describe('Share menu restructure', () => {
     expect(raw.charCodeAt(0)).toBe(0xFEFF);
     expect(raw).toContain('Rocket emoji test \u{1F680} and accents café');
   });
+
+  // The .xlsx writer is hand-rolled (ZIP container + OOXML parts, no
+  // external library -- see buildXlsxWorkbook in wigwag.html) specifically
+  // so single-select fields get a real Excel/Sheets dropdown (data
+  // validation), option colors carry over as real cell fills, and
+  // GitHub/Jira-linked fields become real clickable hyperlinks -- none of
+  // which flat CSV can represent. This unpacks the real downloaded file
+  // (no unzip binary in the sandbox this was built in, see
+  // docs/EDITING.md for the same technique used elsewhere) and checks
+  // both that every part is well-formed XML (via the browser's own
+  // DOMParser, not a hand-rolled check) and that the specific richness
+  // actually landed.
+  test('"Export as XLSX…" downloads a real, well-formed .xlsx with dropdowns for single-select fields, matching colors, and real hyperlinks', async ({ page }) => {
+    await page.locator('[data-testid=btn-notes]').click();
+    await page.waitForTimeout(300);
+    const [dl] = await Promise.all([
+      page.waitForEvent('download'),
+      page.locator('[data-testid=btn-export-xlsx]').click(),
+    ]);
+    expect(dl.suggestedFilename()).toMatch(/^Delivery tracker .*\.xlsx$/);
+
+    const fs = require('fs');
+    const zlib = require('zlib');
+    const buf = fs.readFileSync(await dl.path());
+    expect(buf.slice(0, 4).toString('hex')).toBe('504b0304'); // PK\x03\x04 -- a real zip
+
+    function findEOCD(b) {
+      for (let i = b.length - 22; i >= 0; i--) if (b.readUInt32LE(i) === 0x06054b50) return i;
+      throw new Error('no end-of-central-directory record found');
+    }
+    const eocd = findEOCD(buf);
+    const cdOffset = buf.readUInt32LE(eocd + 16);
+    const cdEntries = buf.readUInt16LE(eocd + 10);
+    let offset = cdOffset;
+    const parts = {};
+    for (let i = 0; i < cdEntries; i++) {
+      const compSize = buf.readUInt32LE(offset + 20);
+      const nameLen = buf.readUInt16LE(offset + 28);
+      const extraLen = buf.readUInt16LE(offset + 30);
+      const commentLen = buf.readUInt16LE(offset + 32);
+      const localHeaderOffset = buf.readUInt32LE(offset + 42);
+      const name = buf.toString('utf8', offset + 46, offset + 46 + nameLen);
+      const lh = localHeaderOffset;
+      const lhNameLen = buf.readUInt16LE(lh + 26);
+      const lhExtraLen = buf.readUInt16LE(lh + 28);
+      const dataStart = lh + 30 + lhNameLen + lhExtraLen;
+      parts[name] = zlib.inflateRawSync(buf.slice(dataStart, dataStart + compSize)).toString('utf8');
+      offset += 46 + nameLen + extraLen + commentLen;
+    }
+
+    for (const name of ['[Content_Types].xml', '_rels/.rels', 'xl/workbook.xml', 'xl/_rels/workbook.xml.rels', 'xl/styles.xml', 'xl/worksheets/sheet1.xml']) {
+      expect(parts[name], name + ' should be present in the zip').toBeTruthy();
+    }
+    for (const [name, xml] of Object.entries(parts)) {
+      const err = await page.evaluate((xmlText) => {
+        const err2 = new DOMParser().parseFromString(xmlText, 'application/xml').querySelector('parsererror');
+        return err2 ? err2.textContent : null;
+      }, xml);
+      expect(err, name + ' should be well-formed XML').toBeNull();
+    }
+
+    const sheet = parts['xl/worksheets/sheet1.xml'];
+    // Real dropdowns for every single-select field, listing its own options.
+    expect(sheet).toContain('<dataValidation type="list"');
+    expect(sheet).toContain('&quot;Bug,Enhancement,Chore&quot;'); // Type
+    expect(sheet).toContain('&quot;P0,P1,P2&quot;'); // Priority
+    // Colors: the styles part carries this app's actual palette fills,
+    // and the sheet references more than just the default/header styles.
+    expect(parts['xl/styles.xml']).toContain('FFE3DF'); // red fill
+    expect(parts['xl/styles.xml']).toContain('D9EFFD'); // blue fill
+    expect(/<c r="B\d+" t="inlineStr" s="(?!0|1)\d+"/.test(sheet)).toBe(true); // a Type cell using a non-default style
+    // Real hyperlinks for the seed's own GitHub-linked issue, resolved to
+    // a real external relationship, not just plain text.
+    expect(sheet).toContain('<hyperlinks>');
+    const relsXml = parts['xl/worksheets/_rels/sheet1.xml.rels'];
+    expect(relsXml).toContain('TargetMode="External"');
+    expect(relsXml).toMatch(/Target="https:\/\/github\.com\/[^"]+"/);
+  });
 });
 
 test.describe('Project panel button + header hover', () => {

@@ -380,8 +380,18 @@ async function closeProjectPanel(page) {
   await page.waitForTimeout(200);
 }
 
+// The project panel is itself split into sections (Notes / Sync & Export /
+// Danger Zone), mirroring Settings' own left-nav -- assumes the panel is
+// already open (openProjectPanel). Always lands back on 'notes' the next
+// time the panel opens (see toggleProjectNotes), so callers needing a
+// different section must select it explicitly every time.
+async function selectProjectPanelSection(page, id) {
+  await page.locator(`[data-testid=project-panel-nav-item][data-section-id="${id}"]`).click();
+  await page.waitForTimeout(200);
+}
+
 // Configures the tracker's own repo-sync -- repo/path/branch/token
-// override live in the active PROJECT's own panel (GITHUB SYNC section,
+// override live in the active PROJECT's own panel (Sync & Export section,
 // per-project since a different project may sync to a different repo);
 // the identity-level default token (used by any project that doesn't set
 // its own override) still lives in Settings > GitHub access.
@@ -394,6 +404,7 @@ async function setGithubRepoSync(page, { repo, path, branch, token, tokenOverrid
   }
   if (repo !== undefined || path !== undefined || branch !== undefined || tokenOverride !== undefined) {
     await openProjectPanel(page);
+    await selectProjectPanelSection(page, 'sync');
     if (repo !== undefined) await page.locator('[data-testid=settings-github-repo]').fill(repo);
     if (path !== undefined) await page.locator('[data-testid=settings-github-repo-path]').fill(path);
     if (branch !== undefined) await page.locator('[data-testid=settings-github-repo-branch]').fill(branch);
@@ -614,6 +625,7 @@ module.exports = {
   openSettingsSection,
   openProjectPanel,
   closeProjectPanel,
+  selectProjectPanelSection,
   setGithubToken,
   setGithubRepoSync,
   setJiraProxyUrl,

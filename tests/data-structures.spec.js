@@ -519,14 +519,14 @@ test.describe('Comment signing & redaction', () => {
     expect(redactedOk).toBe(true);
 
     page.once('dialog', d => d.accept());
-    await page.locator('[data-testid=project-comment-redact-btn]').first().click();
+    await page.locator('[data-testid=project-activity-redact-btn]').first().click();
     await page.waitForTimeout(300);
 
     doc = await h.readActiveMilestoneDoc(page);
     entry = doc.projectComments.find(c => c.id === entry.id);
     expect(entry.redacted).toBe(true);
     expect(entry.text).toBeUndefined();
-    await expect(page.locator('[data-testid=project-comment-redacted-placeholder]')).toHaveCount(1);
+    await expect(page.locator('[data-testid=project-activity-redacted-placeholder]')).toHaveCount(1);
   });
 });
 

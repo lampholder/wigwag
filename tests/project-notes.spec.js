@@ -199,10 +199,10 @@ test.describe('Project comments', () => {
 
   test('an empty thread shows an italic placeholder', async ({ page }) => {
     await openNotes(page);
-    await expect(page.locator('[data-testid=notes-panel]')).toContainText('No project comments yet.');
+    await expect(page.locator('[data-testid=notes-panel]')).toContainText('No activity yet.');
   });
 
-  test('pressing Enter in the composer posts the comment, appended after the previous one', async ({ page }) => {
+  test('pressing Enter in the composer posts the comment, and the feed shows the most recent one first', async ({ page }) => {
     await openNotes(page);
     await page.locator('[data-testid=project-comment-input]').fill('First comment');
     await page.locator('[data-testid=project-comment-input]').press('Enter');
@@ -211,10 +211,12 @@ test.describe('Project comments', () => {
     await page.locator('[data-testid=project-comment-input]').press('Enter');
     await page.waitForTimeout(200);
 
-    const entries = page.locator('[data-testid=project-comment]');
+    // Most recent first, same ordering convention as the issue-level
+    // Activity feed (slideOver.activity).
+    const entries = page.locator('[data-testid=project-activity-entry]');
     await expect(entries).toHaveCount(2);
-    await expect(entries.nth(0)).toContainText('First comment');
-    await expect(entries.nth(1)).toContainText('Second comment');
+    await expect(entries.nth(0)).toContainText('Second comment');
+    await expect(entries.nth(1)).toContainText('First comment');
   });
 
   test('an email address in a project comment renders as a pill', async ({ page }) => {
@@ -235,10 +237,117 @@ test.describe('Project comments', () => {
     await page.reload();
     await page.waitForTimeout(300);
     await openNotes(page);
-    await expect(page.locator('[data-testid=project-comment]')).toContainText('Persisted comment');
+    await expect(page.locator('[data-testid=project-activity-entry]')).toContainText('Persisted comment');
 
     const doc = await h.readActiveMilestoneDoc(page);
     expect(doc.projectComments.some(c => c.text === 'Persisted comment')).toBe(true);
+  });
+});
+
+// The project panel is split into Notes / Sync & Export / Danger Zone,
+// mirroring Settings' own left-nav (settingsSections/settingsIsIdentity
+// etc.) -- see toggleProjectNotes/projectPanelSectionDefs in wigwag.html.
+test.describe('Project panel sections', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  test('the panel opens on Notes by default, and switching sections shows only that section\'s content', async ({ page }) => {
+    await page.locator('[data-testid=btn-notes]').click();
+    await page.waitForTimeout(300);
+
+    const navLabels = (await page.locator('[data-testid=project-panel-nav-item]').allTextContents()).map(t => t.trim());
+    expect(navLabels).toEqual(['Notes', 'Sync & Export', 'Danger Zone']);
+    await expect(page.locator('[data-testid=notes-body-wrap]')).toBeVisible();
+    await expect(page.locator('[data-testid=settings-github-repo]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=btn-delete-project]')).toHaveCount(0);
+
+    await h.selectProjectPanelSection(page, 'sync');
+    await expect(page.locator('[data-testid=notes-body-wrap]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=settings-github-repo]')).toBeVisible();
+    await expect(page.locator('[data-testid=btn-export-csv]')).toBeVisible();
+    await expect(page.locator('[data-testid=btn-delete-project]')).toHaveCount(0);
+
+    await h.selectProjectPanelSection(page, 'danger');
+    await expect(page.locator('[data-testid=settings-github-repo]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=btn-delete-project]')).toBeVisible();
+  });
+
+  test('reopening the panel always lands back on Notes, even after leaving it on a different section', async ({ page }) => {
+    await page.locator('[data-testid=btn-notes]').click();
+    await page.waitForTimeout(300);
+    await h.selectProjectPanelSection(page, 'danger');
+    await page.locator('[data-testid=notes-close-btn]').click();
+    await page.waitForTimeout(300);
+
+    await page.locator('[data-testid=btn-notes]').click();
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=notes-body-wrap]')).toBeVisible();
+    await expect(page.locator('[data-testid=btn-delete-project]')).toHaveCount(0);
+  });
+});
+
+// The Activity feed merges project comments with project-level schema
+// history (fields created/renamed/etc, projectHistory), mirroring the
+// per-issue slide-over's own comments+history merge (slideOver.activity).
+test.describe('Project activity feed (comments + schema history, merged)', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  test('a schema change shows up in the project Activity feed alongside comments, most recent first', async ({ page }) => {
+    await page.locator('[data-testid=btn-notes]').click();
+    await page.waitForTimeout(300);
+    await page.locator('[data-testid=project-comment-input]').fill('First, a comment');
+    await page.locator('[data-testid=project-comment-input]').press('Enter');
+    await page.waitForTimeout(200);
+    await page.locator('[data-testid=notes-close-btn]').click();
+    await page.waitForTimeout(200);
+
+    await page.locator('[data-testid=add-field-wrap] span').first().click();
+    await page.waitForTimeout(150);
+    await page.locator('input[placeholder="Field name"]').fill('Owner');
+    await page.locator('button', { hasText: 'Add field' }).click();
+    await page.waitForTimeout(200);
+
+    await page.locator('[data-testid=btn-notes]').click();
+    await page.waitForTimeout(300);
+
+    const entries = page.locator('[data-testid=project-activity-entry]');
+    // Most recent first: the field-creation entry (just added) before the comment.
+    await expect(entries.first()).toContainText('Created field "Owner"');
+    await expect(entries.nth(1)).toContainText('First, a comment');
+  });
+
+  test('the demo fixture\'s own pre-existing fields (no real history, only backfilled) do not clutter the Activity feed', async ({ page }) => {
+    await page.locator('[data-testid=btn-notes]').click();
+    await page.waitForTimeout(300);
+    // Nothing real has happened yet on this fixture -- its several
+    // pre-existing fields only ever got a backfilled (origin:
+    // legacy-backfill) entry on load, which must not show up as if it
+    // were real activity, same as the issue-level Activity feed already
+    // excludes legacy-backfill entries.
+    await expect(page.locator('[data-testid=notes-panel]')).toContainText('No activity yet.');
+    await expect(page.locator('[data-testid=project-activity-entry]')).toHaveCount(0);
+  });
+
+  test('redacting a project-history entry from the Activity feed removes its content but keeps the tombstone', async ({ page }) => {
+    await page.locator('[data-testid=add-field-wrap] span').first().click();
+    await page.waitForTimeout(150);
+    await page.locator('input[placeholder="Field name"]').fill('Owner');
+    await page.locator('button', { hasText: 'Add field' }).click();
+    await page.waitForTimeout(200);
+
+    await page.locator('[data-testid=btn-notes]').click();
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=project-activity-entry]')).toContainText('Created field "Owner"');
+
+    page.once('dialog', d => d.accept());
+    await page.locator('[data-testid=project-activity-redact-btn]').first().click();
+    await page.waitForTimeout(300);
+
+    await expect(page.locator('[data-testid=project-activity-redacted-placeholder]')).toHaveCount(1);
+    const doc = await h.readActiveMilestoneDoc(page);
+    const newFieldId = Object.keys(doc.fieldDefs).find(k => doc.fieldDefs[k].label === 'Owner');
+    const entry = doc.projectHistory.find(hh => hh.field === newFieldId);
+    expect(entry.redacted).toBe(true);
+    expect(entry.text).toBeUndefined();
   });
 });
 

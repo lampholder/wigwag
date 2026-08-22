@@ -2122,9 +2122,10 @@ test.describe('Share menu restructure', () => {
     expect(download.suggestedFilename()).toMatch(/\.html$/);
   });
 
-  test('the project panel has an EXPORT section with a CSV button and explanatory copy, separate from Share', async ({ page }) => {
+  test('the project panel has a Sync & Export section with a CSV button and explanatory copy, separate from Share', async ({ page }) => {
     await page.locator('[data-testid=btn-notes]').click();
     await page.waitForTimeout(300);
+    await h.selectProjectPanelSection(page, 'sync');
     await expect(page.getByText('EXPORT', { exact: true })).toBeVisible();
     const csvBtn = page.locator('[data-testid=btn-export-csv]');
     await expect(csvBtn).toHaveText('Export as CSV…');
@@ -2134,6 +2135,7 @@ test.describe('Share menu restructure', () => {
   test('"Export as CSV…" downloads a real CSV: header row of visible column labels, select/multiselect resolved to labels', async ({ page }) => {
     await page.locator('[data-testid=btn-notes]').click();
     await page.waitForTimeout(300);
+    await h.selectProjectPanelSection(page, 'sync');
     const [dl] = await Promise.all([
       page.waitForEvent('download'),
       page.locator('[data-testid=btn-export-csv]').click(),
@@ -2161,6 +2163,7 @@ test.describe('Share menu restructure', () => {
 
     await page.locator('[data-testid=btn-notes]').click();
     await page.waitForTimeout(300);
+    await h.selectProjectPanelSection(page, 'sync');
     const [dl] = await Promise.all([
       page.waitForEvent('download'),
       page.locator('[data-testid=btn-export-csv]').click(),
@@ -2185,6 +2188,7 @@ test.describe('Share menu restructure', () => {
   test('"Export as XLSX…" downloads a real, well-formed .xlsx with dropdowns for single-select fields, matching colors, and real hyperlinks', async ({ page }) => {
     await page.locator('[data-testid=btn-notes]').click();
     await page.waitForTimeout(300);
+    await h.selectProjectPanelSection(page, 'sync');
     const [dl] = await Promise.all([
       page.waitForEvent('download'),
       page.locator('[data-testid=btn-export-xlsx]').click(),
@@ -2402,6 +2406,7 @@ test.describe('Delete project (project panel danger zone)', () => {
 
     await page.locator('[data-testid=btn-notes]').click();
     await page.waitForTimeout(400);
+    await h.selectProjectPanelSection(page, 'danger');
     await page.locator('[data-testid=btn-delete-project]').click();
     await page.waitForTimeout(200);
     await expect(page.locator('[data-testid=delete-project-modal]')).toContainText('Delivery tracker');
@@ -2432,6 +2437,7 @@ test.describe('Delete project (project panel danger zone)', () => {
   test('deleting requires typing the exact project name -- wrong text does nothing, and the button looks disabled until it matches', async ({ page }) => {
     await page.locator('[data-testid=btn-notes]').click();
     await page.waitForTimeout(400);
+    await h.selectProjectPanelSection(page, 'danger');
     await page.locator('[data-testid=btn-delete-project]').click();
     await page.waitForTimeout(200);
 
@@ -2463,6 +2469,7 @@ test.describe('Delete project (project panel danger zone)', () => {
   test('Cancel (or Escape) leaves the project untouched', async ({ page }) => {
     await page.locator('[data-testid=btn-notes]').click();
     await page.waitForTimeout(400);
+    await h.selectProjectPanelSection(page, 'danger');
     await page.locator('[data-testid=btn-delete-project]').click();
     await page.waitForTimeout(200);
     await page.locator('[data-testid=delete-project-name-input]').fill('Delivery tracker');
@@ -2485,6 +2492,7 @@ test.describe('Delete project (project panel danger zone)', () => {
   test('deleting the only remaining project lands on a fresh blank one, not a dead end', async ({ page }) => {
     await page.locator('[data-testid=btn-notes]').click();
     await page.waitForTimeout(400);
+    await h.selectProjectPanelSection(page, 'danger');
     await page.locator('[data-testid=btn-delete-project]').click();
     await page.waitForTimeout(200);
     await page.locator('[data-testid=delete-project-name-input]').fill('Delivery tracker');

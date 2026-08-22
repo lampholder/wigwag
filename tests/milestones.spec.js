@@ -212,6 +212,7 @@ test.describe('Tracker switcher', () => {
     expect(gh.getCount).toBe(getCountAfterA); // B never reconnected to A's repo either
 
     await h.openProjectPanel(page);
+    await h.selectProjectPanelSection(page, 'sync');
     await expect(page.locator('[data-testid=settings-github-repo]')).toHaveValue(''); // B has no repo of its own
     await h.closeProjectPanel(page);
 
@@ -220,6 +221,7 @@ test.describe('Tracker switcher', () => {
     await h.milestoneRow(page, 'Delivery tracker').click();
     await page.waitForTimeout(300);
     await h.openProjectPanel(page);
+    await h.selectProjectPanelSection(page, 'sync');
     await expect(page.locator('[data-testid=settings-github-repo]')).toHaveValue(REPO_A);
   });
 });

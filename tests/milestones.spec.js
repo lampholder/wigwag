@@ -224,43 +224,7 @@ test.describe('Tracker switcher', () => {
   });
 });
 
-test.describe('Legacy storage migration', () => {
-  test('an old single-tracker localStorage shape migrates into one milestone with its repo config intact', async ({ page }) => {
-    // Deliberately does NOT use h.gotoTracker -- that now pre-seeds a
-    // demo milestone (see helpers.js), which would make MILESTONES_KEY
-    // already exist and short-circuit the exact migration this test needs
-    // to exercise. Navigate directly instead, with only the legacy shape
-    // present.
-    await page.context().addInitScript(() => {
-      localStorage.setItem('git_native_tracker_v1', JSON.stringify({
-        fieldDefs: { title: { label: 'Issue', type: 'text' } },
-        issues: [{ id: 'legacy1', uid: 'u1', num: 1, fieldRefs: {}, values: { title: 'Pre-migration issue' }, comments: [], history: [] }],
-        columnOrder: [], hiddenFieldIds: [], identityEmail: 'legacy@example.com', sort: { colId: null, dir: 'asc' }
-      }));
-      localStorage.setItem('git_native_tracker_secrets_v1', JSON.stringify({
-        githubToken: 'ghp_legacytoken', githubRepo: 'acme/legacy-repo', githubRepoPath: 'tracker.jsonl', githubRepoBranch: ''
-      }));
-    });
-    await h.mockGithubApi(page);
-    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
-    await page.waitForTimeout(300);
-
-    await expect(page.locator('[data-testid=row]')).toHaveCount(1);
-    await expect(page.locator('[data-testid=row]').first()).toContainText('Pre-migration issue');
-
-    await h.openTrackerSwitcher(page);
-    await expect(page.locator('[data-testid=milestone-row]')).toHaveCount(1);
-    await expect(page.locator('[data-testid=milestone-row]').first()).toContainText('Delivery tracker');
-
-    await h.openSettings(page);
-    await expect(page.locator('[data-testid=settings-identity-email]')).toHaveValue('legacy@example.com');
-    await page.locator('[data-testid=settings-close-btn]').click();
-    await page.waitForTimeout(150);
-
-    await h.openProjectPanel(page);
-    await expect(page.locator('[data-testid=settings-github-repo]')).toHaveValue('acme/legacy-repo');
-  });
-
+test.describe('Fresh-install bootstrap wire format stability', () => {
   // Regression test: an internal rename once renamed the JS-side state
   // property names (milestoneId/milestones -> projectId/projects) and, by
   // accident, the *persisted* index blob's own JSON key names along with
@@ -298,77 +262,11 @@ test.describe('Legacy storage migration', () => {
     const indexRaw = await page.evaluate(() => localStorage.getItem('git_native_tracker_milestones_v1'));
     const index = JSON.parse(indexRaw);
     expect(index.activeMilestoneId).toBe(id);
-    // identityId is expected now (Phase 2's migration tags every existing
-    // project with the identity it was migrated into) -- everything else
-    // about the shape must still match exactly.
+    // identityId is expected now (ensureDefaultIdentityIfNeeded tags every
+    // existing project with the identity it just bootstrapped) --
+    // everything else about the shape must still match exactly.
     expect(index.milestones).toEqual([{ id, name: 'My Real Project', identityId: expect.any(String) }]);
     expect(index.activeProjectId).toBeUndefined();
     expect(index.projects).toBeUndefined();
-  });
-
-  // Regression test for the Phase 2 identity migration specifically:
-  // pre-existing real data (global identityEmail/githubToken/jiraProxyUrl/
-  // signing keys in secrets, a flat project list with no identityId
-  // anywhere) must migrate into exactly one identity, with every existing
-  // project tagged, and -- learning directly from the incident above --
-  // the activeMilestoneId/milestones key names must stay byte-identical,
-  // only gaining the new identityId field inside each project entry.
-  test('pre-identity real data migrates into exactly one identity, tags existing projects, and never touches the project-index wire format', async ({ page }) => {
-    const id = 'pre-existing-real-project-id';
-    await page.context().addInitScript(({ id }) => {
-      localStorage.setItem('git_native_tracker_secrets_v1', JSON.stringify({
-        githubToken: 'ghp_realtoken', jiraProxyUrl: 'http://localhost:8934', identityEmail: 'thomas@lant.uk',
-        identityPublicKeyJwk: { kty: 'EC', fake: 'pub' }, identityPrivateKeyJwk: { kty: 'EC', fake: 'priv' }
-      }));
-      localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({
-        activeMilestoneId: id, milestones: [{ id, name: 'My Real Project' }]
-      }));
-      localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
-        fieldDefs: { title: { label: 'Issue', type: 'text' } },
-        issues: [{ id: 'i1', uid: 'u1', num: 1, fieldRefs: {}, fieldLoading: {}, values: { title: 'Real issue' }, comments: [], history: [] }],
-        hiddenFieldIds: [], githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', projectNotes: '', projectComments: []
-      }));
-    }, { id });
-    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
-    await page.waitForTimeout(300);
-
-    // Existing behavior is completely unaffected -- this is the whole
-    // point of doing the data model as an isolated, additive-only step.
-    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('My Real Project');
-    await expect(page.locator('[data-testid=row]')).toHaveCount(1);
-
-    const before = await page.evaluate(() => localStorage.getItem('git_native_tracker_identities_v1'));
-    const identities = JSON.parse(before);
-    expect(identities.identities).toHaveLength(1);
-    const identity = identities.identities[0];
-    expect(identity.email).toBe('thomas@lant.uk');
-    expect(identity.githubToken).toBe('ghp_realtoken');
-    expect(identity.jiraProxyUrl).toBe('http://localhost:8934');
-    expect(identities.activeIdentityId).toBe(identity.id);
-    expect(identities.defaultIdentityId).toBe(identity.id);
-
-    const projectIndex = JSON.parse(await page.evaluate(() => localStorage.getItem('git_native_tracker_milestones_v1')));
-    expect(projectIndex.activeMilestoneId).toBe(id); // wire key names untouched
-    expect(projectIndex.milestones).toEqual([{ id, name: 'My Real Project', identityId: identity.id }]);
-
-    // Force a re-render (the exact path that clobbered data in the Batch 1
-    // incident) and confirm nothing gets rewritten to a different shape.
-    await h.openSettings(page);
-    await page.waitForTimeout(200);
-    const identitiesAfter = await page.evaluate(() => localStorage.getItem('git_native_tracker_identities_v1'));
-    const projectIndexAfter = await page.evaluate(() => localStorage.getItem('git_native_tracker_milestones_v1'));
-    // Every persistIdentities() write is stamped with a fresh `rev`
-    // (cross-tab staleness rejection, see cross-tab-sync.spec.js) so a
-    // re-render legitimately changes that one field even with no other
-    // change -- compare everything else byte-identical.
-    const stripRev = json => { const o = JSON.parse(json); delete o.rev; return o; };
-    expect(stripRev(identitiesAfter)).toEqual(stripRev(before));
-    expect(JSON.parse(projectIndexAfter)).toEqual(projectIndex);
-
-    // Idempotent: reload should not re-migrate or duplicate identities.
-    await page.reload({ waitUntil: 'networkidle' });
-    await page.waitForTimeout(300);
-    const identitiesAfterReload = await page.evaluate(() => localStorage.getItem('git_native_tracker_identities_v1'));
-    expect(stripRev(identitiesAfterReload)).toEqual(stripRev(before));
   });
 });

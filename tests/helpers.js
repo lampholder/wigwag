@@ -27,14 +27,14 @@ const demoDoc = {
 
 // Seeds the demo dataset (tests/fixtures/demo-milestone.jsonl -- extracted
 // from what the app itself used to seed on first-ever open, before it
-// switched to starting blank) as an already-migrated milestone, via
+// switched to starting blank) as an already-bootstrapped milestone, via
 // addInitScript so it exists before the app's own constructor runs on the
 // next navigation. Exported separately from gotoTracker so a test that
-// specifically needs a truly-unseeded first-ever-open state (e.g. legacy
-// storage migration) can navigate without it.
+// specifically needs a truly-unseeded first-ever-open state can navigate
+// without it.
 // addInitScript re-runs on EVERY navigation in this page, including a test's
 // own page.reload() after making edits -- guarded the same way the app's
-// own migrateLegacyStorageIfNeeded() guards itself, so a reload doesn't
+// own bootstrapFirstProjectIfNeeded() guards itself, so a reload doesn't
 // clobber whatever's actually there back to the pristine seed.
 async function seedDemoMilestone(page) {
   await page.addInitScript(({ id, name, doc }) => {

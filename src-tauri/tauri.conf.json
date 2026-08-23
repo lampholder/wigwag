@@ -5,8 +5,8 @@
   "identifier": "uk.lant.wigwag",
   "build": {
     "frontendDist": "dist",
-    "beforeBuildCommand": "node copy-dist.js",
-    "beforeDevCommand": "node copy-dist.js"
+    "beforeBuildCommand": "node src-tauri/copy-dist.js",
+    "beforeDevCommand": "node src-tauri/copy-dist.js"
   },
   "app": {
     "windows": [

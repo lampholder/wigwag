@@ -1756,6 +1756,71 @@ test.describe('Column value filters', () => {
     await expect(h.colHeader(page, 'rag').locator('[title="Filtered"]')).toBeVisible();
     await expect(page.locator('[data-testid=row]')).toHaveCount(3);
   });
+
+  // Sticky/snapshot filtering (Sheets-style): the filtered set is fixed at
+  // the moment the filter's own criteria last changed, not re-evaluated on
+  // every edit -- editing a row's own filtered field out of the current
+  // match must not make it vanish out from under you.
+  test('editing a matching row\'s filtered field so it no longer matches does not hide it -- only reapplying the filter does', async ({ page }) => {
+    await h.openColumnMenu(page, 'rag');
+    await page.locator('[data-testid=col-filter-option]').filter({ hasText: 'At risk' }).click(); // amber: i2, i4, i9
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=row]')).toHaveCount(3);
+
+    await h.clickFieldToEdit(page, 2, 'rag');
+    await page.locator('div[style*="z-index: 70"]').getByText('Off track').click(); // red -- no longer matches "At risk"
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=row]')).toHaveCount(3); // still visible, sticky
+
+    // Reapplying the filter (toggling a value) recomputes the snapshot --
+    // NOW the edited row correctly drops out.
+    await h.openColumnMenu(page, 'rag');
+    await page.locator('[data-testid=col-filter-option]').filter({ hasText: 'Off track' }).click();
+    await page.locator('[data-testid=col-filter-option]').filter({ hasText: 'Off track' }).click();
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=row]')).toHaveCount(2); // i4, i9
+  });
+
+  test('a newly added row stays visible under an active filter even with a blank filtered field, until the filter is reapplied', async ({ page }) => {
+    await h.openColumnMenu(page, 'rag');
+    await page.locator('[data-testid=col-filter-option]').filter({ hasText: 'At risk' }).click();
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=row]')).toHaveCount(3);
+
+    await page.keyboard.down('Control'); await page.keyboard.press('Space'); await page.keyboard.up('Control');
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=add-item-input]').fill('New row, blank RAG');
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=row]')).toHaveCount(4); // new row visible despite not matching
+
+    await h.openColumnMenu(page, 'rag');
+    await page.locator('[data-testid=col-filter-option]').filter({ hasText: 'At risk' }).click();
+    await page.locator('[data-testid=col-filter-option]').filter({ hasText: 'At risk' }).click();
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=row]')).toHaveCount(3); // reapplied -- blank-RAG row drops out
+  });
+
+  test('"(No value)" is a selectable filter option, alone or ORed with real values in the same column', async ({ page }) => {
+    await h.openColumnMenu(page, 'rag');
+    const labels = (await page.locator('[data-testid=col-filter-option]').allTextContents()).map(s => s.trim());
+    expect(labels[0]).toBe('(No value)'); // listed first, ahead of the real options
+
+    await page.locator('[data-testid=col-filter-option]').filter({ hasText: '(No value)' }).click();
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=row]')).toHaveCount(2); // i3, i6 (null RAG)
+
+    await h.openColumnMenu(page, 'rag');
+    await page.locator('[data-testid=col-filter-option]').filter({ hasText: 'At risk' }).click(); // OR in amber: i2, i4, i9
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=row]')).toHaveCount(5); // i2, i3, i4, i6, i9
+  });
 });
 
 // Column order is cosmetic like column widths/wrap/filters: persists per

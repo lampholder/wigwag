@@ -8,13 +8,23 @@
 // Usage (a pre-obtained access token — simplest, but expires and needs a
 // manual refresh + restart, same trade-off as jira-proxy.js's PAT mode):
 //   SF_INSTANCE_URL=https://yourco.my.salesforce.com SF_ACCESS_TOKEN=xxxx node salesforce-proxy.js
-// Usage (OAuth2 username-password flow via a Connected App — more setup,
-// but the proxy re-authenticates itself, no manual token juggling):
+// Usage (just username + password + security token, no Connected App at
+// all — uses the older SOAP login() call, the same thing tools like
+// simple-salesforce default to; the proxy re-authenticates itself, no
+// manual token juggling):
+//   SF_USERNAME=you@yourco.com SF_PASSWORD=xxxx SF_SECURITY_TOKEN=xxxx node salesforce-proxy.js
+//   (SF_SECURITY_TOKEN can be omitted if your org has a Trusted IP Range
+//   covering wherever this runs from.)
+// Usage (OAuth2 username-password flow via a Connected App — more setup
+// than the above for no real benefit besides using the newer REST OAuth
+// endpoint instead of SOAP; kept as an option since some orgs disable one
+// flow but not the other):
 //   SF_LOGIN_URL=https://login.salesforce.com SF_CLIENT_ID=... SF_CLIENT_SECRET=... \
 //   SF_USERNAME=you@yourco.com SF_PASSWORD=xxxx SF_SECURITY_TOKEN=xxxx node salesforce-proxy.js
 //   (SF_LOGIN_URL defaults to https://login.salesforce.com; use
-//   https://test.salesforce.com for a sandbox org. Some orgs disable this
-//   flow entirely via security policy — use token mode instead if so.)
+//   https://test.salesforce.com for a sandbox org. Some orgs disable one or
+//   both of these password-based flows entirely via security policy — use
+//   token mode instead if so.)
 //
 // Nothing here talks to anything except Salesforce itself and localhost —
 // no telemetry, no third-party relay. Point the tracker's Settings >
@@ -32,6 +42,14 @@ function tokenModeAuth() {
   return null;
 }
 
+// Salesforce's password-flow convention (shared by both the SOAP and
+// REST-OAuth2 password-based logins below): the security token (if your
+// org requires one, e.g. no trusted IP range configured) is appended
+// directly onto the password, not sent as a separate field.
+function sfPassword() {
+  return process.env.SF_PASSWORD + (process.env.SF_SECURITY_TOKEN || '');
+}
+
 function passwordFlowConfigured() {
   return !!(process.env.SF_CLIENT_ID && process.env.SF_CLIENT_SECRET && process.env.SF_USERNAME && process.env.SF_PASSWORD);
 }
@@ -47,10 +65,7 @@ async function passwordFlowAuth(forceRefresh) {
     client_id: process.env.SF_CLIENT_ID,
     client_secret: process.env.SF_CLIENT_SECRET,
     username: process.env.SF_USERNAME,
-    // Salesforce's password-flow convention: the security token (if your
-    // org requires one, e.g. no trusted IP range configured) is appended
-    // directly onto the password, not sent as a separate field.
-    password: process.env.SF_PASSWORD + (process.env.SF_SECURITY_TOKEN || '')
+    password: sfPassword()
   });
   const res = await fetch(loginUrl + '/services/oauth2/token', {
     method: 'POST',
@@ -66,13 +81,69 @@ async function passwordFlowAuth(forceRefresh) {
   return cachedPasswordAuth;
 }
 
+function soapFlowConfigured() {
+  return !!(process.env.SF_USERNAME && process.env.SF_PASSWORD);
+}
+
+function escapeXml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// The older SOAP login() call -- no Connected App needed at all, just the
+// same username/password/security-token most people already have handy
+// (this is what tools like simple-salesforce default to). Returns a
+// session Id that works directly as a REST API Bearer token, plus a
+// serverUrl whose origin is the instance URL for subsequent calls. Same
+// no-expiry-given/cache-until-401 pattern as passwordFlowAuth above.
+let cachedSoapAuth = null;
+async function soapFlowAuth(forceRefresh) {
+  if (cachedSoapAuth && !forceRefresh) return cachedSoapAuth;
+  const loginUrl = (process.env.SF_LOGIN_URL || 'https://login.salesforce.com').replace(/\/$/, '');
+  const envelope = '<?xml version="1.0" encoding="utf-8"?>' +
+    '<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:urn="urn:partner.soap.sforce.com">' +
+    '<soapenv:Body><urn:login><urn:username>' + escapeXml(process.env.SF_USERNAME) + '</urn:username>' +
+    '<urn:password>' + escapeXml(sfPassword()) + '</urn:password></urn:login></soapenv:Body></soapenv:Envelope>';
+  const res = await fetch(loginUrl + '/services/Soap/u/' + API_VERSION.replace(/^v/, ''), {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/xml; charset=UTF-8', SOAPAction: 'login' },
+    body: envelope
+  });
+  const text = await res.text();
+  const sessionId = (text.match(/<sessionId>([\s\S]*?)<\/sessionId>/) || [])[1];
+  const serverUrl = (text.match(/<serverUrl>([\s\S]*?)<\/serverUrl>/) || [])[1];
+  if (!res.ok || !sessionId || !serverUrl) {
+    const fault = (text.match(/<faultstring>([\s\S]*?)<\/faultstring>/) || [])[1];
+    throw new Error('Salesforce SOAP login failed' + (fault ? ': ' + fault : ' (status ' + res.status + ')'));
+  }
+  cachedSoapAuth = { accessToken: sessionId, instanceUrl: new URL(serverUrl).origin };
+  return cachedSoapAuth;
+}
+
 // Whichever credential set is present picks the mode -- no separate mode
-// flag to set, same convention as jira-proxy.js's authConfig().
+// flag to set, same convention as jira-proxy.js's authConfig(). Password
+// OAuth2 mode requires a Connected App (client id/secret) on top of the
+// same username/password/token the SOAP mode needs, so it only wins over
+// SOAP when those extra two are actually present.
 async function getAuth(forceRefresh) {
   const tok = tokenModeAuth();
   if (tok) return tok;
   if (passwordFlowConfigured()) return passwordFlowAuth(forceRefresh);
+  if (soapFlowConfigured()) return soapFlowAuth(forceRefresh);
   return null;
+}
+
+function authModeLabel() {
+  if (tokenModeAuth()) return 'token';
+  if (passwordFlowConfigured()) return 'password-flow (OAuth2)';
+  if (soapFlowConfigured()) return 'password-flow (SOAP)';
+  return 'MISSING';
+}
+
+// True for any mode where a 401 is worth retrying after a forced
+// re-authentication -- not token mode, since that credential is static
+// and re-fetching it would just return the same (now-expired) value.
+function reauthableMode() {
+  return !tokenModeAuth() && (passwordFlowConfigured() || soapFlowConfigured());
 }
 
 function setCors(res) {
@@ -115,9 +186,8 @@ http.createServer(async (req, res) => {
 
   const url = new URL(req.url, 'http://localhost');
   if (url.pathname === '/') {
-    const mode = tokenModeAuth() ? 'token' : (passwordFlowConfigured() ? 'password-flow' : 'MISSING');
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('Salesforce proxy running. auth=' + mode);
+    res.end('Salesforce proxy running. auth=' + authModeLabel());
     return;
   }
 
@@ -135,7 +205,7 @@ http.createServer(async (req, res) => {
   }
   if (!auth) {
     res.writeHead(500, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Proxy is missing Salesforce credentials (SF_INSTANCE_URL+SF_ACCESS_TOKEN, or SF_CLIENT_ID+SF_CLIENT_SECRET+SF_USERNAME+SF_PASSWORD). Set them and restart.' }));
+    res.end(JSON.stringify({ error: 'Proxy is missing Salesforce credentials (SF_INSTANCE_URL+SF_ACCESS_TOKEN, or SF_USERNAME+SF_PASSWORD[+SF_SECURITY_TOKEN], or SF_CLIENT_ID+SF_CLIENT_SECRET+SF_USERNAME+SF_PASSWORD). Set them and restart.' }));
     return;
   }
 
@@ -145,7 +215,7 @@ http.createServer(async (req, res) => {
       { headers: { Authorization: 'Bearer ' + a.accessToken, Accept: 'application/json' } }
     );
     let apiRes = await fetchRecord(auth);
-    if (apiRes.status === 401 && passwordFlowConfigured() && !tokenModeAuth()) {
+    if (apiRes.status === 401 && reauthableMode()) {
       auth = await getAuth(true);
       apiRes = await fetchRecord(auth);
     }
@@ -163,7 +233,6 @@ http.createServer(async (req, res) => {
     res.end(JSON.stringify({ error: 'Could not reach Salesforce: ' + err.message }));
   }
 }).listen(PORT, () => {
-  const mode = tokenModeAuth() ? 'token' : (passwordFlowConfigured() ? 'password-flow' : '(not set — requests will fail until you set SF_INSTANCE_URL+SF_ACCESS_TOKEN or SF_CLIENT_ID+SF_CLIENT_SECRET+SF_USERNAME+SF_PASSWORD)');
   console.log('Salesforce proxy listening on http://localhost:' + PORT);
-  console.log('  auth: ' + mode);
+  console.log('  auth: ' + authModeLabel());
 });

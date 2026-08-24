@@ -87,21 +87,36 @@ GitHub/Jira or repo sync (see below).
   type a Jira key (e.g. `TRK-118`) into any text field to link it. Jira
   credentials stay in the proxy process; the browser never sees them. See
   the comment at the top of `jira-proxy.js` for details.
-- **Salesforce**: same idea, its own local relay — either a pre-obtained
-  access token,
-  ```
-  SF_INSTANCE_URL=https://yourco.my.salesforce.com SF_ACCESS_TOKEN=xxxx npm run salesforce-proxy
-  ```
-  (simplest, but expires — needs a manual refresh + restart), or a
-  Connected App's username-password OAuth2 flow, which the proxy
-  re-authenticates itself with no manual token juggling:
-  ```
-  SF_CLIENT_ID=... SF_CLIENT_SECRET=... SF_USERNAME=you@yourco.com SF_PASSWORD=xxxx SF_SECURITY_TOKEN=xxxx npm run salesforce-proxy
-  ```
+- **Salesforce**: same idea, its own local relay — three ways to authenticate
+  it, depending on what you've already got:
+  - A pre-obtained access token (simplest, but expires — needs a manual
+    refresh + restart; grab one via the Salesforce CLI's
+    `sf org display --json`, or your browser's `sid` cookie once logged in):
+    ```
+    SF_INSTANCE_URL=https://yourco.my.salesforce.com SF_ACCESS_TOKEN=xxxx npm run salesforce-proxy
+    ```
+  - Just your username, password, and security token — no Connected App
+    needed at all (uses the older SOAP `login()` call, the same thing tools
+    like `simple-salesforce` default to; the proxy re-authenticates itself,
+    no manual token juggling):
+    ```
+    SF_USERNAME=you@yourco.com SF_PASSWORD=xxxx SF_SECURITY_TOKEN=xxxx npm run salesforce-proxy
+    ```
+    (get a security token from Salesforce Setup → your avatar → Settings →
+    My Personal Information → Reset My Security Token; can be omitted if
+    your org has a Trusted IP Range covering wherever this runs from.)
+  - The same three values plus a Connected App's Consumer Key/Secret, via
+    the newer REST OAuth2 password flow — no real benefit over the SOAP
+    option above besides using a different endpoint, kept as a fallback for
+    orgs that disable one flow but not the other:
+    ```
+    SF_CLIENT_ID=... SF_CLIENT_SECRET=... SF_USERNAME=you@yourco.com SF_PASSWORD=xxxx SF_SECURITY_TOKEN=xxxx npm run salesforce-proxy
+    ```
+
   (`SF_LOGIN_URL` defaults to `https://login.salesforce.com`; set it to
-  `https://test.salesforce.com` for a sandbox org — some orgs disable the
-  password flow entirely via security policy, in which case use token mode
-  instead.) Point Settings > Salesforce proxy URL at wherever it's
+  `https://test.salesforce.com` for a sandbox org — some orgs disable one or
+  both password-based flows entirely via security policy, in which case use
+  token mode instead.) Point Settings > Salesforce proxy URL at wherever it's
   listening (`http://localhost:8936` by default), then paste a record link
   (e.g. `https://yourco.lightning.force.com/lightning/r/006.../view`) into
   any text field to link it — unlike a Jira key, there's no bare-id form,

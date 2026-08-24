@@ -47,7 +47,7 @@ test.describe('Single-select', () => {
     // carrying a "bug" label (fixture #3, not #1 which has no labels).
     await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/3');
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'linked');
 
     await expect(h.fieldCell(page, 3, 'type')).toHaveText(/Bug/);
@@ -82,7 +82,7 @@ test.describe('Single-select', () => {
 
     await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/3');
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'linked');
 
     const doc2 = await h.readActiveMilestoneDoc(page);
@@ -201,7 +201,7 @@ test.describe('Multi-select', () => {
 });
 
 test.describe('Text fields', () => {
-  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+  test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
 
   // Text fields ARE bindable (as a rule target) so they still get "Edit
   // field…", but they have no option list / ordering concept — the field
@@ -212,12 +212,13 @@ test.describe('Text fields', () => {
     expect(await page.locator('[data-testid=option-row]').count()).toBe(0);
   });
 
-  test('a truncated value shows the full text as a native hover tooltip', async ({ page }) => {
-    // seed row 7's mitigation text is long enough to truncate in the column.
-    const span = h.fieldCell(page, 7, 'mitigation').locator('span[title]').first();
-    const full = await span.getAttribute('title');
+  test('a clamped value shows the full text as a native hover tooltip', async ({ page }) => {
+    // seed row 7's mitigation text is long enough to clamp in the column --
+    // markdown rendering replaced the old plain-text span, but the same
+    // hover-tooltip affordance carries over onto the rendered div.
+    const md = h.fieldCell(page, 7, 'mitigation').locator('[data-testid=text-field-md]');
+    const full = await md.getAttribute('title');
     expect(full).toBe('Fallback to plain text export until fixed');
-    expect(full).toBe(await span.textContent());
   });
 
   test('is bindable via BOUND SOURCE, and the entry point moves from "Set up…" to "Edit rules…" once bound', async ({ page }) => {
@@ -265,6 +266,122 @@ test.describe('Text fields', () => {
     const row1 = page.locator('[data-testid=rule-preview-row]').first();
     await expect(row1).toContainText('linked:');
     await expect(row1).toContainText('enhancement');
+  });
+});
+
+// Multiline markdown editing, added alongside the base 'Text fields'
+// coverage above -- same renderMarkdown engine as project notes/comments
+// (see tests/project-notes.spec.js), just editing UX differs: blur or
+// Cmd/Ctrl+Enter commits (matching every other field type's blur-commit
+// convention), plain Enter inserts a newline instead.
+test.describe('Text fields: multiline markdown', () => {
+  test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
+
+  test('editing opens a multiline textarea, not a single-line input', async ({ page }) => {
+    await h.clickFieldToEdit(page, 1, 'mitigation');
+    await expect(h.fieldCell(page, 1, 'mitigation').locator('[data-testid=text-field-edit-textarea]')).toBeVisible();
+    expect(await h.fieldCell(page, 1, 'mitigation').locator('input').count()).toBe(0);
+  });
+
+  test('committed markdown renders as real elements in the table cell and the slide-over', async ({ page }) => {
+    await h.clickFieldToEdit(page, 1, 'mitigation');
+    await h.fieldCell(page, 1, 'mitigation').locator('[data-testid=text-field-edit-textarea]').fill('# Plan\n\n**Bold** and `code`.\n\n- one\n- two');
+    await page.keyboard.press('Control+Enter');
+    await page.waitForTimeout(200);
+
+    const cellMd = h.fieldCell(page, 1, 'mitigation').locator('[data-testid=text-field-md]');
+    await expect(cellMd.locator('h1')).toHaveText('Plan');
+    await expect(cellMd.locator('strong')).toHaveText('Bold');
+    await expect(cellMd.locator('code')).toHaveText('code');
+    await expect(cellMd.locator('li')).toHaveCount(2);
+
+    const slideover = await h.openSlideover(page, 1);
+    const sfMd = slideover.locator('[data-testid=slideover-field][data-col=mitigation] [data-testid=text-field-md]');
+    await expect(sfMd.locator('h1')).toHaveText('Plan');
+  });
+
+  test('a bare email renders as a person pill and a bare URL becomes a link, same as comments/notes', async ({ page }) => {
+    await h.clickFieldToEdit(page, 1, 'mitigation');
+    await h.fieldCell(page, 1, 'mitigation').locator('[data-testid=text-field-edit-textarea]').fill('Ping priya@lant.uk or see https://example.com/doc');
+    await page.keyboard.press('Control+Enter');
+    await page.waitForTimeout(200);
+
+    const cellMd = h.fieldCell(page, 1, 'mitigation').locator('[data-testid=text-field-md]');
+    await expect(cellMd.locator('a.email-pill')).toHaveAttribute('href', 'mailto:priya@lant.uk');
+    await expect(cellMd.locator('a', { hasText: 'https://example.com/doc' })).toHaveAttribute('href', 'https://example.com/doc');
+  });
+
+  test('Cmd/Ctrl+Enter commits; plain Enter inserts a newline and stays in edit mode', async ({ page }) => {
+    await h.clickFieldToEdit(page, 2, 'mitigation');
+    const textarea = h.fieldCell(page, 2, 'mitigation').locator('[data-testid=text-field-edit-textarea]');
+    await textarea.fill('line one');
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('line two');
+    await expect(textarea).toBeVisible(); // still editing -- Enter alone didn't commit
+    expect(await textarea.inputValue()).toBe('line one\nline two');
+
+    await page.keyboard.press('Control+Enter');
+    await page.waitForTimeout(200);
+    expect(await h.fieldCell(page, 2, 'mitigation').locator('[data-testid=text-field-md]').getAttribute('data-raw-text')).toBe('line one\nline two');
+  });
+
+  test('Escape cancels without committing', async ({ page }) => {
+    // seed row 2's mitigation has real content to preserve/discard against.
+    const before = await h.fieldCell(page, 2, 'mitigation').locator('[data-testid=text-field-md]').getAttribute('data-raw-text');
+    expect(before).toBe('Manual refresh workaround documented');
+    await h.clickFieldToEdit(page, 2, 'mitigation');
+    await h.fieldCell(page, 2, 'mitigation').locator('[data-testid=text-field-edit-textarea]').fill('discard me');
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(150);
+    expect(await h.fieldCell(page, 2, 'mitigation').locator('[data-testid=text-field-md]').getAttribute('data-raw-text')).toBe(before);
+  });
+
+  test('clicking away (blur) commits, same as every other field type', async ({ page }) => {
+    await h.clickFieldToEdit(page, 4, 'mitigation');
+    await h.fieldCell(page, 4, 'mitigation').locator('[data-testid=text-field-edit-textarea]').fill('blur commit test');
+    await page.mouse.click(700, 5);
+    await page.waitForTimeout(200);
+    expect(await h.fieldCell(page, 4, 'mitigation').locator('[data-testid=text-field-md]').getAttribute('data-raw-text')).toBe('blur commit test');
+  });
+
+  test('an empty value still shows the plain placeholder dash, not an empty markdown body', async ({ page }) => {
+    await h.clickFieldToEdit(page, 5, 'mitigation');
+    await h.fieldCell(page, 5, 'mitigation').locator('[data-testid=text-field-edit-textarea]').fill('');
+    await page.keyboard.press('Control+Enter');
+    await page.waitForTimeout(200);
+    const cell = h.fieldCell(page, 5, 'mitigation');
+    await expect(cell).toContainText('—');
+    expect(await cell.locator('[data-testid=text-field-md]').count()).toBe(0);
+  });
+
+  test('"Wrap text" toggles the line-clamp between 1 and 6 lines', async ({ page }) => {
+    const md = h.fieldCell(page, 7, 'mitigation').locator('[data-testid=text-field-md]');
+    const clampBefore = await md.evaluate(el => getComputedStyle(el).webkitLineClamp);
+    expect(clampBefore).toBe('1');
+
+    await h.openColumnMenu(page, 'mitigation');
+    await page.locator('[data-testid=col-wrap-toggle]').click();
+    await page.waitForTimeout(150);
+    const clampAfter = await md.evaluate(el => getComputedStyle(el).webkitLineClamp);
+    expect(clampAfter).toBe('6');
+  });
+
+  test('a text field linked to GitHub still shows its ref pill, not markdown rendering', async ({ page }) => {
+    await h.clickFieldToEdit(page, 2, 'mitigation');
+    await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/3');
+    await page.keyboard.press('Tab');
+    await h.waitForFieldResolved(page, 2, 'mitigation');
+
+    const cell = h.fieldCell(page, 2, 'mitigation');
+    expect(await cell.locator('[data-testid=text-field-md]').count()).toBe(0);
+    await expect(cell.locator('a')).toHaveAttribute('href', 'https://github.com/octocat/Hello-World/issues/3');
+  });
+
+  test('the Title field (type "issue") is unaffected -- still a single-line input, no markdown', async ({ page }) => {
+    await h.clickTitleToEdit(page, 1);
+    await expect(h.titleCell(page, 1).locator('input')).toBeVisible();
+    expect(await h.titleCell(page, 1).locator('[data-testid=text-field-edit-textarea]').count()).toBe(0);
+    await page.keyboard.press('Escape');
   });
 });
 

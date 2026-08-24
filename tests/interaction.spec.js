@@ -96,8 +96,11 @@ test.describe('Click any field to edit', () => {
   });
 
   test('a text field', async ({ page }) => {
+    // 'mitigation' is a multiline markdown text field -- editing opens a
+    // textarea, not a single-line input (see select-fields.spec.js's
+    // "Text fields: multiline markdown" for the dedicated coverage).
     await h.clickFieldToEdit(page, 2, 'mitigation');
-    expect(await page.evaluate(() => document.activeElement.tagName)).toBe('INPUT');
+    expect(await page.evaluate(() => document.activeElement.tagName)).toBe('TEXTAREA');
   });
 
   test('a single-select field opens its option popover, not a text input', async ({ page }) => {
@@ -118,7 +121,7 @@ test.describe('Click any field to edit', () => {
     await mitigationCell.click();
     await page.waitForTimeout(120);
     await mitigationCell.click();
-    expect(await page.evaluate(() => document.activeElement.tagName)).toBe('INPUT');
+    expect(await page.evaluate(() => document.activeElement.tagName)).toBe('TEXTAREA');
   });
 
   // Regression test for a real bug found while building this suite: activeCell
@@ -137,7 +140,7 @@ test.describe('Click any field to edit', () => {
     await mitigationCell.click();
     await page.waitForTimeout(120);
     await mitigationCell.click();
-    expect(await page.evaluate(() => document.activeElement.tagName)).toBe('INPUT');
+    expect(await page.evaluate(() => document.activeElement.tagName)).toBe('TEXTAREA');
     await page.keyboard.press('Escape');
 
     // row 2's OWN table cell is read-only while its own slide-over is open.
@@ -165,7 +168,7 @@ test.describe('Click any field to edit', () => {
       document.querySelector('[data-testid=row][data-row-num="5"] [data-testid=field-cell][data-col=mitigation]').click();
     });
     await page.waitForTimeout(200);
-    expect(await page.evaluate(() => document.activeElement.tagName)).toBe('INPUT');
+    expect(await page.evaluate(() => document.activeElement.tagName)).toBe('TEXTAREA');
   });
 });
 
@@ -290,7 +293,11 @@ test.describe('Title: click to peek vs. click to edit', () => {
   // editable in place, same as before this feature existed).
   test('the slide-over\'s own title still edits in place on a second click, rather than re-peeking itself', async ({ page }) => {
     await h.openSlideover(page, 2);
-    const titleDiv = page.locator('[data-testid=slideover] div[style*="cursor: text"]');
+    // Scoped to the title header specifically -- a plain cursor:text style
+    // match is no longer unique on its own, since a markdown text field's
+    // rendered div (e.g. 'mitigation') elsewhere in the same slide-over
+    // carries the same style.
+    const titleDiv = page.locator('[data-testid=slideover-title-wrap] div[style*="cursor: text"]');
     await titleDiv.click();
     await page.waitForTimeout(150);
     await titleDiv.click();
@@ -306,7 +313,7 @@ test.describe('Remote lookups persist with the data', () => {
   test('a resolved field survives a page reload (state, not a re-fetch)', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'mitigation');
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/1');
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'mitigation');
     const before = (await h.fieldCell(page, 3, 'mitigation').textContent()).trim();
 
@@ -319,7 +326,7 @@ test.describe('Remote lookups persist with the data', () => {
   test('the resolved ref (owner/repo/num/labels) is part of persisted state, not just the display text', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'mitigation');
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/1');
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'mitigation');
 
     const doc = await h.readActiveMilestoneDoc(page);
@@ -330,7 +337,7 @@ test.describe('Remote lookups persist with the data', () => {
   test('the exported/viewed JSONL source carries fieldRefs too (regression: it used to read a removed property and silently drop this)', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'mitigation');
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/1');
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'mitigation');
 
     const sourceText = await h.readSourceViewText(page);
@@ -378,12 +385,12 @@ test.describe('Refresh: row / whole table', () => {
     // link row 3's title AND mitigation to two different (mocked) issues
     await h.clickTitleToEdit(page, 3);
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/1');
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
     await h.waitForTitleResolved(page, 3);
 
     await h.clickFieldToEdit(page, 3, 'mitigation');
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/2');
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'mitigation');
 
     await h.refreshRow(page, 3);
@@ -417,7 +424,7 @@ test.describe('Refresh: row / whole table', () => {
   test('a no-op refresh (upstream data unchanged) does not spam the history log', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'mitigation');
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/3'); // fixture never changes across calls
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'mitigation');
     const afterLink = await h.getHistoryEntriesFor(page, 'i3');
 
@@ -477,7 +484,7 @@ test.describe('Refresh: row / whole table', () => {
 
     await h.clickFieldToEdit(page, 3, 'mitigation');
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/1');
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'mitigation');
 
     await page.locator('[data-testid=btn-refresh-all]').click();
@@ -545,7 +552,7 @@ test.describe('Staleness highlighting (KNOWN GAP)', () => {
     await h.gotoTracker(page);
     await h.clickFieldToEdit(page, 3, 'mitigation');
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/1');
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'mitigation');
     const doc = await h.readActiveMilestoneDoc(page);
     expect(doc.issues.find(i => i.id === 'i3').fieldRefs.mitigation.fetchedAt).toBeTruthy();
@@ -558,7 +565,7 @@ test.describe('Staleness highlighting (KNOWN GAP)', () => {
     await h.gotoTracker(page);
     await h.clickFieldToEdit(page, 3, 'mitigation');
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/1');
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'mitigation');
 
     // Simulate a fetch that happened 2 days ago and re-render.
@@ -2044,12 +2051,17 @@ test.describe('Wrap vs truncate per column', () => {
   });
 
   test('a text-type column gets its own "Wrap text" item in the column menu', async ({ page }) => {
+    // 'mitigation' is a multiline markdown field -- its at-rest display is
+    // a line-clamped rendered-markdown div, not a plain white-space:nowrap
+    // span (see select-fields.spec.js's "Text fields: multiline markdown"
+    // for the dedicated 1-vs-6-line clamp coverage); the wrap toggle still
+    // applies, just producing -webkit-line-clamp instead of white-space.
     await h.clickFieldToEdit(page, 1, 'mitigation');
     await h.typeAndCommit(page, LONG_TEXT);
     await page.waitForTimeout(150);
 
-    const span = h.fieldCell(page, 1, 'mitigation').locator('span span').first();
-    await expect(span).toHaveCSS('white-space', 'nowrap');
+    const md = h.fieldCell(page, 1, 'mitigation').locator('[data-testid=text-field-md]');
+    expect(await md.evaluate(el => getComputedStyle(el).webkitLineClamp)).toBe('1');
 
     await h.openColumnMenu(page, 'mitigation');
     const wrapItem = page.locator('[data-testid=col-wrap-toggle]');
@@ -2057,7 +2069,7 @@ test.describe('Wrap vs truncate per column', () => {
     await wrapItem.click();
     await page.waitForTimeout(150);
 
-    await expect(span).toHaveCSS('white-space', 'normal');
+    expect(await md.evaluate(el => getComputedStyle(el).webkitLineClamp)).toBe('6');
     // Toggling one column doesn't affect the title or other columns.
     await expect(h.titleCell(page, 1).locator('span').first()).toHaveCSS('white-space', 'nowrap');
   });
@@ -2080,7 +2092,8 @@ test.describe('Wrap vs truncate per column', () => {
     await page.reload();
     await page.waitForTimeout(300);
     await expect(h.titleCell(page, 1).locator('span').first()).toHaveCSS('white-space', 'normal');
-    await expect(h.fieldCell(page, 2, 'mitigation').locator('span span').first()).toHaveCSS('white-space', 'normal');
+    const md = h.fieldCell(page, 2, 'mitigation').locator('[data-testid=text-field-md]');
+    expect(await md.evaluate(el => getComputedStyle(el).webkitLineClamp)).toBe('6');
 
     const sourceText = await h.readSourceViewText(page);
     expect(sourceText).not.toContain('columnWrap');
@@ -2679,7 +2692,7 @@ test.describe('No flash of full-screen modal overlays on page load', () => {
     await h.clickFieldToEdit(page, 1, 'mitigation');
     await page.waitForTimeout(150);
     await page.keyboard.type('trigger gate');
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
     await page.waitForTimeout(300);
     await checkCentered('email-gate-overlay', 'email-gate-modal');
     await page.locator('[data-testid=btn-cancel-email-gate]').click();

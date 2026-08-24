@@ -20,7 +20,7 @@ test.describe('GitHub token', () => {
     });
     await h.clickFieldToEdit(page, 3, 'mitigation');
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/1');
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'mitigation');
     expect(authHeader).toBeNull();
   });
@@ -34,7 +34,7 @@ test.describe('GitHub token', () => {
     await h.setGithubToken(page, 'ghp_testtoken123');
     await h.clickFieldToEdit(page, 3, 'mitigation');
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/1');
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'mitigation');
     expect(authHeader).toBe('Bearer ghp_testtoken123');
   });
@@ -76,7 +76,7 @@ test.describe('Jira linking', () => {
   test('typing a Jira key into a text field resolves it via the configured proxy', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'mitigation');
     await h.pasteText(page, 'TRK-999');
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'mitigation');
 
     const cell = h.fieldCell(page, 3, 'mitigation');
@@ -91,7 +91,7 @@ test.describe('Jira linking', () => {
     // got "pillified" as a plain external link instead of being resolved.
     await h.clickTitleToEdit(page, 3);
     await h.pasteText(page, 'https://mock.atlassian.net/browse/TRK-999');
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
     await h.waitForTitleResolved(page, 3);
 
     const cell = h.titleCell(page, 3);
@@ -106,7 +106,7 @@ test.describe('Jira linking', () => {
   test('the linked field is stored with a system:"jira" tag carrying the full resolved shape', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'mitigation');
     await h.pasteText(page, 'TRK-999');
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'mitigation');
 
     const doc = await h.readActiveMilestoneDoc(page);
@@ -120,7 +120,7 @@ test.describe('Jira linking', () => {
   test('the row refresh button re-fetches an existing Jira link', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'mitigation');
     await h.pasteText(page, 'TRK-999');
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'mitigation');
 
     let fetchCount = 0;
@@ -137,7 +137,7 @@ test.describe('Jira linking', () => {
     await page.route('http://localhost:8934/**', route => route.abort());
     await h.clickFieldToEdit(page, 3, 'mitigation');
     await h.pasteText(page, 'TRK-999');
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
     await page.waitForTimeout(500);
 
     await expect(h.fieldCell(page, 3, 'mitigation')).toContainText('TRK-999');
@@ -150,7 +150,7 @@ test.describe('Jira linking', () => {
     // fields like Mitigation are not (see select-fields.spec.js).
     await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'TRK-999');
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'linked');
 
     await h.openFieldEditor(page, 'type');
@@ -191,7 +191,7 @@ test.describe('Salesforce linking', () => {
   test('pasting a Salesforce record link resolves it via the configured proxy', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'mitigation');
     await h.pasteText(page, SF_URL);
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'mitigation');
 
     const cell = h.fieldCell(page, 3, 'mitigation');
@@ -203,7 +203,7 @@ test.describe('Salesforce linking', () => {
   test('the linked field is stored with a system:"salesforce" tag carrying the full resolved shape', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'mitigation');
     await h.pasteText(page, SF_URL);
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'mitigation');
 
     const doc = await h.readActiveMilestoneDoc(page);
@@ -217,7 +217,7 @@ test.describe('Salesforce linking', () => {
   test('the row refresh button re-fetches an existing Salesforce link', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'mitigation');
     await h.pasteText(page, SF_URL);
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'mitigation');
 
     let fetchCount = 0;
@@ -234,7 +234,7 @@ test.describe('Salesforce linking', () => {
     await page.route('http://localhost:8936/**', route => route.abort());
     await h.clickFieldToEdit(page, 3, 'mitigation');
     await h.pasteText(page, SF_URL);
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
     await page.waitForTimeout(500);
 
     await expect(h.fieldCell(page, 3, 'mitigation')).toContainText(SF_ID);
@@ -245,7 +245,7 @@ test.describe('Salesforce linking', () => {
   test('bound-source rules can read source.salesforce.status / .objectType from a Salesforce-linked source field', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, SF_URL);
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'linked');
 
     await h.openFieldEditor(page, 'type');
@@ -257,7 +257,7 @@ test.describe('Salesforce linking', () => {
   test('source.salesforce is null (not an empty-shaped object) unless the link is actually Salesforce', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/3');
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'linked');
 
     await h.openFieldEditor(page, 'mitigation');
@@ -316,7 +316,7 @@ test.describe('Jira linking: expanded field set', () => {
   test('the full field set (status, priority, assignee, dates, components, ...) is persisted into fieldRefs', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'mitigation');
     await h.pasteText(page, 'TRK-999');
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'mitigation');
 
     const doc = await h.readActiveMilestoneDoc(page);
@@ -331,7 +331,7 @@ test.describe('Jira linking: expanded field set', () => {
   test('a bound-source rule can branch on source.jira.status', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'TRK-999');
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'linked');
 
     await h.openFieldEditor(page, 'type');
@@ -347,7 +347,7 @@ test.describe('Jira linking: expanded field set', () => {
   test('the rule editor\'s advanced expression can read the expanded Jira field set', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'TRK-999');
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'linked');
 
     await h.openFieldEditor(page, 'mitigation');
@@ -374,7 +374,7 @@ test.describe('Jira linking: expanded field set', () => {
     // linked to.
     await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/3');
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'linked');
 
     await h.openFieldEditor(page, 'mitigation');
@@ -397,7 +397,7 @@ test.describe('Jira linking: expanded field set', () => {
     // Relink the same field to Jira instead -- github flips to null, jira becomes the object.
     await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'TRK-999');
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'linked');
 
     await h.openFieldEditor(page, 'mitigation');
@@ -424,7 +424,7 @@ test.describe('Jira linking: expanded field set', () => {
     }));
     await h.clickFieldToEdit(page, 3, 'mitigation');
     await h.pasteText(page, 'TRK-1000');
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'mitigation');
 
     const doc = await h.readActiveMilestoneDoc(page);

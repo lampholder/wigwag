@@ -116,7 +116,7 @@ test.describe('Export as HTML', () => {
 
     await h.clickFieldToEdit(recipientPage, 1, 'mitigation');
     await h.pasteText(recipientPage, 'Recipient-authored mitigation text');
-    await recipientPage.keyboard.press('Enter');
+    await recipientPage.keyboard.press('Tab');
     await recipientPage.waitForTimeout(200);
 
     // The recipient is a genuinely fresh identity in this brand-new
@@ -146,7 +146,7 @@ test.describe('Export as HTML', () => {
 
     await h.clickFieldToEdit(recipientPage, 1, 'mitigation');
     await h.pasteText(recipientPage, 'Do not clobber me');
-    await recipientPage.keyboard.press('Enter');
+    await recipientPage.keyboard.press('Tab');
     await recipientPage.waitForTimeout(200);
 
     // The recipient is a genuinely fresh identity in this brand-new

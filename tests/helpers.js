@@ -490,11 +490,16 @@ async function pasteText(page, text) {
   await page.keyboard.press('Control+KeyV');
 }
 
+// Commits via Tab (which blurs), not Enter -- blur already commits every
+// field type regardless of which key triggered it, but Enter itself no
+// longer does for a multiline markdown 'text' field (it inserts a
+// newline instead), so Tab is the one commit signal that works
+// universally across every field type this helper is used against.
 async function typeAndCommit(page, text) {
   await page.keyboard.press('Control+A');
   if (text) await page.keyboard.type(text);
   else await page.keyboard.press('Delete');
-  await page.keyboard.press('Enter');
+  await page.keyboard.press('Tab');
 }
 
 // Sandbox network latency for a fresh connection is sometimes well over a

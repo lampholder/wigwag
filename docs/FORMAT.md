@@ -173,6 +173,17 @@ same format a native `<input type="date">` already uses as its own
 **not** bindable via the rule DSL (no "Bound source" option) and have no
 wrap-text or value-filter affordance, unlike text/select fields.
 
+`text` fields are multiline and render markdown — the exact same
+`renderMarkdown`/`renderMarkdownInline` engine as issue comments and
+project notes (see "Project notes & comments" below), including bare
+email/URL autolinking. The stored value is still just a plain string, no
+different from before; only the editing UX and display changed. Editing
+commits on blur or Cmd/Ctrl+Enter — plain Enter inserts a newline instead
+of committing, matching how a comment/note edit already behaves. `issue`-type
+fields (Title, and any other field holding a GitHub/Jira/Salesforce link)
+are unaffected — still single-line, no markdown rendering, since a short
+reference/title isn't the same kind of content.
+
 ## Project notes & comments
 
 Separate from any issue: a milestone-wide notes document (markdown, edited

@@ -20,7 +20,7 @@ test.describe('Key/Issue field', () => {
   test('a GitHub issue URL resolves to the real title with the link as a subscript', async ({ page }) => {
     await h.clickTitleToEdit(page, 8);
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/1');
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
     await h.waitForTitleResolved(page, 8);
 
     const cell = h.titleCell(page, 8);

@@ -170,6 +170,56 @@ test.describe('Mobile row detail (S5)', () => {
     await page.waitForTimeout(300);
     await expect(page.locator('[data-testid=mobile-sheet]')).toHaveCount(0);
   });
+
+  // Regression: the global Escape handler used to fall through to a
+  // generic slideOverIssueId check that cleared the slide-over data but
+  // never mobileActiveSheet, leaving the sheet chrome (scrim + panel,
+  // gated on mobileActiveSheet alone) mounted and empty.
+  test('Escape fully dismisses the sheet, not just its content', async ({ page }) => {
+    await page.locator('[data-testid=mobile-row]').first().click();
+    await page.waitForTimeout(350);
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=mobile-sheet]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=mobile-sheet-scrim]')).toHaveCount(0);
+  });
+});
+
+test.describe('Mobile sheets dismiss on Escape', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  test('the identity sheet closes on Escape', async ({ page }) => {
+    await page.locator('[data-testid=crumb-identity]').click();
+    await page.waitForTimeout(300);
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=mobile-sheet]')).toHaveCount(0);
+  });
+
+  test('the project sheet closes on Escape', async ({ page }) => {
+    await page.locator('[data-testid=crumb-project]').click();
+    await page.waitForTimeout(300);
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=mobile-sheet]')).toHaveCount(0);
+  });
+
+  test('Escape closes a nested appearance picker first, then a second Escape closes the sheet', async ({ page }) => {
+    await page.locator('[data-testid=crumb-identity]').click();
+    await page.waitForTimeout(300);
+    await page.locator('[data-testid=btn-appearance]').click();
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=appearance-menu]')).toBeVisible();
+
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=appearance-menu]')).toBeHidden();
+    await expect(page.locator('[data-testid=mobile-sheet]')).toBeVisible();
+
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=mobile-sheet]')).toHaveCount(0);
+  });
 });
 
 test.describe('Mobile header actions', () => {

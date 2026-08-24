@@ -18,10 +18,13 @@ test.describe('GitHub token', () => {
       authHeader = route.request().headers()['authorization'] || null;
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'x', labels: [] }) });
     });
-    await h.clickFieldToEdit(page, 3, 'mitigation');
+    // 'linked' ("Related") is type:'issue' -- paste-to-resolve linking is
+    // gated to that type now, so this generic "some editable field" stand-in
+    // can no longer be 'mitigation' (type:'text').
+    await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/1');
     await page.keyboard.press('Tab');
-    await h.waitForFieldResolved(page, 3, 'mitigation');
+    await h.waitForFieldResolved(page, 3, 'linked');
     expect(authHeader).toBeNull();
   });
 
@@ -32,10 +35,10 @@ test.describe('GitHub token', () => {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Private issue', labels: [] }) });
     });
     await h.setGithubToken(page, 'ghp_testtoken123');
-    await h.clickFieldToEdit(page, 3, 'mitigation');
+    await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/1');
     await page.keyboard.press('Tab');
-    await h.waitForFieldResolved(page, 3, 'mitigation');
+    await h.waitForFieldResolved(page, 3, 'linked');
     expect(authHeader).toBe('Bearer ghp_testtoken123');
   });
 
@@ -73,13 +76,13 @@ test.describe('Jira linking', () => {
     await h.gotoTracker(page);
   });
 
-  test('typing a Jira key into a text field resolves it via the configured proxy', async ({ page }) => {
-    await h.clickFieldToEdit(page, 3, 'mitigation');
+  test('typing a Jira key into an issue-type field resolves it via the configured proxy', async ({ page }) => {
+    await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'TRK-999');
     await page.keyboard.press('Tab');
-    await h.waitForFieldResolved(page, 3, 'mitigation');
+    await h.waitForFieldResolved(page, 3, 'linked');
 
-    const cell = h.fieldCell(page, 3, 'mitigation');
+    const cell = h.fieldCell(page, 3, 'linked');
     await expect(cell).toContainText('Mocked Jira ticket title');
     const anchor = cell.locator('a');
     await expect(anchor).toHaveAttribute('href', 'https://mock.atlassian.net/browse/TRK-999');
@@ -104,13 +107,13 @@ test.describe('Jira linking', () => {
   });
 
   test('the linked field is stored with a system:"jira" tag carrying the full resolved shape', async ({ page }) => {
-    await h.clickFieldToEdit(page, 3, 'mitigation');
+    await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'TRK-999');
     await page.keyboard.press('Tab');
-    await h.waitForFieldResolved(page, 3, 'mitigation');
+    await h.waitForFieldResolved(page, 3, 'linked');
 
     const doc = await h.readActiveMilestoneDoc(page);
-    const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'mitigation');
+    const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'linked');
     expect(ref).toMatchObject({
       system: 'jira', key: 'TRK-999', labels: ['bug', 'urgent'],
       description: 'A mocked description.', browseUrl: 'https://mock.atlassian.net/browse/TRK-999',
@@ -118,10 +121,10 @@ test.describe('Jira linking', () => {
   });
 
   test('the row refresh button re-fetches an existing Jira link', async ({ page }) => {
-    await h.clickFieldToEdit(page, 3, 'mitigation');
+    await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'TRK-999');
     await page.keyboard.press('Tab');
-    await h.waitForFieldResolved(page, 3, 'mitigation');
+    await h.waitForFieldResolved(page, 3, 'linked');
 
     let fetchCount = 0;
     await page.route('http://localhost:8934/issue/TRK-999', async (route) => {
@@ -135,12 +138,12 @@ test.describe('Jira linking', () => {
 
   test('an unreachable proxy fails gracefully — no crash, plain text kept, history records the error', async ({ page }) => {
     await page.route('http://localhost:8934/**', route => route.abort());
-    await h.clickFieldToEdit(page, 3, 'mitigation');
+    await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'TRK-999');
     await page.keyboard.press('Tab');
     await page.waitForTimeout(500);
 
-    await expect(h.fieldCell(page, 3, 'mitigation')).toContainText('TRK-999');
+    await expect(h.fieldCell(page, 3, 'linked')).toContainText('TRK-999');
     const history = await h.getHistoryEntriesFor(page, 'i3');
     expect(history.some(t => t.toLowerCase().includes('could not fetch from jira'))).toBe(true);
   });
@@ -189,25 +192,25 @@ test.describe('Salesforce linking', () => {
   });
 
   test('pasting a Salesforce record link resolves it via the configured proxy', async ({ page }) => {
-    await h.clickFieldToEdit(page, 3, 'mitigation');
+    await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, SF_URL);
     await page.keyboard.press('Tab');
-    await h.waitForFieldResolved(page, 3, 'mitigation');
+    await h.waitForFieldResolved(page, 3, 'linked');
 
-    const cell = h.fieldCell(page, 3, 'mitigation');
+    const cell = h.fieldCell(page, 3, 'linked');
     await expect(cell).toContainText('Mocked Opportunity');
     const anchor = cell.locator('a');
     await expect(anchor).toHaveAttribute('href', SF_URL);
   });
 
   test('the linked field is stored with a system:"salesforce" tag carrying the full resolved shape', async ({ page }) => {
-    await h.clickFieldToEdit(page, 3, 'mitigation');
+    await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, SF_URL);
     await page.keyboard.press('Tab');
-    await h.waitForFieldResolved(page, 3, 'mitigation');
+    await h.waitForFieldResolved(page, 3, 'linked');
 
     const doc = await h.readActiveMilestoneDoc(page);
-    const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'mitigation');
+    const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'linked');
     expect(ref).toMatchObject({
       system: 'salesforce', id: SF_ID, objectType: 'Opportunity', name: 'Mocked Opportunity',
       status: 'Negotiation/Review', url: SF_URL,
@@ -215,10 +218,10 @@ test.describe('Salesforce linking', () => {
   });
 
   test('the row refresh button re-fetches an existing Salesforce link', async ({ page }) => {
-    await h.clickFieldToEdit(page, 3, 'mitigation');
+    await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, SF_URL);
     await page.keyboard.press('Tab');
-    await h.waitForFieldResolved(page, 3, 'mitigation');
+    await h.waitForFieldResolved(page, 3, 'linked');
 
     let fetchCount = 0;
     await page.route('http://localhost:8936/record/' + SF_ID, async (route) => {
@@ -232,12 +235,12 @@ test.describe('Salesforce linking', () => {
 
   test('an unreachable proxy fails gracefully — no crash, plain text kept, history records the error', async ({ page }) => {
     await page.route('http://localhost:8936/**', route => route.abort());
-    await h.clickFieldToEdit(page, 3, 'mitigation');
+    await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, SF_URL);
     await page.keyboard.press('Tab');
     await page.waitForTimeout(500);
 
-    await expect(h.fieldCell(page, 3, 'mitigation')).toContainText(SF_ID);
+    await expect(h.fieldCell(page, 3, 'linked')).toContainText(SF_ID);
     const history = await h.getHistoryEntriesFor(page, 'i3');
     expect(history.some(t => t.toLowerCase().includes('could not fetch from salesforce'))).toBe(true);
   });
@@ -314,13 +317,13 @@ test.describe('Jira linking: expanded field set', () => {
   });
 
   test('the full field set (status, priority, assignee, dates, components, ...) is persisted into fieldRefs', async ({ page }) => {
-    await h.clickFieldToEdit(page, 3, 'mitigation');
+    await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'TRK-999');
     await page.keyboard.press('Tab');
-    await h.waitForFieldResolved(page, 3, 'mitigation');
+    await h.waitForFieldResolved(page, 3, 'linked');
 
     const doc = await h.readActiveMilestoneDoc(page);
-    const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'mitigation');
+    const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'linked');
     expect(ref).toMatchObject({
       status: 'In Progress', statusCategory: 'indeterminate', issueType: 'Bug', priority: 'High',
       assignee: 'Priya Sharma', reporter: 'Jordan Lee', dueDate: '2026-03-01',
@@ -422,13 +425,13 @@ test.describe('Jira linking: expanded field set', () => {
       status: 200, contentType: 'application/json',
       body: JSON.stringify({ title: 'Old-shaped ticket', description: 'x', labels: [], browseUrl: 'https://mock.atlassian.net/browse/TRK-1000' }),
     }));
-    await h.clickFieldToEdit(page, 3, 'mitigation');
+    await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'TRK-1000');
     await page.keyboard.press('Tab');
-    await h.waitForFieldResolved(page, 3, 'mitigation');
+    await h.waitForFieldResolved(page, 3, 'linked');
 
     const doc = await h.readActiveMilestoneDoc(page);
-    const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'mitigation');
+    const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'linked');
     expect(ref.key).toBe('TRK-1000'); // the explicit key param wins even though data.key is absent
     expect(ref.status).toBe('');
     expect(ref.components).toEqual([]);

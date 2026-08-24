@@ -91,3 +91,57 @@ test.describe('Key/Issue field', () => {
     expect(full).toBe(await span.textContent());
   });
 });
+
+// The Issue field is genuinely type:'issue' now (it used to be type:'text'
+// despite behaving like an issue-linkable field throughout the UI, purely
+// by colId-based special-casing) -- see docs/FORMAT.md's "Field types"
+// section and deriveFieldDefs() in wigwag.html for the auto-migration that
+// makes this true for every existing project too, not just new ones.
+test.describe('Issue field is genuinely type:\'issue\'', () => {
+  test('a fresh project\'s Issue field is type:\'issue\', not the old type:\'text\' default', async ({ page }) => {
+    await h.gotoTracker(page); // the demo fixture's OWN stored fields line still literally says type:'text'
+    const doc = await h.readActiveMilestoneDoc(page);
+    expect(doc.fieldDefs.title.type).toBe('issue');
+  });
+
+  test('an existing project stored with type:\'text\' self-heals to type:\'issue\' on load, keeping a customized label', async ({ page }) => {
+    const id = 'legacy-proj';
+    await h.useFastTimers(page);
+    await page.addInitScript((id) => {
+      localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({ activeMilestoneId: id, milestones: [{ id, name: 'Legacy project' }] }));
+      localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
+        fieldDefs: { title: { label: 'Ticket', type: 'text' } },
+        issues: [{ id: 'i1', uid: 'u1', num: 1, fieldRefs: {}, fieldLoading: {}, values: { title: 'Something' }, comments: [], history: [] }],
+        projectHistory: [], hiddenFieldIds: [],
+        githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', githubTokenOverride: '', projectNotes: '', projectComments: []
+      }));
+    }, id);
+    await page.addInitScript((email) => {
+      localStorage.setItem('git_native_tracker_secrets_v1', JSON.stringify({ identityEmail: email }));
+    }, h.DEMO_IDENTITY_EMAIL);
+    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    expect(doc.fieldDefs.title).toMatchObject({ label: 'Ticket', type: 'issue' });
+
+    // And it now genuinely behaves as issue-typed: paste-to-resolve linking works.
+    await h.mockGithubApi(page);
+    await h.clickTitleToEdit(page, 1);
+    await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/1');
+    await page.keyboard.press('Tab');
+    await h.waitForTitleResolved(page, 1);
+    await expect(h.titleCell(page, 1).locator('a')).toHaveCount(1);
+  });
+
+  test('the bound-source dropdown lists "Issue" once, not twice', async ({ page }) => {
+    // Regression: bindableSources() used to hardcode 'title' into the list
+    // AND separately loop over every type:'issue' field -- once title's own
+    // type became 'issue' too, it matched both, without an explicit
+    // exclusion in the loop.
+    await h.gotoTracker(page);
+    await h.openFieldEditor(page, 'type');
+    const options = await page.locator('[data-testid=field-editor-source-select] option').allTextContents();
+    expect(options.filter(o => o === 'Issue').length).toBe(1);
+  });
+});

@@ -366,15 +366,26 @@ test.describe('Text fields: multiline markdown', () => {
     expect(clampAfter).toBe('6');
   });
 
-  test('a text field linked to GitHub still shows its ref pill, not markdown rendering', async ({ page }) => {
+  // Paste-to-resolve linking is gated to type:'issue' fields (see
+  // tests/external-auth.spec.js and interaction.spec.js, which use
+  // 'linked' for that) -- a plain type:'text' field like 'mitigation'
+  // never resolves a GitHub/Jira/Salesforce-shaped paste, no matter how
+  // link-like it looks; it always just commits as (markdown) text.
+  test('a GitHub-shaped URL pasted into a text field never resolves -- it renders as ordinary markdown-autolinked text', async ({ page }) => {
     await h.clickFieldToEdit(page, 2, 'mitigation');
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/3');
     await page.keyboard.press('Tab');
-    await h.waitForFieldResolved(page, 2, 'mitigation');
+    await page.waitForTimeout(300);
 
     const cell = h.fieldCell(page, 2, 'mitigation');
-    expect(await cell.locator('[data-testid=text-field-md]').count()).toBe(0);
-    await expect(cell.locator('a')).toHaveAttribute('href', 'https://github.com/octocat/Hello-World/issues/3');
+    const md = cell.locator('[data-testid=text-field-md]');
+    await expect(md).toHaveCount(1);
+    expect(await md.getAttribute('data-raw-text')).toBe('https://github.com/octocat/Hello-World/issues/3');
+    // The markdown engine's own bare-URL autolinking still makes it
+    // clickable -- a plain <a>, not a [data-testid=...] ref-pill anchor.
+    const anchor = md.locator('a');
+    await expect(anchor).toHaveAttribute('href', 'https://github.com/octocat/Hello-World/issues/3');
+    expect(await anchor.getAttribute('data-testid')).toBeNull();
   });
 
   test('the Title field (type "issue") is unaffected -- still a single-line input, no markdown', async ({ page }) => {

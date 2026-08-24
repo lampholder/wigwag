@@ -311,40 +311,43 @@ test.describe('Remote lookups persist with the data', () => {
   test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
 
   test('a resolved field survives a page reload (state, not a re-fetch)', async ({ page }) => {
-    await h.clickFieldToEdit(page, 3, 'mitigation');
+    // 'linked' ("Related") is type:'issue' -- paste-to-resolve linking is
+    // gated to that type now, so this generic "some editable field"
+    // stand-in can no longer be 'mitigation' (type:'text').
+    await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/1');
     await page.keyboard.press('Tab');
-    await h.waitForFieldResolved(page, 3, 'mitigation');
-    const before = (await h.fieldCell(page, 3, 'mitigation').textContent()).trim();
+    await h.waitForFieldResolved(page, 3, 'linked');
+    const before = (await h.fieldCell(page, 3, 'linked').textContent()).trim();
 
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
-    const after = (await h.fieldCell(page, 3, 'mitigation').textContent()).trim();
+    const after = (await h.fieldCell(page, 3, 'linked').textContent()).trim();
     expect(after).toBe(before);
   });
 
   test('the resolved ref (owner/repo/num/labels) is part of persisted state, not just the display text', async ({ page }) => {
-    await h.clickFieldToEdit(page, 3, 'mitigation');
+    await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/1');
     await page.keyboard.press('Tab');
-    await h.waitForFieldResolved(page, 3, 'mitigation');
+    await h.waitForFieldResolved(page, 3, 'linked');
 
     const doc = await h.readActiveMilestoneDoc(page);
     const issue = doc.issues.find(i => i.id === 'i3');
-    expect(h.latestFieldRef(issue, 'mitigation')).toMatchObject({ owner: 'octocat', repo: 'Hello-World', num: '1' });
+    expect(h.latestFieldRef(issue, 'linked')).toMatchObject({ owner: 'octocat', repo: 'Hello-World', num: '1' });
   });
 
   test('the exported/viewed JSONL source carries fieldRefs too (regression: it used to read a removed property and silently drop this)', async ({ page }) => {
-    await h.clickFieldToEdit(page, 3, 'mitigation');
+    await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/1');
     await page.keyboard.press('Tab');
-    await h.waitForFieldResolved(page, 3, 'mitigation');
+    await h.waitForFieldResolved(page, 3, 'linked');
 
     const sourceText = await h.readSourceViewText(page);
     const i3Line = sourceText.split('\n').find(l => l.includes('"id":"i3"'));
     expect(i3Line).toBeTruthy();
     const parsed = JSON.parse(i3Line);
-    expect(h.latestFieldRef(parsed, 'mitigation')).toMatchObject({ owner: 'octocat', repo: 'Hello-World', num: '1' });
+    expect(h.latestFieldRef(parsed, 'linked')).toMatchObject({ owner: 'octocat', repo: 'Hello-World', num: '1' });
   });
 });
 
@@ -372,39 +375,42 @@ test.describe('Refresh: row / whole table', () => {
     // be a genuine no-op and log nothing (see the dedicated no-op test below).
     // To prove refresh actually re-fetches every field, make the upstream
     // title change between the initial link and the refresh, and count requests.
-    let titleCalls = 0, mitigationCalls = 0;
+    // Deliberately links TWO distinct type:'issue' fields on the same row
+    // (title, and 'linked'/"Related" -- paste-linking is gated to that type
+    // now, so 'mitigation' no longer qualifies as the second field here).
+    let titleCalls = 0, linkedCalls = 0;
     await page.route('https://api.github.com/repos/octocat/Hello-World/issues/1', route => {
       titleCalls++;
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Edited README via GitHub' + (titleCalls > 1 ? ' (v2)' : ''), state: 'closed', pull_request: {}, labels: [] }) });
     });
     await page.route('https://api.github.com/repos/octocat/Hello-World/issues/2', route => {
-      mitigationCalls++;
-      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'README file modified' + (mitigationCalls > 1 ? ' (v2)' : ''), state: 'closed', pull_request: {}, labels: [] }) });
+      linkedCalls++;
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'README file modified' + (linkedCalls > 1 ? ' (v2)' : ''), state: 'closed', pull_request: {}, labels: [] }) });
     });
 
-    // link row 3's title AND mitigation to two different (mocked) issues
+    // link row 3's title AND linked to two different (mocked) issues
     await h.clickTitleToEdit(page, 3);
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/1');
     await page.keyboard.press('Tab');
     await h.waitForTitleResolved(page, 3);
 
-    await h.clickFieldToEdit(page, 3, 'mitigation');
+    await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/2');
     await page.keyboard.press('Tab');
-    await h.waitForFieldResolved(page, 3, 'mitigation');
+    await h.waitForFieldResolved(page, 3, 'linked');
 
     await h.refreshRow(page, 3);
     await h.waitForTitleResolved(page, 3);
-    await h.waitForFieldResolved(page, 3, 'mitigation');
+    await h.waitForFieldResolved(page, 3, 'linked');
 
     expect(titleCalls).toBe(2);
-    expect(mitigationCalls).toBe(2);
+    expect(linkedCalls).toBe(2);
     await expect(h.titleCell(page, 3)).toContainText('(v2)');
-    await expect(h.fieldCell(page, 3, 'mitigation')).toContainText('(v2)');
+    await expect(h.fieldCell(page, 3, 'linked')).toContainText('(v2)');
 
     const history = await h.getHistoryEntriesFor(page, 'i3');
     expect(history.some(t => /Issue [Rr]efresh/.test(t))).toBe(true);
-    expect(history.some(t => /Mitigation [Rr]efresh/.test(t))).toBe(true);
+    expect(history.some(t => /Related [Rr]efresh/.test(t))).toBe(true);
   });
 
   test('row: unlinked row\'s refresh is a harmless no-op', async ({ page }) => {
@@ -422,10 +428,14 @@ test.describe('Refresh: row / whole table', () => {
   // entries. A refresh that finds nothing new should be silent, same as
   // every other no-op mutation path in this app.
   test('a no-op refresh (upstream data unchanged) does not spam the history log', async ({ page }) => {
-    await h.clickFieldToEdit(page, 3, 'mitigation');
+    // 'linked' ("Related") is type:'issue' -- paste-to-resolve linking is
+    // gated to that type now, so 'mitigation' would never actually link at
+    // all here (making refreshRow's own per-field no-ref guard the only
+    // thing keeping history flat, not the no-op-refresh behavior under test).
+    await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/3'); // fixture never changes across calls
     await page.keyboard.press('Tab');
-    await h.waitForFieldResolved(page, 3, 'mitigation');
+    await h.waitForFieldResolved(page, 3, 'linked');
     const afterLink = await h.getHistoryEntriesFor(page, 'i3');
 
     await h.refreshRow(page, 3);
@@ -476,31 +486,33 @@ test.describe('Refresh: row / whole table', () => {
     // and logs nothing (see the dedicated no-op tests above) — so prove the
     // re-pull actually happened via request count + an upstream data change,
     // not via a log entry that (correctly) might not exist.
-    let mitigationCalls = 0;
+    // 'linked' ("Related") is type:'issue' -- paste-to-resolve linking is
+    // gated to that type now, so 'mitigation' no longer qualifies.
+    let linkedCalls = 0;
     await page.route('https://api.github.com/repos/octocat/Hello-World/issues/1', route => {
-      mitigationCalls++;
-      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Edited README via GitHub' + (mitigationCalls > 1 ? ' (v2)' : ''), state: 'closed', pull_request: {}, labels: [] }) });
+      linkedCalls++;
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Edited README via GitHub' + (linkedCalls > 1 ? ' (v2)' : ''), state: 'closed', pull_request: {}, labels: [] }) });
     });
 
-    await h.clickFieldToEdit(page, 3, 'mitigation');
+    await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/1');
     await page.keyboard.press('Tab');
-    await h.waitForFieldResolved(page, 3, 'mitigation');
+    await h.waitForFieldResolved(page, 3, 'linked');
 
     await page.locator('[data-testid=btn-refresh-all]').click();
-    await h.waitForFieldResolved(page, 3, 'mitigation');
+    await h.waitForFieldResolved(page, 3, 'linked');
     // row 1's title was already linked in seed data — refreshing it too means it
     // hits the mocked API (acme/app is a fictional repo, so this resolves as a
     // real 404 via the mock — the point is it was attempted, not that it succeeds).
     await page.waitForTimeout(500);
 
-    expect(mitigationCalls).toBe(2);
-    await expect(h.fieldCell(page, 3, 'mitigation')).toContainText('(v2)');
+    expect(linkedCalls).toBe(2);
+    await expect(h.fieldCell(page, 3, 'linked')).toContainText('(v2)');
 
     const h1 = await h.getHistoryEntriesFor(page, 'i1');
     expect(h1.some(t => /Could not fetch/.test(t))).toBe(true);
     const h3 = await h.getHistoryEntriesFor(page, 'i3');
-    expect(h3.some(t => /Mitigation/.test(t) && /[Rr]efresh/.test(t))).toBe(true);
+    expect(h3.some(t => /Related/.test(t) && /[Rr]efresh/.test(t))).toBe(true);
   });
 
   // Regression: "Refresh all" used to fire every linked field's fetch in one
@@ -550,12 +562,12 @@ test.describe('Staleness highlighting (KNOWN GAP)', () => {
       'owner/repo/num/labels. Staleness can\'t be computed without a fetchedAt/syncedAt field.');
 
     await h.gotoTracker(page);
-    await h.clickFieldToEdit(page, 3, 'mitigation');
+    await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/1');
     await page.keyboard.press('Tab');
-    await h.waitForFieldResolved(page, 3, 'mitigation');
+    await h.waitForFieldResolved(page, 3, 'linked');
     const doc = await h.readActiveMilestoneDoc(page);
-    expect(doc.issues.find(i => i.id === 'i3').fieldRefs.mitigation.fetchedAt).toBeTruthy();
+    expect(doc.issues.find(i => i.id === 'i3').fieldRefs.linked.fetchedAt).toBeTruthy();
   });
 
   test('a stale (old) resolved field is visually flagged', async ({ page }) => {
@@ -563,19 +575,19 @@ test.describe('Staleness highlighting (KNOWN GAP)', () => {
       'there is no fetchedAt timestamp to compare against (see the previous test).');
 
     await h.gotoTracker(page);
-    await h.clickFieldToEdit(page, 3, 'mitigation');
+    await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/1');
     await page.keyboard.press('Tab');
-    await h.waitForFieldResolved(page, 3, 'mitigation');
+    await h.waitForFieldResolved(page, 3, 'linked');
 
     // Simulate a fetch that happened 2 days ago and re-render.
     const doc = await h.readActiveMilestoneDoc(page);
-    doc.issues.find(i => i.id === 'i3').fieldRefs.mitigation.fetchedAt = Date.now() - 2 * 24 * 60 * 60 * 1000;
+    doc.issues.find(i => i.id === 'i3').fieldRefs.linked.fetchedAt = Date.now() - 2 * 24 * 60 * 60 * 1000;
     await h.writeActiveMilestoneDoc(page, doc);
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
 
-    const staleIndicator = await h.fieldCell(page, 3, 'mitigation').locator('[data-stale="true"], [title*="stale" i]').count();
+    const staleIndicator = await h.fieldCell(page, 3, 'linked').locator('[data-stale="true"], [title*="stale" i]').count();
     expect(staleIndicator).toBeGreaterThan(0);
   });
 });

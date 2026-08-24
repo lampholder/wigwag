@@ -340,6 +340,21 @@ async function mockJiraProxy(page, fixtures, proxyUrl = 'http://localhost:8934')
   });
 }
 
+// Mirrors mockJiraProxy, for the local Salesforce proxy (salesforce-proxy.js)
+// -- same CORS constraint as Jira. fixtures maps record Id -> the proxy's
+// normalized response shape ({id, objectType, name, status, owner, url, fields}).
+async function mockSalesforceProxy(page, fixtures, proxyUrl = 'http://localhost:8936') {
+  await page.route(proxyUrl + '/record/*', async (route) => {
+    const id = decodeURIComponent(new URL(route.request().url()).pathname.replace(/^\/record\//, ''));
+    const fixture = fixtures[id];
+    if (fixture) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(fixture) });
+    } else {
+      await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: 'not found' }) });
+    }
+  });
+}
+
 // Settings moved off its own standalone gear button and into the identity
 // dropdown (a "Settings..." link on the active identity's own card) -- this
 // helper hides that two-click path so every existing call site (there are
@@ -459,6 +474,13 @@ async function setJiraProxyUrl(page, url) {
   await openSettingsSection(page, 'integrations');
   await page.locator('[data-testid=settings-jira-proxy-url]').fill(url);
   await page.mouse.click(10, 10); // outside Settings -- its full-screen backdrop closes it from anywhere
+  await page.waitForTimeout(150);
+}
+
+async function setSalesforceProxyUrl(page, url) {
+  await openSettingsSection(page, 'integrations');
+  await page.locator('[data-testid=settings-salesforce-proxy-url]').fill(url);
+  await page.mouse.click(10, 10);
   await page.waitForTimeout(150);
 }
 
@@ -621,6 +643,7 @@ module.exports = {
   mockGithubApi,
   mockGithubContentsApi,
   mockJiraProxy,
+  mockSalesforceProxy,
   openSettings,
   openSettingsSection,
   openProjectPanel,
@@ -629,6 +652,7 @@ module.exports = {
   setGithubToken,
   setGithubRepoSync,
   setJiraProxyUrl,
+  setSalesforceProxyUrl,
   seedTwoIdentities,
   gotoTrackerFreshIdentity,
   DEMO_IDENTITY_EMAIL,

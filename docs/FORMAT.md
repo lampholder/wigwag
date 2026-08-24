@@ -47,7 +47,7 @@ Every line has a `type` discriminator:
 ## History is the sole source of truth
 
 There is no separate materialized-vs-event-log split for issue data.
-`values` (a field's current value) and `fieldRefs` (GitHub/Jira link
+`values` (a field's current value) and `fieldRefs` (GitHub/Jira/Salesforce link
 metadata) are not stored or exported at all — they're derived fresh,
 every time, from `history`, the append-only log, the same way
 `fieldDefs` (below) is derived from `fields`' own log. This is
@@ -75,7 +75,7 @@ its own history through a bug). A history entry looks like:
 `field`/`value` are only present on entries that represent an actual field
 mutation — narrative-only entries (issue creation, a merge's "added from
 import" note) omit them. For a text/issue-type field that's linked to
-GitHub or Jira, the same entry additionally carries a `fieldRef` with the
+GitHub, Jira, or Salesforce, the same entry additionally carries a `fieldRef` with the
 link metadata (see "Field provenance" below) — so a field's value and its
 link travel together on one entry, not as two separately-maintained
 pieces of state. Comments live in a separate `comments` array (an
@@ -166,7 +166,7 @@ shipped.
 ## Field types
 
 `fieldDefs[colId].type` is one of `text`, `select`, `multiselect`,
-`issue` (the Key/Title-style field — can hold a GitHub/Jira link), or
+`issue` (the Key/Title-style field — can hold a GitHub/Jira/Salesforce link), or
 `date`. Date fields store a plain ISO 8601 string (`YYYY-MM-DD`) — the
 same format a native `<input type="date">` already uses as its own
 `value`, so there's no separate serialization step. They're deliberately
@@ -224,9 +224,9 @@ re-exporting from).
 
 A linked text/issue-type field's `fieldRef` (carried on the history entry
 that set its value — see "History is the sole source of truth" above) is
-a read-only, cached mirror of an external system (GitHub issue/PR or Jira
-ticket). Both systems now expose a maximalist field set, not just
-`{owner, repo, num, labels}`:
+a read-only, cached mirror of an external system (GitHub issue/PR, Jira
+ticket, or Salesforce record). GitHub and Jira expose a maximalist field
+set, not just `{owner, repo, num, labels}`:
 
 - **GitHub**: `key` (`owner/repo#num`), `labels`, `description`, `status`
   (raw `state`, `'open'`/`'closed'`), `statusCategory` (normalized to the
@@ -245,26 +245,39 @@ ticket). Both systems now expose a maximalist field set, not just
   name, which varies per project's workflow), `issueType`, `priority`,
   `assignee`, `reporter`, `created`, `updated`, `dueDate`, `resolution`,
   `resolutionDate`, `components`, `fixVersions`, `project`.
+- **Salesforce**: `id`, `objectType` (the SObject API name, e.g.
+  `'Opportunity'`), `name`, `status` (best-effort — whichever of
+  `Status`/`StageName` the record actually has, `''` if neither),
+  `owner`, `url` (the Lightning record URL), `lastModified`, and `fields`
+  — the record's own admin-configured Compact Layout, flattened to a
+  plain `{ ApiName: displayValue }` map. Salesforce has no fixed schema
+  the way Jira issues do (an Opportunity, a Case, and a Contact expose
+  entirely different meaningful fields, and which ones by design), so
+  rather than a hardcoded field list, `name`/`status`/`owner` are
+  best-effort convenience aliases and `fields` is the honest raw
+  passthrough — e.g. `source.salesforce.fields.Amount` on an Opportunity.
 
-Each system has a shared picker (`pickGithubFields`/`pickJiraFields`) that
-every field safely defaults (`''`/`[]`), so old, already-linked data missing
-newer fields (e.g. from before this expansion shipped) resolves cleanly
-rather than crashing — confirmed by a dedicated backward-compatibility test.
-A field's `fieldRef` is only ever overwritten wholesale by a refresh pull
-(a fresh history entry with a fresh `fieldRef`), never merged piecemeal.
+Each system has a shared picker (`pickGithubFields`/`pickJiraFields`/
+`pickSalesforceFields`) that every field safely defaults (`''`/`[]`/`{}`),
+so old, already-linked data missing newer fields (e.g. from before this
+expansion shipped) resolves cleanly rather than crashing — confirmed by a
+dedicated backward-compatibility test. A field's `fieldRef` is only ever
+overwritten wholesale by a refresh pull (a fresh history entry with a
+fresh `fieldRef`), never merged piecemeal.
 
 A field can additionally be **bound**: `fieldDefs[colId].linkedSourceId`
 names another field to read from, and `fieldDefs[colId].rule` is a small JS
-expression evaluated against that source. **`source.github`/`source.jira`
-are `null`, not an empty-shaped object, unless the bound field is actually
-linked to that specific system** — this is a deliberate reversal of an
-earlier design (the original "always-object" approach is preserved for
-history in `linked-value-rework.md`, now superseded). A rule branches with a
-plain truthy check or optional chaining, e.g.
+expression evaluated against that source. **`source.github`/`source.jira`/
+`source.salesforce` are `null`, not an empty-shaped object, unless the
+bound field is actually linked to that specific system** — this is a
+deliberate reversal of an earlier design (the original "always-object"
+approach is preserved for history in `linked-value-rework.md`, now
+superseded). A rule branches with a plain truthy check or optional
+chaining, e.g.
 `source.jira ? source.jira.status : source.github ? source.github.status : 'Todo'`
 — this also means a rule written assuming one system will silently produce
 `undefined` (clearing the target field) if the actual link turns out to be
-the other system, so guard accordingly. Recomputation happens automatically
+a different one, so guard accordingly. Recomputation happens automatically
 whenever the source field or the rule itself changes.
 
 `fieldDefs[colId].rule` is the single source of truth the engine actually
@@ -393,9 +406,9 @@ rows show nothing.
 
 ## Explicitly out of scope
 
-- Jira live-pull requires auth the app doesn't implement; only anonymous
-  public GitHub reads are live-fetched. Jira fields work through a
-  user-supplied proxy URL instead.
+- Jira/Salesforce live-pull requires auth the app doesn't implement; only
+  anonymous public GitHub reads are live-fetched. Jira and Salesforce
+  fields each work through their own user-supplied proxy URL instead.
 - Automatic conflict-*prevention* policies beyond latest-sortKey-wins —
   there's no locking or optimistic-concurrency check before a merge
   applies; the lightweight notice is purely informational, after the fact.

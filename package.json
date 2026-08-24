@@ -10,6 +10,7 @@
   "scripts": {
     "test": "playwright test",
     "jira-proxy": "node jira-proxy.js",
+    "salesforce-proxy": "node salesforce-proxy.js",
     "github-oauth-proxy": "node github-oauth-proxy.js",
     "tauri": "tauri"
   },

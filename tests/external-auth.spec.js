@@ -167,6 +167,136 @@ test.describe('Jira linking', () => {
   });
 });
 
+// Salesforce shares Jira's core constraint (no permissive browser CORS,
+// real auth required) so it goes through the same local-proxy pattern --
+// see salesforce-proxy.js. Unlike Jira, there's no bare-id paste form: a
+// Salesforce record Id isn't something anyone types from memory the way a
+// short Jira key is, so only a full record URL resolves.
+test.describe('Salesforce linking', () => {
+  const SF_ID = '006Nz00000jD3mCIAS';
+  const SF_URL = 'https://elementnewvectorltd.lightning.force.com/lightning/r/' + SF_ID + '/view';
+  const SF_FIXTURE = {
+    id: SF_ID, objectType: 'Opportunity', name: 'Mocked Opportunity',
+    status: 'Negotiation/Review', owner: 'Jane Rep', url: SF_URL,
+    fields: { Name: 'Mocked Opportunity', StageName: 'Negotiation/Review', Amount: '$120,000' }
+  };
+
+  test.beforeEach(async ({ page }) => {
+    await h.mockGithubApi(page);
+    await h.mockSalesforceProxy(page, { [SF_ID]: SF_FIXTURE });
+    await h.gotoTracker(page);
+    await h.setSalesforceProxyUrl(page, 'http://localhost:8936');
+  });
+
+  test('pasting a Salesforce record link resolves it via the configured proxy', async ({ page }) => {
+    await h.clickFieldToEdit(page, 3, 'mitigation');
+    await h.pasteText(page, SF_URL);
+    await page.keyboard.press('Enter');
+    await h.waitForFieldResolved(page, 3, 'mitigation');
+
+    const cell = h.fieldCell(page, 3, 'mitigation');
+    await expect(cell).toContainText('Mocked Opportunity');
+    const anchor = cell.locator('a');
+    await expect(anchor).toHaveAttribute('href', SF_URL);
+  });
+
+  test('the linked field is stored with a system:"salesforce" tag carrying the full resolved shape', async ({ page }) => {
+    await h.clickFieldToEdit(page, 3, 'mitigation');
+    await h.pasteText(page, SF_URL);
+    await page.keyboard.press('Enter');
+    await h.waitForFieldResolved(page, 3, 'mitigation');
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'mitigation');
+    expect(ref).toMatchObject({
+      system: 'salesforce', id: SF_ID, objectType: 'Opportunity', name: 'Mocked Opportunity',
+      status: 'Negotiation/Review', url: SF_URL,
+    });
+  });
+
+  test('the row refresh button re-fetches an existing Salesforce link', async ({ page }) => {
+    await h.clickFieldToEdit(page, 3, 'mitigation');
+    await h.pasteText(page, SF_URL);
+    await page.keyboard.press('Enter');
+    await h.waitForFieldResolved(page, 3, 'mitigation');
+
+    let fetchCount = 0;
+    await page.route('http://localhost:8936/record/' + SF_ID, async (route) => {
+      fetchCount++;
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(SF_FIXTURE) });
+    });
+    await h.refreshRow(page, 3);
+    await page.waitForTimeout(500);
+    expect(fetchCount).toBeGreaterThan(0);
+  });
+
+  test('an unreachable proxy fails gracefully — no crash, plain text kept, history records the error', async ({ page }) => {
+    await page.route('http://localhost:8936/**', route => route.abort());
+    await h.clickFieldToEdit(page, 3, 'mitigation');
+    await h.pasteText(page, SF_URL);
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(500);
+
+    await expect(h.fieldCell(page, 3, 'mitigation')).toContainText(SF_ID);
+    const history = await h.getHistoryEntriesFor(page, 'i3');
+    expect(history.some(t => t.toLowerCase().includes('could not fetch from salesforce'))).toBe(true);
+  });
+
+  test('bound-source rules can read source.salesforce.status / .objectType from a Salesforce-linked source field', async ({ page }) => {
+    await h.clickFieldToEdit(page, 3, 'linked');
+    await h.pasteText(page, SF_URL);
+    await page.keyboard.press('Enter');
+    await h.waitForFieldResolved(page, 3, 'linked');
+
+    await h.openFieldEditor(page, 'type');
+    await h.setBoundSourceAndRule(page, 'Related', 'source.salesforce.objectType === "Opportunity" ? "bug" : "chore"');
+
+    await expect(h.fieldCell(page, 3, 'type')).toHaveText(/Bug/);
+  });
+
+  test('source.salesforce is null (not an empty-shaped object) unless the link is actually Salesforce', async ({ page }) => {
+    await h.clickFieldToEdit(page, 3, 'linked');
+    await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/3');
+    await page.keyboard.press('Enter');
+    await h.waitForFieldResolved(page, 3, 'linked');
+
+    await h.openFieldEditor(page, 'mitigation');
+    await page.locator('[data-testid=field-editor-source-select]').selectOption({ label: 'Related' });
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=field-editor-open-rules]').click();
+    await page.waitForTimeout(400);
+    await page.locator('[data-testid=rule-edit-expression]').click();
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=rule-advanced-textarea]').fill('source.salesforce ? "has-sf" : "no-sf"');
+    await page.waitForTimeout(300);
+    const row3 = page.locator('[data-testid=rule-preview-row]').nth(2);
+    await expect(row3).toContainText('no-sf');
+  });
+
+  test('the Salesforce proxy URL is stored separately and never appears in the tracker\'s own persisted state or "View source"', async ({ page }) => {
+    await h.setSalesforceProxyUrl(page, 'http://sf-proxy-marker-shouldneverleak.local:8936');
+    const storage = await page.evaluate(() => {
+      const idx = JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1'));
+      return {
+        main: localStorage.getItem('git_native_tracker_v1:' + idx.activeMilestoneId),
+        secrets: localStorage.getItem('git_native_tracker_secrets_v1'),
+      };
+    });
+    expect(storage.main).not.toContain('shouldneverleak');
+    expect(storage.secrets).toContain('shouldneverleak');
+
+    const sourceText = await h.readSourceViewText(page);
+    expect(sourceText).not.toContain('shouldneverleak');
+  });
+
+  test('a set Salesforce proxy URL survives a page reload', async ({ page }) => {
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+    await h.openSettingsSection(page, 'integrations');
+    await expect(page.locator('[data-testid=settings-salesforce-proxy-url]')).toHaveValue('http://localhost:8936');
+  });
+});
+
 test.describe('Jira linking: expanded field set', () => {
   test.beforeEach(async ({ page }) => {
     await h.mockGithubApi(page);

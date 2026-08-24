@@ -91,13 +91,14 @@ test.describe('Deep links', () => {
       await expect(page).toHaveURL(/#\/project\/demo-milestone\/issue\/i1$/);
 
       await page.goBack();
-      await page.waitForTimeout(300);
-      await expect(page.locator('[data-testid=slideover]')).toHaveCount(0);
+      // Auto-retrying assertions (not a fixed sleep) -- goBack/goForward's
+      // own completion timing is noisy under full-suite load, so these give
+      // it real headroom instead of racing a blind waitForTimeout.
+      await expect(page.locator('[data-testid=slideover]')).toHaveCount(0, { timeout: 10000 });
       await expect(page).toHaveURL(/#\/project\/demo-milestone$/);
 
       await page.goForward();
-      await page.waitForTimeout(300);
-      await expect(page.locator('[data-testid=slideover]')).toBeVisible();
+      await expect(page.locator('[data-testid=slideover]')).toBeVisible({ timeout: 10000 });
       await expect(page).toHaveURL(/#\/project\/demo-milestone\/issue\/i1$/);
     });
 
@@ -109,10 +110,11 @@ test.describe('Deep links', () => {
       // back() moves the history pointer but doesn't erase the forward
       // entry -- Forward genuinely redoes the open, same as test above.
       // This just confirms Escape goes through the same back()-based close
-      // path as the X button, not a plain replaceState.
+      // path as the X button, not a plain replaceState. Auto-retrying
+      // assertion, not a fixed sleep -- see the comment on the sibling test
+      // above.
       await page.goForward();
-      await page.waitForTimeout(300);
-      await expect(page.locator('[data-testid=slideover]')).toBeVisible();
+      await expect(page.locator('[data-testid=slideover]')).toBeVisible({ timeout: 10000 });
       await expect(page).toHaveURL(/#\/project\/demo-milestone\/issue\/i1$/);
     });
 
@@ -123,13 +125,14 @@ test.describe('Deep links', () => {
       const urlAfterCreate = page.url();
 
       await page.goBack();
-      await page.waitForTimeout(300);
-      await expect(page.locator('[data-testid=tracker-switcher-wrap]')).toContainText('Delivery tracker');
+      // toContainText auto-retries, so the URL check right after it is safe
+      // to run synchronously -- by the time the text assertion succeeds,
+      // goBack()'s navigation has genuinely finished.
+      await expect(page.locator('[data-testid=tracker-switcher-wrap]')).toContainText('Delivery tracker', { timeout: 10000 });
       expect(page.url()).not.toBe(urlAfterCreate);
 
       await page.goForward();
-      await page.waitForTimeout(300);
-      await expect(page.locator('[data-testid=tracker-switcher-wrap]')).toContainText('Second project');
+      await expect(page.locator('[data-testid=tracker-switcher-wrap]')).toContainText('Second project', { timeout: 10000 });
     });
   });
 

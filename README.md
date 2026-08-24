@@ -16,14 +16,15 @@ this file the normal way will corrupt it. `docs/FORMAT.md` documents the
 ## What it does
 
 - **Fields you define**: text, single-select, multi-select, date, and a
-  special "Issue" field type that can hold a live link to a GitHub issue/PR
-  or a Jira ticket (via a small local proxy — Jira's API doesn't allow
-  direct browser requests the way GitHub's does).
+  special "Issue" field type that can hold a live link to a GitHub issue/PR,
+  a Jira ticket, or a Salesforce record (the latter two via a small local
+  proxy each — neither API allows direct browser requests the way GitHub's
+  does).
 - **Bound/derived fields**: a field can compute its value from a rule
-  (plain JS expression) evaluated against a linked GitHub/Jira source —
-  e.g. auto-set "Type" from an issue's labels. `source.github`/
-  `source.jira` are `null` unless the field is actually linked to that
-  system, so a rule can branch with a simple truthy check.
+  (plain JS expression) evaluated against a linked GitHub/Jira/Salesforce
+  source — e.g. auto-set "Type" from an issue's labels. `source.github`/
+  `source.jira`/`source.salesforce` are `null` unless the field is actually
+  linked to that system, so a rule can branch with a simple truthy check.
 - **Milestones**: multiple independent tracker documents per browser,
   switchable from a dropdown — each with its own fields, issues, GitHub
   repo-sync target, and project-wide notes/comments.
@@ -70,7 +71,7 @@ GitHub/Jira or repo sync (see below).
 - **"Import from file…"** (in the milestone switcher) creates a brand new
   milestone from a file instead of touching your current one.
 
-## Linking to private GitHub repos & Jira
+## Linking to private GitHub repos, Jira & Salesforce
 
 - **Private GitHub repos**: open Settings (gear icon) and paste a personal
   access token with `repo` read access. Stored only in `localStorage`, in a
@@ -86,6 +87,31 @@ GitHub/Jira or repo sync (see below).
   type a Jira key (e.g. `TRK-118`) into any text field to link it. Jira
   credentials stay in the proxy process; the browser never sees them. See
   the comment at the top of `jira-proxy.js` for details.
+- **Salesforce**: same idea, its own local relay — either a pre-obtained
+  access token,
+  ```
+  SF_INSTANCE_URL=https://yourco.my.salesforce.com SF_ACCESS_TOKEN=xxxx npm run salesforce-proxy
+  ```
+  (simplest, but expires — needs a manual refresh + restart), or a
+  Connected App's username-password OAuth2 flow, which the proxy
+  re-authenticates itself with no manual token juggling:
+  ```
+  SF_CLIENT_ID=... SF_CLIENT_SECRET=... SF_USERNAME=you@yourco.com SF_PASSWORD=xxxx SF_SECURITY_TOKEN=xxxx npm run salesforce-proxy
+  ```
+  (`SF_LOGIN_URL` defaults to `https://login.salesforce.com`; set it to
+  `https://test.salesforce.com` for a sandbox org — some orgs disable the
+  password flow entirely via security policy, in which case use token mode
+  instead.) Point Settings > Salesforce proxy URL at wherever it's
+  listening (`http://localhost:8936` by default), then paste a record link
+  (e.g. `https://yourco.lightning.force.com/lightning/r/006.../view`) into
+  any text field to link it — unlike a Jira key, there's no bare-id form,
+  since a Salesforce record Id isn't something anyone types from memory.
+  Salesforce objects don't share one fixed schema the way Jira issues do,
+  so the proxy fetches each record's own admin-configured Compact Layout
+  fields rather than a hardcoded list; `name`/`status`/`owner` are
+  best-effort convenience aliases, and the full field set is available to
+  rules via `source.salesforce.fields.<ApiName>`. See the comment at the
+  top of `salesforce-proxy.js` for details.
 
 ## Syncing the tracker's own data to a GitHub repo
 

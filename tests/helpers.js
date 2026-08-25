@@ -74,7 +74,7 @@ async function seedTwoIdentities(page, opts = {}) {
   };
   await page.addInitScript(({ idA, idB, activeIdentityId, projects, blankDoc, docs }) => {
     localStorage.setItem('git_native_tracker_identities_v1', JSON.stringify({
-      activeIdentityId, defaultIdentityId: idA,
+      activeIdentityId,
       identities: [
         { id: idA, label: 'Personal', email: 'tom@personal.com', githubToken: '', jiraProxyUrl: '', signingPublicKeyJwk: null, signingPrivateKeyJwk: null },
         { id: idB, label: 'Northwind', email: 'tom@northwind.com', githubToken: '', jiraProxyUrl: '', signingPublicKeyJwk: null, signingPrivateKeyJwk: null },
@@ -162,7 +162,7 @@ async function gotoTrackerWithSharedProject(page) {
   await page.addInitScript(({ personalId, sharedId, sharedName, doc, email }) => {
     if (localStorage.getItem('git_native_tracker_identities_v1')) return;
     localStorage.setItem('git_native_tracker_identities_v1', JSON.stringify({
-      activeIdentityId: personalId, defaultIdentityId: personalId,
+      activeIdentityId: personalId,
       identities: [{ id: personalId, label: 'Personal', email, githubToken: '', jiraProxyUrl: '', salesforceProxyUrl: '', signingPublicKeyJwk: null, signingPrivateKeyJwk: null }],
       lastActiveProjectByIdentity: {}
     }));
@@ -411,15 +411,25 @@ async function mockSalesforceProxy(page, fixtures, proxyUrl = 'http://localhost:
   });
 }
 
-// Settings lives behind the unified switcher's own "Settings…" link now
-// (right column, shown only while previewing a real identity scope, not
-// "Shared with you") -- this helper hides that path so every existing
-// call site (there are many) keeps working unchanged. Opening always
-// resets to the Identity section (see openSettingsSection below for the
-// other three).
+// Settings lives behind a per-identity cog in the switcher's own left
+// column now (one per real identity row, none on "Shared with you") --
+// this helper hides that path so every existing call site (there are
+// many) keeps working unchanged. Clicks whichever cog is already
+// rendered full-strength (the previewed/selected identity, which the
+// switcher defaults to matching the active project's own identity), so
+// this opens Settings for the identity a caller would naturally expect
+// without needing to know its name. Opening always resets to the
+// Identity section (see openSettingsSection below for the other three).
 async function openSettings(page) {
   await openTrackerSwitcher(page);
-  await page.locator('[data-testid=btn-switcher-settings]').click();
+  const activeId = await page.evaluate(() => {
+    const raw = localStorage.getItem('git_native_tracker_identities_v1');
+    return raw ? JSON.parse(raw).activeIdentityId : null;
+  });
+  const row = activeId
+    ? page.locator(`[data-testid=switcher-scope-row][data-scope-id="${activeId}"]`)
+    : page.locator('[data-testid=switcher-scope-row]').first();
+  await row.locator('[data-testid=switcher-scope-settings-btn]').click();
   await page.waitForTimeout(150);
 }
 

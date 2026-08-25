@@ -257,10 +257,7 @@ test.describe('Cross-tab sync: identities', () => {
     await pageB.keyboard.press('Escape');
     await pageB.waitForTimeout(500);
 
-    await page.locator('[data-testid=btn-switcher]').click();
-    await page.waitForTimeout(150);
-    await page.locator('[data-testid=btn-switcher-settings]').click();
-    await page.waitForTimeout(200);
+    await h.openSettings(page);
     await page.locator('[data-testid=settings-identity-email]').fill('tom-changed@personal.com');
     await page.waitForTimeout(500);
 

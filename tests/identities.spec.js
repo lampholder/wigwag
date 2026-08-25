@@ -78,7 +78,7 @@ test.describe('Multiple identities: switcher scopes, projects, breadcrumb', () =
     await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Project A');
   });
 
-  test('opening the switcher lists both identities as scopes with their email as the sub-line, and a Settings… link for the active scope', async ({ page }) => {
+  test('opening the switcher lists both identities as scopes with their email as the sub-line, each with its own settings cog', async ({ page }) => {
     await h.openTrackerSwitcher(page);
     const scopes = page.locator('[data-testid=switcher-scope-row]');
     await expect(scopes).toHaveCount(2);
@@ -87,7 +87,9 @@ test.describe('Multiple identities: switcher scopes, projects, breadcrumb', () =
     expect(texts[0]).toContain('tom@personal.com');
     expect(texts[1]).toContain('Northwind');
     expect(texts[1]).toContain('tom@northwind.com');
-    await expect(page.locator('[data-testid=btn-switcher-settings]')).toContainText('Settings…'); // active scope (Personal) previewed by default
+    // Every real identity gets a cog -- not just the previewed one.
+    await expect(page.locator('[data-testid=switcher-scope-settings-btn]')).toHaveCount(2);
+    await expect(page.locator('[data-testid=btn-switcher-settings]')).toHaveCount(0); // the old right-column link is gone
   });
 
   test('clicking outside the open switcher closes it', async ({ page }) => {
@@ -171,13 +173,50 @@ test.describe('Multiple identities: switcher scopes, projects, breadcrumb', () =
     await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Wigwag');
   });
 
-  test('clicking "Settings…" closes the switcher and opens the Settings modal on the Identity section', async ({ page }) => {
+  test('clicking the active identity\'s settings cog closes the switcher and opens the Settings modal on the Identity section', async ({ page }) => {
     await h.openTrackerSwitcher(page);
-    await page.locator('[data-testid=btn-switcher-settings]').click();
+    const personalRow = page.locator('[data-testid=switcher-scope-row]').filter({ hasText: 'Personal' });
+    await personalRow.locator('[data-testid=switcher-scope-settings-btn]').click();
     await page.waitForTimeout(150);
     await expect(page.locator('[data-testid=switcher-menu]')).toHaveCount(0);
     await expect(page.locator('[data-testid=settings-modal]')).toBeVisible();
-    await expect(page.locator('[data-testid=settings-identity-email]')).toBeVisible();
+    await expect(page.locator('[data-testid=settings-identity-email]')).toHaveValue('tom@personal.com');
+  });
+
+  // A cog on a NOT-yet-active identity is still a real, working button
+  // (dimmed, not disabled) -- clicking it switches identity first so
+  // Settings shows THAT identity's own data, not whatever was active
+  // a moment ago.
+  test('clicking a non-active identity\'s settings cog switches to it first, then opens Settings with its own data', async ({ page }) => {
+    await h.openTrackerSwitcher(page);
+    const northwindRow = page.locator('[data-testid=switcher-scope-row]').filter({ hasText: 'Northwind' });
+    await northwindRow.locator('[data-testid=switcher-scope-settings-btn]').click();
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=switcher-menu]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=settings-modal]')).toBeVisible();
+    await expect(page.locator('[data-testid=settings-identity-email]')).toHaveValue('tom@northwind.com');
+    const activeIdentityId = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_identities_v1')).activeIdentityId);
+    expect(activeIdentityId).toBe('identity-b');
+  });
+
+  test('"Shared with you" has no settings cog -- there is no identity to configure', async ({ page }) => {
+    // seedTwoIdentities' own addInitScript reapplies on every navigation
+    // (with no "already seeded" guard, unlike seedDemoMilestone), so a
+    // shared project must be part of the initial seed, not layered on
+    // via page.evaluate + reload -- the reload would just re-run the
+    // init script and wipe the mutation straight back out.
+    await h.seedTwoIdentities(page, {
+      projects: [
+        { id: 'project-a', name: 'Project A', identityId: 'identity-a' },
+        { id: 'shared-proj', name: 'Shared thing', identityId: null },
+      ],
+    });
+    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+    await h.openTrackerSwitcher(page);
+    const sharedRow = page.locator('[data-testid=switcher-scope-row]').filter({ hasText: 'Shared with you' });
+    await expect(sharedRow).toHaveCount(1);
+    await expect(sharedRow.locator('[data-testid=switcher-scope-settings-btn]')).toHaveCount(0);
   });
 
   // "Add identity…" lives inline in the switcher's own left column now
@@ -262,8 +301,10 @@ test.describe('Active identity reconciles with the active project at boot (regre
 // The old "Manage identities" panel duplicated these same facts read-only
 // in a second surface; deleted, and the facts moved into the Settings
 // modal's own Identity section (the "THIS IDENTITY" grid: signing key,
-// project count, default-identity toggle) plus what the switcher's own
-// scope row already shows (label, email, project count).
+// project count) plus what the switcher's own scope row already shows
+// (label, email, project count). There is no separate "default identity"
+// concept -- activeIdentityId is independently persisted/restored on its
+// own, so whichever identity was last active is simply what reopens.
 test.describe('Settings modal: Identity section', () => {
   test.beforeEach(async ({ page }) => {
     await h.seedTwoIdentities(page);
@@ -272,7 +313,7 @@ test.describe('Settings modal: Identity section', () => {
     await h.openSettings(page);
   });
 
-  test('header identifies which identity Settings applies to, and the "THIS IDENTITY" grid shows signing key / project count / default-identity state', async ({ page }) => {
+  test('header identifies which identity Settings applies to, and the "THIS IDENTITY" grid shows signing key / project count', async ({ page }) => {
     const body = page.locator('[data-testid=settings-body]');
     await expect(page.locator('[data-testid=settings-modal]')).toContainText('SETTINGS FOR');
     await expect(page.locator('[data-testid=settings-modal]')).toContainText('Personal');
@@ -290,29 +331,7 @@ test.describe('Settings modal: Identity section', () => {
     expect(signingKeyValue).not.toContain(' ');
     expect(signingKeyValue.length).toBeGreaterThan(20);
     await expect(body).toContainText('1 project');
-    await expect(body).toContainText('DEFAULT IDENTITY'); // Personal starts as default
-    await expect(page.locator('[data-testid=btn-make-default]')).toHaveCount(0); // no-op on the already-default identity, so not even shown
-  });
-
-  test('"Make default" works on a non-default identity, and swaps which one shows in the breadcrumb', async ({ page }) => {
-    await page.mouse.click(10, 10);
-    await page.waitForTimeout(150);
-    await h.openTrackerSwitcher(page);
-    const northwindScope = page.locator('[data-testid=switcher-scope-row]').filter({ hasText: 'Northwind' });
-    await northwindScope.click();
-    await page.waitForTimeout(150);
-    await page.locator('[data-testid=switcher-project-row]').first().click(); // commits into Northwind
-    await page.waitForTimeout(400);
-    await h.openSettings(page);
-
-    await expect(page.locator('[data-testid=btn-make-default]')).toBeVisible();
-    await page.locator('[data-testid=btn-make-default]').click();
-    await page.waitForTimeout(200);
-    await expect(page.locator('[data-testid=settings-body]')).toContainText('DEFAULT IDENTITY');
-    await expect(page.locator('[data-testid=btn-make-default]')).toHaveCount(0);
-
-    const idsRaw = await page.evaluate(() => localStorage.getItem('git_native_tracker_identities_v1'));
-    expect(JSON.parse(idsRaw).defaultIdentityId).toBe('identity-b');
+    await expect(page.locator('[data-testid=btn-make-default]')).toHaveCount(0); // removed -- no "default identity" concept
   });
 
   test('the modal closes via the X button and via clicking the backdrop', async ({ page }) => {
@@ -365,7 +384,7 @@ test.describe('Settings modal: section navigation', () => {
     await expect(githubNav.locator('span[style*="border-radius"]')).toHaveCount(1);
   });
 
-  test('reopening Settings from the "Settings…" link always resets to the Identity section', async ({ page }) => {
+  test('reopening Settings from an identity\'s settings cog always resets to the Identity section', async ({ page }) => {
     await page.locator('[data-testid=settings-nav-item][data-section-id=integrations]').click();
     await page.waitForTimeout(120);
     await page.mouse.click(10, 10);

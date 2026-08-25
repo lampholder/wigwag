@@ -156,7 +156,7 @@ test.describe('Late-bound identity: the attribution gate', () => {
     await page.addInitScript(({ personalId, northwindId, sharedId, sharedName, doc, email }) => {
       if (localStorage.getItem('git_native_tracker_identities_v1')) return;
       localStorage.setItem('git_native_tracker_identities_v1', JSON.stringify({
-        activeIdentityId: personalId, defaultIdentityId: personalId,
+        activeIdentityId: personalId,
         identities: [
           { id: personalId, label: 'Personal', email, githubToken: '', jiraProxyUrl: '', salesforceProxyUrl: '', signingPublicKeyJwk: null, signingPrivateKeyJwk: null },
           { id: northwindId, label: 'Northwind', email: 'ben@northwind.com', githubToken: '', jiraProxyUrl: '', salesforceProxyUrl: '', signingPublicKeyJwk: null, signingPrivateKeyJwk: null }

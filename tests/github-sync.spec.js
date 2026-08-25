@@ -232,6 +232,64 @@ test.describe('GitHub repo sync', () => {
     expect(newPage.url()).toBe(`https://github.com/${REPO}/blob/HEAD/tracker.jsonl`);
     await newPage.close();
   });
+
+  // Background polling: the leader tab re-checks the remote Contents API on
+  // an interval (window.__wigwagPollIntervalMs, shrunk to 400ms by
+  // useFastTimers) so a collaborator's push shows up without a reload.
+  test('the leader tab periodically re-checks the remote and merges in a change with no user action, staying quiet on no-op polls', async ({ page }) => {
+    test.setTimeout(45000);
+    const gh = h.mockGithubContentsApi(page, REPO);
+    gh.getResponses = [{ status: 404 }]; // nothing there yet -> initial connect pushes as the first commit
+
+    await h.gotoTracker(page);
+    await h.setGithubRepoSync(page, { repo: REPO, token: 'ghp_faketoken' });
+    await page.reload({ waitUntil: 'networkidle' });
+    await h.waitUntil(() => Promise.resolve(gh.pushCount >= 1));
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    const i8Before = doc.issues.find(i => i.id === 'i8');
+    const historyLenBefore = i8Before.history.length;
+
+    // Point every subsequent GET at the exact sha the push just landed --
+    // a no-op poll must not merge anything or flip the footer into a fresh
+    // "syncing" flash for nothing.
+    const pushedSha = 'sha-after-push-' + gh.pushCount;
+    gh.getResponses = [{ status: 200, sha: pushedSha, text: 'irrelevant -- sha match short-circuits before this is read' }];
+    await page.waitForTimeout(6000); // past a full poll interval (5s), so a real no-op tick actually happens
+    const docAfterNoop = await h.readActiveMilestoneDoc(page);
+    expect(docAfterNoop.issues.find(i => i.id === 'i8').history.length).toBe(historyLenBefore);
+
+    // Now the remote genuinely changes -- the very next poll must merge it
+    // in with no reload and no user action.
+    const fs = require('fs');
+    const path = require('path');
+    const demoLines = fs.readFileSync(path.join(__dirname, 'fixtures', 'demo-milestone.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+    const remote = JSON.parse(JSON.stringify(demoLines));
+    const i8 = remote.find(l => l.type === 'issue' && l.id === 'i8');
+    i8.history.push({ id: 'poll_h1', time: 'Aug 2', actor: 'jordan', email: 'jordan@example.com', text: 'Mitigation set', field: 'mitigation', value: 'Picked up via background poll', origin: 'authored', sortKey: Date.now() + 1000, sig: null, pubKey: null });
+    gh.getResponses = [{ status: 200, sha: 'sha-remote-poll-2', text: remote.map(l => JSON.stringify(l)).join('\n') }];
+
+    await h.waitUntil(async () => (await h.fieldCell(page, 8, 'mitigation').textContent()).includes('Picked up via background poll'), 12000);
+    await expect(page.locator('[data-testid=merge-conflict-modal]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=footer-github-sync]')).toContainText('just now');
+  });
+
+  test('polling is skipped while the tab is not visible', async ({ page }) => {
+    test.setTimeout(45000);
+    const gh = h.mockGithubContentsApi(page, REPO);
+    gh.getResponses = [{ status: 404 }];
+    await page.addInitScript(() => {
+      Object.defineProperty(document, 'hidden', { value: true, configurable: true });
+    });
+
+    await h.gotoTracker(page);
+    await h.setGithubRepoSync(page, { repo: REPO, token: 'ghp_faketoken' });
+    await page.reload({ waitUntil: 'networkidle' });
+    await h.waitUntil(() => Promise.resolve(gh.pushCount >= 1)); // the initial connect still happens -- only the interval-driven poll is hidden-gated
+    const getCountAfterConnect = gh.getCount;
+    await page.waitForTimeout(6000); // past a full poll interval (5s)
+    expect(gh.getCount).toBe(getCountAfterConnect); // no poll-driven GETs went out while hidden
+  });
 });
 
 test.describe('GitHub OAuth sign-in popup handshake', () => {

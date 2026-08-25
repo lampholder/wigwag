@@ -73,4 +73,37 @@ test.describe('GitHub sync leader election across tabs', () => {
     await h.typeAndCommit(pageB, 'edited after the leader tab closed');
     await h.waitUntil(() => Promise.resolve(ghB.pushCount >= 1));
   });
+
+  test('background polling only happens in the leader tab; the follower never queries the Contents API itself but still sees the merged result via cross-tab sync', async ({ page, context }) => {
+    test.setTimeout(45000);
+    const ghA = h.mockGithubContentsApi(page, REPO);
+    ghA.getResponses = [{ status: 404 }];
+    await h.gotoTracker(page);
+    await h.setGithubRepoSync(page, { repo: REPO, token: 'ghp_faketoken' });
+    await h.waitUntil(() => Promise.resolve(ghA.pushCount >= 1));
+
+    const pageB = await context.newPage();
+    const ghB = h.mockGithubContentsApi(pageB, REPO);
+    ghB.getResponses = [{ status: 404 }];
+    await h.useFastTimers(pageB);
+    await pageB.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
+    await pageB.waitForTimeout(500);
+
+    const fs = require('fs');
+    const path = require('path');
+    const demoLines = fs.readFileSync(path.join(__dirname, 'fixtures', 'demo-milestone.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+    const remote = JSON.parse(JSON.stringify(demoLines));
+    const i8 = remote.find(l => l.type === 'issue' && l.id === 'i8');
+    i8.history.push({ id: 'poll_h2', time: 'Aug 2', actor: 'jordan', email: 'jordan@example.com', text: 'Mitigation set', field: 'mitigation', value: 'Picked up by leader poll, mirrored to follower', origin: 'authored', sortKey: Date.now() + 1000, sig: null, pubKey: null });
+    ghA.getResponses = [{ status: 200, sha: 'sha-remote-poll-3', text: remote.map(l => JSON.stringify(l)).join('\n') }];
+
+    // Tab A (leader) picks the change up on its own via polling.
+    await h.waitUntil(async () => (await h.fieldCell(page, 8, 'mitigation').textContent()).includes('Picked up by leader poll'), 12000);
+    expect(ghB.getCount).toBe(0); // the follower never queried the Contents API itself
+
+    // Tab B (follower) still ends up showing it, via the existing
+    // cross-tab localStorage sync of project content -- not by polling.
+    await h.waitUntil(async () => (await h.fieldCell(pageB, 8, 'mitigation').textContent()).includes('Picked up by leader poll'), 5000);
+    expect(ghB.getCount).toBe(0);
+  });
 });

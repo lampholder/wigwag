@@ -95,6 +95,14 @@ async function useFastTimers(page) {
     window.__wigwagLeaderStaleMs = 600;
     window.__wigwagPushDebounceMs = 300;
     window.__wigwagLeaderHeartbeatMs = 200; // keep the same ~3x safety margin vs. staleMs as production (5000 vs 15000)
+    // Deliberately NOT shrunk anywhere near as aggressively as the other
+    // three -- unlike the heartbeat (localStorage-only, no network), a poll
+    // tick is a real fetch(), so a short interval keeps the network from
+    // ever going idle and hangs any page.reload({waitUntil:'networkidle'})
+    // in every test that already has a repo connected (most of this spec).
+    // 5s comfortably clears Playwright's 500ms idle threshold in the gaps
+    // between ticks; tests that specifically exercise polling wait past it.
+    window.__wigwagPollIntervalMs = 5000;
   });
 }
 

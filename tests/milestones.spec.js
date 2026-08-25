@@ -137,14 +137,23 @@ test.describe('Tracker switcher', () => {
       page.waitForEvent('filechooser'),
       page.locator('[data-testid=btn-import-project-from-file]').click(),
     ]);
+    const projectsBefore = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1')).milestones);
     await fc.setFiles({ name: 'new-project.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(pastedJsonl) });
     await page.waitForTimeout(400);
     await expect(page.locator('[data-testid=row]')).toHaveCount(1);
     await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Genuinely New');
 
+    // A genuinely separate milestone exists now (imported projects start
+    // with no derived identity -- see identity-attribution.spec.js -- so
+    // it won't show in this identity-scoped switcher until it's written
+    // to; checked at the storage level instead, which is where "separate
+    // milestone, original untouched" actually lives).
+    const projectsAfter = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1')).milestones);
+    expect(projectsAfter.length).toBe(projectsBefore.length + 1);
+    const original = projectsBefore[0];
+    expect(projectsAfter.find(p => p.id === original.id)).toEqual(original);
     await h.openTrackerSwitcher(page);
-    await expect(page.locator('[data-testid=milestone-row]')).toHaveCount(2);
-    await expect(h.milestoneRow(page, 'Delivery tracker')).toBeVisible(); // original untouched
+    await expect(h.milestoneRow(page, 'Delivery tracker')).toBeVisible(); // original still reachable, untouched
   });
 
   // Regression / deliberate behavior change: re-importing a file that

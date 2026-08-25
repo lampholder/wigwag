@@ -143,6 +143,39 @@ async function gotoTrackerFreshIdentity(page) {
   await page.waitForTimeout(300);
 }
 
+const SHARED_PROJECT_ID = 'shared-project';
+const SHARED_PROJECT_NAME = 'Rules demo';
+const SHARED_PERSONAL_IDENTITY_ID = 'personal-identity';
+
+// Seeds a project with the demo fixture's own content (same field/issue
+// shape as gotoTracker's own seed -- deliberately not a tiny hand-built
+// import) but NO derived identity (identityId: null), as the active
+// project -- for exercising the "Shared with you" / first-write
+// attribution flow (requireAttribution, the attribution-gate UI).
+// Pre-seeds IDENTITIES_KEY directly, bypassing ensureDefaultIdentityIfNeeded's
+// bootstrap entirely -- that bootstrap's own retroactive identity-tagging
+// treats a missing OR null identityId the same way (`m.identityId ? m :
+// ...`), so it would otherwise silently stomp a null identityId back to
+// non-null before a test ever got to see the "Shared with you" state.
+async function gotoTrackerWithSharedProject(page) {
+  await useFastTimers(page);
+  await page.addInitScript(({ personalId, sharedId, sharedName, doc, email }) => {
+    if (localStorage.getItem('git_native_tracker_identities_v1')) return;
+    localStorage.setItem('git_native_tracker_identities_v1', JSON.stringify({
+      activeIdentityId: personalId, defaultIdentityId: personalId,
+      identities: [{ id: personalId, label: 'Personal', email, githubToken: '', jiraProxyUrl: '', salesforceProxyUrl: '', signingPublicKeyJwk: null, signingPrivateKeyJwk: null }],
+      lastActiveProjectByIdentity: {}
+    }));
+    localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({
+      activeMilestoneId: sharedId,
+      milestones: [{ id: sharedId, name: sharedName, identityId: null }]
+    }));
+    localStorage.setItem('git_native_tracker_v1:' + sharedId, JSON.stringify(doc));
+  }, { personalId: SHARED_PERSONAL_IDENTITY_ID, sharedId: SHARED_PROJECT_ID, sharedName: SHARED_PROJECT_NAME, doc: demoDoc, email: DEMO_IDENTITY_EMAIL });
+  await page.goto(TRACKER_PATH, { waitUntil: 'networkidle' });
+  await page.waitForTimeout(300);
+}
+
 // The tracker's own document (fieldDefs/issues/etc.) is persisted under a
 // per-milestone key resolved via a small index -- see the milestone-switcher
 // storage layout. Tests that used to read the bare 'git_native_tracker_v1'
@@ -669,4 +702,9 @@ module.exports = {
   seedTwoIdentities,
   gotoTrackerFreshIdentity,
   DEMO_IDENTITY_EMAIL,
+  gotoTrackerWithSharedProject,
+  SHARED_PROJECT_ID,
+  SHARED_PROJECT_NAME,
+  SHARED_PERSONAL_IDENTITY_ID,
+  demoDoc,
 };

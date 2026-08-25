@@ -909,6 +909,13 @@ test.describe('Migration: backfilling history from pre-existing stored values', 
   test('a field with a real stored value but zero history entries gets a backfill entry, displays correctly, and the backfill is idempotent across reloads', async ({ page }) => {
     const id = 'legacy-backfill-project';
     await page.context().addInitScript(({ id }) => {
+      // Guarded like the shared seed helpers -- this script re-runs on
+      // every navigation including this test's own page.reload() below,
+      // so without the guard it would keep re-seeding a project with no
+      // identityId at all, permanently un-attributed (the one-time
+      // ensureDefaultIdentityIfNeeded() backfill that would otherwise fix
+      // this up only ever runs once, on the very first boot).
+      if (localStorage.getItem('git_native_tracker_milestones_v1')) return;
       localStorage.setItem('git_native_tracker_secrets_v1', JSON.stringify({ identityEmail: 'tom@example.com' }));
       localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({
         activeMilestoneId: id, milestones: [{ id, name: 'Legacy Data' }]

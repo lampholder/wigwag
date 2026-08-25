@@ -1577,7 +1577,16 @@ test.describe('Keep "add an item" reachable: full-height flex shell', () => {
       for (let i = 1; i <= 60; i++) {
         issues.push({ id: 'i' + i, uid: 'u' + i, num: i, fieldRefs: {}, fieldLoading: {}, values: { title: 'Issue number ' + i }, comments: [], history: [] });
       }
-      localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({ activeMilestoneId: id, milestones: [{ id, name: 'Tall Project 3' }] }));
+      // The preceding beforeEach's gotoTracker() already bootstrapped a
+      // real identity (with an email set) -- reuse its id here so this
+      // freshly-seeded project starts already attributed, same as any
+      // ordinary project a signed-in user creates. Without this, adding a
+      // row below the fold (a real write) would open the attribution gate
+      // instead of scrolling, since ensureDefaultIdentityIfNeeded()'s own
+      // retroactive-identity backfill only ever runs once, on the very
+      // first boot -- not on this test's own second navigation.
+      const identities = JSON.parse(localStorage.getItem('git_native_tracker_identities_v1'));
+      localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({ activeMilestoneId: id, milestones: [{ id, name: 'Tall Project 3', identityId: identities.activeIdentityId }] }));
       localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
         fieldDefs: { title: { label: 'Issue', type: 'text' } }, issues,
         hiddenFieldIds: [], githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', projectNotes: '', projectComments: []

@@ -11,14 +11,14 @@ test.describe('Tracker switcher', () => {
 
   test('opens showing the seed milestone as active, and closes on outside click', async ({ page }) => {
     await h.openTrackerSwitcher(page);
-    const rows = page.locator('[data-testid=milestone-row]');
+    const rows = page.locator('[data-testid=switcher-project-row]');
     await expect(rows).toHaveCount(1);
     await expect(rows.first()).toContainText('Delivery tracker');
     await expect(rows.first()).toContainText('✓');
 
     await page.mouse.click(700, 700);
     await page.waitForTimeout(150);
-    await expect(page.locator('[data-testid=milestone-row]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=switcher-project-row]')).toHaveCount(0);
   });
 
   test('creating a blank milestone switches to it with the starter field template and no issues; switching back leaves the original untouched', async ({ page }) => {
@@ -46,7 +46,7 @@ test.describe('Tracker switcher', () => {
       await page.waitForTimeout(300);
     }
     await h.openTrackerSwitcher(page);
-    const names = await page.locator('[data-testid=milestone-row]').allInnerTexts();
+    const names = await page.locator('[data-testid=switcher-project-row]').allInnerTexts();
     const trimmed = names.map(n => n.trim().split('\n')[0]);
     expect(trimmed).toEqual(['Apple project', 'Delivery tracker', 'Mango project', 'Zebra project']);
   });
@@ -56,9 +56,9 @@ test.describe('Tracker switcher', () => {
   // project immediately, named "Untitled" (then "Untitled 2",
   // "Untitled 3", ...) since import is already handled by the dedicated
   // app-bar "Import project..." menu.
-  test('"+ New project" creates a project named "Untitled 1", then "Untitled 2" etc, with no naming step or import options', async ({ page }) => {
+  test('"New project" creates a project named "Untitled 1", then "Untitled 2" etc, with no naming step or import options', async ({ page }) => {
     await h.openTrackerSwitcher(page);
-    await expect(page.locator('[data-testid=btn-add-milestone]')).toHaveText('+ New project');
+    await expect(page.locator('[data-testid=btn-switcher-new-project]')).toHaveText('New project in Personal'); // no "+" -- neither this nor Import project is marked, both create a project; names the target identity since creating is a write
     await h.addBlankProject(page);
     await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Untitled 1');
     await expect(page.locator('[data-testid=row]')).toHaveCount(0);
@@ -71,17 +71,19 @@ test.describe('Tracker switcher', () => {
     await expect(page.locator('[data-testid=new-milestone-name-input]')).toHaveCount(0);
     await expect(page.locator('[data-testid=btn-import-milestone]')).toHaveCount(0);
     await expect(page.locator('[data-testid=btn-paste-milestone]')).toHaveCount(0);
-    await expect(page.locator('[data-testid=milestone-row]')).toHaveCount(3); // Delivery tracker, Untitled 1, Untitled 2
+    await expect(page.locator('[data-testid=switcher-project-row]')).toHaveCount(3); // Delivery tracker, Untitled 1, Untitled 2
   });
 
   // Rename moved off the header (inline edit) and into the project panel,
   // behind a "Rename..." link, with deliberate friction: a stray blur must
   // NOT commit (the opposite of the old inline-edit behavior) -- only the
-  // explicit Rename button or Enter does.
-  test('clicking the header title opens the project panel, not an inline editor', async ({ page }) => {
-    const title = page.locator('[data-testid=tracker-name-title]');
+  // explicit Rename button or Enter does. tracker-name-title is now just a
+  // display span inside the unified switcher's own toggle button (clicking
+  // it opens the switcher, not the project panel) -- "Project" is the
+  // dedicated entry point.
+  test('the "Project" button opens the project panel, not an inline editor', async ({ page }) => {
     await expect(page.locator('[data-testid=tracker-name-input]')).toHaveCount(0);
-    await title.click();
+    await page.locator('[data-testid=btn-notes]').click();
     await page.waitForTimeout(300);
     await expect(page.locator('[data-testid=notes-panel]')).toBeVisible();
     await expect(page.locator('[data-testid=tracker-name-input]')).toHaveCount(0); // no inline editor exists anymore
@@ -89,7 +91,7 @@ test.describe('Tracker switcher', () => {
 
   test('renaming inside the project panel: Enter commits, Escape cancels, a stray blur does neither (deliberate friction)', async ({ page }) => {
     const title = page.locator('[data-testid=tracker-name-title]');
-    await title.click();
+    await page.locator('[data-testid=btn-notes]').click();
     await page.waitForTimeout(300);
 
     await page.locator('[data-testid=notes-rename-btn]').click();
@@ -123,7 +125,7 @@ test.describe('Tracker switcher', () => {
     await page.locator('[data-testid=notes-close-btn]').click();
     await page.waitForTimeout(300);
     await h.openTrackerSwitcher(page);
-    await expect(page.locator('[data-testid=milestone-row]').first()).toContainText('should NOT be committed by a stray click');
+    await expect(page.locator('[data-testid=switcher-project-row]').first()).toContainText('should NOT be committed by a stray click');
   });
 
   test('importing a file for a genuinely new project creates a separate milestone without touching the current one', async ({ page }) => {
@@ -152,7 +154,12 @@ test.describe('Tracker switcher', () => {
     expect(projectsAfter.length).toBe(projectsBefore.length + 1);
     const original = projectsBefore[0];
     expect(projectsAfter.find(p => p.id === original.id)).toEqual(original);
+    // The just-imported project is now active and has no derived identity,
+    // so the switcher opens on "Shared with you" by default -- Personal's
+    // scope needs previewing before its own project is clickable/visible.
     await h.openTrackerSwitcher(page);
+    await page.locator('[data-testid=switcher-scope-row]').filter({ hasText: 'Personal' }).click();
+    await page.waitForTimeout(150);
     await expect(h.milestoneRow(page, 'Delivery tracker')).toBeVisible(); // original still reachable, untouched
   });
 
@@ -183,7 +190,7 @@ test.describe('Tracker switcher', () => {
     expect(dialogMsg).toContain('already have');
     await expect(page.locator('[data-testid=row]')).toHaveCount(9); // unchanged, cancelling did nothing
     await h.openTrackerSwitcher(page);
-    await expect(page.locator('[data-testid=milestone-row]')).toHaveCount(1); // still just the one project
+    await expect(page.locator('[data-testid=switcher-project-row]')).toHaveCount(1); // still just the one project
     await page.mouse.click(700, 400); // outside click closes the dropdown
     await page.waitForTimeout(150);
 
@@ -199,7 +206,7 @@ test.describe('Tracker switcher', () => {
     await page.waitForTimeout(400);
     await expect(page.locator('[data-testid=row]')).toHaveCount(9); // merged, not duplicated -- still 9
     await h.openTrackerSwitcher(page);
-    await expect(page.locator('[data-testid=milestone-row]')).toHaveCount(1);
+    await expect(page.locator('[data-testid=switcher-project-row]')).toHaveCount(1);
   });
 
   test('connecting milestone A to a GitHub repo, then creating a blank milestone B, does not touch A\'s repo', async ({ page }) => {

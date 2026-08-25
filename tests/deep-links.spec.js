@@ -30,7 +30,7 @@ test.describe('Deep links', () => {
     await h.seedTwoIdentities(page); // identity-a active by default; project-b1 belongs to identity-b
     await page.goto(h.TRACKER_PATH + '#/project/project-b1', { waitUntil: 'networkidle' });
     await page.waitForTimeout(500);
-    await expect(page.locator('[data-testid=tracker-switcher-wrap]')).toContainText('Project B1');
+    await expect(page.locator('[data-testid=switcher-wrap]')).toContainText('Project B1');
   });
 
   test('an unknown project id shows a not-found notice and still boots normally', async ({ page }) => {
@@ -128,11 +128,11 @@ test.describe('Deep links', () => {
       // toContainText auto-retries, so the URL check right after it is safe
       // to run synchronously -- by the time the text assertion succeeds,
       // goBack()'s navigation has genuinely finished.
-      await expect(page.locator('[data-testid=tracker-switcher-wrap]')).toContainText('Delivery tracker', { timeout: 10000 });
+      await expect(page.locator('[data-testid=switcher-wrap]')).toContainText('Delivery tracker', { timeout: 10000 });
       expect(page.url()).not.toBe(urlAfterCreate);
 
       await page.goForward();
-      await expect(page.locator('[data-testid=tracker-switcher-wrap]')).toContainText('Second project', { timeout: 10000 });
+      await expect(page.locator('[data-testid=switcher-wrap]')).toContainText('Second project', { timeout: 10000 });
     });
   });
 
@@ -141,10 +141,15 @@ test.describe('Deep links', () => {
     await h.seedTwoIdentities(page);
     await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
-    await page.locator('[data-testid=identity-pill]').click();
+    // Previewing Northwind's scope then clicking one of its projects is
+    // what switches identity+project together now -- there's no
+    // standalone "switch identity" action (see identities.spec.js).
+    await page.locator('[data-testid=btn-switcher]').click();
     await page.waitForTimeout(150);
-    await page.locator('[data-testid=identity-option]').nth(1).click(); // -> Northwind, lands on a Project B*
+    await page.locator('[data-testid=switcher-scope-row]').filter({ hasText: 'Northwind' }).click();
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=switcher-project-row]').first().click(); // -> lands on a Project B*
     await page.waitForTimeout(400);
-    await expect(page.locator('[data-testid=tracker-switcher-wrap]')).toContainText(/Project B1|Project B2/);
+    await expect(page.locator('[data-testid=switcher-wrap]')).toContainText(/Project B1|Project B2/);
   });
 });

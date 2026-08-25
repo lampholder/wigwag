@@ -222,18 +222,28 @@ function latestFieldValue(issue, colId) {
   return entries.reduce((a, b) => (b.sortKey > a.sortKey ? b : a)).value;
 }
 
+// Idempotent -- the pill itself is a plain toggle (click closes it if
+// already open, same as the old dropdowns it replaced), so a call site
+// that isn't sure whether the switcher is already open (e.g. right after
+// openImportProjectMenu, which opens it as a side effect) doesn't
+// accidentally close it instead.
 async function openTrackerSwitcher(page) {
-  await page.locator('[data-testid=btn-tracker-switcher]').click();
+  if (await page.locator('[data-testid=switcher-menu]').count()) return;
+  await page.locator('[data-testid=btn-switcher]').click();
   await page.waitForTimeout(150);
 }
 
-// "+ Add project" creates a project directly ("Untitled"/"Untitled N"),
-// with no naming step and no import options of its own -- those live only
-// in the dedicated app-bar "Import project..." menu now (see
-// openImportProjectMenu below). Assumes the switcher dropdown is already
-// open (openTrackerSwitcher).
+// "New project" creates a project directly ("Untitled"/"Untitled N") in
+// whichever scope the picker is currently previewing (defaults to the
+// active project's own identity), with no naming step and no import
+// options of its own -- those live in the picker's own "Import
+// project..." footer item instead (see openImportProjectMenu below).
+// Assumes the switcher is already open (openTrackerSwitcher) and, if a
+// specific identity's scope matters, already selected via a
+// switcher-scope-row click -- "New project" is hidden entirely while
+// previewing "Shared with you" (no identity to create it under).
 async function addBlankProject(page) {
-  await page.locator('[data-testid=btn-add-milestone]').click();
+  await page.locator('[data-testid=btn-switcher-new-project]').click();
   await page.waitForTimeout(400);
 }
 
@@ -257,15 +267,20 @@ async function createNamedBlankProject(page, name) {
   await renameActiveProject(page, name);
 }
 
-// The one dedicated entry point for file/paste project import (app bar,
-// not the switcher dropdown).
+// The one dedicated entry point for file/paste project import -- lives in
+// the unified switcher's own footer now, next to the projects it creates
+// (not a standalone app-bar button). Opens the switcher itself first if
+// it isn't already open.
 async function openImportProjectMenu(page) {
+  if (!(await page.locator('[data-testid=switcher-menu]').count())) {
+    await openTrackerSwitcher(page);
+  }
   await page.locator('[data-testid=btn-import-project-appbar]').click();
   await page.waitForTimeout(150);
 }
 
 function milestoneRow(page, name) {
-  return page.locator('[data-testid=milestone-row]').filter({ hasText: name });
+  return page.locator('[data-testid=switcher-project-row]').filter({ hasText: name });
 }
 
 function row(page, num) {
@@ -396,15 +411,15 @@ async function mockSalesforceProxy(page, fixtures, proxyUrl = 'http://localhost:
   });
 }
 
-// Settings moved off its own standalone gear button and into the identity
-// dropdown (a "Settings..." link on the active identity's own card) -- this
-// helper hides that two-click path so every existing call site (there are
-// many) keeps working unchanged. Opening always resets to the Identity
-// section (see openSettingsSection below for the other three).
+// Settings lives behind the unified switcher's own "Settings…" link now
+// (right column, shown only while previewing a real identity scope, not
+// "Shared with you") -- this helper hides that path so every existing
+// call site (there are many) keeps working unchanged. Opening always
+// resets to the Identity section (see openSettingsSection below for the
+// other three).
 async function openSettings(page) {
-  await page.locator('[data-testid=identity-pill]').click();
-  await page.waitForTimeout(150);
-  await page.locator('[data-testid=btn-open-settings]').click();
+  await openTrackerSwitcher(page);
+  await page.locator('[data-testid=btn-switcher-settings]').click();
   await page.waitForTimeout(150);
 }
 

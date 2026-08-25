@@ -247,7 +247,7 @@ test.describe('Desktop is unaffected by the mobile tree', () => {
   test('at a desktop viewport, the desktop chrome renders and the mobile tree does not exist in the DOM', async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 800 });
     await h.gotoTracker(page);
-    await expect(page.locator('[data-testid=identity-pill]')).toBeVisible();
+    await expect(page.locator('[data-testid=btn-switcher]')).toBeVisible();
     await expect(page.locator('[data-testid=mobile-header]')).toHaveCount(0);
     await expect(page.locator('[data-testid=row]')).toHaveCount(9);
   });

@@ -2133,27 +2133,21 @@ test.describe('Table card corners', () => {
 test.describe('App bar / Project bar / footer', () => {
   test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
 
-  test('the wordmark and a standalone "Import project…" entry point render in the app bar', async ({ page }) => {
+  // Import moved off the app bar entirely per the unified-switcher handoff
+  // -- it lives in a full-width footer spanning the whole picker menu
+  // (not inside the projects column, since an import belongs to no scope
+  // until first write) -- so it's the wordmark alone in the app bar now.
+  test('the wordmark renders in the app bar', async ({ page }) => {
     await expect(page.getByText('Wigwag', { exact: true })).toBeVisible();
-    await expect(page.locator('[data-testid=btn-import-project-appbar]')).toHaveText('Import project…');
+    await expect(page.locator('[data-testid=btn-import-project-appbar]')).toHaveCount(0);
   });
 
-  test('"Import project…" offers From file… and Paste from clipboard…, same shape as Apply update…', async ({ page }) => {
+  test('"Import project…" (in the switcher\'s own footer) offers From file… and Paste from clipboard…, same shape as Apply update…', async ({ page }) => {
+    await h.openTrackerSwitcher(page);
     await page.locator('[data-testid=btn-import-project-appbar]').click();
     await page.waitForTimeout(150);
     await expect(page.locator('[data-testid=btn-import-project-from-file]')).toHaveText('From file…');
     await expect(page.locator('[data-testid=btn-import-project-from-paste]')).toHaveText('Paste from clipboard…');
-  });
-
-  test('"Import project…" is sized the same as Apply update…, and the identity pill is enlarged to match', async ({ page }) => {
-    const importBtn = page.locator('[data-testid=btn-import-project-appbar]');
-    const applyUpdate = page.locator('[data-testid=btn-import-merge]');
-    const pill = page.locator('[data-testid=identity-pill]');
-    const [importBox, applyBox, pillBoxBefore] = await Promise.all([
-      importBtn.boundingBox(), applyUpdate.boundingBox(), pill.boundingBox(),
-    ]);
-    expect(importBox.height).toBe(applyBox.height);
-    expect(pillBoxBefore.height).toBe(importBox.height); // balanced against the now-taller import button
   });
 
   test('the footer shows format version, last-updated (once there is real history), and View source, with no issue count or filename', async ({ page }) => {
@@ -2368,38 +2362,23 @@ test.describe('Project panel button + header hover', () => {
     expect(titleSize).toBe('20px');
   });
 
-  // Regression note: Phase 1 (Batch 4) originally made title/caret hover
-  // fully independently, per the design handoff README's explicit "never a
-  // shared wrapper hover" guidance. User feedback during Phase 2 overrode
-  // that: the whole title+caret pill should read as one unit, lighting up
-  // together on hover, with each part additionally getting its own
-  // slightly darker shade. This test checks the WRAPPING element's own
-  // background (the actual shared-hover signal) rather than the caret's
-  // own computed background, which stays transparent either way -- the
-  // wrapper's fill showing through a transparent child is what makes the
-  // whole pill look highlighted.
-  test('hovering either the title or the caret highlights the whole pill (shared wrapper hover), each also picking up its own slightly darker shade', async ({ page }) => {
-    const title = page.locator('[data-testid=tracker-name-title]');
-    const caret = page.locator('[data-testid=btn-tracker-switcher]');
-    const wrapperBg = () => title.evaluate(el => getComputedStyle(el.parentElement).backgroundColor);
-    const titleBg = () => title.evaluate(el => getComputedStyle(el).backgroundColor);
-    const caretBg = () => caret.evaluate(el => getComputedStyle(el).backgroundColor);
+  // The unified switcher's breadcrumb (identity / project / caret) is one
+  // clickable pill now, not a separate title+caret sub-pill next to an
+  // independent identity control -- hovering anywhere on it lights up the
+  // whole thing as a single unit (its own background), and clears once
+  // unhovered.
+  test('hovering the breadcrumb pill highlights it as a whole', async ({ page }) => {
+    const pill = page.locator('[data-testid=btn-switcher]');
+    const bg = () => pill.evaluate(el => getComputedStyle(el).backgroundColor);
+    const before = await bg();
 
-    const wrapperBefore = await wrapperBg();
-
-    await caret.hover();
+    await pill.hover();
     await page.waitForTimeout(100);
-    expect(await wrapperBg()).not.toBe(wrapperBefore); // the whole pill lit up...
-    expect(await caretBg()).not.toBe('rgba(0, 0, 0, 0)'); // ...and the caret itself has its own (darker) shade on top
+    expect(await bg()).not.toBe(before);
 
     await page.mouse.move(10, 10);
     await page.waitForTimeout(100);
-    expect(await wrapperBg()).toBe(wrapperBefore); // clears once unhovered
-
-    await title.hover();
-    await page.waitForTimeout(100);
-    expect(await wrapperBg()).not.toBe(wrapperBefore); // hovering the title alone also lights up the whole pill
-    expect(await titleBg()).not.toBe('rgba(0, 0, 0, 0)');
+    expect(await bg()).toBe(before); // clears once unhovered
   });
 });
 
@@ -2445,15 +2424,48 @@ test.describe('Toolbar row button styling is consistent', () => {
 });
 
 test.describe('Project dropdown anchor', () => {
-  test('the dropdown anchors near the project name\'s own position, not the header row\'s outer edge', async ({ page }) => {
+  test('the switcher menu anchors near the breadcrumb pill\'s own position, not the header row\'s outer edge', async ({ page }) => {
     await h.gotoTracker(page);
-    const titleBox = await page.locator('[data-testid=tracker-name-title]').boundingBox();
-    await page.locator('[data-testid=btn-tracker-switcher]').click();
-    await page.waitForTimeout(200);
-    const dropdownBox = await page.locator('[data-testid=milestone-row]').first().locator('..').boundingBox();
-    // Close to the title's own left edge (within a few px, accounting for
-    // the title's own padding) -- not flush with the page/header edge.
-    expect(Math.abs(dropdownBox.x - titleBox.x)).toBeLessThan(20);
+    const pillBox = await page.locator('[data-testid=btn-switcher]').boundingBox();
+    await h.openTrackerSwitcher(page);
+    const menuBox = await page.locator('[data-testid=switcher-menu]').boundingBox();
+    // Close to the pill's own left edge -- not flush with the page/header edge.
+    expect(Math.abs(menuBox.x - pillBox.x)).toBeLessThan(20);
+  });
+});
+
+test.describe('Import footer spans the whole picker menu, not just the projects column', () => {
+  // An import produces a project with no identity yet (Shared with you) --
+  // putting "Import project…" inside a column headed "PROJECTS IN X" would
+  // wrongly imply the import lands in X. It's relocated to a full-width
+  // menu-level footer instead, outside both columns. "New project" stays in
+  // the projects column and now names the target identity, since creating
+  // (unlike importing) is a real write that legitimately belongs to it.
+  test('the import footer sits outside both columns (grid-column: 1 / -1), and "New project" names the previewed identity', async ({ page }) => {
+    await h.gotoTracker(page);
+    await h.openTrackerSwitcher(page);
+    await expect(page.locator('[data-testid=btn-switcher-new-project]')).toHaveText('New project in Personal');
+    const importWrap = page.locator('[data-testid=import-project-menu-wrap]');
+    const gridColumn = await importWrap.evaluate(el => getComputedStyle(el).gridColumn);
+    expect(gridColumn).toBe('1 / -1');
+    const menuBox = await page.locator('[data-testid=switcher-menu]').boundingBox();
+    const importBox = await importWrap.boundingBox();
+    expect(importBox.width).toBeGreaterThan(menuBox.width - 10); // spans the full menu, not just the projects column
+  });
+
+  test('the projects column has no "New project" footer at all in the Shared-with-you scope, but the import footer stays (it belongs to the menu, not any one scope)', async ({ page }) => {
+    await h.seedTwoIdentities(page, {
+      projects: [
+        { id: 'project-a', name: 'Project A', identityId: 'identity-a' },
+        { id: 'project-shared', name: 'Shared thing', identityId: null },
+      ],
+    });
+    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+    await h.openTrackerSwitcher(page);
+    await page.locator('[data-testid=switcher-scope-row]').filter({ hasText: 'Shared with you' }).click();
+    await expect(page.locator('[data-testid=btn-switcher-new-project]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=import-project-menu-wrap]')).toHaveCount(1);
   });
 });
 
@@ -2516,8 +2528,8 @@ test.describe('Delete project (project panel danger zone)', () => {
     await expect(page.locator('[data-testid=delete-project-modal]')).toHaveCount(0);
     await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Second Project');
     await h.openTrackerSwitcher(page);
-    await expect(page.locator('[data-testid=milestone-row]')).toHaveCount(1);
-    await expect(page.locator('[data-testid=milestone-row]')).toContainText('Second Project');
+    await expect(page.locator('[data-testid=switcher-project-row]')).toHaveCount(1);
+    await expect(page.locator('[data-testid=switcher-project-row]')).toContainText('Second Project');
 
     // The deleted project's own doc and per-project prefs are gone, not just
     // dropped from the index -- nothing left over to leak or resurrect.
@@ -2601,7 +2613,7 @@ test.describe('Delete project (project panel danger zone)', () => {
     await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('New project');
     await expect(page.locator('[data-testid=row]')).toHaveCount(0);
     await h.openTrackerSwitcher(page);
-    await expect(page.locator('[data-testid=milestone-row]')).toHaveCount(1);
+    await expect(page.locator('[data-testid=switcher-project-row]')).toHaveCount(1);
   });
 });
 
@@ -2643,8 +2655,8 @@ test.describe('App bar / Project bar stay fixed while the table scrolls', () => 
     await expect(page.locator('[data-testid=tracker-name-title]')).toBeVisible(); // Project bar still on screen too
 
     // Dropdowns anchored to the bars still render correctly on top of scrolled table content.
-    await page.locator('[data-testid=identity-pill]').click();
-    await expect(page.locator('[data-testid=identity-option]').first()).toBeVisible();
+    await page.locator('[data-testid=btn-switcher]').click();
+    await expect(page.locator('[data-testid=switcher-scope-row]').first()).toBeVisible();
   });
 });
 

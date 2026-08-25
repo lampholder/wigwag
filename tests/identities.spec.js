@@ -1,31 +1,47 @@
 // Spec section: Multi-identity (Phase 2 of the identity/IA design handoff),
-// plus the identity-scoped Settings redesign on top of it (settings.zip):
+// plus the identity-scoped Settings redesign on top of it (settings.zip),
+// plus the unified switcher (unified_switcher.zip) that replaced the
+// separate identity-pill / tracker-switcher dropdowns with one merged
+// breadcrumb + two-column picker:
 //   - An identity is a named bundle: label, email, state repo, signing key,
-//     GitHub token, Jira proxy. Projects belong to an identity.
-//   - The pill and title prefix always render, even with exactly one
-//     identity (deliberate deviation from the README/prototype, which only
-//     show them at 2+ -- otherwise there's no entry point at all to the
-//     concept of identities). The dropdown's SWITCH IDENTITY list simply
-//     has one row in that case, not a different layout.
+//     GitHub token, Jira proxy. A project's identity is DERIVED (the
+//     identity last committed with there), not assigned/moved -- see
+//     identity-attribution.spec.js for the late-bound-identity model
+//     itself. This file covers identity management (creation, per-
+//     identity signing keys, Settings scoping) and the switcher's own
+//     scope/project mechanics.
+//   - "Switch identity" no longer exists as a standalone act: the left
+//     column of the picker only ever PREVIEWS a scope (identity or
+//     "Shared with you"); only clicking an actual project row commits,
+//     and if that project belongs to a different identity than the one
+//     currently active, activeIdentityId updates to match as a side
+//     effect of picking that project -- never as its own action. Tests
+//     that used to "switch identity, land on its default/remembered
+//     project" are rewritten to preview-then-click-a-project instead.
+//   - The breadcrumb (identity-title-prefix + tracker-name-title) and the
+//     switcher always render, even with exactly one identity (deliberate
+//     deviation from the README/prototype, which only show a scope list
+//     at 2+ -- otherwise there's no entry point at all to the concept of
+//     identities).
 //   - Settings is a single surface, unambiguously scoped to the active
-//     identity: a two-pane modal (Identity/GitHub access/Sync/Integrations
-//     sections) reached via a "Settings…" button attached to the active
-//     identity's own card in the pill dropdown. The separate "Manage
-//     identities" panel this used to duplicate is gone -- its read-only
-//     facts (signing key, project count, default-identity toggle) moved
-//     into the modal's Identity section, and "+ Add identity…" moved
-//     inline into the dropdown itself.
+//     identity: a two-pane modal (Identity/GitHub access/Integrations
+//     sections) reached via the switcher's own "Settings…" link (right
+//     column, shown only while previewing a real identity scope). The
+//     separate "Manage identities" panel this used to duplicate is gone --
+//     its read-only facts (signing key, project count, default-identity
+//     toggle) moved into the modal's Identity section, and "Add
+//     identity…" moved inline into the switcher's own left column.
 const { test, expect } = require('@playwright/test');
 const h = require('./helpers');
 
-test.describe('Single identity: pill/prefix still render, migration labels it "Personal"', () => {
+test.describe('Single identity: breadcrumb still renders, migration labels it "Personal"', () => {
   // Uses gotoTrackerFreshIdentity (not gotoTracker) specifically because
   // these tests care about the genuinely-no-email migrated state.
   test.beforeEach(async ({ page }) => { await h.gotoTrackerFreshIdentity(page); });
 
-  test('the pill and title prefix are visible immediately, even with only one (migrated) identity', async ({ page }) => {
-    await expect(page.locator('[data-testid=identity-pill]')).toBeVisible();
-    await expect(page.locator('[data-testid=identity-pill]')).toContainText('Personal');
+  test('the breadcrumb is visible immediately, even with only one (migrated) identity', async ({ page }) => {
+    await expect(page.locator('[data-testid=btn-switcher]')).toBeVisible();
+    await expect(page.locator('[data-testid=btn-switcher]')).toContainText('Personal');
     await expect(page.locator('[data-testid=identity-title-prefix]')).toBeVisible();
     await expect(page.locator('[data-testid=identity-title-prefix]')).toContainText('Personal');
   });
@@ -33,12 +49,14 @@ test.describe('Single identity: pill/prefix still render, migration labels it "P
   test('the migrated default identity is always labelled "Personal", regardless of whether an email was already set', async ({ page }) => {
     // gotoTrackerFreshIdentity's demo seed never sets identityEmail, so
     // this also covers the empty-email case; the label must still read
-    // "Personal", not be derived from an email local-part.
-    await page.locator('[data-testid=identity-pill]').click();
-    const options = page.locator('[data-testid=identity-option]');
-    await expect(options).toHaveCount(1);
-    await expect(options.first()).toContainText('Personal');
-    await expect(options.first()).toContainText('1 project');
+    // "Personal", not be derived from an email local-part. An identity
+    // scope row's own sub-line is its email (or "no email set"), not a
+    // project count -- that's "Shared with you"'s own sub-line instead.
+    await h.openTrackerSwitcher(page);
+    const scopes = page.locator('[data-testid=switcher-scope-row]');
+    await expect(scopes).toHaveCount(1);
+    await expect(scopes.first()).toContainText('Personal');
+    await expect(scopes.first()).toContainText('no email set');
   });
 
   test('migration preserves the JIRA PROXY URL default for a user who never set their own (regression: it was silently dropped to empty once the gear popover started reading the migrated identity record)', async ({ page }) => {
@@ -47,70 +65,55 @@ test.describe('Single identity: pill/prefix still render, migration labels it "P
   });
 });
 
-test.describe('Multiple identities: pill, dropdown, title prefix', () => {
+test.describe('Multiple identities: switcher scopes, projects, breadcrumb', () => {
   test.beforeEach(async ({ page }) => {
     await h.seedTwoIdentities(page);
     await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
     await page.waitForTimeout(400);
   });
 
-  test('the pill shows the active identity, and the title prefix shows "<label> /" before the project name', async ({ page }) => {
-    await expect(page.locator('[data-testid=identity-pill]')).toContainText('Personal');
+  test('the breadcrumb shows the active identity, and the title prefix shows "<label> /" before the project name', async ({ page }) => {
+    await expect(page.locator('[data-testid=btn-switcher]')).toContainText('Personal');
     await expect(page.locator('[data-testid=identity-title-prefix]')).toContainText('Personal');
     await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Project A');
   });
 
-  test('opening the dropdown lists both identities with project counts, a checkmark on the active one, the note line, and a Settings… button on the active card', async ({ page }) => {
-    await page.locator('[data-testid=identity-pill]').click();
-    const options = page.locator('[data-testid=identity-option]');
-    await expect(options).toHaveCount(2);
-    const texts = (await options.allTextContents()).map(t => t.replace(/\s+/g, ' ').trim());
+  test('opening the switcher lists both identities as scopes with their email as the sub-line, and a Settings… link for the active scope', async ({ page }) => {
+    await h.openTrackerSwitcher(page);
+    const scopes = page.locator('[data-testid=switcher-scope-row]');
+    await expect(scopes).toHaveCount(2);
+    const texts = (await scopes.allTextContents()).map(t => t.replace(/\s+/g, ' ').trim());
     expect(texts[0]).toContain('Personal');
-    expect(texts[0]).toContain('1 project');
+    expect(texts[0]).toContain('tom@personal.com');
     expect(texts[1]).toContain('Northwind');
-    expect(texts[1]).toContain('2 projects');
-    await expect(options.first().locator('text=✓')).toBeVisible(); // active identity checked
-    await expect(page.getByText('Switching reloads the project list and everything you write is attributed to that address.')).toBeVisible();
-    await expect(page.locator('[data-testid=btn-open-settings]')).toContainText('Settings…');
+    expect(texts[1]).toContain('tom@northwind.com');
+    await expect(page.locator('[data-testid=btn-switcher-settings]')).toContainText('Settings…'); // active scope (Personal) previewed by default
   });
 
-  test('clicking outside the open dropdown closes it', async ({ page }) => {
-    await page.locator('[data-testid=identity-pill]').click();
-    await expect(page.locator('[data-testid=identity-option]')).toHaveCount(2);
+  test('clicking outside the open switcher closes it', async ({ page }) => {
+    await h.openTrackerSwitcher(page);
+    await expect(page.locator('[data-testid=switcher-menu]')).toBeVisible();
     await page.mouse.click(700, 700);
     await page.waitForTimeout(150);
-    await expect(page.locator('[data-testid=identity-option]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=switcher-menu]')).toHaveCount(0);
   });
 
-  test('switching identity via the dropdown loads that identity\'s first project and updates the title prefix', async ({ page }) => {
-    await page.locator('[data-testid=identity-pill]').click();
-    await page.locator('[data-testid=identity-option]').nth(1).click();
+  // "Switch identity" is not a standalone act anymore -- previewing a
+  // different scope only repopulates the right column; picking one of
+  // ITS projects is what actually switches identity+project together.
+  test('previewing a different scope does not commit anything; clicking one of its projects switches identity and project together, updating the title prefix', async ({ page }) => {
+    await h.openTrackerSwitcher(page);
+    const northwindScope = page.locator('[data-testid=switcher-scope-row]').filter({ hasText: 'Northwind' });
+    await northwindScope.click();
+    await page.waitForTimeout(150);
+    // Still Personal / Project A -- previewing alone commits nothing.
+    await expect(page.locator('[data-testid=identity-title-prefix]')).toContainText('Personal');
+    await expect(page.locator('[data-testid=switcher-project-row]').filter({ hasText: 'Project B1' })).toBeVisible();
+
+    await page.locator('[data-testid=switcher-project-row]').filter({ hasText: 'Project B1' }).click();
     await page.waitForTimeout(400);
     await expect(page.locator('[data-testid=identity-title-prefix]')).toContainText('Northwind');
     await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Project B1');
-  });
-
-  test('switching back to a previously-active identity restores whichever of its projects was last active, not just its first', async ({ page }) => {
-    await page.locator('[data-testid=identity-pill]').click();
-    await page.locator('[data-testid=identity-option]').nth(1).click(); // -> Northwind, lands on Project B1
-    await page.waitForTimeout(400);
-
-    // Switch to Project B2 within Northwind before leaving.
-    await h.openTrackerSwitcher(page);
-    await h.milestoneRow(page, 'Project B2').click();
-    await page.waitForTimeout(300);
-    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Project B2');
-
-    // Back to Personal, then back to Northwind -- should remember B2, not re-default to B1.
-    await page.locator('[data-testid=identity-pill]').click();
-    await page.locator('[data-testid=identity-option]').nth(0).click();
-    await page.waitForTimeout(400);
-    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Project A');
-
-    await page.locator('[data-testid=identity-pill]').click();
-    await page.locator('[data-testid=identity-option]').nth(1).click();
-    await page.waitForTimeout(400);
-    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Project B2');
   });
 
   // Regression: switching to an identity with zero projects used to call
@@ -120,8 +123,10 @@ test.describe('Multiple identities: pill, dropdown, title prefix', () => {
   // project object, so trying to rename it silently did nothing (nothing
   // ever matched state.projectId). Fixed the same way deleteProject()
   // already handles losing an identity's last project: auto-create a real
-  // blank one instead of leaving projectId null.
-  test('switching to an identity with zero projects creates a real, immediately-renamable blank project -- not a phantom "Untitled" placeholder', async ({ page }) => {
+  // blank one instead of leaving projectId null. Reachable today via the
+  // switcher's own "New project" footer action on a zero-project scope
+  // (there's no other way to "land on" an identity with nothing in it).
+  test('creating the first project for a zero-project identity via "New project" yields a real, immediately-renamable project -- not a phantom "Untitled" placeholder', async ({ page }) => {
     await h.seedTwoIdentities(page, {
       projects: [
         { id: 'project-a', name: 'Project A', identityId: 'identity-a' },
@@ -130,8 +135,12 @@ test.describe('Multiple identities: pill, dropdown, title prefix', () => {
     await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
     await page.waitForTimeout(400);
 
-    await page.locator('[data-testid=identity-pill]').click();
-    await page.locator('[data-testid=identity-option]').nth(1).click(); // Northwind, 0 projects
+    await h.openTrackerSwitcher(page);
+    const northwindScope = page.locator('[data-testid=switcher-scope-row]').filter({ hasText: 'Northwind' });
+    await northwindScope.click();
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=switcher-project-row]')).toHaveCount(0); // genuinely empty
+    await page.locator('[data-testid=btn-switcher-new-project]').click();
     await page.waitForTimeout(400);
 
     // No phantom rows, and specifically none of Personal's data leaked
@@ -140,11 +149,13 @@ test.describe('Multiple identities: pill, dropdown, title prefix', () => {
     await expect(page.getByText('Project A', { exact: true })).toHaveCount(0);
 
     // A real, named project exists -- not the null-projectId fallback.
-    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('New project');
+    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Untitled 1');
     const idx = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1')));
     const active = idx.milestones.find(m => m.id === idx.activeMilestoneId);
     expect(active).toBeTruthy();
     expect(active.identityId).toBe('identity-b'); // Northwind, not left/mis-tagged to Personal
+    const idsRaw = await page.evaluate(() => localStorage.getItem('git_native_tracker_identities_v1'));
+    expect(JSON.parse(idsRaw).activeIdentityId).toBe('identity-b'); // activeIdentityId follows too (see the onCreateProject fix)
 
     // And it's genuinely renamable -- the actual bug report.
     await page.locator('[data-testid=btn-notes]').click();
@@ -160,35 +171,19 @@ test.describe('Multiple identities: pill, dropdown, title prefix', () => {
     await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Wigwag');
   });
 
-  test('clicking "Settings…" on the active card closes the dropdown and opens the Settings modal on the Identity section', async ({ page }) => {
-    await page.locator('[data-testid=identity-pill]').click();
-    await page.locator('[data-testid=btn-open-settings]').click();
+  test('clicking "Settings…" closes the switcher and opens the Settings modal on the Identity section', async ({ page }) => {
+    await h.openTrackerSwitcher(page);
+    await page.locator('[data-testid=btn-switcher-settings]').click();
     await page.waitForTimeout(150);
-    await expect(page.locator('[data-testid=identity-option]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=switcher-menu]')).toHaveCount(0);
     await expect(page.locator('[data-testid=settings-modal]')).toBeVisible();
     await expect(page.locator('[data-testid=settings-identity-email]')).toBeVisible();
   });
 
-  // The active identity's own row in SWITCH IDENTITY is inert -- it reads
-  // as state (orientation, alongside the checkmark), not a control, since
-  // clicking your current identity would otherwise be a visible no-op.
-  test('the active identity\'s own row in SWITCH IDENTITY is inert: cursor:default, no re-trigger', async ({ page }) => {
-    await page.locator('[data-testid=identity-pill]').click();
-    const activeOption = page.locator('[data-testid=identity-option]').filter({ hasText: 'Personal' });
-    await expect(activeOption).toHaveCSS('cursor', 'default');
-
-    const before = await page.evaluate(() => localStorage.getItem('git_native_tracker_identities_v1'));
-    await activeOption.click();
-    await page.waitForTimeout(200);
-    const after = await page.evaluate(() => localStorage.getItem('git_native_tracker_identities_v1'));
-    expect(after).toBe(before); // no state change from clicking the already-active row
-    await expect(page.locator('[data-testid=identity-option]')).toHaveCount(2); // dropdown stays open, didn't "switch"
-  });
-
-  // "+ Add identity…" moved from the deleted Identities panel into the
-  // dropdown itself -- a two-field inline form, not a modal.
-  test('"+ Add identity…" reveals an inline label/email form in the dropdown; Cancel discards it without creating anything', async ({ page }) => {
-    await page.locator('[data-testid=identity-pill]').click();
+  // "Add identity…" lives inline in the switcher's own left column now
+  // (same underlying form/state as before, just relocated).
+  test('"Add identity…" reveals an inline label/email form in the switcher; Cancel discards it without creating anything', async ({ page }) => {
+    await h.openTrackerSwitcher(page);
     await expect(page.locator('[data-testid=add-identity-form]')).toHaveCount(0);
     await page.locator('[data-testid=btn-add-identity]').click();
     await expect(page.locator('[data-testid=add-identity-form]')).toBeVisible();
@@ -196,18 +191,18 @@ test.describe('Multiple identities: pill, dropdown, title prefix', () => {
     await page.locator('[data-testid=btn-cancel-add-identity]').click();
     await page.waitForTimeout(150);
     await expect(page.locator('[data-testid=add-identity-form]')).toHaveCount(0);
-    await expect(page.locator('[data-testid=identity-option]')).toHaveCount(2);
+    await expect(page.locator('[data-testid=switcher-scope-row]')).toHaveCount(2);
   });
 
   test('creating a new identity via the inline form generates its own signing key, switches to it, and lands on its empty (zero-project) state', async ({ page }) => {
-    await page.locator('[data-testid=identity-pill]').click();
+    await h.openTrackerSwitcher(page);
     await page.locator('[data-testid=btn-add-identity]').click();
     await page.locator('[data-testid=new-identity-label-input]').fill('Acme Co');
     await page.locator('[data-testid=new-identity-email-input]').fill('me@acme.test');
     await page.locator('[data-testid=btn-create-identity]').click();
     await page.waitForTimeout(400);
 
-    await expect(page.locator('[data-testid=identity-pill]')).toContainText('Acme Co');
+    await expect(page.locator('[data-testid=btn-switcher]')).toContainText('Acme Co');
     await expect(page.locator('[data-testid=row]')).toHaveCount(0);
 
     const idsRaw = await page.evaluate(() => localStorage.getItem('git_native_tracker_identities_v1'));
@@ -227,11 +222,11 @@ test.describe('Multiple identities: pill, dropdown, title prefix', () => {
 // e.g. one tab last switched identity without changing project, while
 // another tab's own sessionStorage remembers a project under a different
 // identity entirely. Every INTERACTIVE switch path (switchIdentity,
-// switchProject via the tracker switcher, which only ever lists the
-// active identity's own projects) already keeps these in sync; only the
-// boot-time restoration didn't, producing a header naming one identity
-// while showing a project owned by another -- and gating (email/token/
-// signing key) resolved against the wrong identity as a result.
+// switchProject via the switcher, which only ever lists the previewed
+// scope's own projects) already keeps these in sync; only the boot-time
+// restoration didn't, producing a header naming one identity while
+// showing a project owned by another -- and gating (email/token/signing
+// key) resolved against the wrong identity as a result.
 test.describe('Active identity reconciles with the active project at boot (regression)', () => {
   test('a mismatched activeIdentityId/activeMilestoneId at boot is corrected to whichever identity actually owns the active project', async ({ page }) => {
     await h.seedTwoIdentities(page, {
@@ -246,7 +241,7 @@ test.describe('Active identity reconciles with the active project at boot (regre
 
     // Corrected to Northwind (the project's real owner), not left as the
     // stale Personal/Project B1 pairing.
-    await expect(page.locator('[data-testid=identity-pill]')).toContainText('Northwind');
+    await expect(page.locator('[data-testid=btn-switcher]')).toContainText('Northwind');
     await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Project B1');
 
     // The correction is real, not just cosmetic -- gating resolves against
@@ -267,8 +262,8 @@ test.describe('Active identity reconciles with the active project at boot (regre
 // The old "Manage identities" panel duplicated these same facts read-only
 // in a second surface; deleted, and the facts moved into the Settings
 // modal's own Identity section (the "THIS IDENTITY" grid: signing key,
-// project count, default-identity toggle) plus what the dropdown's active
-// card already shows (label, email, state repo, project count).
+// project count, default-identity toggle) plus what the switcher's own
+// scope row already shows (label, email, project count).
 test.describe('Settings modal: Identity section', () => {
   test.beforeEach(async ({ page }) => {
     await h.seedTwoIdentities(page);
@@ -299,11 +294,14 @@ test.describe('Settings modal: Identity section', () => {
     await expect(page.locator('[data-testid=btn-make-default]')).toHaveCount(0); // no-op on the already-default identity, so not even shown
   });
 
-  test('"Make default" works on a non-default identity, and swaps which one shows the pill', async ({ page }) => {
+  test('"Make default" works on a non-default identity, and swaps which one shows in the breadcrumb', async ({ page }) => {
     await page.mouse.click(10, 10);
     await page.waitForTimeout(150);
-    await page.locator('[data-testid=identity-pill]').click();
-    await page.locator('[data-testid=identity-option]').nth(1).click(); // -> Northwind (not default)
+    await h.openTrackerSwitcher(page);
+    const northwindScope = page.locator('[data-testid=switcher-scope-row]').filter({ hasText: 'Northwind' });
+    await northwindScope.click();
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=switcher-project-row]').first().click(); // commits into Northwind
     await page.waitForTimeout(400);
     await h.openSettings(page);
 
@@ -367,7 +365,7 @@ test.describe('Settings modal: section navigation', () => {
     await expect(githubNav.locator('span[style*="border-radius"]')).toHaveCount(1);
   });
 
-  test('reopening Settings from the "Settings…" button always resets to the Identity section', async ({ page }) => {
+  test('reopening Settings from the "Settings…" link always resets to the Identity section', async ({ page }) => {
     await page.locator('[data-testid=settings-nav-item][data-section-id=integrations]').click();
     await page.waitForTimeout(120);
     await page.mouse.click(10, 10);
@@ -378,39 +376,38 @@ test.describe('Settings modal: section navigation', () => {
   });
 });
 
-test.describe('Project switcher only lists the active identity\'s own projects', () => {
+test.describe('Switcher only lists the previewed scope\'s own projects', () => {
   test.beforeEach(async ({ page }) => {
     await h.seedTwoIdentities(page);
     await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
     await page.waitForTimeout(400);
   });
 
-  test('the switcher dropdown shows only Personal\'s project while active, and only Northwind\'s after switching', async ({ page }) => {
+  test('the switcher shows only Personal\'s project while its scope is previewed, and only Northwind\'s once that scope is previewed', async ({ page }) => {
     await h.openTrackerSwitcher(page);
-    await expect(page.locator('[data-testid=milestone-row]')).toHaveCount(1);
+    await expect(page.locator('[data-testid=switcher-project-row]')).toHaveCount(1);
     await expect(h.milestoneRow(page, 'Project A')).toBeVisible();
-    await page.mouse.click(700, 700);
+
+    const northwindScope = page.locator('[data-testid=switcher-scope-row]').filter({ hasText: 'Northwind' });
+    await northwindScope.click();
     await page.waitForTimeout(150);
-
-    await page.locator('[data-testid=identity-pill]').click();
-    await page.locator('[data-testid=identity-option]').nth(1).click(); // -> Northwind
-    await page.waitForTimeout(400);
-
-    await h.openTrackerSwitcher(page);
-    await expect(page.locator('[data-testid=milestone-row]')).toHaveCount(2);
+    await expect(page.locator('[data-testid=switcher-project-row]')).toHaveCount(2);
     await expect(h.milestoneRow(page, 'Project B1')).toBeVisible();
     await expect(h.milestoneRow(page, 'Project B2')).toBeVisible();
     await expect(h.milestoneRow(page, 'Project A')).toHaveCount(0);
   });
 
-  test('a newly created blank project is tagged with the active identity and disappears from the switcher after switching away', async ({ page }) => {
+  test('a newly created blank project is tagged with the active identity and disappears from the switcher after moving to a different scope', async ({ page }) => {
     await h.openTrackerSwitcher(page);
     await h.createNamedBlankProject(page, 'Personal-only project');
     await page.waitForTimeout(400);
     await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Personal-only project');
 
-    await page.locator('[data-testid=identity-pill]').click();
-    await page.locator('[data-testid=identity-option]').nth(1).click(); // -> Northwind
+    await h.openTrackerSwitcher(page);
+    const northwindScope = page.locator('[data-testid=switcher-scope-row]').filter({ hasText: 'Northwind' });
+    await northwindScope.click();
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=switcher-project-row]').first().click(); // commits into Northwind
     await page.waitForTimeout(400);
     await h.openTrackerSwitcher(page);
     await expect(h.milestoneRow(page, 'Personal-only project')).toHaveCount(0);
@@ -424,6 +421,18 @@ test.describe('Settings is scoped to the active identity', () => {
     await page.waitForTimeout(400);
   });
 
+  // Switches identity+project together by previewing Northwind's scope
+  // then clicking one of its projects -- there's no standalone "switch
+  // identity" action anymore (see the switcher describe block above).
+  async function switchToNorthwind(page) {
+    await h.openTrackerSwitcher(page);
+    const northwindScope = page.locator('[data-testid=switcher-scope-row]').filter({ hasText: 'Northwind' });
+    await northwindScope.click();
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=switcher-project-row]').first().click();
+    await page.waitForTimeout(400);
+  }
+
   test('YOUR EMAIL/GITHUB TOKEN/JIRA PROXY URL show the active identity\'s own values, and swap when switching identity', async ({ page }) => {
     await h.openSettings(page);
     await expect(page.locator('[data-testid=settings-identity-email]')).toHaveValue('tom@personal.com');
@@ -434,9 +443,7 @@ test.describe('Settings is scoped to the active identity', () => {
     await page.mouse.click(10, 10);
     await page.waitForTimeout(150);
 
-    await page.locator('[data-testid=identity-pill]').click();
-    await page.locator('[data-testid=identity-option]').nth(1).click(); // -> Northwind
-    await page.waitForTimeout(400);
+    await switchToNorthwind(page);
 
     await h.openSettings(page);
     await expect(page.locator('[data-testid=settings-identity-email]')).toHaveValue('tom@northwind.com');
@@ -461,11 +468,15 @@ test.describe('Settings is scoped to the active identity', () => {
 
     await page.mouse.click(10, 10);
     await page.waitForTimeout(150);
-    await page.locator('[data-testid=identity-pill]').click();
-    await page.locator('[data-testid=identity-option]').nth(1).click(); // -> Northwind and back
-    await page.waitForTimeout(400);
-    await page.locator('[data-testid=identity-pill]').click();
-    await page.locator('[data-testid=identity-option]').nth(0).click();
+    await switchToNorthwind(page);
+
+    // Back to Personal -- the switcher opens on whichever scope owns the
+    // CURRENTLY active project (Northwind, right now), so Personal's own
+    // project needs its scope previewed first before it's clickable.
+    await h.openTrackerSwitcher(page);
+    await page.locator('[data-testid=switcher-scope-row]').filter({ hasText: 'Personal' }).click();
+    await page.waitForTimeout(150);
+    await h.milestoneRow(page, 'Project A').click();
     await page.waitForTimeout(400);
 
     await h.openSettings(page);
@@ -489,8 +500,10 @@ test.describe('Per-identity signing keys', () => {
     const personalKeyAtBoot = ids.identities.find(i => i.id === 'identity-a').signingPublicKeyJwk;
     expect(personalKeyAtBoot).toBeTruthy();
 
-    await page.locator('[data-testid=identity-pill]').click();
-    await page.locator('[data-testid=identity-option]').nth(1).click(); // -> Northwind
+    await h.openTrackerSwitcher(page);
+    await page.locator('[data-testid=switcher-scope-row]').filter({ hasText: 'Northwind' }).click();
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=switcher-project-row]').first().click();
     await page.waitForTimeout(500);
 
     idsRaw = await page.evaluate(() => localStorage.getItem('git_native_tracker_identities_v1'));
@@ -507,11 +520,15 @@ test.describe('Per-identity signing keys', () => {
     await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
     await page.waitForTimeout(400);
 
-    await page.locator('[data-testid=identity-pill]').click();
-    await page.locator('[data-testid=identity-option]').nth(1).click(); // -> Northwind, generates its key
+    await h.openTrackerSwitcher(page);
+    await page.locator('[data-testid=switcher-scope-row]').filter({ hasText: 'Northwind' }).click();
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=switcher-project-row]').first().click(); // -> Northwind, generates its key
     await page.waitForTimeout(500);
-    await page.locator('[data-testid=identity-pill]').click();
-    await page.locator('[data-testid=identity-option]').nth(0).click(); // -> back to Personal, generates its key (was also null)
+    await h.openTrackerSwitcher(page);
+    await page.locator('[data-testid=switcher-scope-row]').filter({ hasText: 'Personal' }).click();
+    await page.waitForTimeout(150);
+    await h.milestoneRow(page, 'Project A').click(); // -> back to Personal (already had a key)
     await page.waitForTimeout(500);
 
     const idsRaw = await page.evaluate(() => localStorage.getItem('git_native_tracker_identities_v1'));
@@ -618,7 +635,7 @@ test.describe('Gate first edit on identity email being set', () => {
 test.describe('Editable identity label', () => {
   test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
 
-  test('editing the label in Settings updates the pill and title prefix (namespacing), and persists', async ({ page }) => {
+  test('editing the label in Settings updates the breadcrumb and title prefix (namespacing), and persists', async ({ page }) => {
     await h.openSettings(page);
     await expect(page.locator('[data-testid=settings-identity-label]')).toHaveValue('Personal');
     await page.locator('[data-testid=settings-identity-label]').fill('Acme Corp');
@@ -626,7 +643,7 @@ test.describe('Editable identity label', () => {
     await page.mouse.click(10, 10);
     await page.waitForTimeout(150);
 
-    await expect(page.locator('[data-testid=identity-pill]')).toContainText('Acme Corp');
+    await expect(page.locator('[data-testid=btn-switcher]')).toContainText('Acme Corp');
     await expect(page.locator('[data-testid=identity-title-prefix]')).toContainText('Acme Corp');
 
     const idsRaw = await page.evaluate(() => localStorage.getItem('git_native_tracker_identities_v1'));

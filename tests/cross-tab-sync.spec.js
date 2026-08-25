@@ -210,7 +210,7 @@ test.describe('Cross-tab sync: identities', () => {
     await pageB.goto(h.TRACKER_PATH);
     await pageB.waitForTimeout(400);
 
-    await page.locator('[data-testid=identity-pill]').click();
+    await page.locator('[data-testid=btn-switcher]').click();
     await page.locator('[data-testid=btn-add-identity]').click();
     await page.locator('[data-testid=new-identity-label-input]').fill('Acme Corp');
     await page.locator('[data-testid=new-identity-email-input]').fill('me@acme.test');
@@ -230,10 +230,10 @@ test.describe('Cross-tab sync: identities', () => {
     expect(ids.identities.length).toBe(3);
     await pageB.waitForTimeout(300);
 
-    // Tab B's own dropdown shows it live, no reload.
-    await pageB.locator('[data-testid=identity-pill]').click();
+    // Tab B's own switcher shows it live, no reload.
+    await pageB.locator('[data-testid=btn-switcher]').click();
     await pageB.waitForTimeout(150);
-    await expect(pageB.locator('[data-testid=identity-option]')).toHaveCount(3);
+    await expect(pageB.locator('[data-testid=switcher-scope-row]')).toHaveCount(3);
 
     // An unrelated update in tab B (open/close its own dropdown) used to
     // be exactly the moment a stale tab clobbered the shared list back
@@ -250,16 +250,16 @@ test.describe('Cross-tab sync: identities', () => {
     await pageB.goto(h.TRACKER_PATH);
     await pageB.waitForTimeout(400);
 
-    // Tab B touches something unrelated first (its own dropdown), then
+    // Tab B touches something unrelated first (its own switcher), then
     // settles -- simulating the "stale-ish but not idle-forever" tab.
-    await pageB.locator('[data-testid=identity-pill]').click();
+    await pageB.locator('[data-testid=btn-switcher]').click();
     await pageB.waitForTimeout(150);
     await pageB.keyboard.press('Escape');
     await pageB.waitForTimeout(500);
 
-    await page.locator('[data-testid=identity-pill]').click();
+    await page.locator('[data-testid=btn-switcher]').click();
     await page.waitForTimeout(150);
-    await page.locator('[data-testid=btn-open-settings]').click();
+    await page.locator('[data-testid=btn-switcher-settings]').click();
     await page.waitForTimeout(200);
     await page.locator('[data-testid=settings-identity-email]').fill('tom-changed@personal.com');
     await page.waitForTimeout(500);

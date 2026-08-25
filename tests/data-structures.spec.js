@@ -141,7 +141,12 @@ test.describe('JSONL export/import', () => {
     await expect(page.locator('[data-testid=row]')).toHaveCount(1);
     await expect(page.locator('[data-testid=row]').first()).toContainText('Pasted issue');
 
+    // The just-pasted project is now active and has no derived identity,
+    // so the switcher opens on "Shared with you" by default -- Personal's
+    // scope needs previewing before its own project is visible/clickable.
     await h.openTrackerSwitcher(page);
+    await page.locator('[data-testid=switcher-scope-row]').filter({ hasText: 'Personal' }).click();
+    await page.waitForTimeout(150);
     await expect(h.milestoneRow(page, 'Delivery tracker')).toBeVisible(); // the original demo project is still there, untouched
   });
 
@@ -158,7 +163,7 @@ test.describe('JSONL export/import', () => {
     await expect(page.locator('[data-testid=paste-import-modal]')).toHaveCount(0);
 
     await h.openTrackerSwitcher(page);
-    await expect(page.locator('[data-testid=milestone-row]')).toHaveCount(1);
+    await expect(page.locator('[data-testid=switcher-project-row]')).toHaveCount(1);
   });
 
   test('"Apply update..." opens a From file.../Paste from clipboard... choice, not a direct file picker', async ({ page }) => {
@@ -537,11 +542,10 @@ test.describe('Comment signing & redaction', () => {
 test.describe('Import / Apply-update: shared project-identity warnings', () => {
   test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
 
-  // Regression: the app-bar's standalone "Import project from file..."
-  // button called into a file input that only existed in the DOM while a
-  // deeply-nested project-switcher dropdown happened to be open, so
-  // clicking it from anywhere else silently did nothing at all.
-  test('the app-bar "Import project…" button opens a From file/Paste menu, and "From file…" opens a real file picker', async ({ page }) => {
+  // "Import project…" lives in the unified switcher's own footer now, not
+  // a standalone app-bar button -- reached by opening the switcher first.
+  test('"Import project…" (in the switcher) opens a From file/Paste menu, and "From file…" opens a real file picker', async ({ page }) => {
+    await h.openTrackerSwitcher(page);
     await page.locator('[data-testid=btn-import-project-appbar]').click();
     await page.waitForTimeout(150);
     const [chooser] = await Promise.all([
@@ -600,6 +604,7 @@ test.describe('Import / Apply-update: shared project-identity warnings', () => {
 
     let dialogMsg = null;
     page.once('dialog', async d => { dialogMsg = d.message(); await d.accept(); });
+    await h.openTrackerSwitcher(page);
     await page.locator('[data-testid=btn-import-project-appbar]').click();
     await page.waitForTimeout(150);
     const [chooser] = await Promise.all([
@@ -614,7 +619,7 @@ test.describe('Import / Apply-update: shared project-identity warnings', () => {
     await expect(page.locator('[data-testid=row]')).toContainText('Landed on the other project');
 
     await h.openTrackerSwitcher(page);
-    await expect(page.locator('[data-testid=milestone-row]')).toHaveCount(2); // no duplicate created
+    await expect(page.locator('[data-testid=switcher-project-row]')).toHaveCount(2); // no duplicate created
   });
 });
 

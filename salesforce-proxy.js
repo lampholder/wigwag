@@ -31,25 +31,37 @@
 // Salesforce proxy URL at http://localhost:8936 (or whatever PORT you set)
 // once this is running.
 //
-// By default only a record's Compact Layout fields come back (see
-// normalizeRecord below) — fine for Name/Stage/Owner, but a custom field
-// (e.g. an Annual Recurring Revenue rollup on Opportunity) often isn't on
-// that layout. Pull it in regardless via SF_EXTRA_FIELDS, a comma-separated
-// list of ObjectApiName.FieldApiName pairs:
-//   SF_EXTRA_FIELDS=Opportunity.Annual_Recurring_Revenue__c node salesforce-proxy.js
-// (find the exact API name in Setup > Object Manager > Opportunity >
-// Fields & Relationships -- custom fields end in __c). This proxy has no
-// way to know a record's object type before fetching it, so every
-// configured field is sent on every request via the UI API's own
-// `optionalFields` param, which -- unlike `fields` -- silently drops
-// anything that doesn't apply to that particular object rather than
-// erroring; harmless to list fields from several different object types
-// at once.
+// By default every field on the record comes back (not just whatever's on
+// its admin-configured Compact Layout), still with the same displayValue
+// formatting (currency symbols, a lookup like Owner resolved to a name,
+// not a raw Id) -- see resolveObjectType/getObjectFields below. This costs
+// two extra, cacheable describe calls: a one-time org-wide object list (to
+// turn a record Id's 3-character key prefix into its object API name, e.g.
+// "006" -> "Opportunity") and a one-time per-object-type field list: both
+// cached in memory for this process's lifetime, so only the FIRST record
+// of a given object type pays for them -- fine given how infrequently a
+// tracker field actually gets refreshed. If your org's object has a huge
+// number of fields (heavy managed packages, several hundred custom
+// fields), the resulting request URL grows accordingly; hasn't been an
+// issue in practice, but SF_FIELDS below is the way out if it ever is.
+//
+// Set SF_FIELDS to skip all of that and request an EXACT list instead --
+// a comma-separated list of ObjectApiName.FieldApiName pairs:
+//   SF_FIELDS=Opportunity.Name,Opportunity.Annual_Recurring_Revenue__c node salesforce-proxy.js
+// (find exact API names in Setup > Object Manager > <object> > Fields &
+// Relationships -- custom fields end in __c). Useful to keep the response
+// small/predictable, or to deliberately hold back fields you don't want
+// surfaced into a shared tracker. This proxy has no way to know a record's
+// object type before fetching it, so the whole configured list is sent on
+// every request via the UI API's own `optionalFields` param, which --
+// unlike `fields` -- silently drops anything that doesn't apply to that
+// particular object rather than erroring; harmless to list fields from
+// several different object types at once.
 const http = require('http');
 
 const PORT = parseInt(process.env.PORT || '8936', 10);
 const API_VERSION = 'v59.0';
-const EXTRA_FIELDS = (process.env.SF_EXTRA_FIELDS || '').split(',').map(s => s.trim()).filter(Boolean);
+const EXACT_FIELDS = (process.env.SF_FIELDS || '').split(',').map(s => s.trim()).filter(Boolean);
 
 function tokenModeAuth() {
   if (process.env.SF_INSTANCE_URL && process.env.SF_ACCESS_TOKEN) {
@@ -168,15 +180,49 @@ function setCors(res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 }
 
-// A record's own Compact Layout (admin-configured per object type) is the
-// one Salesforce field set that's actually meaningful for ANY object
-// without this proxy needing to know ahead of time whether it's looking
-// at an Opportunity, a Case, or a custom object -- unlike Jira's fixed
-// issue schema, there's no universal "status/priority/assignee" shape
-// here. displayValue is preferred over the raw value everywhere (Salesforce
-// resolves lookups like Owner to the related record's name there already,
-// under a normal compact layout) -- best-effort, not guaranteed for every
-// custom object's own compact layout configuration.
+// keyPrefix -> object API name (e.g. "006" -> "Opportunity"), resolved
+// from one org-wide Global Describe call and cached for this process's
+// lifetime -- every Salesforce record Id's first 3 characters identify
+// its object type, so this lets a bare record Id be resolved to an object
+// without a describe-per-record. Populated lazily on first use, not at
+// startup, so a proxy started with bad/expired credentials still boots.
+let keyPrefixCache = null;
+async function resolveObjectType(id, auth) {
+  if (!keyPrefixCache) {
+    const res = await fetch(auth.instanceUrl + '/services/data/' + API_VERSION + '/sobjects/', {
+      headers: { Authorization: 'Bearer ' + auth.accessToken, Accept: 'application/json' }
+    });
+    if (!res.ok) return null; // caller falls back to a Compact-only fetch
+    const body = await res.json();
+    keyPrefixCache = new Map();
+    for (const obj of body.sobjects || []) {
+      if (obj.keyPrefix) keyPrefixCache.set(obj.keyPrefix, obj.name);
+    }
+  }
+  return keyPrefixCache.get(id.slice(0, 3)) || null;
+}
+
+// object API name -> every field API name it has, via one Describe call
+// per object type (cached forever per type, same reasoning as
+// keyPrefixCache above). This is what makes "every field on the record,
+// still displayValue-formatted" possible with no SF_FIELDS configuration
+// at all -- see the file header comment.
+const objectFieldsCache = new Map();
+async function getObjectFields(apiName, auth) {
+  if (objectFieldsCache.has(apiName)) return objectFieldsCache.get(apiName);
+  const res = await fetch(auth.instanceUrl + '/services/data/' + API_VERSION + '/sobjects/' + encodeURIComponent(apiName) + '/describe', {
+    headers: { Authorization: 'Bearer ' + auth.accessToken, Accept: 'application/json' }
+  });
+  if (!res.ok) return []; // caller falls back to a Compact-only fetch
+  const body = await res.json();
+  const names = (body.fields || []).map(f => f.name).filter(Boolean);
+  objectFieldsCache.set(apiName, names);
+  return names;
+}
+
+// displayValue is preferred over the raw value everywhere (Salesforce
+// resolves lookups like Owner to the related record's name there already)
+// -- best-effort, not guaranteed for every field on every object.
 function normalizeRecord(id, apiName, instanceUrl, body) {
   const rawFields = body.fields || {};
   const flat = {};
@@ -226,7 +272,22 @@ http.createServer(async (req, res) => {
   }
 
   try {
-    const optionalFieldsParam = EXTRA_FIELDS.length ? '&optionalFields=' + encodeURIComponent(EXTRA_FIELDS.join(',')) : '';
+    // SF_FIELDS set -> use that exact list, no describe calls at all.
+    // Otherwise, resolve every field this object type actually has (via
+    // the cached key-prefix + per-type describes above) and request all
+    // of them; if either describe fails for any reason (stale auth, an
+    // org permission issue, an unrecognized key prefix), fields ends up
+    // empty and the request below just falls back to Compact-layout-only,
+    // same as if SF_FIELDS/auto-describe didn't exist -- never a hard error.
+    let fields = EXACT_FIELDS;
+    if (!fields.length) {
+      const apiName = await resolveObjectType(id, auth).catch(() => null);
+      if (apiName) {
+        const names = await getObjectFields(apiName, auth).catch(() => []);
+        fields = names.map(n => apiName + '.' + n);
+      }
+    }
+    const optionalFieldsParam = fields.length ? '&optionalFields=' + encodeURIComponent(fields.join(',')) : '';
     const fetchRecord = (a) => fetch(
       a.instanceUrl + '/services/data/' + API_VERSION + '/ui-api/records/' + encodeURIComponent(id) + '?layoutTypes=Compact&modes=View' + optionalFieldsParam,
       { headers: { Authorization: 'Bearer ' + a.accessToken, Accept: 'application/json' } }
@@ -252,5 +313,5 @@ http.createServer(async (req, res) => {
 }).listen(PORT, () => {
   console.log('Salesforce proxy listening on http://localhost:' + PORT);
   console.log('  auth: ' + authModeLabel());
-  console.log('  extra fields: ' + (EXTRA_FIELDS.length ? EXTRA_FIELDS.join(', ') : '(none -- compact layout only)'));
+  console.log('  fields: ' + (EXACT_FIELDS.length ? 'exact list -- ' + EXACT_FIELDS.join(', ') : 'every field on the record (auto-describe)'));
 });

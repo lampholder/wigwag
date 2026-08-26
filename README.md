@@ -122,18 +122,23 @@ GitHub/Jira or repo sync (see below).
   any text field to link it — unlike a Jira key, there's no bare-id form,
   since a Salesforce record Id isn't something anyone types from memory.
   Salesforce objects don't share one fixed schema the way Jira issues do,
-  so the proxy fetches each record's own admin-configured Compact Layout
-  fields rather than a hardcoded list; `name`/`status`/`owner` are
-  best-effort convenience aliases, and the full field set is available to
-  rules via `source.salesforce.fields.<ApiName>`. A custom field not on
-  that Compact Layout (e.g. an Annual Recurring Revenue rollup) won't come
-  back on its own — pull it in explicitly via `SF_EXTRA_FIELDS`:
+  so the proxy fetches *every* field the record actually has (via two
+  cached describe calls that resolve the record's object type and its
+  field list — cheap in practice since most trackers don't refresh often,
+  and only paid once per object type per proxy run), still with the same
+  displayValue formatting (currency symbols, a lookup like Owner resolved
+  to a name); `name`/`status`/`owner` are best-effort convenience aliases,
+  and the full set — including any custom field, e.g. an Annual Recurring
+  Revenue rollup — is available to rules via
+  `source.salesforce.fields.<ApiName>`. Set `SF_FIELDS` to request an
+  exact list instead (skips both describe calls — smaller/more predictable
+  responses, or to deliberately hold back fields you don't want surfaced):
   ```
-  SF_EXTRA_FIELDS=Opportunity.Annual_Recurring_Revenue__c npm run salesforce-proxy
+  SF_FIELDS=Opportunity.Name,Opportunity.Annual_Recurring_Revenue__c npm run salesforce-proxy
   ```
-  (find the exact API name in Setup → Object Manager → Opportunity →
-  Fields & Relationships; custom fields end in `__c`). See the comment at
-  the top of `salesforce-proxy.js` for details.
+  (find exact API names in Setup → Object Manager → <object> → Fields &
+  Relationships; custom fields end in `__c`). See the comment at the top
+  of `salesforce-proxy.js` for details.
 
 ## Syncing the tracker's own data to a GitHub repo
 

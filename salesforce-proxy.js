@@ -30,10 +30,26 @@
 // no telemetry, no third-party relay. Point the tracker's Settings >
 // Salesforce proxy URL at http://localhost:8936 (or whatever PORT you set)
 // once this is running.
+//
+// By default only a record's Compact Layout fields come back (see
+// normalizeRecord below) — fine for Name/Stage/Owner, but a custom field
+// (e.g. an Annual Recurring Revenue rollup on Opportunity) often isn't on
+// that layout. Pull it in regardless via SF_EXTRA_FIELDS, a comma-separated
+// list of ObjectApiName.FieldApiName pairs:
+//   SF_EXTRA_FIELDS=Opportunity.Annual_Recurring_Revenue__c node salesforce-proxy.js
+// (find the exact API name in Setup > Object Manager > Opportunity >
+// Fields & Relationships -- custom fields end in __c). This proxy has no
+// way to know a record's object type before fetching it, so every
+// configured field is sent on every request via the UI API's own
+// `optionalFields` param, which -- unlike `fields` -- silently drops
+// anything that doesn't apply to that particular object rather than
+// erroring; harmless to list fields from several different object types
+// at once.
 const http = require('http');
 
 const PORT = parseInt(process.env.PORT || '8936', 10);
 const API_VERSION = 'v59.0';
+const EXTRA_FIELDS = (process.env.SF_EXTRA_FIELDS || '').split(',').map(s => s.trim()).filter(Boolean);
 
 function tokenModeAuth() {
   if (process.env.SF_INSTANCE_URL && process.env.SF_ACCESS_TOKEN) {
@@ -210,8 +226,9 @@ http.createServer(async (req, res) => {
   }
 
   try {
+    const optionalFieldsParam = EXTRA_FIELDS.length ? '&optionalFields=' + encodeURIComponent(EXTRA_FIELDS.join(',')) : '';
     const fetchRecord = (a) => fetch(
-      a.instanceUrl + '/services/data/' + API_VERSION + '/ui-api/records/' + encodeURIComponent(id) + '?layoutTypes=Compact&modes=View',
+      a.instanceUrl + '/services/data/' + API_VERSION + '/ui-api/records/' + encodeURIComponent(id) + '?layoutTypes=Compact&modes=View' + optionalFieldsParam,
       { headers: { Authorization: 'Bearer ' + a.accessToken, Accept: 'application/json' } }
     );
     let apiRes = await fetchRecord(auth);
@@ -235,4 +252,5 @@ http.createServer(async (req, res) => {
 }).listen(PORT, () => {
   console.log('Salesforce proxy listening on http://localhost:' + PORT);
   console.log('  auth: ' + authModeLabel());
+  console.log('  extra fields: ' + (EXTRA_FIELDS.length ? EXTRA_FIELDS.join(', ') : '(none -- compact layout only)'));
 });

@@ -125,8 +125,15 @@ GitHub/Jira or repo sync (see below).
   so the proxy fetches each record's own admin-configured Compact Layout
   fields rather than a hardcoded list; `name`/`status`/`owner` are
   best-effort convenience aliases, and the full field set is available to
-  rules via `source.salesforce.fields.<ApiName>`. See the comment at the
-  top of `salesforce-proxy.js` for details.
+  rules via `source.salesforce.fields.<ApiName>`. A custom field not on
+  that Compact Layout (e.g. an Annual Recurring Revenue rollup) won't come
+  back on its own — pull it in explicitly via `SF_EXTRA_FIELDS`:
+  ```
+  SF_EXTRA_FIELDS=Opportunity.Annual_Recurring_Revenue__c npm run salesforce-proxy
+  ```
+  (find the exact API name in Setup → Object Manager → Opportunity →
+  Fields & Relationships; custom fields end in `__c`). See the comment at
+  the top of `salesforce-proxy.js` for details.
 
 ## Syncing the tracker's own data to a GitHub repo
 

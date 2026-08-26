@@ -236,7 +236,7 @@ test.describe('wigwag: links -- prose (comments, notes, multiline text fields)',
 test.describe('wigwag: links -- grammar (?from=, wigwag:/remote/..., unknown-project screens)', () => {
   test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
 
-  test('translating an embedded link attaches ?from= when the target project has a connected GitHub repo', async ({ page }) => {
+  test('translating an embedded link attaches ?from=&path= when the target project has a connected GitHub repo -- path= is always stated explicitly, even at its default', async ({ page }) => {
     await page.evaluate(() => {
       const doc = JSON.parse(localStorage.getItem('git_native_tracker_v1:demo-milestone'));
       doc.githubRepo = 'acme/demo';
@@ -250,7 +250,7 @@ test.describe('wigwag: links -- grammar (?from=, wigwag:/remote/..., unknown-pro
     await page.waitForTimeout(400);
     const doc = await h.readActiveMilestoneDoc(page);
     const lastComment = doc.issues.find(i => i.id === 'i1').comments.slice(-1)[0];
-    expect(lastComment.text).toBe('See wigwag:/project/demo-milestone/issue/i2?from=github.com%2Facme%2Fdemo for context.');
+    expect(lastComment.text).toBe('See wigwag:/project/demo-milestone/issue/i2?from=github.com%2Facme%2Fdemo&path=tracker.jsonl for context.');
   });
 
   test('a wigwag:/project/... link with a trailing slash (the old canonical form) still resolves -- backward compatible with anything already persisted', async ({ page }) => {

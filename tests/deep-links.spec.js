@@ -89,7 +89,7 @@ test.describe('Deep links', () => {
       expect(clip).toBe('wigwag:/project/demo-milestone');
     });
 
-    test('Copy link attaches ?from= when the project has a connected GitHub repo', async ({ page }) => {
+    test('Copy link attaches ?from=&path= when the project has a connected GitHub repo -- path= is always stated explicitly, even at its default', async ({ page }) => {
       await page.evaluate(() => {
         const idx = JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1'));
         const doc = JSON.parse(localStorage.getItem('git_native_tracker_v1:' + idx.activeMilestoneId));
@@ -101,7 +101,7 @@ test.describe('Deep links', () => {
       await h.openProjectPanel(page);
       await page.locator('[data-testid=notes-copy-link-btn]').click();
       const clip = await page.evaluate(() => navigator.clipboard.readText());
-      expect(clip).toBe('wigwag:/project/demo-milestone?from=github.com%2Facme%2Fdemo');
+      expect(clip).toBe('wigwag:/project/demo-milestone?from=github.com%2Facme%2Fdemo&path=tracker.jsonl');
     });
   });
 

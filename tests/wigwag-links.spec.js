@@ -29,7 +29,7 @@ test.describe('wigwag: links -- issue-type fields', () => {
 
     const doc = await h.readActiveMilestoneDoc(page);
     const iss = doc.issues.find(i => i.id === 'i1');
-    expect(h.latestFieldRef(iss, 'linked')).toEqual({ system: 'wigwag', projectId: 'demo-milestone', issueId: 'i2' });
+    expect(h.latestFieldRef(iss, 'linked')).toEqual({ system: 'wigwag', projectId: 'demo-milestone', issueId: 'i2', from: null, path: null, ref: null });
   });
 
   test('pasting the already-canonical wigwag: form resolves identically (idempotent re-paste)', async ({ page }) => {
@@ -49,7 +49,7 @@ test.describe('wigwag: links -- issue-type fields', () => {
     await expect(cell).toContainText('Delivery tracker');
     const doc = await h.readActiveMilestoneDoc(page);
     const ref = h.latestFieldRef(doc.issues.find(i => i.id === 'i1'), 'linked');
-    expect(ref).toEqual({ system: 'wigwag', projectId: 'demo-milestone', issueId: null });
+    expect(ref).toEqual({ system: 'wigwag', projectId: 'demo-milestone', issueId: null, from: null, path: null, ref: null });
   });
 
   test('re-opening the field for edit shows the canonical wigwag: URI, not the raw pasted link', async ({ page }) => {
@@ -149,7 +149,7 @@ test.describe('wigwag: links -- issue-type fields', () => {
     const title = h.latestFieldValue(created, 'title');
     expect(title).toContain('Delivery tracker');
     expect(title).not.toContain('Fetching');
-    expect(h.latestFieldRef(created, 'title')).toEqual({ system: 'wigwag', projectId: 'demo-milestone', issueId: 'i3' });
+    expect(h.latestFieldRef(created, 'title')).toEqual({ system: 'wigwag', projectId: 'demo-milestone', issueId: 'i3', from: null, path: null, ref: null });
   });
 });
 
@@ -278,7 +278,7 @@ test.describe('wigwag: links -- grammar (?from=, wigwag:/remote/..., unknown-pro
 
     const doc = await h.readActiveMilestoneDoc(page);
     const ref = h.latestFieldRef(doc.issues.find(i => i.id === 'i2'), 'linked');
-    expect(ref).toEqual({ system: 'wigwag', projectId: 'demo-milestone', issueId: 'i1' });
+    expect(ref).toEqual({ system: 'wigwag', projectId: 'demo-milestone', issueId: 'i1', from: null, path: null, ref: null });
   });
 
   test('a wigwag:/remote/... link with no local match falls through to plain text, not a broken link', async ({ page }) => {
@@ -301,5 +301,85 @@ test.describe('wigwag: links -- grammar (?from=, wigwag:/remote/..., unknown-pro
     await expect(page.locator('[data-testid=row]')).toHaveCount(9); // the working app is still right there, underneath
     await page.locator('[data-testid=unknown-project-notice-dismiss]').click();
     await expect(notice).toHaveCount(0);
+  });
+
+  test('?from= also carries path=/ref= when the project\'s repo sync uses a non-default path or branch', async ({ page }) => {
+    await page.evaluate(() => {
+      const doc = JSON.parse(localStorage.getItem('git_native_tracker_v1:demo-milestone'));
+      doc.githubRepo = 'acme/demo';
+      doc.githubRepoPath = 'projects/roadmap/tracker.jsonl';
+      doc.githubRepoBranch = 'main';
+      localStorage.setItem('git_native_tracker_v1:demo-milestone', JSON.stringify(doc));
+    });
+    await page.reload({ waitUntil: 'load' });
+    await page.waitForTimeout(300);
+    await h.openProjectPanel(page);
+    await page.locator('[data-testid=notes-copy-link-btn]').click();
+    const clip = await page.evaluate(() => navigator.clipboard.readText());
+    expect(clip).toBe('wigwag:/project/demo-milestone?from=github.com%2Facme%2Fdemo&path=projects%2Froadmap%2Ftracker.jsonl&ref=main');
+  });
+
+  test('a project/ link\'s own from=/path=/ref= survive being pasted, stored, and refreshed on an issue-type field', async ({ page }) => {
+    await h.clickFieldToEdit(page, 2, 'linked');
+    await h.pasteText(page, 'wigwag:/project/does-not-exist-here?from=github.com%2Flampholder%2Fwigwag&path=projects%2Froadmap%2Ftracker.jsonl&ref=main');
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(300);
+
+    let doc = await h.readActiveMilestoneDoc(page);
+    let ref = h.latestFieldRef(doc.issues.find(i => i.num === 2), 'linked');
+    expect(ref).toMatchObject({
+      system: 'wigwag', projectId: 'does-not-exist-here',
+      from: 'github.com/lampholder/wigwag', path: 'projects/roadmap/tracker.jsonl', ref: 'main'
+    });
+
+    await h.refreshRow(page, 2);
+    await page.waitForTimeout(300);
+    doc = await h.readActiveMilestoneDoc(page);
+    ref = h.latestFieldRef(doc.issues.find(i => i.num === 2), 'linked');
+    expect(ref).toMatchObject({ from: 'github.com/lampholder/wigwag', path: 'projects/roadmap/tracker.jsonl', ref: 'main' });
+  });
+
+  test('clicking an unresolvable project/ field pill opens the inline notice with Connect Remote pre-fillable from its own from=/path=/ref=', async ({ page }) => {
+    await h.clickFieldToEdit(page, 2, 'linked');
+    await h.pasteText(page, 'wigwag:/project/does-not-exist-here?from=github.com%2Flampholder%2Fwigwag&path=projects%2Froadmap%2Ftracker.jsonl&ref=main');
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(300);
+
+    const pill = h.fieldCell(page, 2, 'linked').locator('a');
+    await pill.click();
+    await page.waitForTimeout(300);
+
+    const notice = page.locator('[data-testid=unknown-project-notice]');
+    await expect(notice).toBeVisible();
+    await expect(notice).toContainText('github.com/lampholder/wigwag');
+    await expect(page.locator('[data-testid=row]')).toHaveCount(9); // no dead history entry -- the app underneath never navigated away
+
+    await page.locator('[data-testid=unknown-project-connect-btn]').click();
+    await page.waitForTimeout(300);
+
+    await expect(page.locator('[data-testid=connect-remote-modal]')).toBeVisible();
+    await expect(page.locator('[data-testid=connect-remote-address-input]')).toHaveValue('github.com/lampholder/wigwag');
+    const modal = page.locator('[data-testid=connect-remote-modal]');
+    await expect(modal).toContainText('lampholder');
+    await expect(modal).toContainText('wigwag');
+    await expect(modal).toContainText('main');
+    await expect(modal).toContainText('projects/roadmap/tracker.jsonl');
+    await expect(page.locator('[data-testid=connect-remote-probe-panel]')).toBeVisible(); // probe already running, not waiting on a submit
+  });
+
+  test('a project/ link with no from= hint (bare id, nothing to prefill from) still opens Connect Remote cleanly, just blank', async ({ page }) => {
+    await h.clickFieldToEdit(page, 2, 'linked');
+    await h.pasteText(page, 'wigwag:/project/does-not-exist-either');
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(300);
+
+    const pill = h.fieldCell(page, 2, 'linked').locator('a');
+    await pill.click();
+    await page.waitForTimeout(300);
+    await page.locator('[data-testid=unknown-project-connect-btn]').click();
+    await page.waitForTimeout(300);
+
+    await expect(page.locator('[data-testid=connect-remote-modal]')).toBeVisible();
+    await expect(page.locator('[data-testid=connect-remote-address-input]')).toHaveValue('');
   });
 });

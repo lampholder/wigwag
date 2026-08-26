@@ -35,6 +35,16 @@ test.describe('Connect a remote -- address parsing', () => {
     await expect(chips).toContainText('wigwag');
   });
 
+  test('a bare host/owner/repo address (matching the input\'s own placeholder, and what wigwagLinkSuffix\'s from= emits) parses too', async ({ page }) => {
+    await openConnectRemote(page);
+    await page.locator('[data-testid=connect-remote-address-input]').fill('github.com/acme-corp/wigwag');
+    await page.waitForTimeout(200);
+    const chips = page.locator('[data-testid=connect-remote-modal]');
+    await expect(chips).toContainText('acme-corp');
+    await expect(chips).toContainText('wigwag');
+    await expect(page.locator('[data-testid=connect-remote-probe-panel]')).toBeVisible();
+  });
+
   test('a full HTTPS tree URL parses org, repo, branch, and path', async ({ page }) => {
     await openConnectRemote(page);
     await page.locator('[data-testid=connect-remote-address-input]').fill('https://github.com/acme-corp/wigwag/tree/main/projects/tracker');

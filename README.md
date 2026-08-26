@@ -195,6 +195,10 @@ minutes) that this is the actual bar, not an aspiration.
   and the only safe workflow for changing it. Read this first.
 - **`docs/FORMAT.md`** — the `.jsonl` data format spec: field provenance,
   history/signing, the merge algorithm, what's explicitly out of scope.
+- **`docs/REMOTE-CONNECT-TODO.md`** — deferred work from the remote-connect
+  handoff (no-access re-authorize/request-access routing, first-write-on-
+  read-only, the `remotes[]` plural data model, an OS-level protocol
+  handler, and the Copy Link HTTPS-mirror question).
 - **`jira-proxy.js`** / **`github-oauth-proxy.js`** — the two optional local
   relay processes described above.
 - **`tests/`** — the Playwright suite.

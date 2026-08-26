@@ -17,8 +17,13 @@
 const { test, expect } = require('@playwright/test');
 const h = require('./helpers');
 
+// "Connect remote..." lives inside the same "Import project..." popover
+// as "From file..." / "Paste from clipboard..." now (one entry point,
+// three choices), not a standalone row of its own.
 async function openConnectRemote(page) {
   await h.openTrackerSwitcher(page);
+  await page.locator('[data-testid=btn-import-project-appbar]').click();
+  await page.waitForTimeout(150);
   await page.locator('[data-testid=btn-connect-remote-appbar]').click();
   await page.waitForTimeout(150);
 }

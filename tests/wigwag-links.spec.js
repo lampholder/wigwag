@@ -68,7 +68,7 @@ test.describe('wigwag: links -- issue-type fields', () => {
     await page.waitForTimeout(120);
     await cell.dispatchEvent('click');
     const input = cell.locator('input');
-    await expect(input).toHaveValue('wigwag:/project/demo-milestone/issue/i2/');
+    await expect(input).toHaveValue('wigwag:/project/demo-milestone/issue/i2');
   });
 
   test('the resolved pill carries a small wigwag glyph, and clicking it navigates in-app (same project, no new tab)', async ({ page, context }) => {
@@ -165,7 +165,7 @@ test.describe('wigwag: links -- prose (comments, notes, multiline text fields)',
     const doc = await h.readActiveMilestoneDoc(page);
     const iss = doc.issues.find(i => i.id === 'i1');
     const lastComment = iss.comments[iss.comments.length - 1];
-    expect(lastComment.text).toBe('See wigwag:/project/demo-milestone/issue/i2/ for context.');
+    expect(lastComment.text).toBe('See wigwag:/project/demo-milestone/issue/i2 for context.');
 
     const commentMd = page.locator('[data-testid=comment-md]').last();
     const pill = commentMd.locator('.wigwag-ref-pill');
@@ -193,7 +193,7 @@ test.describe('wigwag: links -- prose (comments, notes, multiline text fields)',
     const doc = await h.readActiveMilestoneDoc(page);
     const iss = doc.issues.find(i => i.id === 'i2');
     const live = iss.comments.filter(c => !c.redacted);
-    expect(live[live.length - 1].text).toBe('Updated: wigwag:/project/demo-milestone/issue/i1/');
+    expect(live[live.length - 1].text).toBe('Updated: wigwag:/project/demo-milestone/issue/i1');
   });
 
   test('a multiline type:\'text\' field (Mitigation) translates an embedded raw link on commit', async ({ page }) => {
@@ -204,7 +204,7 @@ test.describe('wigwag: links -- prose (comments, notes, multiline text fields)',
     await page.waitForTimeout(300);
     const doc = await h.readActiveMilestoneDoc(page);
     const iss = doc.issues.find(i => i.id === 'i1');
-    expect(h.latestFieldValue(iss, 'mitigation')).toBe('Tracked at wigwag:/project/demo-milestone/issue/i2/');
+    expect(h.latestFieldValue(iss, 'mitigation')).toBe('Tracked at wigwag:/project/demo-milestone/issue/i2');
   });
 
   test('project notes translate an embedded raw link on save', async ({ page }) => {
@@ -217,7 +217,7 @@ test.describe('wigwag: links -- prose (comments, notes, multiline text fields)',
       const idx = JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1'));
       return JSON.parse(localStorage.getItem('git_native_tracker_v1:' + idx.activeMilestoneId)).projectNotes;
     });
-    expect(notes).toBe('Kickoff notes: wigwag:/project/demo-milestone/issue/i1/');
+    expect(notes).toBe('Kickoff notes: wigwag:/project/demo-milestone/issue/i1');
   });
 
   test('a project comment translates an embedded raw link on post', async ({ page }) => {
@@ -229,6 +229,77 @@ test.describe('wigwag: links -- prose (comments, notes, multiline text fields)',
       const idx = JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1'));
       return JSON.parse(localStorage.getItem('git_native_tracker_v1:' + idx.activeMilestoneId)).projectComments;
     });
-    expect(comments[comments.length - 1].text).toBe('Filed as wigwag:/project/demo-milestone/issue/i3/');
+    expect(comments[comments.length - 1].text).toBe('Filed as wigwag:/project/demo-milestone/issue/i3');
+  });
+});
+
+test.describe('wigwag: links -- grammar (?from=, wigwag:/remote/..., unknown-project screens)', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  test('translating an embedded link attaches ?from= when the target project has a connected GitHub repo', async ({ page }) => {
+    await page.evaluate(() => {
+      const doc = JSON.parse(localStorage.getItem('git_native_tracker_v1:demo-milestone'));
+      doc.githubRepo = 'acme/demo';
+      localStorage.setItem('git_native_tracker_v1:demo-milestone', JSON.stringify(doc));
+    });
+    await page.reload({ waitUntil: 'load' });
+    await page.waitForTimeout(300);
+    await h.openSlideover(page, 1);
+    await page.fill('[data-testid=new-comment-input]', 'See http://localhost:8935/wigwag.html#/project/demo-milestone/issue/i2 for context.');
+    await page.keyboard.press('Control+Enter');
+    await page.waitForTimeout(400);
+    const doc = await h.readActiveMilestoneDoc(page);
+    const lastComment = doc.issues.find(i => i.id === 'i1').comments.slice(-1)[0];
+    expect(lastComment.text).toBe('See wigwag:/project/demo-milestone/issue/i2?from=github.com%2Facme%2Fdemo for context.');
+  });
+
+  test('a wigwag:/project/... link with a trailing slash (the old canonical form) still resolves -- backward compatible with anything already persisted', async ({ page }) => {
+    await h.clickFieldToEdit(page, 1, 'linked');
+    await h.pasteText(page, 'wigwag:/project/demo-milestone/issue/i2/');
+    await page.keyboard.press('Tab');
+    await h.waitForFieldResolved(page, 1, 'linked');
+    await expect(h.fieldCell(page, 1, 'linked')).toContainText("ACME – New rooms added to spaces don't show until sync");
+  });
+
+  test('a wigwag:/remote/... link resolves via an existing project\'s own connected repo, storing the resolved project id (not the remote form)', async ({ page }) => {
+    await page.evaluate(() => {
+      const doc = JSON.parse(localStorage.getItem('git_native_tracker_v1:demo-milestone'));
+      doc.githubRepo = 'acme/demo';
+      localStorage.setItem('git_native_tracker_v1:demo-milestone', JSON.stringify(doc));
+    });
+    await page.reload({ waitUntil: 'load' });
+    await page.waitForTimeout(300);
+
+    await h.clickFieldToEdit(page, 2, 'linked');
+    await h.pasteText(page, 'wigwag:/remote/github.com/acme/demo/issue/i1');
+    await page.keyboard.press('Tab');
+    await h.waitForFieldResolved(page, 2, 'linked');
+    await expect(h.fieldCell(page, 2, 'linked')).toContainText('Sidebar sizing does not stick between application starts');
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    const ref = h.latestFieldRef(doc.issues.find(i => i.id === 'i2'), 'linked');
+    expect(ref).toEqual({ system: 'wigwag', projectId: 'demo-milestone', issueId: 'i1' });
+  });
+
+  test('a wigwag:/remote/... link with no local match falls through to plain text, not a broken link', async ({ page }) => {
+    await h.clickFieldToEdit(page, 3, 'linked');
+    await h.pasteText(page, 'wigwag:/remote/github.com/someorg/unrelated');
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(300);
+    await expect(h.fieldCell(page, 3, 'linked')).toHaveText('wigwag:/remote/github.com/someorg/unrelated');
+  });
+
+  test('clicking a resolved-but-since-broken reference live (already in the app) shows the inline unknown-project notice, not the cold whole-view', async ({ page }) => {
+    await page.evaluate(() => {
+      history.pushState(null, '', '#/project/00000000-not-real');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+    await page.waitForTimeout(300);
+    const notice = page.locator('[data-testid=unknown-project-notice]');
+    await expect(notice).toBeVisible();
+    await expect(notice).toContainText('00000000');
+    await expect(page.locator('[data-testid=row]')).toHaveCount(9); // the working app is still right there, underneath
+    await page.locator('[data-testid=unknown-project-notice-dismiss]').click();
+    await expect(notice).toHaveCount(0);
   });
 });

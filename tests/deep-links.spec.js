@@ -33,15 +33,22 @@ test.describe('Deep links', () => {
     await expect(page.locator('[data-testid=switcher-wrap]')).toContainText('Project B1');
   });
 
-  test('an unknown project id shows a not-found notice and still boots normally', async ({ page }) => {
+  // An unknown project id in the hash the app booted with (nothing real
+  // behind it yet) is the "opened cold" case -- a whole-view takeover,
+  // not a dismissible notice over content that was never actually
+  // reached. See "Unknown project (12a/12b)" below for the live,
+  // already-in-the-app counterpart.
+  test('an unknown project id in the boot hash shows the cold whole-view takeover, not the normal app', async ({ page }) => {
     await h.useFastTimers(page);
     await h.seedDemoMilestone(page);
-    await page.goto(h.TRACKER_PATH + '#/project/does-not-exist', { waitUntil: 'networkidle' });
+    await page.goto(h.TRACKER_PATH + '#/project/does-not-exist', { waitUntil: 'load' });
     await page.waitForTimeout(400);
-    await expect(page.locator('[data-testid=deep-link-notice]')).toBeVisible();
+    await expect(page.locator('[data-testid=row]')).toHaveCount(0);
+    await expect(page.getByText('Wigwag doesn\'t have that project here')).toBeVisible();
+    await expect(page.locator('[data-testid=unknown-project-cold-import-btn]')).toBeVisible();
+    await page.locator('[data-testid=unknown-project-cold-goto-btn]').click();
+    await page.waitForTimeout(200);
     await expect(page.locator('[data-testid=row]')).toHaveCount(9);
-    await page.locator('[data-testid=deep-link-notice-dismiss]').click();
-    await expect(page.locator('[data-testid=deep-link-notice]')).toHaveCount(0);
   });
 
   test('a known project with an unknown issue id shows a notice but still lands on the project', async ({ page }) => {
@@ -63,23 +70,38 @@ test.describe('Deep links', () => {
   test.describe('Copy link', () => {
     test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
 
-    test('the slide-over\'s Copy link button copies a project+issue URL and flips its own label', async ({ page }) => {
+    test('the slide-over\'s Copy link button copies a wigwag:/project/.../issue/... reference and flips its own label', async ({ page }) => {
       await h.openSlideover(page, 1);
       const btn = page.locator('[data-testid=slideover-copy-link-btn]');
       await expect(btn).toHaveText('Copy link');
       await btn.click();
       await expect(btn).toHaveText('Copied!');
       const clip = await page.evaluate(() => navigator.clipboard.readText());
-      expect(clip).toMatch(/#\/project\/demo-milestone\/issue\/i1$/);
+      expect(clip).toBe('wigwag:/project/demo-milestone/issue/i1');
     });
 
-    test('the project panel\'s Copy link button copies a project-only URL', async ({ page }) => {
+    test('the project panel\'s Copy link button copies a wigwag:/project/... reference', async ({ page }) => {
       await h.openProjectPanel(page);
       const btn = page.locator('[data-testid=notes-copy-link-btn]');
       await btn.click();
       await expect(btn).toHaveText('Copied!');
       const clip = await page.evaluate(() => navigator.clipboard.readText());
-      expect(clip).toMatch(/#\/project\/demo-milestone$/);
+      expect(clip).toBe('wigwag:/project/demo-milestone');
+    });
+
+    test('Copy link attaches ?from= when the project has a connected GitHub repo', async ({ page }) => {
+      await page.evaluate(() => {
+        const idx = JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1'));
+        const doc = JSON.parse(localStorage.getItem('git_native_tracker_v1:' + idx.activeMilestoneId));
+        doc.githubRepo = 'acme/demo';
+        localStorage.setItem('git_native_tracker_v1:' + idx.activeMilestoneId, JSON.stringify(doc));
+      });
+      await page.reload({ waitUntil: 'load' });
+      await page.waitForTimeout(300);
+      await h.openProjectPanel(page);
+      await page.locator('[data-testid=notes-copy-link-btn]').click();
+      const clip = await page.evaluate(() => navigator.clipboard.readText());
+      expect(clip).toBe('wigwag:/project/demo-milestone?from=github.com%2Facme%2Fdemo');
     });
   });
 

@@ -354,4 +354,20 @@ test.describe('Connect a remote -- entry points', () => {
     await expect(page.locator('[data-testid=connect-remote-modal]')).toHaveCount(0);
     await expect(page.locator('[data-testid=unknown-project-connect-btn]')).toBeVisible();
   });
+
+  // Regression: the modal lives outside the normal app tree (a sibling
+  // near </x-dc>, not nested in the desktop/mobile/cold wrapper divs that
+  // each set their own font-family -- there's no font-family on
+  // body/html for it to inherit instead), so it silently rendered in the
+  // browser's default font until this was caught. Checking from the 12b
+  // cold entry point specifically, since that's the furthest the modal
+  // ever renders from any of those font-declaring wrappers.
+  test('the modal renders in the app\'s own system-font stack, not the browser default', async ({ page }) => {
+    await page.goto(h.TRACKER_PATH + '#/project/does-not-exist-xyz');
+    await page.waitForTimeout(500);
+    await page.locator('[data-testid=unknown-project-cold-connect-btn]').click();
+    await expect(page.locator('[data-testid=connect-remote-modal]')).toBeVisible();
+    const fontFamily = await page.locator('[data-testid=connect-remote-modal]').evaluate(el => getComputedStyle(el).fontFamily);
+    expect(fontFamily).toContain('-apple-system');
+  });
 });

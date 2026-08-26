@@ -36,6 +36,16 @@ test.describe('Key/Issue field', () => {
     await expect(anchor).toHaveText('octocat/Hello-World#1 ↗');
   });
 
+  // Regression: the octocat glyph used a hardcoded near-black brand color
+  // (#181717, GitHub's own light-background mark) -- invisible against a
+  // dark-mode background. Checked via computed style rather than a
+  // screenshot, since the actual visibility bug is the color, not layout.
+  test('the GitHub glyph uses a theme-aware color, not a hardcoded light-mode-only hex', async ({ page }) => {
+    const cell = h.titleCell(page, 1); // seed row 1: already resolved (acme/app#3298)
+    const color = await cell.locator('svg').first().evaluate(el => getComputedStyle(el).color);
+    expect(color).not.toBe('rgb(24, 23, 23)'); // #181717
+  });
+
   test('a Jira-style reference (no resolvable href) has no anchor at all, just the plain key', async ({ page }) => {
     // seed row 9's title is a demo Jira reference (TRK-118), with no real URL to link to.
     const cell = h.titleCell(page, 9);

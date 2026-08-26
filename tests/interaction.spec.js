@@ -1908,6 +1908,22 @@ test.describe('Column order', () => {
     expect(order[order.length - 1]).toBe('mitigation'); // last in the default sequence
   });
 
+  // Regression: the slide-over built its own field list straight from
+  // columnOrder, which is always filtered to exclude hidden fields (it's
+  // the table's own column list) -- so hiding a field from the table
+  // silently hid it from the full per-issue detail view too, where
+  // there's no density problem hiding is meant to solve.
+  test('hiding a field from the table keeps it visible in the slide-over', async ({ page }) => {
+    await h.openColumnMenu(page, 'mitigation');
+    await page.getByText('Hide field', { exact: true }).click();
+    await page.waitForTimeout(150);
+    await expect(h.colHeader(page, 'mitigation')).toHaveCount(0);
+
+    await h.openSlideover(page, 2); // seed row 2 has a real Mitigation value
+    await expect(page.locator('[data-testid=slideover-field][data-col=mitigation]')).toBeVisible();
+    await expect(page.locator('[data-testid=slideover-field][data-col=mitigation]')).toContainText('Manual refresh');
+  });
+
   test('a reordered column never appears in the JSONL export or "View source"', async ({ page }) => {
     await moveColumnToStart(page, 'rag');
     await page.waitForTimeout(150);
@@ -2127,6 +2143,29 @@ test.describe('Table card corners', () => {
     await h.gotoTracker(page);
     const radius = await page.locator('[data-testid=row]').last().evaluate(el => getComputedStyle(el).borderRadius);
     expect(radius).toBe('0px 0px 8px 8px');
+  });
+
+  // Regression: the header's rounded-corner illusion paints a small
+  // background square over its own square corner, then draws a border
+  // arc on top -- the mask used --surface-page (the outer page
+  // background) instead of --surface-header (what the header row it's
+  // masking actually renders), close enough in light mode to be
+  // invisible but far enough apart in dark mode to show as a visible
+  // patch in both top corners.
+  test('the header corner mask matches the header row\'s own background in dark mode too', async ({ page }) => {
+    await h.gotoTracker(page);
+    await page.locator('[data-testid=btn-appearance]').click();
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=appearance-option][data-appearance-id=dark]').click();
+    await page.waitForTimeout(150);
+
+    const [maskBg, headerBg] = await page.evaluate(() => {
+      const masks = document.querySelectorAll('div[aria-hidden="true"][style*="z-index:0"], div[aria-hidden="true"][style*="z-index: 0"]');
+      const mask = Array.from(masks).find(el => el.style.background);
+      const header = mask ? mask.parentElement : null;
+      return [mask ? getComputedStyle(mask).backgroundColor : null, header ? getComputedStyle(header).backgroundColor : null];
+    });
+    expect(maskBg).toBe(headerBg);
   });
 });
 

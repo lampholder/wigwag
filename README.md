@@ -207,12 +207,14 @@ minutes) that this is the actual bar, not an aspiration.
   and the only safe workflow for changing it. Read this first.
 - **`docs/FORMAT.md`** — the `.jsonl` data format spec: field provenance,
   history/signing, the merge algorithm, what's explicitly out of scope.
-- **`docs/REMOTE-CONNECT-TODO.md`** — deferred work from the remote-connect
-  handoff (no-access re-authorize/request-access routing, first-write-on-
-  read-only, the `remotes[]` plural data model, an OS-level protocol
-  handler, and the Copy Link HTTPS-mirror question).
 - **`jira-proxy.js`** / **`github-oauth-proxy.js`** — the two optional local
   relay processes described above.
+- **`wigwag-agent.js`** / **`wigwag_tracker`** — this project's own backlog
+  lives in a real, live wigwag tracker (not a markdown TODO file) --
+  `wigwag_tracker` holds the link and a persistent bot identity,
+  `wigwag-agent.js` is a small CLI (`list`/`add-issue`/`comment`/
+  `set-field`) for reading and grooming it without a full browser
+  session. See `CLAUDE.md` for the policy this exists to support.
 - **`tests/`** — the Playwright suite.
 - **`example/milestone.jsonl`** — a worked sample file.
 - **`app/`, `schema/tracker.schema.json`** — an earlier hand-built

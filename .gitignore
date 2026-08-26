@@ -5,7 +5,13 @@ src-tauri/target/
 src-tauri/dist/
 src-tauri/gen/
 
-# Persistent Playwright browser profile used for Claude's own collaborative
-# wigwag session (see /workspace/docs/ or ask -- holds a real GitHub token
-# and synced tracker data in its own localStorage, never to be committed).
+# Persistent Playwright browser profile from an earlier, apparently-
+# abandoned attempt at Claude-tracker access (its own identity has no
+# email set and is connected to a demo/test project, not the real
+# lampholder/wigwag repo) -- superseded by wigwag_tracker below, kept
+# ignored rather than deleted pending confirmation it's safe to remove.
 .wigwag-collab-profile/
+
+# Holds a real GitHub token and a persisted signing identity for
+# wigwag-agent.js (see CLAUDE.md) -- never to be committed.
+wigwag_tracker

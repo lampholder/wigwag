@@ -19,7 +19,7 @@ const demoIssues = demoLines.filter(l => l.type === 'issue');
 const demoDoc = {
   fieldDefs: demoFieldsLine.fields, columnOrder: demoFieldsLine.columnOrder, hiddenFieldIds: [],
   issues: demoIssues.map(iss => ({
-    id: iss.id, uid: iss.uid, num: iss.num, fieldRefs: iss.fieldRefs || {}, fieldLoading: {},
+    id: iss.id, num: iss.num, fieldRefs: iss.fieldRefs || {}, fieldLoading: {},
     values: iss.values, comments: iss.comments, history: iss.history
   })),
   githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: ''

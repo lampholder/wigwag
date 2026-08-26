@@ -152,7 +152,7 @@ test.describe('Connect a remote -- probe outcomes and per-identity rows', () => 
 test.describe('Connect a remote -- finishing the connection', () => {
   const FULL_ACCESS_FIXTURE = [
     JSON.stringify({ type: 'fields', id: 'remote-proj-uuid-1', name: 'Remote Wigwag Tracker', fields: { title: { label: 'Issue', type: 'text' } }, columnOrder: [] }),
-    JSON.stringify({ type: 'issue', id: 'r1', uid: 'uid-r1', num: 1, fieldRefs: {}, values: { title: 'Remote issue one' }, comments: [], history: [] }),
+    JSON.stringify({ type: 'issue', id: 'r1', num: 1, fieldRefs: {}, values: { title: 'Remote issue one' }, comments: [], history: [] }),
   ].join('\n');
 
   test('full access: creates the project under the winning identity, connects it, and switches to it', async ({ page }) => {
@@ -234,7 +234,7 @@ test.describe('Connect a remote -- finishing the connection', () => {
       status: 200, sha: 'sha1',
       text: [
         JSON.stringify({ type: 'fields', id: 'existing-uuid-1', name: 'Project A (renamed upstream)', fields: { title: { label: 'Issue', type: 'text' } }, columnOrder: [] }),
-        JSON.stringify({ type: 'issue', id: 'r1', uid: 'uid-r1', num: 1, fieldRefs: {}, values: { title: 'Synced issue' }, comments: [], history: [] }),
+        JSON.stringify({ type: 'issue', id: 'r1', num: 1, fieldRefs: {}, values: { title: 'Synced issue' }, comments: [], history: [] }),
       ].join('\n'),
     }];
 

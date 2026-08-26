@@ -107,7 +107,7 @@ test.describe('wigwag: links -- issue-type fields', () => {
       localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify(idx));
       localStorage.setItem('git_native_tracker_v1:other-project', JSON.stringify({
         fieldDefs: { title: { label: 'Issue', type: 'issue' } },
-        issues: [{ id: 'op-1', num: 1, uid: 'op-uid-1', fieldRefs: {}, fieldLoading: {}, values: { title: 'A remote-project issue' }, comments: [], history: [] }],
+        issues: [{ id: 'op-1', num: 1, fieldRefs: {}, fieldLoading: {}, values: { title: 'A remote-project issue' }, comments: [], history: [] }],
         githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: ''
       }));
     });

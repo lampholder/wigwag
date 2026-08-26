@@ -111,7 +111,7 @@ test.describe('Issue field is genuinely type:\'issue\'', () => {
       localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({ activeMilestoneId: id, milestones: [{ id, name: 'Legacy project' }] }));
       localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
         fieldDefs: { title: { label: 'Ticket', type: 'text' } },
-        issues: [{ id: 'i1', uid: 'u1', num: 1, fieldRefs: {}, fieldLoading: {}, values: { title: 'Something' }, comments: [], history: [] }],
+        issues: [{ id: 'i1', num: 1, fieldRefs: {}, fieldLoading: {}, values: { title: 'Something' }, comments: [], history: [] }],
         projectHistory: [], hiddenFieldIds: [],
         githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', githubTokenOverride: '', projectNotes: '', projectComments: []
       }));

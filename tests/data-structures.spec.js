@@ -124,7 +124,7 @@ test.describe('JSONL export/import', () => {
   test('"Paste from clipboard…" creates a new project from pasted JSONL, without touching the current one', async ({ page }) => {
     const pastedJsonl = [
       JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, id: 'pasted-proj', name: 'Pasted Project' }),
-      JSON.stringify({ type: 'issue', id: 'p1', uid: 'pu1', num: 1, fieldRefs: {}, values: { title: 'Pasted issue' }, comments: [], history: [] })
+      JSON.stringify({ type: 'issue', id: 'p1', num: 1, fieldRefs: {}, values: { title: 'Pasted issue' }, comments: [], history: [] })
     ].join('\n');
 
     await h.openImportProjectMenu(page);
@@ -558,7 +558,7 @@ test.describe('Import / Apply-update: shared project-identity warnings', () => {
   test('"Apply update..." warns before merging in a file for a project that does not match the one currently open, and proceeds on confirm', async ({ page }) => {
     const foreignJsonl = [
       JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, projectHistory: [], id: 'foreign-project-id', name: 'Foreign Project' }),
-      JSON.stringify({ type: 'issue', id: 'f1', uid: 'uf1', num: 1, comments: [], history: [{ id: 'fh1', time: new Date().toISOString(), actor: 'Tester', email: 't@example.com', text: 'title set', field: 'title', value: 'Foreign issue', origin: 'authored', sortKey: Date.now(), sig: null, pubKey: null }] })
+      JSON.stringify({ type: 'issue', id: 'f1', num: 1, comments: [], history: [{ id: 'fh1', time: new Date().toISOString(), actor: 'Tester', email: 't@example.com', text: 'title set', field: 'title', value: 'Foreign issue', origin: 'authored', sortKey: Date.now(), sig: null, pubKey: null }] })
     ].join('\n');
 
     let dialogMsg = null;
@@ -599,7 +599,7 @@ test.describe('Import / Apply-update: shared project-identity warnings', () => {
 
     const updateForOther = [
       JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, projectHistory: [], id: otherProjectId, name: 'Other Project' }),
-      JSON.stringify({ type: 'issue', id: 'op1', uid: 'uop1', num: 1, comments: [], history: [{ id: 'oph1', time: new Date().toISOString(), actor: 'Tester', email: 't@example.com', text: 'title set', field: 'title', value: 'Landed on the other project', origin: 'authored', sortKey: Date.now(), sig: null, pubKey: null }] })
+      JSON.stringify({ type: 'issue', id: 'op1', num: 1, comments: [], history: [{ id: 'oph1', time: new Date().toISOString(), actor: 'Tester', email: 't@example.com', text: 'title set', field: 'title', value: 'Landed on the other project', origin: 'authored', sortKey: Date.now(), sig: null, pubKey: null }] })
     ].join('\n');
 
     let dialogMsg = null;
@@ -859,7 +859,7 @@ test.describe('Field values are derived from history', () => {
           status: { label: 'Status', type: 'select', options: [{ id: 's1', label: 'Open', color: 'blue' }, { id: 's2', label: 'Closed', color: 'green' }] }
         },
         issues: [{
-          id: 'i1', uid: 'u1', num: 1, fieldRefs: {}, fieldLoading: {},
+          id: 'i1', num: 1, fieldRefs: {}, fieldLoading: {},
           // Stored value deliberately stale/wrong -- history is the real source now.
           values: { title: 'Stale stored title', status: 's1' },
           comments: [],
@@ -932,7 +932,7 @@ test.describe('Migration: backfilling history from pre-existing stored values', 
           tags: { label: 'Tags', type: 'multiselect', options: [{ id: 't1', label: 'Bug', color: 'red' }] }
         },
         issues: [{
-          id: 'i1', uid: 'u1', num: 1, fieldRefs: {}, fieldLoading: {},
+          id: 'i1', num: 1, fieldRefs: {}, fieldLoading: {},
           values: { title: 'Legacy issue', priority: 'p0', tags: ['t1'] },
           comments: [],
           history: [] // pre-history-tracking data -- nothing to derive from yet
@@ -990,7 +990,7 @@ test.describe('Migration: backfilling history from pre-existing stored values', 
           tags: { label: 'Tags', type: 'multiselect', options: [{ id: 't1', label: 'Bug', color: 'red' }] }
         },
         issues: [{
-          id: 'i1', uid: 'u1', num: 1, fieldRefs: {}, fieldLoading: {},
+          id: 'i1', num: 1, fieldRefs: {}, fieldLoading: {},
           values: { title: 'Untouched issue', priority: null, tags: [] }, // priority/tags never actually set
           comments: [],
           history: []
@@ -1020,7 +1020,7 @@ test.describe('Migration: backfilling history from pre-existing stored values', 
           priority: { label: 'Priority', type: 'select', options: [{ id: 'p0', label: 'P0', color: 'red' }] }
         },
         issues: [{
-          id: 'i1', uid: 'u1', num: 1, fieldRefs: {}, fieldLoading: {},
+          id: 'i1', num: 1, fieldRefs: {}, fieldLoading: {},
           values: { title: 'Legacy issue', priority: 'p0' },
           comments: [],
           history: [] // nothing real to derive from -- both fields get backfilled on load
@@ -1060,7 +1060,7 @@ test.describe('Migration: backfilling history from pre-existing stored values', 
       localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
         fieldDefs: { title: { label: 'Issue', type: 'text' } },
         issues: [{
-          id: 'i1', uid: 'u1', num: 1, fieldLoading: {},
+          id: 'i1', num: 1, fieldLoading: {},
           values: { title: 'Fix the sidebar rendering bug' },
           fieldRefs: { title: { system: 'github', owner: 'acme', repo: 'app', num: 42, labels: ['bug'] } },
           comments: [],

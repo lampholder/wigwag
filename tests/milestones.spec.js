@@ -131,7 +131,7 @@ test.describe('Tracker switcher', () => {
   test('importing a file for a genuinely new project creates a separate milestone without touching the current one', async ({ page }) => {
     const pastedJsonl = [
       JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, id: 'genuinely-new-project', name: 'Genuinely New' }),
-      JSON.stringify({ type: 'issue', id: 'gn1', uid: 'ugn1', num: 1, fieldRefs: {}, values: { title: 'New project issue' }, comments: [], history: [] })
+      JSON.stringify({ type: 'issue', id: 'gn1', num: 1, fieldRefs: {}, values: { title: 'New project issue' }, comments: [], history: [] })
     ].join('\n');
 
     await h.openImportProjectMenu(page);
@@ -260,7 +260,7 @@ test.describe('Fresh-install bootstrap wire format stability', () => {
       }));
       localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
         fieldDefs: { title: { label: 'Issue', type: 'text' } },
-        issues: [{ id: 'i1', uid: 'u1', num: 1, fieldRefs: {}, fieldLoading: {}, values: { title: 'My real issue' }, comments: [], history: [] }],
+        issues: [{ id: 'i1', num: 1, fieldRefs: {}, fieldLoading: {}, values: { title: 'My real issue' }, comments: [], history: [] }],
         hiddenFieldIds: [], githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '',
         projectNotes: '', projectComments: []
       }));

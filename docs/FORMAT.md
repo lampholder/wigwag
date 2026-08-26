@@ -41,8 +41,17 @@ Every line has a `type` discriminator:
   absent on files written before this was added, and optional on the way
   in for exactly that reason.
 - `issue` — one per tracked issue, any order:
-  `{ type: 'issue', id, uid, num, comments, history }`. Note what's
-  *absent*: no `values`, no `fieldRefs` — see the next section.
+  `{ type: 'issue', id, num, comments, history }`. `id` is always a UUID
+  for anything the app itself writes, and is the sole identifier — it's
+  what routing, `findIssue()`, and the slide-over's own short `#XXXXXXXX`
+  reference (its first 8 characters) all use; an earlier version of the
+  format carried a second, independently-random `uid` used only for that
+  short reference, which meant the number shown on screen could never be
+  correlated with the id in a URL. `uid` is no longer written; an
+  incoming file that still has one has it silently ignored, not migrated.
+  A non-UUID `id` (e.g. old hand-authored fixtures using short ids like
+  `"i1"`) is out of scope, not specially handled. Note what's *absent*
+  otherwise: no `values`, no `fieldRefs` — see the next section.
 
 ## History is the sole source of truth
 

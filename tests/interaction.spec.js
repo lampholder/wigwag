@@ -726,10 +726,10 @@ test.describe('Detail slide-over', () => {
     expect(Math.abs(box.width - 1600 * 0.875)).toBeLessThan(2);
   });
 
-  test('header shows a stable short ref (first 8 chars of the issue uid), not the positional row number', async ({ page }) => {
+  test('header shows a stable short ref (first 8 chars of the issue id), not the positional row number', async ({ page }) => {
     const slideover = await h.openSlideover(page, 1);
-    const uid = (await h.readActiveMilestoneDoc(page)).issues.find(i => i.id === 'i1').uid;
-    await expect(slideover).toContainText('#' + uid.slice(0, 8));
+    const id = (await h.readActiveMilestoneDoc(page)).issues.find(i => i.num === 1).id;
+    await expect(slideover).toContainText('#' + id.slice(0, 8));
   });
 
   test('pressing Escape closes it', async ({ page }) => {
@@ -1352,7 +1352,7 @@ test.describe('Keep "add an item" reachable: full-height flex shell', () => {
       localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({ activeMilestoneId: id, milestones: [{ id, name: 'Short Project' }] }));
       localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
         fieldDefs: { title: { label: 'Issue', type: 'text' } },
-        issues: [{ id: 'i1', uid: 'u1', num: 1, fieldRefs: {}, fieldLoading: {}, values: { title: 'Only issue' }, comments: [], history: [] }],
+        issues: [{ id: 'i1', num: 1, fieldRefs: {}, fieldLoading: {}, values: { title: 'Only issue' }, comments: [], history: [] }],
         hiddenFieldIds: [], githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', projectNotes: '', projectComments: []
       }));
     }, { id: shortId });
@@ -1376,7 +1376,7 @@ test.describe('Keep "add an item" reachable: full-height flex shell', () => {
     await page.addInitScript(({ id }) => {
       const issues = [];
       for (let i = 1; i <= 60; i++) {
-        issues.push({ id: 'i' + i, uid: 'u' + i, num: i, fieldRefs: {}, fieldLoading: {}, values: { title: 'Issue number ' + i }, comments: [], history: [] });
+        issues.push({ id: 'i' + i, num: i, fieldRefs: {}, fieldLoading: {}, values: { title: 'Issue number ' + i }, comments: [], history: [] });
       }
       localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({ activeMilestoneId: id, milestones: [{ id, name: 'Tall Project' }] }));
       localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
@@ -1405,7 +1405,7 @@ test.describe('Keep "add an item" reachable: full-height flex shell', () => {
     await page.addInitScript(({ id }) => {
       const issues = [];
       for (let i = 1; i <= 60; i++) {
-        issues.push({ id: 'i' + i, uid: 'u' + i, num: i, fieldRefs: {}, fieldLoading: {}, values: { title: 'Issue number ' + i }, comments: [], history: [] });
+        issues.push({ id: 'i' + i, num: i, fieldRefs: {}, fieldLoading: {}, values: { title: 'Issue number ' + i }, comments: [], history: [] });
       }
       localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({ activeMilestoneId: id, milestones: [{ id, name: 'Tall Project' }] }));
       localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
@@ -1428,7 +1428,7 @@ test.describe('Keep "add an item" reachable: full-height flex shell', () => {
     await page.addInitScript(({ id }) => {
       const issues = [];
       for (let i = 1; i <= 60; i++) {
-        issues.push({ id: 'i' + i, uid: 'u' + i, num: i, fieldRefs: {}, fieldLoading: {}, values: { title: 'Issue number ' + i }, comments: [], history: [] });
+        issues.push({ id: 'i' + i, num: i, fieldRefs: {}, fieldLoading: {}, values: { title: 'Issue number ' + i }, comments: [], history: [] });
       }
       localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({ activeMilestoneId: id, milestones: [{ id, name: 'Tall Project 2' }] }));
       localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
@@ -1483,7 +1483,7 @@ test.describe('Keep "add an item" reachable: full-height flex shell', () => {
     await page.addInitScript(({ id }) => {
       const issues = [];
       for (let i = 1; i <= 60; i++) {
-        issues.push({ id: 'i' + i, uid: 'u' + i, num: i, fieldRefs: {}, fieldLoading: {}, values: { title: 'Issue number ' + i }, comments: [], history: [] });
+        issues.push({ id: 'i' + i, num: i, fieldRefs: {}, fieldLoading: {}, values: { title: 'Issue number ' + i }, comments: [], history: [] });
       }
       localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({ activeMilestoneId: id, milestones: [{ id, name: 'Tall Project Radius' }] }));
       localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
@@ -1575,7 +1575,7 @@ test.describe('Keep "add an item" reachable: full-height flex shell', () => {
     await page.addInitScript(({ id }) => {
       const issues = [];
       for (let i = 1; i <= 60; i++) {
-        issues.push({ id: 'i' + i, uid: 'u' + i, num: i, fieldRefs: {}, fieldLoading: {}, values: { title: 'Issue number ' + i }, comments: [], history: [] });
+        issues.push({ id: 'i' + i, num: i, fieldRefs: {}, fieldLoading: {}, values: { title: 'Issue number ' + i }, comments: [], history: [] });
       }
       // The preceding beforeEach's gotoTracker() already bootstrapped a
       // real identity (with an email set) -- reuse its id here so this
@@ -2630,7 +2630,7 @@ test.describe('App bar / Project bar stay fixed while the table scrolls', () => 
     await page.addInitScript(({ id }) => {
       const issues = [];
       for (let i = 1; i <= 60; i++) {
-        issues.push({ id: 'i' + i, uid: 'u' + i, num: i, fieldRefs: {}, fieldLoading: {}, values: { title: 'Issue number ' + i }, comments: [], history: [] });
+        issues.push({ id: 'i' + i, num: i, fieldRefs: {}, fieldLoading: {}, values: { title: 'Issue number ' + i }, comments: [], history: [] });
       }
       localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({ activeMilestoneId: id, milestones: [{ id, name: 'Big Project' }] }));
       localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({

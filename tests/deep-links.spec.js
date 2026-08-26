@@ -2,8 +2,10 @@ const { test, expect } = require('@playwright/test');
 const h = require('./helpers.js');
 
 // Deep links: #/project/<projectId> and #/project/<projectId>/issue/<issueId>,
-// keyed off each record's stable .id (never the cosmetic issue.uid short
-// ref). Resolved once at boot and again on every browser popstate, via the
+// keyed off each record's stable .id -- the same id the slide-over's own
+// short #XXXXXXXX reference is derived from (its first 8 characters), so
+// what's on screen always correlates with what's in the URL. Resolved
+// once at boot and again on every browser popstate, via the
 // app's own resolveDeepLinkFromHash() -- which also means normal in-app
 // navigation (the tracker switcher, opening/closing an issue) now pushes
 // real history entries, so the browser's Back/Forward buttons work too.

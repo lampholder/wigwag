@@ -536,6 +536,35 @@ function mockGithubContentsApi(page, repo, path = 'tracker.jsonl') {
   return state;
 }
 
+// Mocks the GitHub repo-metadata endpoint (GET /repos/{owner}/{repo}) that
+// the Connect Remote sheet's probe (probeGithubRepoAccess) hits once per
+// identity plus once anonymously, all in parallel -- so callers are told
+// apart by their Authorization header (or its absence), not call order.
+// `responses` maps a token string (use '' for the anonymous request) to
+// {status, push}; `push` only matters for a 200 with a token (an
+// unauthenticated 200 never carries a permissions object, matching the
+// real API). A token with no entry in `responses` gets a 404, matching a
+// private/nonexistent repo. Returns the list of tokens actually seen, in
+// request order, for tests that care which identities were probed.
+function mockGithubRepoAccessApi(page, owner, repo, responses) {
+  const calls = [];
+  page.route(`https://api.github.com/repos/${owner}/${repo}`, async (route) => {
+    const auth = route.request().headers()['authorization'] || '';
+    const token = auth.replace(/^Bearer /, '');
+    calls.push(token);
+    const resp = responses[token];
+    if (!resp || resp.status === 404) {
+      await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ message: 'Not Found' }) });
+    } else if (resp.status === 401) {
+      await route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ message: 'Bad credentials' }) });
+    } else {
+      const body = token ? { permissions: { push: !!resp.push } } : {};
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+    }
+  });
+  return calls;
+}
+
 async function setJiraProxyUrl(page, url) {
   await openSettingsSection(page, 'integrations');
   await page.locator('[data-testid=settings-jira-proxy-url]').fill(url);
@@ -675,6 +704,7 @@ async function getHistoryEntriesFor(page, issueId) {
 
 module.exports = {
   TRACKER_PATH,
+  DEMO_MILESTONE_NAME,
   gotoTracker,
   seedDemoMilestone,
   useFastTimers,
@@ -713,6 +743,7 @@ module.exports = {
   milestoneRow,
   mockGithubApi,
   mockGithubContentsApi,
+  mockGithubRepoAccessApi,
   mockJiraProxy,
   mockSalesforceProxy,
   openSettings,

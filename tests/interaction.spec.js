@@ -1644,6 +1644,46 @@ test.describe('Clearing an active sort', () => {
   });
 });
 
+// Regression: editing the very field a sorted table is ordered by (most
+// commonly Status/RAG) used to reorder the table the instant the edit
+// committed -- the row you just interacted with vanished from under your
+// cursor mid-click. A short grace period now holds the row at its
+// pre-edit position (showing the edit's own new value in place) before
+// letting the real sorted order take over.
+test.describe('Editing the sorted-by column does not instantly reorder the row', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  test('the edited row stays put briefly, showing its new value, then settles into sorted order', async ({ page }) => {
+    await h.sortByColumn(page, 'rag', 'ascending'); // On track, On track, On track, At risk, ..., Off track, —, —
+    await expect(h.fieldCell(page, 1, 'rag')).toContainText('On track'); // i1: first green
+
+    await h.clickFieldToEdit(page, 1, 'rag');
+    await page.locator('div[style*="max-height: 220px"]').getByText('Off track', { exact: true }).click();
+
+    // Immediately after commit: still at position 1, but showing the new value.
+    await expect(h.fieldCell(page, 1, 'rag')).toContainText('Off track');
+
+    // Past the (shrunk) freeze window: the row has moved on to wherever
+    // Off track actually sorts, and a different (still-green) issue has
+    // taken position 1 back.
+    await page.waitForTimeout(400);
+    await expect(h.fieldCell(page, 1, 'rag')).toContainText('On track');
+  });
+
+  test('explicitly changing the sort direction while a freeze is active applies the real order immediately, not after the grace period', async ({ page }) => {
+    await h.sortByColumn(page, 'rag', 'ascending');
+    await h.clickFieldToEdit(page, 1, 'rag');
+    await page.locator('div[style*="max-height: 220px"]').getByText('Off track', { exact: true }).click();
+    await expect(h.fieldCell(page, 1, 'rag')).toContainText('Off track'); // still pinned, per above
+
+    // Descending order puts unset RAG values first, not the just-edited
+    // issue -- if the freeze wrongly survived the explicit re-sort, this
+    // row would still show "Off track" at position 1 instead.
+    await h.sortByColumn(page, 'rag', 'descending');
+    await expect(h.fieldCell(page, 1, 'rag')).toContainText('—');
+  });
+});
+
 // Sort is cosmetic like column order/filters/widths: persists per browser,
 // per milestone, across reload and switching -- but is excluded from
 // persist()'s document blob and buildSourceText()'s exported fields line,

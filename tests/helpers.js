@@ -103,7 +103,6 @@ async function useFastTimers(page) {
     // 5s comfortably clears Playwright's 500ms idle threshold in the gaps
     // between ticks; tests that specifically exercise polling wait past it.
     window.__wigwagPollIntervalMs = 5000;
-    window.__wigwagSortFreezeMs = 200;
   });
 }
 

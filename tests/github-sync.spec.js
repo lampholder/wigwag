@@ -290,6 +290,53 @@ test.describe('GitHub repo sync', () => {
     await page.waitForTimeout(6000); // past a full poll interval (5s)
     expect(gh.getCount).toBe(getCountAfterConnect); // no poll-driven GETs went out while hidden
   });
+
+  // Regression: a hidden leader tab correctly skips its own polling (see
+  // above), but used to keep publishing a live heartbeat regardless of
+  // visibility -- so its leadership claim never went stale, and a second,
+  // visible tab (a follower, since the hidden tab claimed leadership first)
+  // never polled either, since only the leader ever polls. A backgrounded
+  // tab left open (e.g. from earlier in the day) could silently starve an
+  // active tab of remote-change detection indefinitely, with no error and
+  // a footer that just quietly stops updating. Fixed by also gating the
+  // heartbeat publish on document.hidden (so a hidden leader's claim goes
+  // stale) and having a non-leader's own poll tick claim leadership if the
+  // current holder has gone stale, instead of only ever checking it.
+  test('a visible tab reclaims leadership and resumes polling once a hidden leader tab stops heartbeating', async ({ page, context }) => {
+    test.setTimeout(45000);
+    const gh = h.mockGithubContentsApi(page, REPO);
+    gh.getResponses = [{ status: 404 }];
+
+    await h.gotoTracker(page);
+    await h.setGithubRepoSync(page, { repo: REPO, token: 'ghp_faketoken' });
+    await page.reload({ waitUntil: 'networkidle' });
+    await h.waitUntil(() => Promise.resolve(gh.pushCount >= 1));
+    await page.evaluate(() => Object.defineProperty(document, 'hidden', { configurable: true, get: () => true }));
+
+    const pushedSha = 'sha-after-push-' + gh.pushCount;
+    gh.getResponses = [{ status: 200, sha: pushedSha, text: 'irrelevant' }];
+
+    // A second, visible tab -- same browser context, so it shares
+    // localStorage (and thus the leadership claim) with the now-hidden tab.
+    const pageB = await context.newPage();
+    await h.mockGithubApi(pageB);
+    const ghB = h.mockGithubContentsApi(pageB, REPO);
+    ghB.getResponses = gh.getResponses;
+    await h.gotoTracker(pageB); // idempotent re-seed; picks up the already-connected repo state
+    await pageB.waitForTimeout(500);
+
+    const fs = require('fs');
+    const path = require('path');
+    const demoLines = fs.readFileSync(path.join(__dirname, 'fixtures', 'demo-milestone.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+    const remote = JSON.parse(JSON.stringify(demoLines));
+    const i8 = remote.find(l => l.type === 'issue' && l.id === 'i8');
+    i8.history.push({ id: 'poll_h1', time: 'Aug 2', actor: 'jordan', email: 'jordan@example.com', text: 'Mitigation set', field: 'mitigation', value: 'Picked up via background poll', origin: 'authored', sortKey: Date.now() + 1000, sig: null, pubKey: null });
+    const newResponses = [{ status: 200, sha: 'sha-remote-poll-2', text: remote.map(l => JSON.stringify(l)).join('\n') }];
+    gh.getResponses = newResponses;
+    ghB.getResponses = newResponses;
+
+    await h.waitUntil(async () => (await h.fieldCell(pageB, 8, 'mitigation').textContent()).includes('Picked up via background poll'), 12000);
+  });
 });
 
 test.describe('GitHub OAuth sign-in popup handshake', () => {

@@ -1647,80 +1647,40 @@ test.describe('Clearing an active sort', () => {
 // Regression: editing the very field a sorted table is ordered by (most
 // commonly Status/RAG) used to reorder the table the instant the edit
 // committed -- the row you just interacted with vanished from under your
-// cursor mid-click. Row order is now captured once per sort/filter
-// context (maybeCaptureSortFreeze, via componentDidUpdate) and held
-// indefinitely -- an edit never moves a row, no matter how long you
-// wait. Only an explicit trigger nulls the snapshot so the next render
-// recomputes it fresh: changing the sort (sortBy/clearSort), changing a
-// column filter (toggleColumnFilterValue/clearColumnFilter), or a page
-// reload (transient state, not persisted).
-test.describe('Editing the sorted-by column does not reorder the row', () => {
+// cursor mid-click. A short grace period now holds the row at its
+// pre-edit position (showing the edit's own new value in place) before
+// letting the real sorted order take over.
+test.describe('Editing the sorted-by column does not instantly reorder the row', () => {
   test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
 
-  test('the edited row stays put indefinitely, showing its new value -- no auto-resort, ever', async ({ page }) => {
-    await h.sortByColumn(page, 'rag', 'ascending'); // i1,i5,i8 (On track), i2,i4,i9 (At risk), i7 (Off track), i3,i6 (—)
+  test('the edited row stays put briefly, showing its new value, then settles into sorted order', async ({ page }) => {
+    await h.sortByColumn(page, 'rag', 'ascending'); // On track, On track, On track, At risk, ..., Off track, —, —
     await expect(h.fieldCell(page, 1, 'rag')).toContainText('On track'); // i1: first green
 
     await h.clickFieldToEdit(page, 1, 'rag');
     await page.locator('div[style*="max-height: 220px"]').getByText('Off track', { exact: true }).click();
 
-    // Immediately after commit: still at position 1, showing the new value.
+    // Immediately after commit: still at position 1, but showing the new value.
     await expect(h.fieldCell(page, 1, 'rag')).toContainText('Off track');
 
-    // A long wait -- there is no timer to expire anymore. Still position 1.
-    await page.waitForTimeout(3000);
-    await expect(h.fieldCell(page, 1, 'rag')).toContainText('Off track');
-
-    // A second edit, on a different row, doesn't move anything either.
-    await h.clickFieldToEdit(page, 2, 'rag');
-    await page.locator('div[style*="max-height: 220px"]').getByText('Off track', { exact: true }).click();
-    await page.waitForTimeout(500);
-    await expect(h.fieldCell(page, 1, 'rag')).toContainText('Off track');
-    await expect(h.fieldCell(page, 2, 'rag')).toContainText('Off track');
+    // Past the (shrunk) freeze window: the row has moved on to wherever
+    // Off track actually sorts, and a different (still-green) issue has
+    // taken position 1 back.
+    await page.waitForTimeout(400);
+    await expect(h.fieldCell(page, 1, 'rag')).toContainText('On track');
   });
 
-  test('explicitly changing the sort direction applies the real order immediately', async ({ page }) => {
+  test('explicitly changing the sort direction while a freeze is active applies the real order immediately, not after the grace period', async ({ page }) => {
     await h.sortByColumn(page, 'rag', 'ascending');
     await h.clickFieldToEdit(page, 1, 'rag');
     await page.locator('div[style*="max-height: 220px"]').getByText('Off track', { exact: true }).click();
-    await expect(h.fieldCell(page, 1, 'rag')).toContainText('Off track'); // still frozen in place, per above
+    await expect(h.fieldCell(page, 1, 'rag')).toContainText('Off track'); // still pinned, per above
 
     // Descending order puts unset RAG values first, not the just-edited
-    // issue -- if the frozen snapshot wrongly survived the explicit
-    // re-sort, this row would still show "Off track" at position 1.
+    // issue -- if the freeze wrongly survived the explicit re-sort, this
+    // row would still show "Off track" at position 1 instead.
     await h.sortByColumn(page, 'rag', 'descending');
     await expect(h.fieldCell(page, 1, 'rag')).toContainText('—');
-  });
-
-  test('changing a column filter applies the real order immediately too', async ({ page }) => {
-    await h.sortByColumn(page, 'rag', 'ascending');
-    await h.clickFieldToEdit(page, 1, 'rag'); // i1: On track -> Off track, stays pinned at position 1
-    await page.locator('div[style*="max-height: 220px"]').getByText('Off track', { exact: true }).click();
-    await expect(h.fieldCell(page, 1, 'rag')).toContainText('Off track');
-
-    // Filter to Priority=P2 -- i1 (now red), i7 (red), i8 (still green)
-    // are the only P2 issues. A live ascending re-sort puts the still-
-    // green i8 first; the stale frozen snapshot (captured when i1 was
-    // still green, at position 1) would wrongly keep i1 first instead.
-    await h.openColumnMenu(page, 'priority');
-    await page.locator('[data-testid=col-filter-option]').filter({ hasText: 'P2' }).click();
-    await page.mouse.click(700, 700);
-    await page.waitForTimeout(300);
-
-    const values = (await page.locator('[data-testid=field-cell][data-col=rag]').allTextContents()).map(v => v.trim());
-    expect(values).toEqual(['🟢 On track', '🔴 Off track', '🔴 Off track']); // i8, i1, i7
-  });
-
-  test('a page reload recomputes the row order fresh (the freeze is transient, not persisted)', async ({ page }) => {
-    await h.sortByColumn(page, 'rag', 'ascending');
-    await h.clickFieldToEdit(page, 1, 'rag'); // i1: On track -> Off track
-    await page.locator('div[style*="max-height: 220px"]').getByText('Off track', { exact: true }).click();
-    await expect(h.fieldCell(page, 1, 'rag')).toContainText('Off track');
-
-    await page.reload({ waitUntil: 'networkidle' });
-    await page.waitForTimeout(300);
-    // i8 (still green) now sorts first; i1's edited value takes its real place.
-    await expect(h.fieldCell(page, 1, 'rag')).toContainText('On track');
   });
 });
 

@@ -321,6 +321,73 @@ test.describe('GitHub repo sync', () => {
     expect(gh.getCount).toBe(0);
     expect(gh.pushCount).toBe(0);
   });
+
+  // Regression: connectGithubRepo/pollGithubForRemoteChanges/pushToGithub
+  // are all async, and used to apply their result (startMerge, sha/etag
+  // bookkeeping, sync status) to whatever project happened to be active
+  // by the time their fetch resolved -- not necessarily the one the fetch
+  // was actually FOR. Switching projects while a connect is still in
+  // flight used to leak the OLD project's entire issue list into the NEW
+  // one (confirmed live: reverting just this fix reproduces exactly that,
+  // 9 issues appearing in a brand-new blank project). Every step now
+  // re-checks state.projectId against the id captured when the async call
+  // began, and startMerge itself refuses content whose own declared
+  // projectId doesn't match, as a second, independent layer.
+  test('switching to a different project while a connect is still in flight does not leak the old project\'s issues into the new one', async ({ page }) => {
+    test.setTimeout(30000);
+    const REPO_A = 'acme/project-a';
+    let releaseA;
+    const gate = new Promise(resolve => { releaseA = resolve; });
+    await page.route(`https://api.github.com/repos/${REPO_A}/contents/tracker.jsonl`, async (route) => {
+      await gate; // held open until the test explicitly releases it
+      const fs = require('fs');
+      const path = require('path');
+      const demoLines = fs.readFileSync(path.join(__dirname, 'fixtures', 'demo-milestone.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+      const text = demoLines.map(l => JSON.stringify(l)).join('\n');
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ sha: 'sha-a', content: Buffer.from(text, 'utf8').toString('base64') }) });
+    });
+
+    await h.gotoTracker(page);
+    await h.setGithubRepoSync(page, { repo: REPO_A, token: 'ghp_faketoken' });
+    await page.reload({ waitUntil: 'load' }); // triggers the connect, which hangs on the gated route
+    await page.waitForTimeout(500);
+
+    await h.openTrackerSwitcher(page);
+    await h.createNamedBlankProject(page, 'Unrelated project B');
+    await page.waitForTimeout(300);
+    const projectBId = JSON.parse(await page.evaluate(() => localStorage.getItem('git_native_tracker_milestones_v1'))).activeMilestoneId;
+
+    releaseA(); // project A's connect resolves now, with project B active
+    await page.waitForTimeout(1000);
+
+    const docB = await page.evaluate((id) => JSON.parse(localStorage.getItem('git_native_tracker_v1:' + id)), projectBId);
+    expect(docB.issues || []).toHaveLength(0);
+  });
+
+  // The second, independent layer: even with no timing race at all, if a
+  // connect's own fetched file declares a DIFFERENT project id than the
+  // one being connected to (a header-page.route/repo misconfiguration,
+  // a bug elsewhere, whatever), startMerge itself refuses to merge it --
+  // not just the async-staleness check above.
+  test('startMerge refuses to merge a fetched file whose own declared project id does not match the current project', async ({ page }) => {
+    const gh = h.mockGithubContentsApi(page, REPO);
+    const fs = require('fs');
+    const path = require('path');
+    const demoLines = fs.readFileSync(path.join(__dirname, 'fixtures', 'demo-milestone.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+    const foreign = JSON.parse(JSON.stringify(demoLines));
+    const fieldsLine = foreign.find(l => l.type === 'fields');
+    fieldsLine.id = 'some-other-project-entirely';
+    const foreignIssue = foreign.find(l => l.type === 'issue' && l.id === 'i1');
+    foreignIssue.id = 'foreign-i1'; // a genuinely new id, so a real (buggy) merge would visibly add a 10th row
+    gh.getResponses = [{ status: 200, sha: 'sha-foreign', text: foreign.map(l => JSON.stringify(l)).join('\n') }];
+
+    await h.gotoTracker(page); // demo fixture, project id "demo-milestone", 9 issues
+    await h.setGithubRepoSync(page, { repo: REPO, token: 'ghp_faketoken' });
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(500);
+
+    await expect(page.locator('[data-testid=row]')).toHaveCount(9); // unchanged -- nothing from the mismatched file merged
+  });
 });
 
 test.describe('GitHub OAuth sign-in popup handshake', () => {

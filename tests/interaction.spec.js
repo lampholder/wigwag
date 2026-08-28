@@ -1644,6 +1644,74 @@ test.describe('Clearing an active sort', () => {
   });
 });
 
+// Regression: editing the very field a sorted table is ordered by (most
+// commonly Status/RAG) used to reorder the table the instant the edit
+// committed -- the row you just interacted with vanished from under your
+// cursor mid-click. Row order is now captured once, only when the sort
+// itself is set/changed (sortBy/clearSort) or the project loads -- never
+// re-armed by an edit, and never recomputed on a timer or on every
+// render, so there's no ongoing per-tick mechanism to misbehave.
+test.describe('Editing the sorted-by column does not reorder the row', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  test('the edited row stays put indefinitely, showing its new value -- no auto-resort, ever', async ({ page }) => {
+    await h.sortByColumn(page, 'rag', 'ascending'); // i1,i5,i8 (On track), i2,i4,i9 (At risk), i7 (Off track), i3,i6 (—)
+    await expect(h.fieldCell(page, 1, 'rag')).toContainText('On track'); // i1: first green
+
+    await h.clickFieldToEdit(page, 1, 'rag');
+    await page.locator('div[style*="z-index: 70"]').getByText('Off track').click();
+    await expect(h.fieldCell(page, 1, 'rag')).toContainText('Off track'); // still position 1, new value shown
+
+    await page.waitForTimeout(2000); // no timer to expire -- still position 1
+    await expect(h.fieldCell(page, 1, 'rag')).toContainText('Off track');
+
+    // A second edit, on a different row, doesn't move anything either.
+    await h.clickFieldToEdit(page, 2, 'rag');
+    await page.locator('div[style*="z-index: 70"]').getByText('Off track').click();
+    await page.waitForTimeout(300);
+    await expect(h.fieldCell(page, 1, 'rag')).toContainText('Off track');
+    await expect(h.fieldCell(page, 2, 'rag')).toContainText('Off track');
+  });
+
+  test('explicitly changing the sort direction applies the real order immediately', async ({ page }) => {
+    await h.sortByColumn(page, 'rag', 'ascending');
+    await h.clickFieldToEdit(page, 1, 'rag');
+    await page.locator('div[style*="z-index: 70"]').getByText('Off track').click();
+    await expect(h.fieldCell(page, 1, 'rag')).toContainText('Off track'); // still frozen in place
+
+    // Descending order puts unset RAG values first, not the just-edited
+    // issue -- if the frozen order wrongly survived the explicit re-sort,
+    // this row would still show "Off track" at position 1.
+    await h.sortByColumn(page, 'rag', 'descending');
+    await expect(h.fieldCell(page, 1, 'rag')).toContainText('—');
+  });
+
+  test('a new row added while sorted appears at the end, not reordering anything else', async ({ page }) => {
+    await h.sortByColumn(page, 'rag', 'ascending');
+    await page.keyboard.down('Control'); await page.keyboard.press('Space'); await page.keyboard.up('Control');
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=add-item-input]').fill('New row while sorted');
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(300);
+
+    await expect(h.fieldCell(page, 1, 'rag')).toContainText('On track'); // i1 unmoved
+    const titles = await page.locator('[data-testid=title-cell]').allTextContents();
+    expect(titles[titles.length - 1]).toContain('New row while sorted');
+  });
+
+  test('a page reload recomputes the row order fresh (the freeze is transient, not persisted)', async ({ page }) => {
+    await h.sortByColumn(page, 'rag', 'ascending');
+    await h.clickFieldToEdit(page, 1, 'rag'); // i1: On track -> Off track
+    await page.locator('div[style*="z-index: 70"]').getByText('Off track').click();
+    await expect(h.fieldCell(page, 1, 'rag')).toContainText('Off track');
+
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+    // i8 (still green) now sorts first; i1's edited value takes its real place.
+    await expect(h.fieldCell(page, 1, 'rag')).toContainText('On track');
+  });
+});
+
 // Sort is cosmetic like column order/filters/widths: persists per browser,
 // per milestone, across reload and switching -- but is excluded from
 // persist()'s document blob and buildSourceText()'s exported fields line,
@@ -1809,6 +1877,35 @@ test.describe('Column value filters', () => {
     await page.mouse.click(700, 700);
     await page.waitForTimeout(200);
     await expect(page.locator('[data-testid=row]')).toHaveCount(2); // i4, i9
+  });
+
+  // The other half of "sticky" filtering: an edit that makes a currently-
+  // HIDDEN row start matching is revealed immediately, not stuck out of
+  // view until the filter is reapplied -- filtering only ever suppresses
+  // a row disappearing, never a row appearing.
+  test('editing a hidden row so it newly matches the filter reveals it immediately', async ({ page }) => {
+    await h.openColumnMenu(page, 'rag');
+    await page.locator('[data-testid=col-filter-option]').filter({ hasText: 'At risk' }).click(); // amber: i2, i4, i9
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=row]')).toHaveCount(3);
+
+    // i1 (green "On track") is now hidden -- table row-nums are positional
+    // in the filtered set, so reach it by id via the deep-link hash instead.
+    const projectId = JSON.parse(await page.evaluate(() => localStorage.getItem('git_native_tracker_milestones_v1'))).activeMilestoneId;
+    await page.goto(h.TRACKER_PATH + '#/project/' + projectId + '/issue/i1', { waitUntil: 'load' });
+    await page.waitForTimeout(500);
+
+    const statusCell = page.locator('[data-testid=slideover-field][data-col=rag]');
+    const trigger = statusCell.locator('span[style*="cursor: pointer"]').first();
+    await trigger.click();
+    await page.waitForTimeout(150);
+    await trigger.click();
+    await page.waitForTimeout(200);
+    await page.locator('div.scpa').filter({ hasText: 'At risk' }).first().click();
+    await page.waitForTimeout(300);
+
+    await expect(page.locator('[data-testid=row]')).toHaveCount(4); // revealed, no reapply needed
   });
 
   test('a newly added row stays visible under an active filter even with a blank filtered field, until the filter is reapplied', async ({ page }) => {

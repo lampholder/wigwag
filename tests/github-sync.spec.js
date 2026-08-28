@@ -233,10 +233,10 @@ test.describe('GitHub repo sync', () => {
     await newPage.close();
   });
 
-  // Background polling: the leader tab re-checks the remote Contents API on
+  // Background polling: a visible tab re-checks the remote Contents API on
   // an interval (window.__wigwagPollIntervalMs, shrunk to 400ms by
   // useFastTimers) so a collaborator's push shows up without a reload.
-  test('the leader tab periodically re-checks the remote and merges in a change with no user action, staying quiet on no-op polls', async ({ page }) => {
+  test('a visible tab periodically re-checks the remote and merges in a change with no user action, staying quiet on no-op polls', async ({ page }) => {
     test.setTimeout(45000);
     const gh = h.mockGithubContentsApi(page, REPO);
     gh.getResponses = [{ status: 404 }]; // nothing there yet -> initial connect pushes as the first commit
@@ -274,7 +274,10 @@ test.describe('GitHub repo sync', () => {
     await expect(page.locator('[data-testid=footer-github-sync]')).toContainText('just now');
   });
 
-  test('polling is skipped while the tab is not visible', async ({ page }) => {
+  // No leader election left to gate on -- document.hidden is the sole
+  // gate now, applied uniformly to the initial connect, the poll, and the
+  // push debounce (see maybeScheduleGithubPush's own coverage elsewhere).
+  test('nothing syncs at all while the tab is hidden from the start -- no connect, no push, no poll', async ({ page }) => {
     test.setTimeout(45000);
     const gh = h.mockGithubContentsApi(page, REPO);
     gh.getResponses = [{ status: 404 }];
@@ -284,11 +287,10 @@ test.describe('GitHub repo sync', () => {
 
     await h.gotoTracker(page);
     await h.setGithubRepoSync(page, { repo: REPO, token: 'ghp_faketoken' });
-    await page.reload({ waitUntil: 'networkidle' });
-    await h.waitUntil(() => Promise.resolve(gh.pushCount >= 1)); // the initial connect still happens -- only the interval-driven poll is hidden-gated
-    const getCountAfterConnect = gh.getCount;
+    await page.reload({ waitUntil: 'load' });
     await page.waitForTimeout(6000); // past a full poll interval (5s)
-    expect(gh.getCount).toBe(getCountAfterConnect); // no poll-driven GETs went out while hidden
+    expect(gh.getCount).toBe(0);
+    expect(gh.pushCount).toBe(0);
   });
 });
 

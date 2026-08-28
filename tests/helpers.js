@@ -92,16 +92,14 @@ async function seedTwoIdentities(page, opts = {}) {
 
 async function useFastTimers(page) {
   await page.addInitScript(() => {
-    window.__wigwagLeaderStaleMs = 600;
     window.__wigwagPushDebounceMs = 300;
-    window.__wigwagLeaderHeartbeatMs = 200; // keep the same ~3x safety margin vs. staleMs as production (5000 vs 15000)
-    // Deliberately NOT shrunk anywhere near as aggressively as the other
-    // three -- unlike the heartbeat (localStorage-only, no network), a poll
-    // tick is a real fetch(), so a short interval keeps the network from
-    // ever going idle and hangs any page.reload({waitUntil:'networkidle'})
-    // in every test that already has a repo connected (most of this spec).
-    // 5s comfortably clears Playwright's 500ms idle threshold in the gaps
-    // between ticks; tests that specifically exercise polling wait past it.
+    // Deliberately NOT shrunk anywhere near as aggressively as the above --
+    // unlike the debounce (a plain setTimeout), a poll tick is a real
+    // fetch(), so a short interval keeps the network from ever going idle
+    // and hangs any page.reload({waitUntil:'networkidle'}) in every test
+    // that already has a repo connected (most of this spec). 5s comfortably
+    // clears Playwright's 500ms idle threshold in the gaps between ticks;
+    // tests that specifically exercise polling wait past it.
     window.__wigwagPollIntervalMs = 5000;
   });
 }
@@ -516,7 +514,17 @@ function mockGithubContentsApi(page, repo, path = 'tracker.jsonl') {
       if (!resp || resp.status === 404) {
         await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ message: 'Not Found' }) });
       } else {
-        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ sha: resp.sha, content: Buffer.from(resp.text, 'utf8').toString('base64') }) });
+        // Real GitHub ETags are quoted strings, deterministic per blob --
+        // derived from the same sha the app already tracks, so a test can
+        // drive a real conditional-GET 304 just by repeating a getResponses
+        // entry with the same sha and checking the incoming If-None-Match.
+        const etag = '"' + resp.sha + '"';
+        const ifNoneMatch = route.request().headers()['if-none-match'];
+        if (ifNoneMatch && ifNoneMatch === etag) {
+          await route.fulfill({ status: 304, headers: { etag } });
+        } else {
+          await route.fulfill({ status: 200, contentType: 'application/json', headers: { etag }, body: JSON.stringify({ sha: resp.sha, content: Buffer.from(resp.text, 'utf8').toString('base64') }) });
+        }
       }
       return;
     }

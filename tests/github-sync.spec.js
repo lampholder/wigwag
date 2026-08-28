@@ -274,6 +274,35 @@ test.describe('GitHub repo sync', () => {
     await expect(page.locator('[data-testid=footer-github-sync]')).toContainText('just now');
   });
 
+  // Conditional polling: once a poll has seen a response's ETag, the next
+  // one sends it as If-None-Match -- a real 304 (not just a matching sha
+  // read out of a 200 body) is the "nothing changed" signal, and doesn't
+  // count against GitHub's rate limit at all, unlike a 200 that happens
+  // to match. mockGithubContentsApi's own ETag is deterministic per sha
+  // (see its own comment), so repeating the same sha across polls
+  // naturally produces a real 304 on the second one.
+  test('a poll that gets a 304 does not attempt to re-parse or merge', async ({ page }) => {
+    test.setTimeout(45000);
+    const gh = h.mockGithubContentsApi(page, REPO);
+    gh.getResponses = [{ status: 404 }];
+
+    await h.gotoTracker(page);
+    await h.setGithubRepoSync(page, { repo: REPO, token: 'ghp_faketoken' });
+    await page.reload({ waitUntil: 'networkidle' });
+    await h.waitUntil(() => Promise.resolve(gh.pushCount >= 1));
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    const historyLenBefore = doc.issues.find(i => i.id === 'i8').history.length;
+
+    const pushedSha = 'sha-after-push-' + gh.pushCount;
+    gh.getResponses = [{ status: 200, sha: pushedSha, text: 'irrelevant -- a 304 short-circuits before this is ever read' }];
+
+    await h.waitUntil(() => Promise.resolve(gh.getCount >= 2), 15000); // two poll ticks: first 200 (learns the etag), second 304
+    const docAfter304 = await h.readActiveMilestoneDoc(page);
+    expect(docAfter304.issues.find(i => i.id === 'i8').history.length).toBe(historyLenBefore); // no merge happened
+    await expect(page.locator('[data-testid=merge-conflict-modal]')).toHaveCount(0);
+  });
+
   // No leader election left to gate on -- document.hidden is the sole
   // gate now, applied uniformly to the initial connect, the poll, and the
   // push debounce (see maybeScheduleGithubPush's own coverage elsewhere).

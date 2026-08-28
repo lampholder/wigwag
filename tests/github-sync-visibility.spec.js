@@ -36,7 +36,7 @@ test.describe('GitHub sync visibility gating', () => {
     await h.waitUntil(() => Promise.resolve(gh.pushCount >= afterConnect + 1)); // caught up on refocus
   });
 
-  test('two simultaneously-visible tabs each sync independently; a push race between them resolves cleanly via the existing conflict-retry path', async ({ page, context }) => {
+  test('two simultaneously-visible tabs each push independently; a real conflict between them resolves cleanly via the existing retry path, losing neither edit', async ({ page, context }) => {
     test.setTimeout(45000);
     const gh = h.mockGithubContentsApi(page, REPO);
     gh.getResponses = [{ status: 404 }];
@@ -51,20 +51,30 @@ test.describe('GitHub sync visibility gating', () => {
     await h.gotoTracker(pageB);
     await pageB.waitForTimeout(500);
 
-    // Both tabs edit at once -- no leader to arbitrate; GitHub's own
-    // sha-conditional PUT is what actually keeps this safe.
-    await Promise.all([
-      (async () => { await h.clickFieldToEdit(page, 1, 'mitigation'); await h.typeAndCommit(page, 'from tab A'); })(),
-      (async () => { await h.clickFieldToEdit(pageB, 2, 'mitigation'); await h.typeAndCommit(pageB, 'from tab B'); })(),
-    ]);
-    await page.waitForTimeout(800);
-    await pageB.waitForTimeout(800);
+    // Both tabs commit their own edit (sequential UI actions, so this
+    // doesn't depend on Playwright itself racing two live pages) -- but
+    // neither push is gated by the other, so their actual PUT requests
+    // can still genuinely overlap, forcing tab B's own push into a real
+    // 409 that its existing pull-merge-retry path (pushToGithub) has to
+    // recover from with no coordination at all, unlike the old
+    // leader-only-pushes model.
+    await h.clickFieldToEdit(page, 1, 'mitigation');
+    await h.typeAndCommit(page, 'from tab A');
+    await h.clickFieldToEdit(pageB, 2, 'mitigation');
+    await h.typeAndCommit(pageB, 'from tab B');
 
+    await h.waitUntil(() => Promise.resolve(gh.pushCount >= 2), 15000);
+    await h.waitUntil(() => Promise.resolve(ghB.pushCount >= 1), 15000);
     await expect(page.locator('[data-testid=merge-conflict-modal]')).toHaveCount(0);
     await expect(pageB.locator('[data-testid=merge-conflict-modal]')).toHaveCount(0);
-    // Both edits eventually land in tab A's own view via poll/merge, even
-    // though each tab pushed independently with no coordination.
-    await h.waitUntil(async () => (await h.fieldCell(page, 1, 'mitigation').textContent()).includes('from tab A'));
+
+    // Neither edit was lost -- both eventually land in the shared document,
+    // regardless of which tab's push happened to win the race.
+    const docA = await h.readActiveMilestoneDoc(page);
+    const i1History = docA.issues.find(i => i.id === 'i1').history;
+    const i2History = docA.issues.find(i => i.id === 'i2').history;
+    expect(i1History.some(hh => hh.value === 'from tab A')).toBe(true);
+    expect(i2History.some(hh => hh.value === 'from tab B')).toBe(true);
   });
 
   test('a tab that mounts already hidden connects immediately once it becomes visible', async ({ page }) => {

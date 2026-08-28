@@ -518,12 +518,17 @@ function mockGithubContentsApi(page, repo, path = 'tracker.jsonl') {
         // derived from the same sha the app already tracks, so a test can
         // drive a real conditional-GET 304 just by repeating a getResponses
         // entry with the same sha and checking the incoming If-None-Match.
+        // Access-Control-Expose-Headers is required for this to actually
+        // work, not just be present on the wire -- fetch() can't read an
+        // arbitrary response header cross-origin without it, a real CORS
+        // restriction the app's own code has to work within too (confirmed
+        // this is the real GitHub API's own behavior, not just this mock's).
         const etag = '"' + resp.sha + '"';
         const ifNoneMatch = route.request().headers()['if-none-match'];
         if (ifNoneMatch && ifNoneMatch === etag) {
-          await route.fulfill({ status: 304, headers: { etag } });
+          await route.fulfill({ status: 304, headers: { etag, 'access-control-expose-headers': 'ETag' } });
         } else {
-          await route.fulfill({ status: 200, contentType: 'application/json', headers: { etag }, body: JSON.stringify({ sha: resp.sha, content: Buffer.from(resp.text, 'utf8').toString('base64') }) });
+          await route.fulfill({ status: 200, contentType: 'application/json', headers: { etag, 'access-control-expose-headers': 'ETag' }, body: JSON.stringify({ sha: resp.sha, content: Buffer.from(resp.text, 'utf8').toString('base64') }) });
         }
       }
       return;

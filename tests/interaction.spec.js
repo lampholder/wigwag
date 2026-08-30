@@ -701,6 +701,38 @@ test.describe('Detail slide-over', () => {
     await expect(slideover).toContainText('#' + id.slice(0, 8));
   });
 
+  // Tracker issue 4bee26c8: the source-platform glyph (Jira/Salesforce/
+  // wigwag) in the title's own ref line used float:left; margin-top:2px,
+  // which doesn't participate in baseline alignment -- sat visibly lower
+  // than the text, unlike GitHub's icon right next to it in the same
+  // sc-if chain (margin-right:4px; vertical-align:-2px). Scoped to just
+  // this title ref line, not the many other float-based ref icons
+  // elsewhere in the file.
+  test('the source-platform glyph in the title ref line is vertical-aligned, not floated', async ({ page }) => {
+    await h.gotoTracker(page);
+    const projectId = JSON.parse(await page.evaluate(() => localStorage.getItem('git_native_tracker_milestones_v1'))).activeMilestoneId;
+    await page.evaluate((pid) => {
+      const key = 'git_native_tracker_v1:' + pid;
+      const doc = JSON.parse(localStorage.getItem(key));
+      doc.issues[2].history.push({
+        id: 'h-jira-align-test', field: 'title', value: 'TRK-1 A Jira-linked title',
+        fieldRef: { system: 'jira', key: 'TRK-1', href: 'https://example.atlassian.net/browse/TRK-1' },
+        text: 'Title set', actor: 'test', email: '', time: 'now', sortKey: 999999999
+      });
+      localStorage.setItem(key, JSON.stringify(doc));
+    }, projectId);
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    await h.openSlideover(page, 3);
+    await page.waitForTimeout(300);
+    const icon = page.locator('[data-testid=slideover-title-wrap] svg').first();
+    await expect(icon).toBeVisible();
+    const style = await icon.evaluate(el => ({ float: getComputedStyle(el).float, verticalAlign: getComputedStyle(el).verticalAlign }));
+    expect(style.float).toBe('none');
+    expect(style.verticalAlign).not.toBe('baseline');
+  });
+
   test('pressing Escape closes it', async ({ page }) => {
     await h.openSlideover(page, 1);
     await expect(page.locator('[data-testid=slideover]')).toBeVisible();
@@ -1861,6 +1893,19 @@ test.describe('Column value filters', () => {
     await page.mouse.click(700, 700);
     await page.waitForTimeout(200);
     await expect(h.colHeader(page, 'rag').locator('[title="Filtered"]')).toBeVisible();
+  });
+
+  // Tracker issue 982c06d0: the filter-funnel glyph was purely
+  // decorative -- no click handler at all.
+  test('clicking the filtered indicator opens the column menu, same as clicking "⋯"', async ({ page }) => {
+    await h.openColumnMenu(page, 'rag');
+    await page.locator('[data-testid=col-filter-option]').filter({ hasText: 'At risk' }).click();
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(200);
+
+    await h.colHeader(page, 'rag').locator('[title="Filtered"]').click();
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=col-filter-option]').first()).toBeVisible();
   });
 
   test('Clear removes only that column\'s filter, leaving other columns\' filters intact', async ({ page }) => {

@@ -1679,6 +1679,33 @@ test.describe('Editing the sorted-by column does not reorder the row', () => {
     // i8 (still green) now sorts first; i1's edited value takes its real place.
     await expect(h.fieldCell(page, 1, 'rag')).toContainText('On track');
   });
+
+  // Real regression, found live: the freeze above is armed by sortBy()/
+  // switchProject() computing sortSnapshot -- but a page LOAD with an
+  // already-persisted sort preference (the common case: you sorted by
+  // this column in an earlier session, then just reopened the tab) goes
+  // through loadProjectIndex() instead, which loaded the persisted
+  // `sort` into state directly without ever computing a matching
+  // sortSnapshot for it. That left sortSnapshot at its default null,
+  // silently falling through to the live/unfrozen sort branch until the
+  // next explicit sortBy() call -- editing the sorted column on a fresh
+  // load re-sorted the table immediately, exactly the bug this whole
+  // describe block exists to prevent.
+  test('a fresh load with an already-persisted sort also freezes the order on the very first edit -- not just after an explicit re-sort', async ({ page }) => {
+    await h.sortByColumn(page, 'rag', 'ascending'); // persists the preference
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+    await expect(h.fieldCell(page, 1, 'rag')).toContainText('On track'); // i1 or i8, whichever sorts first
+
+    const titlesBefore = await page.locator('[data-testid=title-cell]').allTextContents();
+    await h.clickFieldToEdit(page, 1, 'rag');
+    await page.locator('div[style*="z-index: 70"]').getByText('Off track').click();
+    await page.waitForTimeout(300);
+
+    const titlesAfter = await page.locator('[data-testid=title-cell]').allTextContents();
+    expect(titlesAfter).toEqual(titlesBefore); // same order -- row 1 stayed put, just shows Off track now
+    await expect(h.fieldCell(page, 1, 'rag')).toContainText('Off track');
+  });
 });
 
 // Sort is cosmetic like column order/filters/widths: persists per browser,

@@ -37,6 +37,10 @@ const DEFAULT_REPO_OWNER = 'lampholder';
 const DEFAULT_REPO_NAME = 'wigwag';
 const STATUS_FIELD_LABEL = 'Status';
 
+// Also reused by wigwag-file-store.js's CredentialStore -- exported so
+// the file-based CLI can point at the exact same identity files (e.g.
+// wigwag_tracker) without a second parser for the same documented,
+// prose-plus-embedded-JSON format.
 function loadIdentity(identityPath) {
   const text = fs.readFileSync(identityPath, 'utf8');
   const m = text.match(/\n(\{\s*"id":[\s\S]*?\n\})\n/);
@@ -323,4 +327,4 @@ async function connect(opts = {}) {
   return { page, list, getIssue, addIssue, comment, setField, close };
 }
 
-module.exports = { connect };
+module.exports = { connect, loadIdentity };

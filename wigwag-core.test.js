@@ -1,0 +1,128 @@
+// Fast, browser-free unit tests for wigwag-core.js -- run via
+// `node --test wigwag-core.test.js`. No Playwright, no browser: these
+// exercise the pure data-transformation logic directly, something the
+// existing Playwright-only suite structurally can't offer for this code.
+// See /home/dev/.claude/plans/vast-cuddling-pnueli.md for the extraction
+// this is verifying (Phase 1: the ~960-line pure core moved verbatim out
+// of wigwag.html's own bundled app source).
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const core = require('./wigwag-core.js');
+
+test('deriveIssueValues: latest history entry per field wins', () => {
+  const fieldDefs = { title: { label: 'Issue', type: 'issue' }, priority: { label: 'Priority', type: 'select' } };
+  const issue = {
+    history: [
+      { field: 'priority', value: 'p1', sortKey: 1 },
+      { field: 'priority', value: 'p2', sortKey: 3 },
+      { field: 'priority', value: 'p0', sortKey: 2 }, // out of order, must lose to sortKey 3
+      { field: 'title', value: 'Hello', sortKey: 1 }
+    ]
+  };
+  const values = core.deriveIssueValues(issue, fieldDefs);
+  assert.equal(values.priority, 'p2');
+  assert.equal(values.title, 'Hello');
+});
+
+test('deriveIssueValues: a field with no history falls back to a type-appropriate default', () => {
+  const fieldDefs = { title: { type: 'issue' }, teams: { type: 'multiselect' }, rag: { type: 'select' } };
+  const values = core.deriveIssueValues({ history: [] }, fieldDefs);
+  assert.equal(values.title, '');
+  assert.deepEqual(values.teams, []);
+  assert.equal(values.rag, null);
+});
+
+test('hydrateIssue: composes backfill + derive, same shape addIssue/switchProject rely on', () => {
+  const fieldDefs = { title: { type: 'issue' } };
+  // A real stored value with zero history entries -- the migration-safety-net case.
+  const issue = { id: 'i1', values: { title: 'Legacy title' }, history: [] };
+  const hydrated = core.hydrateIssue(issue, fieldDefs);
+  assert.equal(hydrated.values.title, 'Legacy title');
+  assert.equal(hydrated.history.length, 1);
+  assert.equal(hydrated.history[0].origin, 'legacy-backfill');
+});
+
+test('hydrateProject: derives fieldDefs from projectHistory, not a stale stored copy', () => {
+  const projectHistory = [
+    { field: 'rag', value: { label: 'RAG', type: 'select', options: [] }, sortKey: 1 },
+    { field: 'rag', value: { label: 'Health', type: 'select', options: [] }, sortKey: 2 } // renamed later
+  ];
+  const { fieldDefs } = core.hydrateProject({ rag: { label: 'RAG (stale)', type: 'select', options: [] } }, projectHistory);
+  assert.equal(fieldDefs.rag.label, 'Health');
+});
+
+test('compileRuleRows: compiles a single-condition row to a ternary reading the label, falling back', () => {
+  const def = { type: 'select', options: [{ id: 'g', label: 'On track' }] };
+  const compiled = core.compileRuleRows(
+    [{ criteria: [{ subject: 'source.github.state', op: 'equals', value: 'closed' }], then: 'g' }],
+    null, def
+  );
+  assert.match(compiled, /"On track"/);
+  assert.match(compiled, /: null$/);
+});
+
+test('latestCommentsById: an edited comment collapses to its latest revision, marks wasEdited', () => {
+  const comments = [
+    { id: 'c1', text: 'first draft', sortKey: 1, author: 'me', email: '', time: 't1' },
+    { id: 'c1', text: 'edited draft', sortKey: 2, author: 'me', email: '', time: 't2' }
+  ];
+  const result = core.latestCommentsById(comments);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].text, 'edited draft');
+  assert.equal(result[0].wasEdited, true);
+});
+
+test('signablePayload / redactedPayload: deterministic serialization, redacted drops text/value', () => {
+  const entry = { id: 'h1', field: 'title', value: 'secret', text: 'Title set to "secret"', time: 'now', sortKey: 1, author: 'me', email: 'me@x.com' };
+  const full = core.signablePayload('issue1', entry);
+  const redacted = core.redactedPayload('issue1', entry);
+  assert.match(full, /secret/);
+  assert.doesNotMatch(redacted, /secret/);
+  assert.notEqual(full, redacted);
+});
+
+test('issueValueMatchesFilter + computeColumnFilterExcludedIds: excludes non-matching issues', () => {
+  // computeColumnFilterExcludedIds reads iss.values[colId] -- issues must
+  // already be hydrated (values derived), matching how every real call
+  // site in wigwag.html always passes the post-deriveIssueValues shape.
+  const fieldDefs = { rag: { type: 'select' } };
+  const issues = [
+    { id: 'i1', values: { rag: 'g' } },
+    { id: 'i2', values: { rag: 'r' } },
+    { id: 'i3', values: { rag: null } }
+  ];
+  const excluded = core.computeColumnFilterExcludedIds({ rag: ['g'] }, issues, fieldDefs);
+  assert.deepEqual(excluded.sort(), ['i2', 'i3']);
+});
+
+test('splitHighlightSegments: every occurrence, case-insensitive, non-matching text untouched', () => {
+  const segs = core.splitHighlightSegments('Add JSONL schema validation on Schema Import', 'schema');
+  const matches = segs.filter(s => s.isMatch).map(s => s.text);
+  assert.deepEqual(matches, ['schema', 'Schema']);
+  assert.equal(segs.map(s => s.text).join(''), 'Add JSONL schema validation on Schema Import');
+});
+
+test('renderMarkdown: bold/emphasis render as real elements, plain text passes through', () => {
+  assert.equal(core.renderMarkdown('**bold** and _em_'), '<p><strong>bold</strong> and <em>em</em></p>');
+  assert.match(core.renderMarkdown('plain text'), /plain text/);
+});
+
+test('truncate: shortens with an ellipsis only when actually over length, never mutates short strings', () => {
+  assert.equal(core.truncate('short', 60), 'short');
+  const long = 'x'.repeat(100);
+  const truncated = core.truncate(long, 60);
+  assert.equal(truncated.length, 60);
+  assert.match(truncated, /…$/);
+});
+
+test('col: known color names resolve, unknown falls back to gray', () => {
+  assert.equal(core.col('red').dot, core.COLORS.red.dot);
+  assert.deepEqual(core.col('not-a-real-color'), core.COLORS.gray);
+});
+
+test('defaultFieldDefs / defaultColumnOrder: produce a usable starter schema', () => {
+  const fieldDefs = core.defaultFieldDefs();
+  assert.ok(fieldDefs.title);
+  const order = core.defaultColumnOrder();
+  assert.ok(Array.isArray(order) && order.length > 0);
+});

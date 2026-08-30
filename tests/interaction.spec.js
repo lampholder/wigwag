@@ -354,21 +354,6 @@ test.describe('Remote lookups persist with the data', () => {
 test.describe('Refresh: row / whole table', () => {
   test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
 
-  // The row number is replaced by a refresh button on hover (no more
-  // chevron/menu) -- full opacity if the row has any linked field, dimmed
-  // (but still clickable, see the no-op test below) if it doesn't.
-  test('the row-hover refresh button is dimmed on a row with no linked fields, full opacity on one that has a link', async ({ page }) => {
-    await h.row(page, 1).hover(); // seed row 1 has a GitHub link
-    await page.waitForTimeout(150);
-    const linkedOpacity = await h.row(page, 1).locator('[data-testid=row-refresh-btn]').evaluate(el => getComputedStyle(el).opacity);
-    expect(Number(linkedOpacity)).toBe(1);
-
-    await h.row(page, 3).hover(); // seed row 3 has nothing linked
-    await page.waitForTimeout(150);
-    const unlinkedOpacity = await h.row(page, 3).locator('[data-testid=row-refresh-btn]').evaluate(el => getComputedStyle(el).opacity);
-    expect(Number(unlinkedOpacity)).toBeLessThan(1);
-  });
-
   test('row: refreshing re-pulls every GitHub-linked field on that row, not just one', async ({ page }) => {
     // The fixtures are deterministic (mockGithubApi always returns the same
     // body for a given URL), so a plain refresh of freshly-linked fields would
@@ -499,7 +484,8 @@ test.describe('Refresh: row / whole table', () => {
     await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'linked');
 
-    await page.locator('[data-testid=btn-refresh-all]').click();
+    await page.locator('[data-testid=header-select-checkbox]').click(); // select every row, respecting the current filter
+    await page.locator('[data-testid=bulk-refresh-btn]').click();
     await h.waitForFieldResolved(page, 3, 'linked');
     // row 1's title was already linked in seed data — refreshing it too means it
     // hits the mocked API (acme/app is a fictional repo, so this resolves as a
@@ -530,29 +516,12 @@ test.describe('Refresh: row / whole table', () => {
       await route.continue();
     });
 
-    await page.locator('[data-testid=btn-refresh-all]').click();
+    await page.locator('[data-testid=header-select-checkbox]').click();
+    await page.locator('[data-testid=bulk-refresh-btn]').click();
     await page.waitForFunction(() => !document.body.textContent.includes('Loading…'), { timeout: 15000 });
     await page.waitForTimeout(200);
 
     expect(maxConcurrent).toBeLessThanOrEqual(1);
-  });
-
-  test('the "Refresh linked issues" button lives in the toolbar, left of Apply update…, and greys out when nothing in the milestone is linked', async ({ page }) => {
-    const icon = page.locator('[data-testid=btn-refresh-all]');
-    await expect(icon).toHaveText('Refresh linked issues'); // says what it does, not just an icon
-    await expect(icon).toHaveCSS('cursor', 'pointer'); // seed data has linked issues
-    const enabledColor = await icon.evaluate(el => getComputedStyle(el).color);
-
-    await h.openTrackerSwitcher(page);
-    await h.createNamedBlankProject(page, 'No links here');
-    await page.waitForTimeout(300);
-
-    await expect(icon).toHaveCSS('cursor', 'default');
-    await expect(icon).toHaveAttribute('title', 'No linked issues to refresh');
-    const disabledColor = await icon.evaluate(el => getComputedStyle(el).color);
-    expect(disabledColor).not.toBe(enabledColor);
-
-    await expect(page.locator('button', { hasText: 'Refresh all' })).toHaveCount(0); // old toolbar button is gone
   });
 });
 
@@ -1902,7 +1871,7 @@ test.describe('Column value filters', () => {
     await page.waitForTimeout(150);
     await trigger.click();
     await page.waitForTimeout(200);
-    await page.locator('div.scpa').filter({ hasText: 'At risk' }).first().click();
+    await page.locator('[data-testid=select-option]').filter({ hasText: 'At risk' }).first().click();
     await page.waitForTimeout(300);
 
     await expect(page.locator('[data-testid=row]')).toHaveCount(4); // revealed, no reapply needed
@@ -2529,33 +2498,10 @@ test.describe('Project panel button + header hover', () => {
 test.describe('Toolbar row button styling is consistent', () => {
   test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
 
-  test('Project, Refresh linked issues, Apply update…, and Share all share the same resolved text color', async ({ page }) => {
-    const ids = ['btn-notes', 'btn-refresh-all', 'btn-import-merge', 'btn-export'];
+  test('Project, Apply update…, and Share all share the same resolved text color', async ({ page }) => {
+    const ids = ['btn-notes', 'btn-import-merge', 'btn-export'];
     const colors = await page.evaluate((ids) => ids.map(id => getComputedStyle(document.querySelector('[data-testid="' + id + '"]')).color), ids);
     expect(new Set(colors).size).toBe(1);
-  });
-
-  test('Refresh linked issues still visually grays out when there is nothing to refresh', async ({ page }) => {
-    // Seed data's one linked issue (row 1) is what makes the button
-    // enabled at all -- delete it and confirm the disabled/grayed styling
-    // machinery still exists and differs from the shared enabled color,
-    // not accidentally unified away along with the rest of the button.
-    const enabledColor = await page.locator('[data-testid=btn-refresh-all]').evaluate(el => getComputedStyle(el).color);
-
-    // fieldRefs is a derived projection (re-computed from each issue's own
-    // history on load, not read from the persisted doc directly -- see
-    // deriveIssueFieldRefs) -- strip the history entries that carry a
-    // fieldRef instead of the (non-persisted) fieldRefs field itself.
-    const doc = await h.readActiveMilestoneDoc(page);
-    doc.issues.forEach(iss => { iss.history = iss.history.filter(hh => !hh.fieldRef); });
-    await h.writeActiveMilestoneDoc(page, doc);
-    await page.reload();
-    await page.waitForTimeout(300);
-
-    const disabledColor = await page.locator('[data-testid=btn-refresh-all]').evaluate(el => getComputedStyle(el).color);
-    const disabledCursor = await page.locator('[data-testid=btn-refresh-all]').evaluate(el => getComputedStyle(el).cursor);
-    expect(disabledCursor).toBe('default');
-    expect(disabledColor).not.toBe(enabledColor);
   });
 });
 

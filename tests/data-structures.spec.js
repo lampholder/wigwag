@@ -533,6 +533,39 @@ test.describe('Comment signing & redaction', () => {
     expect(entry.text).toBeUndefined();
     await expect(page.locator('[data-testid=project-activity-redacted-placeholder]')).toHaveCount(1);
   });
+
+  // Tracker issue 2791a473: project comments previously had no edit
+  // capability at all, only redact. Mirrors the issue-comment edit test
+  // above -- same tombstone-plus-new-entry shape, same UI collapse to the
+  // latest revision.
+  test('editing a project comment auto-redacts its prior revision, collapsing to the latest text in the UI', async ({ page }) => {
+    await page.locator('[data-testid=btn-notes]').click();
+    await page.waitForTimeout(300);
+    await page.locator('[data-testid=project-comment-input]').fill('first draft');
+    await page.locator('[data-testid=project-comment-post-btn]').click();
+    await page.waitForTimeout(300);
+
+    await page.locator('[data-testid=project-comment-edit-btn]').first().click();
+    await page.locator('[data-testid=project-comment-edit-input]').fill('edited draft');
+    await page.locator('[data-testid=project-comment-edit-save]').click();
+    await page.waitForTimeout(300);
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    const commentId = doc.projectComments[doc.projectComments.length - 1].id;
+    const revisions = doc.projectComments.filter(c => c.id === commentId);
+    expect(revisions.length).toBe(2);
+
+    const tombstone = revisions.find(c => c.redacted);
+    const live = revisions.find(c => !c.redacted);
+    expect(tombstone).toBeTruthy();
+    expect(tombstone.text).toBeUndefined();
+    expect(tombstone.sigRedacted).toBeTruthy();
+    expect(live.text).toBe('edited draft');
+
+    await expect(page.locator('[data-testid=project-comment-md]').first()).toContainText('edited draft');
+    await expect(page.locator('[data-testid=project-activity-entry]')).toHaveCount(1);
+    await expect(page.locator('[data-testid=project-activity-redacted-placeholder]')).toHaveCount(0);
+  });
 });
 
 // "Import project from file..." and "Apply update..." now share the same
@@ -1149,6 +1182,40 @@ test.describe('Project-level schema history (Batch 3)', () => {
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
     await expect(page.locator('[data-testid=col-header][data-col="rag"]')).toContainText('Health');
+  });
+
+  // Tracker issue 4ac15b77: renaming a project (the switcher's own
+  // metadata array, separate from fieldDefs) updated the displayed name
+  // but never logged anything -- unlike every other project-level change.
+  test('renaming a project via the Project panel logs a narrative entry to projectHistory, and survives reload', async ({ page }) => {
+    await h.gotoTracker(page);
+    await page.locator('[data-testid=btn-notes]').click();
+    await page.waitForTimeout(300);
+    await page.locator('[data-testid=notes-rename-btn]').click();
+    await page.locator('[data-testid=notes-rename-input]').fill('Renamed tracker');
+    await page.locator('[data-testid=notes-rename-commit-btn]').click();
+    await page.waitForTimeout(200);
+
+    await expect(page.locator('[data-testid=project-activity-entry]')).toContainText(/Renamed project from ".*" to "Renamed tracker"/);
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    const entry = doc.projectHistory.find(hh => hh.text && hh.text.includes('Renamed project from'));
+    expect(entry).toBeTruthy();
+    expect(entry.field).toBeFalsy(); // narrative-only, no field derivation implied
+
+    // Renaming back to the same name is a no-op -- no duplicate entry.
+    const countBefore = doc.projectHistory.length;
+    await page.locator('[data-testid=notes-rename-btn]').click();
+    await page.locator('[data-testid=notes-rename-commit-btn]').click();
+    await page.waitForTimeout(200);
+    const docAfter = await h.readActiveMilestoneDoc(page);
+    expect(docAfter.projectHistory.length).toBe(countBefore);
+
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+    await page.locator('[data-testid=btn-notes]').click();
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=project-activity-entry]')).toContainText(/Renamed project from ".*" to "Renamed tracker"/);
   });
 
   test('a new field created via "+ add field" is described entirely through projectHistory and survives reload', async ({ page }) => {

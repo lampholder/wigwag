@@ -338,9 +338,13 @@ async function openSlideover(page, num) {
   return page.locator('[data-testid=slideover]');
 }
 
-// The row-hover refresh button, replacing the old chevron-then-menu path.
+// Refreshing a single row is now: check its box, Refresh in the bulk bar
+// (replacing the old per-row hover button) -- then clear the selection so
+// callers see the same "nothing selected" state afterward they used to.
 async function refreshRow(page, num) {
-  await row(page, num).locator('[data-testid=row-refresh-btn]').click();
+  await row(page, num).locator('[data-testid=row-select-checkbox]').click();
+  await page.locator('[data-testid=bulk-refresh-btn]').click();
+  await page.locator('[data-testid=bulk-clear-btn]').click();
 }
 
 async function closeSlideover(page) {

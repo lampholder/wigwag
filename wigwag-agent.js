@@ -250,11 +250,11 @@ async function attemptSetField(page, projectId, issueId, colId, def, value) {
   // cursor:pointer span, not the outer [data-testid=slideover-field]
   // wrapper (buildSelectCell binds onClick there specifically) -- this
   // framework's click delegation doesn't reliably bubble from arbitrary
-  // descendants (the same quirk documented below for .scpa), so clicking
-  // the wrapper visibly "clicks" but never opens the popover. A text
-  // field is the opposite: buildTextCell deliberately leaves its inner
-  // span's onClick unset so the click bubbles to onCellClick on the
-  // wrapper -- clicking the inner span there would never fire anything.
+  // descendants, so clicking the wrapper visibly "clicks" but never opens
+  // the popover. A text field is the opposite: buildTextCell deliberately
+  // leaves its inner span's onClick unset so the click bubbles to
+  // onCellClick on the wrapper -- clicking the inner span there would
+  // never fire anything.
   const trigger = def.type === 'select' ? cell.locator('span[style*="cursor: pointer"]').first() : cell;
   await trigger.click();
   await page.waitForTimeout(150);
@@ -262,11 +262,12 @@ async function attemptSetField(page, projectId, issueId, colId, def, value) {
   await page.waitForTimeout(200);
 
   if (def.type === 'select') {
-    // .scpa is the option row's own class, carrying the actual
-    // sc-camel-on-click handler -- getByText(...).click() can resolve to
-    // an inner text span instead, which visibly "clicks" (no error) but
-    // never fires the framework's delegated handler bound to the row div.
-    const optionRow = page.locator('div.scpa').filter({ hasText: value });
+    // [data-testid=select-option] is the option row itself, carrying the
+    // actual sc-camel-on-click handler -- getByText(...).click() can
+    // resolve to an inner text span instead, which visibly "clicks" (no
+    // error) but never fires the framework's delegated handler bound to
+    // the row div.
+    const optionRow = page.locator('[data-testid=select-option]').filter({ hasText: value });
     if (!(await optionRow.count())) throw new Error(`No option labeled "${value}" for field type select. Options: ` + (def.options || []).map(o => o.label).join(', '));
     await optionRow.first().click();
   } else {

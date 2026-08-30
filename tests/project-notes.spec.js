@@ -285,13 +285,14 @@ test.describe('Project panel sections', () => {
   });
 });
 
-// The Activity feed merges project comments with project-level schema
-// history (fields created/renamed/etc, projectHistory), mirroring the
-// per-issue slide-over's own comments+history merge (slideOver.activity).
-test.describe('Project activity feed (comments + schema history, merged)', () => {
+// Tracker issue 1f177ff2: project comments and project-level schema
+// history (fields created/renamed/etc, projectHistory) are separate
+// COMMENTS/HISTORY tabs now, not one merged feed -- mirroring the
+// per-issue slide-over's own comments/history split (slideOver.activity).
+test.describe('Project activity feed (Comments/History tabs)', () => {
   test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
 
-  test('a schema change shows up in the project Activity feed alongside comments, most recent first', async ({ page }) => {
+  test('a comment and a schema change land in their own separate tabs, not merged together', async ({ page }) => {
     await page.locator('[data-testid=btn-notes]').click();
     await page.waitForTimeout(300);
     await page.locator('[data-testid=project-comment-input]').fill('First, a comment');
@@ -309,10 +310,18 @@ test.describe('Project activity feed (comments + schema history, merged)', () =>
     await page.locator('[data-testid=btn-notes]').click();
     await page.waitForTimeout(300);
 
+    // Comments tab (default): the comment, not the schema entry.
     const entries = page.locator('[data-testid=project-activity-entry]');
-    // Most recent first: the field-creation entry (just added) before the comment.
+    await expect(page.locator('[data-testid=activity-tab-comments]')).toContainText('(1)');
+    await expect(entries).toHaveCount(1);
+    await expect(entries.first()).toContainText('First, a comment');
+
+    // History tab: the schema entry, not the comment.
+    await page.locator('[data-testid=activity-tab-history]').click();
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=activity-tab-history]')).toContainText('(1)');
+    await expect(entries).toHaveCount(1);
     await expect(entries.first()).toContainText('Created field "Owner"');
-    await expect(entries.nth(1)).toContainText('First, a comment');
   });
 
   test('the demo fixture\'s own pre-existing fields (no real history, only backfilled) do not clutter the Activity feed', async ({ page }) => {
@@ -336,6 +345,10 @@ test.describe('Project activity feed (comments + schema history, merged)', () =>
 
     await page.locator('[data-testid=btn-notes]').click();
     await page.waitForTimeout(300);
+    // Comments and history are now separate tabs (tracker issue
+    // 1f177ff2) -- a schema-change entry lives under History.
+    await page.locator('[data-testid=activity-tab-history]').click();
+    await page.waitForTimeout(150);
     await expect(page.locator('[data-testid=project-activity-entry]')).toContainText('Created field "Owner"');
 
     page.once('dialog', d => d.accept());

@@ -732,18 +732,25 @@ test.describe('Detail slide-over', () => {
     await expect(page.locator('[data-testid=slideover]')).toHaveCount(0);
   });
 
-  test('comments and history are merged into a single most-recent-first ACTIVITY timeline', async ({ page }) => {
+  // Tracker issue 1f177ff2: comments and history used to be merged into
+  // one interleaved timeline -- now COMMENTS and HISTORY are separate
+  // tabs, each independently most-recent-first.
+  test('comments and history are separate, independently most-recent-first COMMENTS/HISTORY tabs, not one merged timeline', async ({ page }) => {
     // seed row 2: history "Created" (Jul 15) -> comment (Jul 21) -> history "RAG set to At risk" (Jul 21, later same day)
     const slideover = await h.openSlideover(page, 2);
-    expect(await page.getByText('COMMENTS', { exact: true }).count()).toBe(0);
-    expect(await page.getByText('HISTORY', { exact: true }).count()).toBe(0);
-    await expect(page.getByText('ACTIVITY', { exact: true })).toBeVisible();
+    await expect(page.getByText('ACTIVITY', { exact: true })).toHaveCount(0);
+    await expect(page.locator('[data-testid=activity-tab-comments]')).toContainText('COMMENTS (1)');
+    await expect(page.locator('[data-testid=activity-tab-history]')).toContainText('HISTORY (2)');
 
     const entries = slideover.locator('[data-testid=activity-entry]');
-    expect(await entries.count()).toBe(3);
-    await expect(entries.nth(0)).toContainText('RAG set to At risk');
-    await expect(entries.nth(1)).toContainText('Confirmed on staging');
-    await expect(entries.nth(2)).toContainText('Created');
+    await expect(entries).toHaveCount(1); // Comments tab is the default
+    await expect(entries.first()).toContainText('Confirmed on staging');
+
+    await slideover.locator('[data-testid=activity-tab-history]').click();
+    await page.waitForTimeout(150);
+    await expect(entries).toHaveCount(2);
+    await expect(entries.nth(0)).toContainText('RAG set to At risk'); // most recent
+    await expect(entries.nth(1)).toContainText('Created'); // oldest
   });
 
   test('posting a new comment adds it to the top of the ACTIVITY timeline', async ({ page }) => {
@@ -753,6 +760,22 @@ test.describe('Detail slide-over', () => {
     await page.waitForTimeout(150);
     const entries = slideover.locator('[data-testid=activity-entry]');
     await expect(entries.first()).toContainText('A brand new comment');
+  });
+
+  test('switching to the History tab, then opening a different issue, resets back to Comments', async ({ page }) => {
+    let slideover = await h.openSlideover(page, 2);
+    await slideover.locator('[data-testid=activity-tab-history]').click();
+    await page.waitForTimeout(150);
+    // sanity: really on History now -- the seed comment isn't there.
+    await expect(slideover.locator('[data-testid=activity-entry]').filter({ hasText: 'Confirmed on staging' })).toHaveCount(0);
+
+    await h.closeSlideover(page);
+    slideover = await h.openSlideover(page, 1);
+    await page.waitForTimeout(150);
+    // Back on Comments by default -- the active tab span has no click
+    // handler (it's the current one), unlike the inactive tab's.
+    await expect(slideover.locator('[data-testid=activity-tab-comments]')).not.toHaveAttribute('style', /cursor:\s*pointer/);
+    await expect(slideover.locator('[data-testid=activity-tab-history]')).toHaveAttribute('style', /cursor:\s*pointer/);
   });
 
   // Regression test: the slide-over's select/multiselect popovers used to
@@ -1026,6 +1049,10 @@ test.describe('Activity history', () => {
     await page.waitForTimeout(150);
 
     const slideover = await h.openSlideover(page, 3);
+    // Comments and history are now separate tabs (tracker issue
+    // 1f177ff2) -- History for the pills, Comments for the plain text.
+    await slideover.locator('[data-testid=activity-tab-history]').click();
+    await page.waitForTimeout(150);
     const entries = slideover.locator('[data-testid=activity-entry]');
 
     const priorityEntry = entries.filter({ hasText: 'Priority set to' });
@@ -1043,6 +1070,8 @@ test.describe('Activity history', () => {
     await page.locator('[data-testid=new-comment-input]').fill('Just a plain comment');
     await page.locator('button', { hasText: 'Post' }).click();
     await page.waitForTimeout(150);
+    await slideover.locator('[data-testid=activity-tab-comments]').click();
+    await page.waitForTimeout(150);
     await expect(entries.first()).toContainText('Just a plain comment');
   });
 
@@ -1052,6 +1081,8 @@ test.describe('Activity history', () => {
     await page.waitForTimeout(200);
 
     const slideover = await h.openSlideover(page, 3);
+    await slideover.locator('[data-testid=activity-tab-history]').click();
+    await page.waitForTimeout(150);
     const entry = slideover.locator('[data-testid=activity-entry]').filter({ hasText: 'Mitigation set to' });
     const label = entry.locator('b', { hasText: 'Mitigation' });
     await expect(label).toBeVisible();

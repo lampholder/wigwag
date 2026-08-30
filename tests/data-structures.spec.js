@@ -456,6 +456,10 @@ test.describe('Comment signing & redaction', () => {
     await page.waitForTimeout(300);
     await h.openSlideover(page, 1);
     await page.waitForTimeout(200);
+    // Comments and history are separate tabs now (tracker issue
+    // 1f177ff2) -- a field-value change lives under History.
+    await page.locator('[data-testid=activity-tab-history]').click();
+    await page.waitForTimeout(150);
 
     page.once('dialog', d => d.accept());
     await page.locator('[data-testid=activity-redact-btn]').first().click();
@@ -490,6 +494,10 @@ test.describe('Comment signing & redaction', () => {
 
     await h.openSlideover(page, 10); // appended after the 9 seed rows
     await page.waitForTimeout(200);
+    // Comments and history are separate tabs now (tracker issue
+    // 1f177ff2) -- Created and Title-set are both history entries.
+    await page.locator('[data-testid=activity-tab-history]').click();
+    await page.waitForTimeout(150);
 
     await expect(page.getByText('Created', { exact: true })).toBeVisible();
     // one redact button for the real Title-set entry; none for Created
@@ -1068,7 +1076,10 @@ test.describe('Migration: backfilling history from pre-existing stored values', 
     expect(doc.issues[0].history.filter(hh => hh.origin === 'legacy-backfill')).toHaveLength(2);
 
     const slideover = await h.openSlideover(page, 1);
-    await expect(page.getByText('ACTIVITY', { exact: true })).toBeVisible();
+    // The plain "ACTIVITY" label was replaced by the COMMENTS/HISTORY
+    // tabs (tracker issue 1f177ff2) -- check those instead.
+    await expect(page.locator('[data-testid=activity-tab-comments]')).toBeVisible();
+    await expect(page.locator('[data-testid=activity-tab-history]')).toContainText('(0)');
     const entries = slideover.locator('[data-testid=activity-entry]');
     expect(await entries.count()).toBe(0);
     await expect(page.getByText('No activity yet', { exact: false })).toBeVisible();
@@ -1196,6 +1207,10 @@ test.describe('Project-level schema history (Batch 3)', () => {
     await page.locator('[data-testid=notes-rename-commit-btn]').click();
     await page.waitForTimeout(200);
 
+    // Comments and history are separate tabs now (tracker issue
+    // 1f177ff2) -- a rename is a history entry.
+    await page.locator('[data-testid=activity-tab-history]').click();
+    await page.waitForTimeout(150);
     await expect(page.locator('[data-testid=project-activity-entry]')).toContainText(/Renamed project from ".*" to "Renamed tracker"/);
 
     const doc = await h.readActiveMilestoneDoc(page);
@@ -1215,6 +1230,8 @@ test.describe('Project-level schema history (Batch 3)', () => {
     await page.waitForTimeout(300);
     await page.locator('[data-testid=btn-notes]').click();
     await page.waitForTimeout(300);
+    await page.locator('[data-testid=activity-tab-history]').click();
+    await page.waitForTimeout(150);
     await expect(page.locator('[data-testid=project-activity-entry]')).toContainText(/Renamed project from ".*" to "Renamed tracker"/);
   });
 

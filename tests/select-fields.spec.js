@@ -119,6 +119,30 @@ test.describe('Single-select', () => {
     await page.waitForTimeout(200);
     await expect(page.getByText('Select an item', { exact: true })).toHaveCount(0);
   });
+
+  // Tracker issue 15f48c0e: the popover only ever listed def.options, so
+  // once a select field had a value there was no way back to "no value"
+  // via the UI (a text field could always be cleared by deleting its
+  // text; select had no equivalent). A pinned "— No value —" row fixes
+  // this, reusing selectOption(id, colId, null) -- which already had (via
+  // commitFieldValue's own precedent) the right "cleared" semantics once
+  // its history-text ternary handled a falsy optionId.
+  test('a pinned "— No value —" row clears a select field back to empty, and is itself checked when already empty', async ({ page }) => {
+    await h.clickFieldToEdit(page, 1, 'rag'); // i1 has a RAG value in the fixture
+    const clearRow = page.locator('[data-testid=select-option]').filter({ hasText: 'No value' });
+    await expect(clearRow).toBeVisible();
+    await clearRow.click();
+    await expect(h.fieldCell(page, 1, 'rag')).toHaveText('—');
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    const entry = doc.issues.find(i => i.id === 'i1').history
+      .filter(hh => hh.field === 'rag').sort((a, b) => b.sortKey - a.sortKey)[0];
+    expect(entry.value).toBeFalsy();
+    expect(entry.text).toContain('cleared');
+
+    await h.clickFieldToEdit(page, 1, 'rag');
+    await expect(page.locator('[data-testid=select-option]').filter({ hasText: 'No value' })).toContainText('✓');
+  });
 });
 
 test.describe('Multi-select', () => {

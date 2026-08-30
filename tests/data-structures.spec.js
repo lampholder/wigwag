@@ -1240,3 +1240,106 @@ test.describe('Project-level schema history (Batch 3)', () => {
     expect(Object.keys(doc2.fieldDefs)).toContain(newId);
   });
 });
+
+// Tracker issue 3677ddb9 ("Fields should optionally have default
+// values"). Scoped to select + text for this pass -- see wigwag.html's
+// own comment above setFieldLabel/setFieldDefaultValue for why
+// multiselect is left as an explicit follow-up rather than folded in
+// here. defaultValue rides along on fieldDefs like label/options/rule
+// already do (setFieldDefaultValue uses the same appendProjectHistory
+// convention as setFieldLabel), and is only ever applied at issue
+// creation -- existing issues are never touched.
+test.describe('Field default values', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  async function closeFieldEditor(page) {
+    await page.locator('[data-testid=field-editor] button', { hasText: 'Done' }).click();
+    await page.waitForTimeout(200);
+  }
+
+  async function addIssueByTitle(page, title) {
+    await page.keyboard.down('Control');
+    await page.keyboard.press('Space');
+    await page.keyboard.up('Control');
+    await page.waitForTimeout(150);
+    await page.keyboard.type(title);
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(400);
+  }
+
+  test('a select field\'s default value applies to a new issue, as a real history entry naming the option label', async ({ page }) => {
+    await h.openFieldEditor(page, 'rag');
+    await page.waitForTimeout(200);
+    await page.locator('[data-testid=field-editor-default-value-select]').selectOption({ label: 'On track' });
+    await page.waitForTimeout(200);
+    await closeFieldEditor(page);
+
+    await addIssueByTitle(page, 'a fresh issue with a select default');
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    const fresh = doc.issues[doc.issues.length - 1];
+    const entry = fresh.history.find(hh => hh.field === 'rag');
+    expect(entry).toBeTruthy();
+    expect(entry.text).toBe('RAG defaulted to On track');
+    expect(entry.value).toBe(doc.fieldDefs.rag.options.find(o => o.label === 'On track').id);
+    await expect(h.fieldCell(page, doc.issues.length, 'rag')).toHaveText(/On track/);
+  });
+
+  test('a text field\'s default value applies to a new issue, and clearing it back to blank stops applying it', async ({ page }) => {
+    await h.openFieldEditor(page, 'mitigation');
+    await page.waitForTimeout(200);
+    const input = page.locator('[data-testid=field-editor-default-value-text]');
+    await input.fill('TBD');
+    await input.dispatchEvent('change');
+    await page.waitForTimeout(200);
+    await closeFieldEditor(page);
+
+    await addIssueByTitle(page, 'a fresh issue with a text default');
+    let doc = await h.readActiveMilestoneDoc(page);
+    let fresh = doc.issues[doc.issues.length - 1];
+    expect(fresh.history.find(hh => hh.field === 'mitigation').text).toBe('Mitigation defaulted to "TBD"');
+
+    await h.openFieldEditor(page, 'mitigation');
+    await page.waitForTimeout(200);
+    await input.fill('');
+    await input.dispatchEvent('change');
+    await page.waitForTimeout(200);
+    await closeFieldEditor(page);
+
+    await addIssueByTitle(page, 'a second fresh issue, no default anymore');
+    doc = await h.readActiveMilestoneDoc(page);
+    fresh = doc.issues[doc.issues.length - 1];
+    expect(fresh.history.find(hh => hh.field === 'mitigation')).toBeFalsy();
+  });
+
+  test('an already-existing issue is never touched by a default value set after it was created', async ({ page }) => {
+    const before = await h.readActiveMilestoneDoc(page);
+    const i1RagHistoryCountBefore = before.issues.find(i => i.id === 'i1').history.filter(hh => hh.field === 'rag').length;
+
+    await h.openFieldEditor(page, 'rag');
+    await page.waitForTimeout(200);
+    await page.locator('[data-testid=field-editor-default-value-select]').selectOption({ label: 'Off track' });
+    await page.waitForTimeout(200);
+    await closeFieldEditor(page);
+    await page.waitForTimeout(200);
+
+    const after = await h.readActiveMilestoneDoc(page);
+    const i1RagHistoryCountAfter = after.issues.find(i => i.id === 'i1').history.filter(hh => hh.field === 'rag').length;
+    expect(i1RagHistoryCountAfter).toBe(i1RagHistoryCountBefore);
+  });
+
+  // Date and issue-type fields have no field editor access point at all
+  // (isBindableType gates "Edit field…" to select/multiselect/text --
+  // see the existing Date-fields describe block's own "has no ... 'Edit
+  // field…' menu item" test), so their exclusion from DEFAULT VALUE is
+  // structural, nothing to assert here. Multiselect DOES reach the field
+  // editor (isBindableType includes it) but was deliberately left out of
+  // hasDefaultValue's scope -- that's the one reachable, meaningful case
+  // to check doesn't show the section.
+  test('a multiselect field has no DEFAULT VALUE section -- deliberately out of scope for this pass', async ({ page }) => {
+    await h.openFieldEditor(page, 'teams');
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=field-editor-default-value-select]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=field-editor-default-value-text]')).toHaveCount(0);
+  });
+});

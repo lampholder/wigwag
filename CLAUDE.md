@@ -20,25 +20,34 @@ filed. Don't create a new `docs/*-TODO.md` file for it.
 - **`wigwag-agent.js`** (repo root) is a small CLI wrapping a real
   headless instance of `wigwag.html` via Playwright — every read/write
   goes through the app's own logic (real signed history entries, real
-  derived values, real gating), not direct JSONL manipulation. See the
-  comment at the top of that file for the full rationale and usage:
+  derived values, real gating), not direct JSONL manipulation. The
+  interaction logic itself (browser lifecycle, the real Connect Remote
+  flow, list/get/add/comment/set-field) lives in **`wigwag-client.js`**,
+  a standalone library `wigwag-agent.js` is a thin CLI wrapper around —
+  reuse that module directly if you need this from something other than
+  a one-shot shell call. See the comment at the top of each file for the
+  full rationale and usage:
   ```
   node wigwag-agent.js list
+  node wigwag-agent.js show <num-or-id-prefix>
   node wigwag-agent.js add-issue "Title text"
   node wigwag-agent.js comment <num-or-id-prefix> "Comment text"
   node wigwag-agent.js set-field <num-or-id-prefix> "<Field label>" <value>
   ```
-  Each call is a fresh browser context that reconnects and re-syncs from
-  GitHub every time — no stale local state, but ~10-20s per call (a real
-  browser launch plus the real push debounce). Fine for backlog-grooming
-  cadence; don't reach for it in a tight loop.
+  Each call connects fresh and reconnects/re-syncs from GitHub every time
+  — no stale local state, but ~10-20s per call (a real browser launch
+  plus the real push debounce). Fine for backlog-grooming cadence; don't
+  reach for it in a tight loop.
 - This is someone else's live, actively-used tracker — other real users
   (including the repo owner) edit it concurrently. Don't be surprised by
   concurrent-edit latency (a conflict costs an immediate retry, not
   silent data loss — see `pushToGithub`'s own comment in `wigwag.html`),
   and don't delete or drastically rewrite issues that aren't yours to
-  begin with. Issue #25 ("Test issue from Claude…") is explicitly marked
-  safe to use for testing `wigwag-agent.js` itself.
+  begin with. Refer to tracker issues by their UUID (the `[xxxxxxxx]`
+  prefix `list`/`show` print), not their sequential number, which shifts
+  and is easy to mis-pick. Issue `61822bcb` ("Test issue from Claude…")
+  is explicitly marked safe to use for testing `wigwag-agent.js`/
+  `wigwag-client.js` themselves.
 
 ## Everything else
 

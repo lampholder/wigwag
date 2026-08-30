@@ -1103,6 +1103,62 @@ function computeSortSnapshot(sort, issues, fieldDefs) {
   return withValues.map(i => i.id);
 }
 
+// --- Phase 3 of the wigwag-core extraction (see the plan doc) ---------
+// The write path: signing primitives + the shared two-phase commit shape.
+// getSigningKey's caching (an instance field) and nextSortKey's counter
+// (also an instance field) stay in wigwag.html/a CLI's own state -- only
+// the actual crypto call and the counter arithmetic move here.
+async function importSigningKey(jwk) {
+  return crypto.subtle.importKey('jwk', jwk, SIGN_ALG, false, ['sign']);
+}
+async function signWithKey(key, payloadStr) {
+  if (!key) return null;
+  try {
+    const sigBuf = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, key, new TextEncoder().encode(payloadStr));
+    return base64FromBytes(new Uint8Array(sigBuf));
+  } catch (e) { return null; }
+}
+// Used both for verifying a history entry's own signature and for the
+// TOFU identity check on import/merge.
+async function verifyPayload(payloadStr, sigBase64, pubKeyJwk) {
+  if (!sigBase64 || !pubKeyJwk) return false;
+  try {
+    const key = await crypto.subtle.importKey('jwk', pubKeyJwk, SIGN_ALG, false, ['verify']);
+    const sigBytes = bytesFromBase64(sigBase64);
+    return await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, sigBytes, new TextEncoder().encode(payloadStr));
+  } catch (e) { return false; }
+}
+// Strictly-increasing sortKey for every history entry/comment this app
+// generates, so two events written in the same millisecond never tie.
+function advanceSortKey(lastSortKey) {
+  const now = Date.now();
+  return now > lastSortKey ? now : lastSortKey + 1;
+}
+// The single funnel every history/comment append-or-edit call site goes
+// through (appendSignedHistory, appendProjectHistory, addComment,
+// saveEditComment, postProjectComment, saveEditProjectComment): commit an
+// unsigned entry immediately (synchronous, optimistic), sign it in the
+// background, patch the signature on once both signings resolve.
+// entryBase: the caller-built entry object minus sig/sigRedacted/pubKey --
+// shape varies by call site (history entries carry field/value/fieldRef;
+// comments don't), this function only ever touches .id/.sortKey.
+// payloads: { signable, redacted } strings, built by the caller via the
+// existing signable*/redacted* functions above.
+// store: { sign(payloadStr) => Promise<string|null>,
+//          insertUnsigned(entry) => void,
+//          patchSignature(id, sortKey, sig, sigRedacted, pubKey) => void,
+//          currentPubKey() => jwk|null }
+function commitSignedEntry(entryBase, payloads, store) {
+  const entry = { ...entryBase, sig: null, sigRedacted: null, pubKey: null };
+  store.insertUnsigned(entry);
+  return Promise.all([store.sign(payloads.signable), store.sign(payloads.redacted)])
+    .then(([sig, sigRedacted]) => {
+      if (!sig && !sigRedacted) return;
+      store.patchSignature(entry.id, entry.sortKey, sig, sigRedacted, store.currentPubKey());
+    });
+}
+
 module.exports = {
-  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, COMMENT_READS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, truncate, splitHighlightSegments, relativeAge, formatNow, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, hydrateIssue, deriveFieldDefs, backfillProjectHistory, hydrateProject, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, evalRule, computeBoundValue, isFieldLocked, applyComputedToField, applyLinkedRules, sortValue, computeSortSnapshot
+  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, COMMENT_READS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, truncate, splitHighlightSegments, relativeAge, formatNow, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, hydrateIssue, deriveFieldDefs, backfillProjectHistory, hydrateProject, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, evalRule, computeBoundValue, isFieldLocked, applyComputedToField, applyLinkedRules, sortValue, computeSortSnapshot,
+  importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry
 };

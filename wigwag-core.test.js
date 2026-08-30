@@ -201,3 +201,59 @@ test('computeSortSnapshot: freezes an order by id, ties broken by live sortValue
   assert.deepEqual(snapshot, ['b', 'a']); // green (idx 0) before red (idx 1)
   assert.equal(core.computeSortSnapshot({ colId: null }, issues, fieldDefs), null);
 });
+
+// --- Phase 3: signing primitives + the shared two-phase commit ---
+
+test('advanceSortKey: strictly increasing even when called faster than Date.now() resolution', () => {
+  const a = core.advanceSortKey(0);
+  const b = core.advanceSortKey(a);
+  assert.ok(b > a);
+  // Simulate a far-future lastSortKey (clock didn't advance past it yet).
+  assert.equal(core.advanceSortKey(b + 1000000), b + 1000001);
+});
+
+test('importSigningKey / signWithKey / verifyPayload: a real sign+verify round-trip, tampered payload fails', async () => {
+  const keyPair = await crypto.subtle.generateKey(core.SIGN_ALG, true, ['sign', 'verify']);
+  const privateJwk = await crypto.subtle.exportKey('jwk', keyPair.privateKey);
+  const publicJwk = await crypto.subtle.exportKey('jwk', keyPair.publicKey);
+  const key = await core.importSigningKey(privateJwk);
+  const sig = await core.signWithKey(key, 'hello world');
+  assert.ok(sig);
+  assert.equal(await core.verifyPayload('hello world', sig, publicJwk), true);
+  assert.equal(await core.verifyPayload('tampered', sig, publicJwk), false);
+  assert.equal(await core.signWithKey(null, 'x'), null); // no key -> null, never throws
+  assert.equal(await core.verifyPayload('x', null, publicJwk), false); // no sig -> false, never throws
+});
+
+test('commitSignedEntry: inserts unsigned synchronously, patches signature once both signings resolve', async () => {
+  const inserted = [];
+  const patched = [];
+  const store = {
+    sign: async (payload) => 'sig-for-' + payload,
+    insertUnsigned: (entry) => inserted.push(entry),
+    patchSignature: (id, sortKey, sig, sigRedacted, pubKey) => patched.push({ id, sortKey, sig, sigRedacted, pubKey }),
+    currentPubKey: () => 'pub-key'
+  };
+  const entryBase = { id: 'e1', text: 'hello', sortKey: 5 };
+  const promise = core.commitSignedEntry(entryBase, { signable: 'full', redacted: 'red' }, store);
+  // The optimistic insert must have already happened before signing resolves.
+  assert.equal(inserted.length, 1);
+  assert.equal(inserted[0].id, 'e1');
+  assert.equal(inserted[0].sig, null);
+  assert.equal(patched.length, 0);
+  await promise;
+  assert.equal(patched.length, 1);
+  assert.deepEqual(patched[0], { id: 'e1', sortKey: 5, sig: 'sig-for-full', sigRedacted: 'sig-for-red', pubKey: 'pub-key' });
+});
+
+test('commitSignedEntry: both signings resolving to null leaves the entry unpatched', async () => {
+  const patched = [];
+  const store = {
+    sign: async () => null,
+    insertUnsigned: () => {},
+    patchSignature: (...args) => patched.push(args),
+    currentPubKey: () => 'pub-key'
+  };
+  await core.commitSignedEntry({ id: 'e1', sortKey: 1 }, { signable: 'a', redacted: 'b' }, store);
+  assert.equal(patched.length, 0);
+});

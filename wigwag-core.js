@@ -998,6 +998,111 @@ function compileRuleRows(rows, fallback, def) {
   return parts.join('\n  : ') + '\n  : ' + fb;
 }
 
+
+// --- Phase 2 of the wigwag-core extraction (see the plan doc) ---------
+// Rule/bound-value resolution and sort-order computation -- these were
+// instance methods touching `this.state` in at most one line each
+// (applyLinkedRules read this.state.fieldDefs directly; the rest called
+// only sibling pure methods). Moved verbatim except for that one
+// signature change (applyLinkedRules now takes fieldDefs explicitly).
+function buildSource(issue, linkedSourceId) {
+  if (!linkedSourceId) return { text: '', isLinked: false, github: null, jira: null, salesforce: null };
+  const ref = issue.fieldRefs && issue.fieldRefs[linkedSourceId];
+  const system = ref ? (ref.system || 'github') : null;
+  return {
+    text: issue.values[linkedSourceId] || '',
+    isLinked: !!ref,
+    github: system === 'github' ? pickGithubFields(ref) : null,
+    jira: system === 'jira' ? pickJiraFields(ref) : null,
+    salesforce: system === 'salesforce' ? pickSalesforceFields(ref) : null
+  };
+}
+function evalRule(ruleStr, source, values) {
+  try {
+    const fn = new Function('source', 'values', 'S', 'return (' + ruleStr + ');');
+    return fn(source, values, S);
+  } catch (e) { return undefined; }
+}
+// { isLinked:false } short-circuits before the rule even runs, for fields
+// with no rule/no bound source AND for bound-but-not-yet-linked rows —
+// callers use isLinked to decide whether to lock the cell / overwrite its
+// materialized value at all.
+function computeBoundValue(issue, def) {
+  if (!def.rule || !def.linkedSourceId) return { isLinked: false, computed: undefined };
+  const source = buildSource(issue, def.linkedSourceId);
+  if (!source.isLinked) return { isLinked: false, computed: undefined };
+  return { isLinked: true, computed: evalRule(def.rule, source, issue.values) };
+}
+// Whether a field is currently rule-derived (and therefore locked from
+// manual/bulk edit) for a specific issue -- every cell builder already
+// inlines this same computeBoundValue(...).isLinked check; bulk
+// Set-field is the first caller that needs it outside a per-cell
+// render, hence pulling it out to a name.
+function isFieldLocked(issue, def) {
+  return computeBoundValue(issue, def).isLinked;
+}
+// select: computed matched against option id/label -> that option's id (or
+// null if nothing matches). multiselect: computed may be an array or a
+// single value; each entry is matched the same way and invalid entries are
+// dropped. text: computed is coerced to a string directly.
+function applyComputedToField(values, colId, def, computed) {
+  if (def.type === 'select') {
+    const opt = (def.options || []).find(o => o.id === computed || (o.label || '').toLowerCase() === String(computed).toLowerCase());
+    const next = opt ? opt.id : null;
+    return next === values[colId] ? values : { ...values, [colId]: next };
+  }
+  if (def.type === 'multiselect') {
+    const arr = Array.isArray(computed) ? computed : (computed == null ? [] : [computed]);
+    const ids = arr.map(v => {
+      const opt = (def.options || []).find(o => o.id === v || (o.label || '').toLowerCase() === String(v).toLowerCase());
+      return opt ? opt.id : null;
+    }).filter(Boolean);
+    const cur = values[colId] || [];
+    const same = cur.length === ids.length && cur.every((v, i) => v === ids[i]);
+    return same ? values : { ...values, [colId]: ids };
+  }
+  const next = computed == null ? '' : String(computed);
+  return next === values[colId] ? values : { ...values, [colId]: next };
+}
+function applyLinkedRules(iss, fieldDefs) {
+  let values = iss.values;
+  for (const colId in fieldDefs) {
+    const def = fieldDefs[colId];
+    const bound = computeBoundValue(iss, def);
+    if (!bound.isLinked) continue;
+    values = applyComputedToField(values, colId, def, bound.computed);
+  }
+  return values === iss.values ? iss : { ...iss, values };
+}
+function sortValue(issue, colId, def) {
+  if (colId === 'title') return issue.values.title || '';
+  if (!def) return '';
+  if (def.type === 'select') { const idx = (def.options || []).findIndex(o => o.id === issue.values[colId]); return idx === -1 ? 'zzz' : String(idx).padStart(4, '0'); }
+  if (def.type === 'multiselect') {
+    const ids = issue.values[colId] || [];
+    if (!ids.length) return 'zzz';
+    const idxs = ids.map(id => (def.options || []).findIndex(o => o.id === id)).filter(i => i !== -1);
+    return idxs.length ? String(Math.min(...idxs)).padStart(4, '0') : 'zzz';
+  }
+  return issue.values[colId] || '';
+}
+// Row order should only change when the sort itself is set/changed or the
+// page is reloaded -- never as a side effect of editing a field, even the
+// sorted-by column. See wigwag.html's own switchProject/sortBy/boot-time
+// callers for where this gets (re)computed and why -- never on every
+// render, so there's no per-tick mechanism that could misbehave.
+function computeSortSnapshot(sort, issues, fieldDefs) {
+  if (!sort.colId) return null;
+  const def = sort.colId === 'title' ? null : fieldDefs[sort.colId];
+  const withValues = issues.map(iss => ({ id: iss.id, values: deriveIssueValues(iss, fieldDefs) }));
+  withValues.sort((a, b) => {
+    const av = sortValue(a, sort.colId, def), bv = sortValue(b, sort.colId, def);
+    const cmp = String(av).localeCompare(String(bv));
+    return sort.dir === 'asc' ? cmp : -cmp;
+  });
+  return withValues.map(i => i.id);
+}
+
 module.exports = {
-  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, COMMENT_READS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, truncate, splitHighlightSegments, relativeAge, formatNow, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, hydrateIssue, deriveFieldDefs, backfillProjectHistory, hydrateProject, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER
+  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, COMMENT_READS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, truncate, splitHighlightSegments, relativeAge, formatNow, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, hydrateIssue, deriveFieldDefs, backfillProjectHistory, hydrateProject, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, evalRule, computeBoundValue, isFieldLocked, applyComputedToField, applyLinkedRules, sortValue, computeSortSnapshot
 };

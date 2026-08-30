@@ -126,3 +126,78 @@ test('defaultFieldDefs / defaultColumnOrder: produce a usable starter schema', (
   const order = core.defaultColumnOrder();
   assert.ok(Array.isArray(order) && order.length > 0);
 });
+
+// --- Phase 2: rule/bound-value resolution and sort-order computation ---
+
+test('buildSource: isLinked true only when fieldRefs actually carries a ref for that column', () => {
+  const linked = core.buildSource({ values: { related: 'x' }, fieldRefs: { related: { system: 'github', labels: ['bug'] } } }, 'related');
+  assert.equal(linked.isLinked, true);
+  assert.deepEqual(linked.github.labels, ['bug']);
+  assert.equal(linked.jira, null);
+
+  const unlinked = core.buildSource({ values: {}, fieldRefs: {} }, 'related');
+  assert.equal(unlinked.isLinked, false);
+
+  assert.deepEqual(core.buildSource({ values: {}, fieldRefs: {} }, null), { text: '', isLinked: false, github: null, jira: null, salesforce: null });
+});
+
+test('evalRule: evaluates against source/values/S, returns undefined on a throwing expression rather than throwing', () => {
+  const source = { github: { labels: ['bug'] } };
+  assert.equal(core.evalRule('source.github.labels.includes("bug") ? "bug" : "enh"', source, {}), 'bug');
+  assert.equal(core.evalRule('this is not valid js (((', source, {}), undefined);
+});
+
+test('computeBoundValue / isFieldLocked: unlinked or ruleless fields are never locked, a linked+ruled field resolves and locks', () => {
+  const def = { type: 'select', rule: 'source.github.labels.includes("bug") ? "bug" : "enh"', linkedSourceId: 'related' };
+  const linkedIssue = { values: { related: 'x' }, fieldRefs: { related: { system: 'github', labels: ['bug'] } } };
+  const bound = core.computeBoundValue(linkedIssue, def);
+  assert.equal(bound.isLinked, true);
+  assert.equal(bound.computed, 'bug');
+  assert.equal(core.isFieldLocked(linkedIssue, def), true);
+
+  const unlinkedIssue = { values: {}, fieldRefs: {} };
+  assert.equal(core.computeBoundValue(unlinkedIssue, def).isLinked, false);
+  assert.equal(core.isFieldLocked(unlinkedIssue, def), false);
+
+  const noRuleDef = { type: 'select', linkedSourceId: 'related' };
+  assert.equal(core.computeBoundValue(linkedIssue, noRuleDef).isLinked, false);
+});
+
+test('applyComputedToField: resolves a select computed value to its option id, leaves non-matches null', () => {
+  const def = { type: 'select', options: [{ id: 'bug', label: 'Bug' }] };
+  assert.equal(core.applyComputedToField({ type: null }, 'type', def, 'bug').type, 'bug'); // by id
+  assert.equal(core.applyComputedToField({ type: null }, 'type', def, 'Bug').type, 'bug'); // by label, case-insensitive
+  assert.equal(core.applyComputedToField({ type: null }, 'type', def, 'nonexistent').type, null);
+});
+
+test('applyLinkedRules: only overwrites fields that are actually bound+linked, leaves the rest untouched, is a no-op (same reference) when nothing changes', () => {
+  const fieldDefs = {
+    type: { type: 'select', options: [{ id: 'bug', label: 'Bug' }], rule: 'source.github.labels.includes("bug") ? "bug" : null', linkedSourceId: 'related' },
+    priority: { type: 'text' }
+  };
+  const issue = { values: { type: null, priority: 'P1', related: 'x' }, fieldRefs: { related: { system: 'github', labels: ['bug'] } } };
+  const result = core.applyLinkedRules(issue, fieldDefs);
+  assert.equal(result.values.type, 'bug');
+  assert.equal(result.values.priority, 'P1'); // untouched
+
+  const alreadyApplied = core.applyLinkedRules(result, fieldDefs);
+  assert.equal(alreadyApplied, result); // same reference -- no-op when nothing changed
+});
+
+test('sortValue: select/multiselect sort by configured option order, not alphabetically; unset sorts last', () => {
+  const def = { type: 'select', options: [{ id: 'g', label: 'Green' }, { id: 'r', label: 'Red' }] };
+  assert.ok(core.sortValue({ values: { rag: 'g' } }, 'rag', def) < core.sortValue({ values: { rag: 'r' } }, 'rag', def));
+  assert.equal(core.sortValue({ values: {} }, 'rag', def), 'zzz'); // unset sorts last
+  assert.equal(core.sortValue({ values: { title: 'Hello' } }, 'title', null), 'Hello');
+});
+
+test('computeSortSnapshot: freezes an order by id, ties broken by live sortValue; null colId means no sort at all', () => {
+  const fieldDefs = { rag: { type: 'select', options: [{ id: 'g', label: 'Green' }, { id: 'r', label: 'Red' }] } };
+  const issues = [
+    { id: 'a', history: [{ field: 'rag', value: 'r', sortKey: 1 }] },
+    { id: 'b', history: [{ field: 'rag', value: 'g', sortKey: 1 }] }
+  ];
+  const snapshot = core.computeSortSnapshot({ colId: 'rag', dir: 'asc' }, issues, fieldDefs);
+  assert.deepEqual(snapshot, ['b', 'a']); // green (idx 0) before red (idx 1)
+  assert.equal(core.computeSortSnapshot({ colId: null }, issues, fieldDefs), null);
+});

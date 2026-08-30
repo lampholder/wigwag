@@ -1158,7 +1158,238 @@ function commitSignedEntry(entryBase, payloads, store) {
     });
 }
 
+// --- Phase 4a of the wigwag-core extraction (see the plan doc) --------
+// Export/import serialization, merge, and GitHub Contents-API sync
+// mechanics. Credentials/sync-target (token, owner/repo/path/branch) are
+// always explicit parameters here -- never read from state/localStorage
+// -- so a CLI can call the exact same functions wigwag.html does.
+
+// A history/comment entry not selected as the field's latest gets its
+// prose/value stripped down to a redacted stub -- used for the
+// "squashed" export mode, which keeps only the latest entry per field in
+// full plus a redacted trail for everything superseded.
+function squashHistory(history) {
+  const latestByField = {};
+  for (const h of history) { if (h.field) latestByField[h.field] = h; }
+  const keepIds = new Set(Object.values(latestByField).map(h => h.id));
+  return history.map(h => {
+    if (!h.field || keepIds.has(h.id)) return h;
+    return {
+      id: h.id, time: h.time, actor: h.actor, email: h.email,
+      field: h.field, origin: h.origin, sortKey: h.sortKey,
+      redacted: true, sigRedacted: h.sigRedacted, pubKey: h.pubKey
+    };
+  });
+}
+function displayValueForHistory(def, value) {
+  if (def.type === 'select') {
+    const opt = (def.options || []).find(o => o.id === value);
+    return opt ? opt.label : (value == null || value === '' ? '—' : String(value));
+  }
+  if (def.type === 'multiselect') {
+    const ids = Array.isArray(value) ? value : (value ? [value] : []);
+    if (!ids.length) return '—';
+    return ids.map(id => { const opt = (def.options || []).find(o => o.id === id); return opt ? opt.label : id; }).join(', ');
+  }
+  return value == null || value === '' ? '—' : String(value);
+}
+// doc: { projectId, projectName, fieldDefs, projectHistory, projectNotes,
+// projectComments, issues } -- the full exportable project shape.
+function buildSourceText(mode, doc) {
+  const { projectId, projectName, fieldDefs, projectHistory: rawProjectHistory, projectNotes, projectComments, issues } = doc;
+  const projectHistory = mode === 'squashed' ? squashHistory(rawProjectHistory) : rawProjectHistory;
+  const lines = [JSON.stringify({ type: 'fields', formatVersion: FORMAT_VERSION, generator: 'wigwag', fields: fieldDefs, projectHistory, id: projectId, name: projectName || undefined, projectNotes: projectNotes || undefined, projectComments: (projectComments && projectComments.length) ? projectComments : undefined })];
+  for (const iss of issues) {
+    const history = mode === 'squashed' ? squashHistory(iss.history) : iss.history;
+    lines.push(JSON.stringify({ type: 'issue', id: iss.id, num: iss.num, comments: iss.comments, history }));
+  }
+  return lines.join('\n');
+}
+// Tolerant line-by-line parse -- a malformed line is skipped rather than
+// failing the whole import, since a partially-corrupted file (e.g. one
+// truncated by a bad email client) should still recover what it can.
+// fallbackFieldDefs is used only when the file has no 'fields' line of
+// its own (a pure issues-only paste, say).
+function parseJsonl(text, fallbackFieldDefs) {
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+  let fields = null, incomingProjectHistory = null, projectId = null, projectName = null, projectNotes = null, projectComments = null, incomingFormatVersion = null;
+  const issues = [];
+  for (const line of lines) {
+    let obj;
+    try { obj = JSON.parse(line); } catch (e) { continue; }
+    if (!obj || typeof obj !== 'object') continue;
+    if (obj.type === 'fields') {
+      fields = obj.fields || null; incomingProjectHistory = obj.projectHistory || null; projectId = obj.id || null; projectName = obj.name || null;
+      projectNotes = obj.projectNotes || null; projectComments = obj.projectComments || null; incomingFormatVersion = typeof obj.formatVersion === 'number' ? obj.formatVersion : null;
+    }
+    else if (obj.type === 'issue') issues.push(obj);
+  }
+  const effectiveFields = fields || fallbackFieldDefs;
+  const hydratedIssues = issues.map(iss => hydrateIssue(iss, effectiveFields));
+  const projectHistory = fields ? backfillProjectHistory(fields, incomingProjectHistory || []) : (incomingProjectHistory || []);
+  return { fields, projectHistory, issues: hydratedIssues, projectId, projectName, projectNotes, projectComments, formatVersion: incomingFormatVersion };
+}
+// A stable identity for a history/comment entry for union-dedup purposes.
+// Real entries always have an id; the original seed data's history
+// predates ids, so those fall back to a composite of their other fields
+// -- stable enough to dedupe on, since two independently-authored entries
+// are exceedingly unlikely to collide on sortKey+actor+field+text.
+function entryKey(h) { return h.id || ('legacy|' + (h.sortKey || 0) + '|' + (h.actor || '') + '|' + (h.field || '') + '|' + (h.text || '')); }
+function commentKey(c) { return c.id || ('legacy|' + (c.sortKey || 0) + '|' + (c.author || '') + '|' + (c.text || '')); }
+function unionByKey(localList, incomingList, keyFn) {
+  const map = new Map();
+  for (const item of localList) map.set(keyFn(item), item);
+  for (const item of incomingList) if (!map.has(keyFn(item))) map.set(keyFn(item), item);
+  return [...map.values()].sort((a, b) => (a.sortKey || 0) - (b.sortKey || 0));
+}
+// Unions both sides' history/comments (nothing is ever dropped -- a
+// losing edit is still sitting right there in history) and re-derives
+// values/fieldRefs fresh, the same derivation every other write path
+// uses. No blocking conflict step: whichever side's entry has the higher
+// sortKey naturally wins the derivation. overlappingFields flags any
+// field where BOTH sides had authored entries the other hadn't seen yet
+// (origin !== 'derived' -- two independently-computed bound values
+// disagreeing isn't an authorship overlap) purely so the caller can
+// surface a lightweight, non-blocking notice; it does not affect the
+// merge result itself.
+function mergeIssuePair(localIssue, incomingIssue, fieldDefs) {
+  const history = unionByKey(localIssue.history, incomingIssue.history, h => entryKey(h));
+  const comments = unionByKey(localIssue.comments, incomingIssue.comments, c => commentKey(c));
+  const fieldIds = new Set();
+  for (const h of history) if (h.field) fieldIds.add(h.field);
+  const overlappingFields = [];
+  for (const colId of fieldIds) {
+    const localAuthored = localIssue.history.filter(h => h.field === colId && h.origin !== 'derived');
+    const incomingAuthored = incomingIssue.history.filter(h => h.field === colId && h.origin !== 'derived');
+    const localKeys = new Set(localAuthored.map(h => entryKey(h)));
+    const incomingKeys = new Set(incomingAuthored.map(h => entryKey(h)));
+    const localOnly = localAuthored.some(h => !incomingKeys.has(entryKey(h)));
+    const incomingOnly = incomingAuthored.some(h => !localKeys.has(entryKey(h)));
+    if (localOnly && incomingOnly) overlappingFields.push(colId);
+  }
+  const merged = { ...localIssue, comments, history };
+  const mergedIssue = { ...merged, values: deriveIssueValues(merged, fieldDefs), fieldRefs: deriveIssueFieldRefs(merged, fieldDefs) };
+  return { mergedIssue, overlappingFields };
+}
+// The pure half of a full merge: pairs up local issues with their
+// incoming counterpart (via mergeIssuePair) and identifies which incoming
+// issues are genuinely new (not present locally at all). Assigning ids/
+// notes/sortKeys to those new issues needs an identity + a sortKey
+// counter -- both impure -- so that stays the caller's job; this just
+// hands back the raw incoming issues that need it, plus nextNum to
+// number them from.
+function computeIssueMerge(localIssues, parsedIssues, fieldDefs) {
+  const localById = new Map(localIssues.map(i => [i.id, i]));
+  const pairedIssues = [];
+  const notices = {};
+  for (const localIssue of localIssues) {
+    const incomingIssue = parsedIssues.find(i => i.id === localIssue.id);
+    if (!incomingIssue) { pairedIssues.push(localIssue); continue; }
+    const { mergedIssue, overlappingFields } = mergeIssuePair(localIssue, incomingIssue, fieldDefs);
+    pairedIssues.push(mergedIssue);
+    if (overlappingFields.length) notices[localIssue.id] = overlappingFields;
+  }
+  const nextNum = localIssues.reduce((m, i) => Math.max(m, i.num || 0), 0) + 1;
+  const newIncomingIssues = parsedIssues.filter(i => !localById.has(i.id));
+  return { pairedIssues, notices, newIncomingIssues, nextNum };
+}
+// The fieldDefs/projectHistory half of a merge -- independent of issues,
+// only runs when the incoming file actually carries a 'fields' line (a
+// pure issues-only paste has nothing to merge here).
+function computeFieldDefsMerge(localProjectHistory, parsedFields, parsedProjectHistory, localFieldDefs) {
+  if (!parsedFields) return null;
+  const mergedProjectHistory = unionByKey(localProjectHistory, parsedProjectHistory || [], h => entryKey(h));
+  const mergedFieldDefs = deriveFieldDefs(mergedProjectHistory, Object.assign({}, localFieldDefs, parsedFields));
+  return { mergedProjectHistory, mergedFieldDefs };
+}
+// The pure half of logDerivedChanges: which rule-bound fields actually
+// changed value on this issue, and what the resulting history entry
+// should say. Committing each entry (needs identity + signing) stays the
+// caller's job, same split as every other write path.
+function computeDerivedChangeEntries(issue, beforeValues, fieldDefs) {
+  const entries = [];
+  for (const colId in fieldDefs) {
+    const def = fieldDefs[colId];
+    if (!def.linkedSourceId) continue;
+    const before = beforeValues[colId];
+    const after = issue.values[colId];
+    if (JSON.stringify(before === undefined ? null : before) === JSON.stringify(after === undefined ? null : after)) continue;
+    const srcDef = fieldDefs[def.linkedSourceId];
+    const srcLabel = srcDef ? srcDef.label : def.linkedSourceId;
+    const displayVal = displayValueForHistory(def, after);
+    const source = buildSource(issue, def.linkedSourceId);
+    const derivedFrom = source.text ? ('state of ' + source.text + ' in column ' + srcLabel) : srcLabel;
+    entries.push({ colId, text: (def.label || colId) + ' set to ' + displayVal + ' (derived from ' + derivedFrom + ')', value: after });
+  }
+  return entries;
+}
+
+// GitHub Contents-API sync mechanics. repo is always "owner/repo"; token/
+// fetchImpl/target are always explicit params, never read from state.
+function buildGithubContentsUrl(repo, path, branch) {
+  const p = (path || 'tracker.jsonl').trim();
+  const b = (branch || '').trim();
+  const encodedPath = p.split('/').filter(Boolean).map(encodeURIComponent).join('/');
+  return 'https://api.github.com/repos/' + repo + '/contents/' + encodedPath + (b ? '?ref=' + encodeURIComponent(b) : '');
+}
+function buildGithubContentsHeaders(token, hasBody) {
+  const headers = { Accept: 'application/vnd.github+json' };
+  if (token) headers.Authorization = 'Bearer ' + token;
+  if (hasBody) headers['Content-Type'] = 'application/json';
+  return headers;
+}
+function buildGithubCommitMessage(issueCount) {
+  return 'Update via Git-native Tracker: ' + issueCount + ' issue' + (issueCount === 1 ? '' : 's');
+}
+// Generalizes both a plain "connect" GET (no etag) and a conditional
+// poll GET (etag set -> a 304 comes back as 'not-modified', free against
+// rate limits). Never throws -- network/parse failures come back as
+// {status:'error'} for the caller to handle however fits that call site.
+async function pullGithubFile({ fetchImpl, repo, path, branch, token, etag }) {
+  const headers = buildGithubContentsHeaders(token, false);
+  if (etag) headers['If-None-Match'] = etag;
+  let res;
+  try {
+    res = await fetchImpl(buildGithubContentsUrl(repo, path, branch), { headers });
+  } catch (e) {
+    return { status: 'error', message: e.message };
+  }
+  if (res.status === 304) return { status: 'not-modified' };
+  if (res.status === 404) return { status: 'not-found' };
+  if (!res.ok) return { status: 'error', message: 'GitHub returned ' + res.status };
+  const newEtag = res.headers.get('ETag') || null;
+  let data;
+  try { data = await res.json(); } catch (e) { return { status: 'error', message: 'Invalid response from GitHub' }; }
+  return { status: 'ok', text: textFromBase64(data.content), sha: data.sha, etag: newEtag };
+}
+// sha, if given, makes this a conditional PUT (GitHub itself rejects with
+// 409/422 -- surfaced here as {status:'conflict'} -- if the file moved
+// under us; it's never silently overwritten). Omit sha to create a new
+// file.
+async function pushGithubFile({ fetchImpl, repo, path, branch, token, text, sha, commitMessage, authorName, authorEmail }) {
+  const body = {
+    message: commitMessage,
+    content: base64FromText(text),
+    author: { name: authorName, email: authorEmail || 'unknown@example.invalid' }
+  };
+  if (branch) body.branch = branch;
+  if (sha) body.sha = sha;
+  let res;
+  try {
+    res = await fetchImpl(buildGithubContentsUrl(repo, path, branch), { method: 'PUT', headers: buildGithubContentsHeaders(token, true), body: JSON.stringify(body) });
+  } catch (e) {
+    return { status: 'error', message: e.message };
+  }
+  if (res.status === 409 || res.status === 422) return { status: 'conflict' };
+  if (!res.ok) return { status: 'error', message: 'GitHub returned ' + res.status };
+  let data;
+  try { data = await res.json(); } catch (e) { return { status: 'error', message: 'Invalid response from GitHub' }; }
+  return { status: 'ok', sha: data.content && data.content.sha };
+}
+
 module.exports = {
   xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, COMMENT_READS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, truncate, splitHighlightSegments, relativeAge, formatNow, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, hydrateIssue, deriveFieldDefs, backfillProjectHistory, hydrateProject, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, evalRule, computeBoundValue, isFieldLocked, applyComputedToField, applyLinkedRules, sortValue, computeSortSnapshot,
-  importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry
+  importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry,
+  squashHistory, displayValueForHistory, buildSourceText, parseJsonl, entryKey, commentKey, unionByKey, mergeIssuePair, computeIssueMerge, computeFieldDefsMerge, computeDerivedChangeEntries,
+  buildGithubContentsUrl, buildGithubContentsHeaders, buildGithubCommitMessage, pullGithubFile, pushGithubFile
 };

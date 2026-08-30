@@ -257,3 +257,186 @@ test('commitSignedEntry: both signings resolving to null leaves the entry unpatc
   await core.commitSignedEntry({ id: 'e1', sortKey: 1 }, { signable: 'a', redacted: 'b' }, store);
   assert.equal(patched.length, 0);
 });
+
+// --- Phase 4a: export/import serialization, merge, GitHub sync mechanics ---
+
+test('squashHistory: keeps the latest entry per field in full, redacts the rest', () => {
+  const history = [
+    { id: 'h1', field: 'title', value: 'A', text: 'Title set to A', sortKey: 1, actor: 'x', email: 'x@x', origin: 'authored' },
+    { id: 'h2', field: 'title', value: 'B', text: 'Title set to B', sortKey: 2, actor: 'x', email: 'x@x', origin: 'authored' },
+    { id: 'h3', field: null, text: 'Created', sortKey: 0, actor: 'x', email: 'x@x', origin: 'authored' }
+  ];
+  const squashed = core.squashHistory(history);
+  assert.equal(squashed.find(h => h.id === 'h2').value, 'B');
+  assert.equal(squashed.find(h => h.id === 'h2').redacted, undefined);
+  const h1 = squashed.find(h => h.id === 'h1');
+  assert.equal(h1.redacted, true);
+  assert.equal(h1.value, undefined);
+  assert.equal(h1.text, undefined);
+  assert.equal(squashed.find(h => h.id === 'h3').redacted, undefined); // no field -> never squashed
+});
+
+test('displayValueForHistory: select resolves to label, multiselect joins labels, unset shows an em dash', () => {
+  const selectDef = { type: 'select', options: [{ id: 'g', label: 'Green' }] };
+  assert.equal(core.displayValueForHistory(selectDef, 'g'), 'Green');
+  assert.equal(core.displayValueForHistory(selectDef, null), '—');
+  const multiDef = { type: 'multiselect', options: [{ id: 'a', label: 'Alpha' }, { id: 'b', label: 'Beta' }] };
+  assert.equal(core.displayValueForHistory(multiDef, ['a', 'b']), 'Alpha, Beta');
+  assert.equal(core.displayValueForHistory({ type: 'text' }, 'hi'), 'hi');
+});
+
+test('buildSourceText / parseJsonl: round-trips a doc through full and squashed modes', () => {
+  const fieldDefs = { title: { label: 'Issue', type: 'issue' } };
+  const doc = {
+    projectId: 'p1', projectName: 'My Project', fieldDefs, projectHistory: [],
+    projectNotes: 'some notes', projectComments: [],
+    issues: [{ id: 'i1', num: 1, comments: [], history: [{ id: 'h1', field: 'title', value: 'Hello', text: 'Title set to Hello', sortKey: 1, actor: 'me', email: 'me@x', origin: 'authored' }] }]
+  };
+  const text = core.buildSourceText('full', doc);
+  const parsed = core.parseJsonl(text, fieldDefs);
+  assert.equal(parsed.projectId, 'p1');
+  assert.equal(parsed.projectName, 'My Project');
+  assert.equal(parsed.issues.length, 1);
+  assert.equal(parsed.issues[0].values.title, 'Hello');
+
+  // Squashed mode keeps the ONLY entry for a field in full (nothing to
+  // redact yet -- squashHistory only strips entries a field has since
+  // moved past); confirms buildSourceText really does thread mode through.
+  const squashedText = core.buildSourceText('squashed', doc);
+  assert.match(squashedText, /Title set to Hello/);
+});
+
+test('parseJsonl: tolerant of malformed lines, falls back to caller-supplied fieldDefs when the file has none', () => {
+  const fallback = { title: { label: 'Issue', type: 'issue' } };
+  const text = 'not json at all\n' + JSON.stringify({ type: 'issue', id: 'i1', num: 1, comments: [], history: [] });
+  const parsed = core.parseJsonl(text, fallback);
+  assert.equal(parsed.fields, null);
+  assert.equal(parsed.issues.length, 1);
+  assert.equal(parsed.issues[0].values.title, ''); // hydrated against the fallback fieldDefs
+});
+
+test('entryKey / commentKey: real ids win, legacy entries fall back to a stable composite', () => {
+  assert.equal(core.entryKey({ id: 'h1', sortKey: 1 }), 'h1');
+  assert.equal(core.entryKey({ sortKey: 2, actor: 'me', field: 'title', text: 'hi' }), 'legacy|2|me|title|hi');
+  assert.equal(core.commentKey({ id: 'c1' }), 'c1');
+});
+
+test('unionByKey: keeps local on collision, adds incoming-only, sorts by sortKey', () => {
+  const local = [{ id: 'a', sortKey: 2, tag: 'local' }, { id: 'c', sortKey: 3 }];
+  const incoming = [{ id: 'a', sortKey: 2, tag: 'incoming' }, { id: 'b', sortKey: 1 }];
+  const result = core.unionByKey(local, incoming, x => x.id);
+  assert.deepEqual(result.map(x => x.id), ['b', 'a', 'c']);
+  assert.equal(result.find(x => x.id === 'a').tag, 'local'); // local wins on collision
+});
+
+test('mergeIssuePair: unions history/comments, re-derives values, flags overlapping authored fields', () => {
+  const fieldDefs = { title: { type: 'issue' }, rag: { type: 'select', options: [{ id: 'g', label: 'Green' }, { id: 'r', label: 'Red' }] } };
+  const local = {
+    id: 'i1', comments: [],
+    history: [
+      { id: 'h1', field: 'title', value: 'Local title', sortKey: 1, origin: 'authored' },
+      { id: 'h2', field: 'rag', value: 'g', sortKey: 2, origin: 'authored' }
+    ]
+  };
+  const incoming = {
+    id: 'i1', comments: [],
+    history: [
+      { id: 'h1', field: 'title', value: 'Local title', sortKey: 1, origin: 'authored' }, // same entry, no overlap
+      { id: 'h3', field: 'rag', value: 'r', sortKey: 3, origin: 'authored' } // both sides authored rag independently -> overlap
+    ]
+  };
+  const { mergedIssue, overlappingFields } = core.mergeIssuePair(local, incoming, fieldDefs);
+  assert.deepEqual(overlappingFields, ['rag']);
+  assert.equal(mergedIssue.history.length, 3); // union: h1, h2, h3
+  assert.equal(mergedIssue.values.rag, 'r'); // higher sortKey wins the derivation
+});
+
+test('computeIssueMerge: pairs existing issues, identifies genuinely-new incoming ones, numbers from the max', () => {
+  const fieldDefs = { title: { type: 'issue' } };
+  const local = [{ id: 'i1', num: 1, comments: [], history: [{ id: 'h1', field: 'title', value: 'A', sortKey: 1, origin: 'authored' }] }];
+  const incoming = [
+    { id: 'i1', comments: [], history: [{ id: 'h1', field: 'title', value: 'A', sortKey: 1, origin: 'authored' }] },
+    { id: 'i2', fieldRefs: {}, values: { title: 'New one' }, comments: [], history: [] }
+  ];
+  const result = core.computeIssueMerge(local, incoming, fieldDefs);
+  assert.equal(result.pairedIssues.length, 1);
+  assert.equal(result.pairedIssues[0].id, 'i1');
+  assert.equal(result.newIncomingIssues.length, 1);
+  assert.equal(result.newIncomingIssues[0].id, 'i2');
+  assert.equal(result.nextNum, 2);
+});
+
+test('computeFieldDefsMerge: null with no incoming fields line, otherwise unions history and re-derives fieldDefs', () => {
+  assert.equal(core.computeFieldDefsMerge([], null, [], {}), null);
+  const localHistory = [{ id: 'h1', field: 'rag', value: { label: 'RAG', type: 'select', options: [] }, sortKey: 1 }];
+  const incomingFields = { rag: { label: 'RAG (incoming)', type: 'select', options: [] } };
+  const incomingHistory = [{ id: 'h2', field: 'rag', value: { label: 'Health', type: 'select', options: [] }, sortKey: 2 }];
+  const result = core.computeFieldDefsMerge(localHistory, incomingFields, incomingHistory, {});
+  assert.equal(result.mergedProjectHistory.length, 2);
+  assert.equal(result.mergedFieldDefs.rag.label, 'Health'); // highest sortKey in the unioned history wins
+});
+
+test('computeDerivedChangeEntries: only reports rule-bound fields whose value actually changed', () => {
+  const fieldDefs = {
+    related: { type: 'text' },
+    type: { type: 'select', options: [{ id: 'bug', label: 'Bug' }], linkedSourceId: 'related', label: 'Type' },
+    priority: { type: 'text' } // not linked -- never reported
+  };
+  const issue = { values: { related: 'x', type: 'bug', priority: 'P1' }, fieldRefs: { related: { system: 'github', labels: ['bug'] } } };
+  const entries = core.computeDerivedChangeEntries(issue, { type: null, priority: 'P0' }, fieldDefs);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].colId, 'type');
+  assert.match(entries[0].text, /Type set to Bug/);
+
+  const unchanged = core.computeDerivedChangeEntries(issue, { type: 'bug' }, fieldDefs);
+  assert.equal(unchanged.length, 0);
+});
+
+test('buildGithubContentsUrl / buildGithubContentsHeaders / buildGithubCommitMessage: pure string building', () => {
+  assert.equal(core.buildGithubContentsUrl('owner/repo', 'tracker.jsonl', ''), 'https://api.github.com/repos/owner/repo/contents/tracker.jsonl');
+  assert.equal(core.buildGithubContentsUrl('owner/repo', 'a/b.jsonl', 'main'), 'https://api.github.com/repos/owner/repo/contents/a/b.jsonl?ref=main');
+  assert.deepEqual(core.buildGithubContentsHeaders('', false), { Accept: 'application/vnd.github+json' });
+  assert.deepEqual(core.buildGithubContentsHeaders('tok', true), { Accept: 'application/vnd.github+json', Authorization: 'Bearer tok', 'Content-Type': 'application/json' });
+  assert.equal(core.buildGithubCommitMessage(1), 'Update via Git-native Tracker: 1 issue');
+  assert.equal(core.buildGithubCommitMessage(3), 'Update via Git-native Tracker: 3 issues');
+});
+
+function fakeFetch(responses) {
+  let call = 0;
+  return async () => {
+    const r = responses[Math.min(call, responses.length - 1)];
+    call++;
+    if (r.throw) throw new Error(r.throw);
+    return {
+      ok: r.status >= 200 && r.status < 300,
+      status: r.status,
+      headers: { get: (name) => (name === 'ETag' ? (r.etag || null) : null) },
+      json: async () => r.body
+    };
+  };
+}
+
+test('pullGithubFile: 200 decodes content, 304/404 map to named statuses, network failure never throws', async () => {
+  const ok = await core.pullGithubFile({ fetchImpl: fakeFetch([{ status: 200, etag: 'W/"abc"', body: { content: core.base64FromText('hello'), sha: 'sha1' } }]), repo: 'o/r', path: 'tracker.jsonl', branch: '', token: 't' });
+  assert.deepEqual(ok, { status: 'ok', text: 'hello', sha: 'sha1', etag: 'W/"abc"' });
+
+  const notModified = await core.pullGithubFile({ fetchImpl: fakeFetch([{ status: 304 }]), repo: 'o/r', path: 'tracker.jsonl', branch: '', token: 't', etag: 'W/"abc"' });
+  assert.deepEqual(notModified, { status: 'not-modified' });
+
+  const notFound = await core.pullGithubFile({ fetchImpl: fakeFetch([{ status: 404 }]), repo: 'o/r', path: 'tracker.jsonl', branch: '', token: 't' });
+  assert.deepEqual(notFound, { status: 'not-found' });
+
+  const networkFail = await core.pullGithubFile({ fetchImpl: fakeFetch([{ throw: 'network down' }]), repo: 'o/r', path: 'tracker.jsonl', branch: '', token: 't' });
+  assert.deepEqual(networkFail, { status: 'error', message: 'network down' });
+});
+
+test('pushGithubFile: 200 returns the new sha, 409/422 map to conflict, other failures are errors', async () => {
+  const ok = await core.pushGithubFile({ fetchImpl: fakeFetch([{ status: 200, body: { content: { sha: 'sha2' } } }]), repo: 'o/r', path: 'tracker.jsonl', branch: '', token: 't', text: 'x', sha: 'sha1', commitMessage: 'msg', authorName: 'me', authorEmail: 'me@x' });
+  assert.deepEqual(ok, { status: 'ok', sha: 'sha2' });
+
+  const conflict409 = await core.pushGithubFile({ fetchImpl: fakeFetch([{ status: 409 }]), repo: 'o/r', path: 'tracker.jsonl', branch: '', token: 't', text: 'x', commitMessage: 'msg', authorName: 'me' });
+  assert.deepEqual(conflict409, { status: 'conflict' });
+
+  const serverError = await core.pushGithubFile({ fetchImpl: fakeFetch([{ status: 500 }]), repo: 'o/r', path: 'tracker.jsonl', branch: '', token: 't', text: 'x', commitMessage: 'msg', authorName: 'me' });
+  assert.deepEqual(serverError, { status: 'error', message: 'GitHub returned 500' });
+});

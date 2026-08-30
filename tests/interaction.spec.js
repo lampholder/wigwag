@@ -1752,6 +1752,40 @@ test.describe('Sort persistence', () => {
   });
 });
 
+// Tracker issues f2cd102a (clear button) and eb41191b (match highlight).
+test.describe('Keyword filter polish', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  test('a clear button appears only once the filter is populated, and clears it on click', async ({ page }) => {
+    await expect(page.locator('[data-testid=filter-clear-btn]')).toHaveCount(0);
+    await page.locator('[data-testid=filter-input]').fill('schema');
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=filter-clear-btn]')).toBeVisible();
+
+    await page.locator('[data-testid=filter-clear-btn]').click();
+    await expect(page.locator('[data-testid=filter-input]')).toHaveValue('');
+    await expect(page.locator('[data-testid=filter-clear-btn]')).toHaveCount(0);
+    // Clearing restores the full row count, not just an empty input.
+    await expect(page.locator('[data-testid=row]')).toHaveCount(9);
+  });
+
+  test('the matched substring in a title is wrapped in <mark>, every occurrence', async ({ page }) => {
+    await page.locator('[data-testid=filter-input]').fill('schema');
+    await page.waitForTimeout(200);
+    const marks = page.locator('[data-testid=title-cell] mark');
+    await expect(marks).toHaveCount(1);
+    expect((await marks.first().textContent()).toLowerCase()).toBe('schema');
+
+    // Case-insensitive, and the surrounding text is untouched (not itself
+    // wrapped or dropped).
+    await expect(page.locator('[data-testid=title-cell]')).toContainText('Add JSONL schema validation');
+  });
+
+  test('no filter query means no <mark> at all -- the plain-text path is unaffected', async ({ page }) => {
+    await expect(page.locator('[data-testid=title-cell] mark')).toHaveCount(0);
+  });
+});
+
 test.describe('Column value filters', () => {
   test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
   // Seed RAG values: i1=green i2=amber i3=null i4=amber i5=green i6=null

@@ -78,6 +78,50 @@ test.describe('GitHub repo sync', () => {
     await expect(h.fieldCell(page, 8, 'mitigation')).toContainText('Root cause identified');
   });
 
+  // Regression for a real live-data incident (2026-08-31): a deleted
+  // field used to be resurrected the moment ANY merge brought in a
+  // "stale" remote snapshot that still had it (another tab, another
+  // peer, or the file's own last-synced copy) -- deriveFieldDefs used to
+  // take an ambient "current fieldDefs" fallback and union it in via
+  // Object.assign on every merge, so a field could never actually stay
+  // deleted against a peer that hadn't seen the deletion yet. Now
+  // deleteField logs a real signed tombstone (value: null) and field
+  // existence is derived purely from history's own latest-by-sortKey --
+  // the tombstone wins over an older "field defined" entry regardless of
+  // what any other session's local state still says.
+  test('a field deleted locally stays deleted even when a background poll merges in a stale remote snapshot that still has it', async ({ page }) => {
+    test.setTimeout(45000);
+    const gh = h.mockGithubContentsApi(page, REPO);
+    gh.getResponses = [{ status: 404 }];
+
+    await h.gotoTracker(page);
+    await h.setGithubRepoSync(page, { repo: REPO, token: 'ghp_faketoken' });
+    await page.reload({ waitUntil: 'networkidle' });
+    await h.waitUntil(() => Promise.resolve(gh.pushCount >= 1)); // initial-commit push, rag intact
+
+    page.on('dialog', dialog => dialog.accept());
+    await h.openColumnMenu(page, 'rag');
+    await page.getByText('Delete field', { exact: true }).click();
+    await page.waitForTimeout(500); // past the (shrunk) push debounce
+    await h.waitUntil(() => Promise.resolve(gh.pushCount >= 2)); // deletion pushed
+    await expect(page.locator('[data-testid=col-header][data-col="rag"]')).toHaveCount(0);
+
+    // A "stale" remote snapshot -- the ORIGINAL demo fixture, which still
+    // has rag defined and has never seen the tombstone -- arrives via a
+    // background poll, simulating another peer (or the file's own prior
+    // synced copy) that hasn't caught up yet.
+    const fs = require('fs');
+    const path = require('path');
+    const staleLines = fs.readFileSync(path.join(__dirname, 'fixtures', 'demo-milestone.jsonl'), 'utf8').trim().split('\n');
+    gh.getResponses = [{ status: 200, sha: 'sha-stale-peer', text: staleLines.join('\n') }];
+
+    await page.waitForTimeout(6000); // past a full poll interval
+    await expect(page.locator('[data-testid=merge-conflict-modal]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=col-header][data-col="rag"]')).toHaveCount(0); // still gone
+    const doc = await h.readActiveMilestoneDoc(page);
+    expect(doc.fieldDefs.rag).toBeUndefined();
+  });
+
   test('a burst of local edits results in exactly one debounced push', async ({ page }) => {
     const gh = h.mockGithubContentsApi(page, REPO);
     gh.getResponses = [{ status: 404 }];

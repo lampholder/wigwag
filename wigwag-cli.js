@@ -284,7 +284,7 @@ async function cmdPull(ctx, doc, tokenFlag) {
 function mergeRemoteIntoDoc(doc, parsed) {
   const { mergedIssues } = core.computeIssueMerge(doc.issues, parsed.issues, doc.fieldDefs);
   doc.issues = mergedIssues;
-  const fieldsMerge = core.computeFieldDefsMerge(doc.projectHistory, parsed.fields, parsed.projectHistory, doc.fieldDefs);
+  const fieldsMerge = core.computeFieldDefsMerge(doc.projectHistory, parsed.fields, parsed.projectHistory);
   if (fieldsMerge) { doc.fieldDefs = fieldsMerge.mergedFieldDefs; doc.projectHistory = fieldsMerge.mergedProjectHistory; }
   if (parsed.projectId) doc.projectId = doc.projectId || parsed.projectId;
   if (parsed.projectName) doc.projectName = doc.projectName || parsed.projectName;

@@ -386,12 +386,40 @@ test('computeIssueMerge: pairs existing issues, numbers new incoming ones from t
   assert.deepEqual(newIssue.history, incoming[1].history); // carried over verbatim, no extra "merged in" entry appended
 });
 
+test('deriveFieldDefs: existence comes purely from history -- no ambient parameter, a value:null tombstone excludes a field, re-creation after removal resurrects it', () => {
+  const history = [
+    { field: 'rag', value: { label: 'RAG', type: 'select', options: [] }, sortKey: 1 },
+    { field: 'rag', value: { label: 'Health', type: 'select', options: [] }, sortKey: 2 }
+  ];
+  assert.equal(core.deriveFieldDefs(history).rag.label, 'Health');
+  assert.equal(core.deriveFieldDefs([]).rag, undefined); // no history at all -> field doesn't exist, full stop
+
+  const removed = [...history, { field: 'rag', value: null, sortKey: 3 }]; // tombstone
+  assert.equal(core.deriveFieldDefs(removed).rag, undefined);
+
+  const recreated = [...removed, { field: 'rag', value: { label: 'RAG again', type: 'select', options: [] }, sortKey: 4 }];
+  assert.equal(core.deriveFieldDefs(recreated).rag.label, 'RAG again'); // latest-by-sortKey resurrects it
+});
+
+test('regression: computeFieldDefsMerge cannot let a stale/ambient value inject fields with no real history backing (2026-08-31 live incidents)', () => {
+  // The old signature took a 4th "localFieldDefs" argument and unioned it
+  // in via Object.assign -- exactly what let a polluted session's value
+  // permanently reinject fields with zero history behind them. The new
+  // signature has no such parameter at all; this locks that down.
+  assert.equal(core.computeFieldDefsMerge.length, 3);
+  const localHistory = [];
+  const incomingFields = { title: { label: 'Issue', type: 'issue' } };
+  const incomingHistory = [{ id: 'h1', field: 'title', value: { label: 'Issue', type: 'issue' }, sortKey: 1 }];
+  const result = core.computeFieldDefsMerge(localHistory, incomingFields, incomingHistory);
+  assert.deepEqual(Object.keys(result.mergedFieldDefs), ['title']);
+});
+
 test('computeFieldDefsMerge: null with no incoming fields line, otherwise unions history and re-derives fieldDefs', () => {
-  assert.equal(core.computeFieldDefsMerge([], null, [], {}), null);
+  assert.equal(core.computeFieldDefsMerge([], null, []), null);
   const localHistory = [{ id: 'h1', field: 'rag', value: { label: 'RAG', type: 'select', options: [] }, sortKey: 1 }];
   const incomingFields = { rag: { label: 'RAG (incoming)', type: 'select', options: [] } };
   const incomingHistory = [{ id: 'h2', field: 'rag', value: { label: 'Health', type: 'select', options: [] }, sortKey: 2 }];
-  const result = core.computeFieldDefsMerge(localHistory, incomingFields, incomingHistory, {});
+  const result = core.computeFieldDefsMerge(localHistory, incomingFields, incomingHistory);
   assert.equal(result.mergedProjectHistory.length, 2);
   assert.equal(result.mergedFieldDefs.rag.label, 'Health'); // highest sortKey in the unioned history wins
 });

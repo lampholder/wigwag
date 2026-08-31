@@ -1134,11 +1134,18 @@ test.describe('Migration: backfilling history from pre-existing stored values', 
 
 // Batch 3: fieldDefs becomes a derived projection of a new project-level
 // projectHistory log, the same pattern Batches 1-2 already established for
-// issue.values/issue.history. A field's very existence (the key set) stays
-// directly maintained (submitNewField/deleteField, unlogged, same reasoning
-// as issue deletion) -- only each existing field's CONTENT (label/type/
-// options/linkedSourceId/rule) is derived from the latest project-history
-// entry for that field.
+// issue.values/issue.history. A field's very existence (the key set), not
+// just its content (label/type/options/linkedSourceId/rule), is derived
+// purely from projectHistory too: deriveFieldDefs takes no ambient
+// fieldDefs parameter at all any more (a real, live data-corruption
+// incident, 2026-08-31 -- a stale/polluted ambient value could
+// permanently reinject fields with no real history behind them on every
+// future merge; see the deriveFieldDefs/computeFieldDefsMerge comments in
+// wigwag-core.js). deleteField logs a real signed "field removed"
+// tombstone (value: null) instead of a local-only mutation -- the one
+// remaining exception is still issue deletion (deleteIssue), which
+// really is a separate, standalone-list concern (issues.filter), not a
+// derived-projection one.
 test.describe('Project-level schema history (Batch 3)', () => {
   test('a project with fieldDefs but no projectHistory yet gets backfilled on load, and the backfill is idempotent across reloads', async ({ page }) => {
     const id = 'legacy-schema-project';
@@ -1193,6 +1200,25 @@ test.describe('Project-level schema history (Batch 3)', () => {
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
     await expect(page.locator('[data-testid=col-header][data-col="rag"]')).toContainText('Health');
+  });
+
+  test('deleting a field logs a real signed tombstone to projectHistory -- it stays gone across a reload, not just a local mutation', async ({ page }) => {
+    await h.gotoTracker(page);
+    page.on('dialog', dialog => dialog.accept());
+    await h.openColumnMenu(page, 'rag');
+    await page.getByText('Delete field', { exact: true }).click();
+    await page.waitForTimeout(200);
+
+    await expect(page.locator('[data-testid=col-header][data-col="rag"]')).toHaveCount(0);
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    const latestRagEntry = doc.projectHistory.filter(h => h.field === 'rag').sort((a, b) => b.sortKey - a.sortKey)[0];
+    expect(latestRagEntry.value).toBe(null); // a real signed removal event, not a silent local delete
+    expect(doc.fieldDefs.rag).toBeUndefined();
+
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=col-header][data-col="rag"]')).toHaveCount(0); // stays gone, re-derived from history alone
   });
 
   // Tracker issue 4ac15b77: renaming a project (the switcher's own

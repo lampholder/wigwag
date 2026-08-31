@@ -776,7 +776,19 @@ function hydrateIssue(issue, fieldDefs) {
 // whatever's already there for a field with no history yet (a genuine
 // migration gap -- backfillProjectHistory closes this before derive ever
 // needs to use the fallback in practice).
-function deriveFieldDefs(projectHistory, currentFieldDefs) {
+// Field EXISTENCE, not just field VALUES, comes purely from this fold --
+// no ambient "currentFieldDefs" parameter, matching how every other
+// derivation in this app already works (issue values, comments: latest
+// signed entry per key wins). A field exists iff it has a history entry
+// and that entry's latest value (by sortKey) isn't null -- value: null
+// is a removal tombstone (unambiguous: a real field definition is always
+// an object, never null). This is deliberate: an earlier version took a
+// second "fallback" fieldDefs argument and unioned it in, which is
+// exactly what let a stale/polluted ambient value permanently reinject
+// fields with no real history backing on every future merge -- a real,
+// live incident (2026-08-31, see the plan doc). There is no longer any
+// parameter here for that kind of value to leak in through.
+function deriveFieldDefs(projectHistory) {
   const latestByField = {};
   for (const h of (projectHistory || [])) {
     if (!h.field || h.value === undefined) continue;
@@ -784,8 +796,10 @@ function deriveFieldDefs(projectHistory, currentFieldDefs) {
     if (!existing || h.sortKey > existing.sortKey) latestByField[h.field] = h;
   }
   const fieldDefs = {};
-  for (const colId in currentFieldDefs) {
-    fieldDefs[colId] = latestByField[colId] ? latestByField[colId].value : currentFieldDefs[colId];
+  for (const colId in latestByField) {
+    const value = latestByField[colId].value;
+    if (value === null) continue; // tombstoned -- most recent event was a removal
+    fieldDefs[colId] = value;
   }
   // The built-in "Issue" field is conceptually always issue-typed -- it's
   // what GitHub/Jira/Salesforce linking and the "Related"-style
@@ -832,7 +846,7 @@ function backfillProjectHistory(fieldDefs, projectHistory) {
 // other than this session's own live edits -- mirrors hydrateIssue.
 function hydrateProject(fieldDefs, projectHistory) {
   const backfilled = backfillProjectHistory(fieldDefs, projectHistory);
-  return { fieldDefs: deriveFieldDefs(backfilled, fieldDefs), projectHistory: backfilled };
+  return { fieldDefs: deriveFieldDefs(backfilled), projectHistory: backfilled };
 }
 
 
@@ -1320,11 +1334,14 @@ function computeIssueMerge(localIssues, parsedIssues, fieldDefs) {
 }
 // The fieldDefs/projectHistory half of a merge -- independent of issues,
 // only runs when the incoming file actually carries a 'fields' line (a
-// pure issues-only paste has nothing to merge here).
-function computeFieldDefsMerge(localProjectHistory, parsedFields, parsedProjectHistory, localFieldDefs) {
+// pure issues-only paste has nothing to merge here). No ambient
+// "localFieldDefs" parameter -- the merged field set comes entirely from
+// the merged (unioned, already merge-safe) history, same as everything
+// else this function touches. See deriveFieldDefs's own comment for why.
+function computeFieldDefsMerge(localProjectHistory, parsedFields, parsedProjectHistory) {
   if (!parsedFields) return null;
   const mergedProjectHistory = unionByKey(localProjectHistory, parsedProjectHistory || [], h => entryKey(h));
-  const mergedFieldDefs = deriveFieldDefs(mergedProjectHistory, Object.assign({}, localFieldDefs, parsedFields));
+  const mergedFieldDefs = deriveFieldDefs(mergedProjectHistory);
   return { mergedProjectHistory, mergedFieldDefs };
 }
 // The pure half of logDerivedChanges: which rule-bound fields actually

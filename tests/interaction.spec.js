@@ -860,6 +860,81 @@ test.describe('Detail slide-over', () => {
     await expect(page.locator('[data-testid=row]')).toHaveCount(8);
     await expect(page.locator('[data-testid=slideover]')).toHaveCount(0);
   });
+
+  // Tracker issue 6a903d3d: a heuristic -- a text-type field literally
+  // labeled "Description" gets its own full-width section immediately
+  // below the title, instead of sitting in the regular fields grid.
+  test.describe('A field literally labeled "Description" gets its own section below the title', () => {
+    test('renders full-width, above the regular fields grid, not duplicated inside it', async ({ page }) => {
+      await h.openFieldEditor(page, 'mitigation');
+      const labelInput = page.locator('[data-testid=field-editor] input').first();
+      await labelInput.fill('Description');
+      await labelInput.dispatchEvent('change');
+      await page.waitForTimeout(200);
+      await page.mouse.click(50, 50);
+      await page.waitForTimeout(200);
+
+      await h.openSlideover(page, 1);
+      await page.waitForTimeout(300);
+
+      await expect(page.locator('[data-testid=slideover-description]')).toContainText('Description');
+      await expect(page.locator('[data-testid=slideover-field][data-col=mitigation]')).toHaveCount(0); // not duplicated
+
+      const order = await page.evaluate(() => {
+        const desc = document.querySelector('[data-testid="slideover-description"]');
+        const grid = document.querySelector('[data-testid="slideover-field"]');
+        return !!(desc.compareDocumentPosition(grid) & Node.DOCUMENT_POSITION_FOLLOWING);
+      });
+      expect(order).toBe(true); // description comes before the regular grid
+    });
+
+    test('is editable, renders markdown, and persists through the normal signed-history path', async ({ page }) => {
+      await h.openFieldEditor(page, 'mitigation');
+      const labelInput = page.locator('[data-testid=field-editor] input').first();
+      await labelInput.fill('Description');
+      await labelInput.dispatchEvent('change');
+      await page.waitForTimeout(200);
+      await page.mouse.click(50, 50);
+      await page.waitForTimeout(200);
+
+      await h.openSlideover(page, 1);
+      await page.waitForTimeout(300);
+
+      const section = page.locator('[data-testid=slideover-description]');
+      await section.click();
+      await page.waitForTimeout(150);
+      await section.click();
+      await page.waitForTimeout(200);
+
+      const textarea = page.locator('[data-testid=slideover-description] textarea');
+      await expect(textarea).toBeVisible();
+      await textarea.fill('A real description with **markdown**.');
+      await page.keyboard.press('Tab');
+      await page.waitForTimeout(300);
+
+      await expect(page.locator('[data-testid=slideover-description] [data-testid=text-field-md]')).toBeVisible();
+      const doc = await h.readActiveMilestoneDoc(page);
+      const iss = doc.issues.find(i => i.num === 1);
+      const latest = iss.history.filter(hh => hh.field === 'mitigation').sort((a, b) => b.sortKey - a.sortKey)[0];
+      expect(latest.value).toBe('A real description with **markdown**.');
+    });
+
+    test('a select-type field named "Description" (unusual) stays in the regular grid, not given its own section', async ({ page }) => {
+      await h.openFieldEditor(page, 'rag'); // rag is type:'select'
+      const labelInput = page.locator('[data-testid=field-editor] input').first();
+      await labelInput.fill('Description');
+      await labelInput.dispatchEvent('change');
+      await page.waitForTimeout(200);
+      await page.mouse.click(50, 50);
+      await page.waitForTimeout(200);
+
+      await h.openSlideover(page, 1);
+      await page.waitForTimeout(300);
+
+      await expect(page.locator('[data-testid=slideover-description]')).toHaveCount(0);
+      await expect(page.locator('[data-testid=slideover-field][data-col=rag]')).toBeVisible();
+    });
+  });
 });
 
 test.describe('Control+Space opens and focuses the add-item box', () => {

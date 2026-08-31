@@ -603,6 +603,40 @@ function renderMarkdownInline(line) {
   out = out.replace(restoreRe, function (m, idx) { return stash[Number(idx)]; });
   return out;
 }
+// Matches a list-item line at any indentation -- capture groups are
+// (indent whitespace, marker, content). A leading-whitespace variant is
+// deliberately allowed at both the block-start check and the consume
+// loop below, so a nested/indented item is recognized as a list item at
+// all (rather than falling through to plain paragraph text, dash and
+// all) and its indent depth drives real <ul>/<ol> nesting.
+const LIST_ITEM_RE = /^(\s*)([-*]|\d+\.)\s+(.*)$/;
+// Groups a flat, indent-tagged list into a tree by relative indent depth
+// -- deliberately not a fixed 2-/4-space tab width, so any consistent
+// indent step nests correctly. minIndent is the indent of the first item
+// at this level; a run of items at exactly that level are siblings, and
+// a jump to a deeper indent recurses into the previous sibling's children.
+function buildListTree(flat) {
+  function build(pos, minIndent) {
+    const items = [];
+    let ordered = null;
+    while (pos.i < flat.length && flat[pos.i].indent >= minIndent) {
+      const cur = flat[pos.i];
+      if (ordered === null) ordered = cur.ordered;
+      pos.i++;
+      let children = null;
+      if (pos.i < flat.length && flat[pos.i].indent > cur.indent) children = build(pos, flat[pos.i].indent);
+      items.push({ content: cur.content, children });
+    }
+    return { ordered, items };
+  }
+  return build({ i: 0 }, flat.length ? flat[0].indent : 0);
+}
+function renderListTree(tree) {
+  const tag = tree.ordered ? 'ol' : 'ul';
+  return '<' + tag + '>' + tree.items.map(function (it) {
+    return '<li>' + renderMarkdownInline(it.content) + (it.children ? renderListTree(it.children) : '') + '</li>';
+  }).join('') + '</' + tag + '>';
+}
 function renderMarkdown(raw) {
   const lines = String(raw == null ? '' : raw).replace(/\r\n?/g, '\n').split('\n');
   const parts = [];
@@ -629,18 +663,16 @@ function renderMarkdown(raw) {
       parts.push('<blockquote>' + quote.map(renderMarkdownInline).join('<br>') + '</blockquote>');
       continue;
     }
-    if (/^[-*]\s+/.test(line)) {
+    if (LIST_ITEM_RE.test(line)) {
       flush();
-      const items = [];
-      while (i < lines.length && /^[-*]\s+/.test(lines[i])) { items.push(lines[i].replace(/^[-*]\s+/, '')); i++; }
-      parts.push('<ul>' + items.map(function (it) { return '<li>' + renderMarkdownInline(it) + '</li>'; }).join('') + '</ul>');
-      continue;
-    }
-    if (/^\d+\.\s+/.test(line)) {
-      flush();
-      const items = [];
-      while (i < lines.length && /^\d+\.\s+/.test(lines[i])) { items.push(lines[i].replace(/^\d+\.\s+/, '')); i++; }
-      parts.push('<ol>' + items.map(function (it) { return '<li>' + renderMarkdownInline(it) + '</li>'; }).join('') + '</ol>');
+      const flat = [];
+      while (i < lines.length) {
+        const m = lines[i].match(LIST_ITEM_RE);
+        if (!m) break;
+        flat.push({ indent: m[1].length, ordered: /^\d+\.$/.test(m[2]), content: m[3] });
+        i++;
+      }
+      parts.push(renderListTree(buildListTree(flat)));
       continue;
     }
     if (line.trim() === '') { flush(); i++; continue; }

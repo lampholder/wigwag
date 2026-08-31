@@ -324,6 +324,21 @@ test.describe('Text fields: multiline markdown', () => {
     await expect(sfMd.locator('h1')).toHaveText('Plan');
   });
 
+  // Tracker issue #61 (417cbbda): the old list regexes required zero
+  // leading whitespace, so an indented bullet fell through to plain
+  // paragraph text (literal "- " prefix and all) instead of nesting as a
+  // real sub-list.
+  test('an indented bullet renders as a real nested sub-list, not literal "- " text', async ({ page }) => {
+    await h.clickFieldToEdit(page, 1, 'mitigation');
+    await h.fieldCell(page, 1, 'mitigation').locator('[data-testid=text-field-edit-textarea]').fill('- Item 1\n  - Sub item 1a\n  - Sub item 1b\n- Item 2');
+    await page.keyboard.press('Control+Enter');
+    await page.waitForTimeout(200);
+
+    const cellMd = h.fieldCell(page, 1, 'mitigation').locator('[data-testid=text-field-md]');
+    await expect(cellMd.locator('ul > li > ul > li')).toHaveCount(2);
+    await expect(cellMd).not.toContainText('- Sub item');
+  });
+
   test('a bare email renders as a person pill and a bare URL becomes a link, same as comments/notes', async ({ page }) => {
     await h.clickFieldToEdit(page, 1, 'mitigation');
     await h.fieldCell(page, 1, 'mitigation').locator('[data-testid=text-field-edit-textarea]').fill('Ping priya@lant.uk or see https://example.com/doc');

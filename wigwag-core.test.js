@@ -107,6 +107,24 @@ test('renderMarkdown: bold/emphasis render as real elements, plain text passes t
   assert.match(core.renderMarkdown('plain text'), /plain text/);
 });
 
+// Tracker issue #61 (417cbbda): an indented bullet fell through the old
+// list regexes (they required zero leading whitespace), so it was
+// swallowed as plain paragraph text -- raw "- " prefix and all -- and
+// split the surrounding list into two separate <ul>s around it.
+test('renderMarkdown: an indented bullet nests as a real sub-list, not swallowed into paragraph text', () => {
+  const html = core.renderMarkdown('- Item 1\n  - Sub item 1a\n  - Sub item 1b\n- Item 2');
+  assert.equal(html, '<ul><li>Item 1<ul><li>Sub item 1a</li><li>Sub item 1b</li></ul></li><li>Item 2</li></ul>');
+});
+
+test('renderMarkdown: an indented bullet can nest under a numbered list item too, mixed ordered/unordered', () => {
+  const html = core.renderMarkdown('1. First\n  - nested bullet\n2. Second');
+  assert.equal(html, '<ol><li>First<ul><li>nested bullet</li></ul></li><li>Second</li></ol>');
+});
+
+test('renderMarkdown: a flat list (no indentation) is unaffected by the nesting change', () => {
+  assert.equal(core.renderMarkdown('- a\n- b\n- c'), '<ul><li>a</li><li>b</li><li>c</li></ul>');
+});
+
 test('truncate: shortens with an ellipsis only when actually over length, never mutates short strings', () => {
   assert.equal(core.truncate('short', 60), 'short');
   const long = 'x'.repeat(100);

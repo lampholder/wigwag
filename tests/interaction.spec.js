@@ -1853,10 +1853,10 @@ test.describe('Keyword filter polish', () => {
     await expect(page.locator('[data-testid=row]')).toHaveCount(9);
   });
 
-  test('the matched substring in a title is wrapped in <mark>, every occurrence', async ({ page }) => {
+  test('the matched substring in a title is wrapped in a highlight span, every occurrence', async ({ page }) => {
     await page.locator('[data-testid=filter-input]').fill('schema');
     await page.waitForTimeout(200);
-    const marks = page.locator('[data-testid=title-cell] mark');
+    const marks = page.locator('[data-testid=title-cell] [data-testid=filter-match]');
     await expect(marks).toHaveCount(1);
     expect((await marks.first().textContent()).toLowerCase()).toBe('schema');
 
@@ -1865,8 +1865,8 @@ test.describe('Keyword filter polish', () => {
     await expect(page.locator('[data-testid=title-cell]')).toContainText('Add JSONL schema validation');
   });
 
-  test('no filter query means no <mark> at all -- the plain-text path is unaffected', async ({ page }) => {
-    await expect(page.locator('[data-testid=title-cell] mark')).toHaveCount(0);
+  test('no filter query means no highlight span at all -- the plain-text path is unaffected', async ({ page }) => {
+    await expect(page.locator('[data-testid=title-cell] [data-testid=filter-match]')).toHaveCount(0);
   });
 });
 

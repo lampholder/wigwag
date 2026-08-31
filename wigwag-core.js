@@ -1271,27 +1271,34 @@ function mergeIssuePair(localIssue, incomingIssue, fieldDefs) {
   const mergedIssue = { ...merged, values: deriveIssueValues(merged, fieldDefs), fieldRefs: deriveIssueFieldRefs(merged, fieldDefs) };
   return { mergedIssue, overlappingFields };
 }
-// The pure half of a full merge: pairs up local issues with their
-// incoming counterpart (via mergeIssuePair) and identifies which incoming
-// issues are genuinely new (not present locally at all). Assigning ids/
-// notes/sortKeys to those new issues needs an identity + a sortKey
-// counter -- both impure -- so that stays the caller's job; this just
-// hands back the raw incoming issues that need it, plus nextNum to
-// number them from.
+// The full pure half of a merge: pairs up local issues with their
+// incoming counterpart (via mergeIssuePair) and folds in whichever
+// incoming issues are genuinely new (not present locally at all),
+// carrying each one's own real history over as-is -- no synthetic
+// "merged in" annotation stamped on top of it. A pulled/merged issue's
+// provenance is already fully explained by its own history; adding a
+// local note on top of every one of them (there can be hundreds, on a
+// first connect to an existing project) is noise, not signal.
 function computeIssueMerge(localIssues, parsedIssues, fieldDefs) {
   const localById = new Map(localIssues.map(i => [i.id, i]));
-  const pairedIssues = [];
+  const mergedIssues = [];
   const notices = {};
   for (const localIssue of localIssues) {
     const incomingIssue = parsedIssues.find(i => i.id === localIssue.id);
-    if (!incomingIssue) { pairedIssues.push(localIssue); continue; }
+    if (!incomingIssue) { mergedIssues.push(localIssue); continue; }
     const { mergedIssue, overlappingFields } = mergeIssuePair(localIssue, incomingIssue, fieldDefs);
-    pairedIssues.push(mergedIssue);
+    mergedIssues.push(mergedIssue);
     if (overlappingFields.length) notices[localIssue.id] = overlappingFields;
   }
-  const nextNum = localIssues.reduce((m, i) => Math.max(m, i.num || 0), 0) + 1;
-  const newIncomingIssues = parsedIssues.filter(i => !localById.has(i.id));
-  return { pairedIssues, notices, newIncomingIssues, nextNum };
+  let nextNum = localIssues.reduce((m, i) => Math.max(m, i.num || 0), 0) + 1;
+  for (const incomingIssue of parsedIssues) {
+    if (localById.has(incomingIssue.id)) continue;
+    mergedIssues.push({
+      id: incomingIssue.id, num: nextNum++, fieldRefs: incomingIssue.fieldRefs || {}, fieldLoading: {},
+      values: incomingIssue.values || {}, comments: incomingIssue.comments || [], history: incomingIssue.history || []
+    });
+  }
+  return { mergedIssues, notices };
 }
 // The fieldDefs/projectHistory half of a merge -- independent of issues,
 // only runs when the incoming file actually carries a 'fields' line (a

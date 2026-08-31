@@ -351,19 +351,20 @@ test('mergeIssuePair: unions history/comments, re-derives values, flags overlapp
   assert.equal(mergedIssue.values.rag, 'r'); // higher sortKey wins the derivation
 });
 
-test('computeIssueMerge: pairs existing issues, identifies genuinely-new incoming ones, numbers from the max', () => {
+test('computeIssueMerge: pairs existing issues, numbers new incoming ones from the max, carries their own history over with no synthetic note', () => {
   const fieldDefs = { title: { type: 'issue' } };
   const local = [{ id: 'i1', num: 1, comments: [], history: [{ id: 'h1', field: 'title', value: 'A', sortKey: 1, origin: 'authored' }] }];
   const incoming = [
     { id: 'i1', comments: [], history: [{ id: 'h1', field: 'title', value: 'A', sortKey: 1, origin: 'authored' }] },
-    { id: 'i2', fieldRefs: {}, values: { title: 'New one' }, comments: [], history: [] }
+    { id: 'i2', fieldRefs: {}, values: { title: 'New one' }, comments: [], history: [{ id: 'h2', field: 'title', value: 'New one', sortKey: 1, origin: 'authored' }] }
   ];
   const result = core.computeIssueMerge(local, incoming, fieldDefs);
-  assert.equal(result.pairedIssues.length, 1);
-  assert.equal(result.pairedIssues[0].id, 'i1');
-  assert.equal(result.newIncomingIssues.length, 1);
-  assert.equal(result.newIncomingIssues[0].id, 'i2');
-  assert.equal(result.nextNum, 2);
+  assert.equal(result.mergedIssues.length, 2);
+  assert.equal(result.mergedIssues[0].id, 'i1');
+  const newIssue = result.mergedIssues[1];
+  assert.equal(newIssue.id, 'i2');
+  assert.equal(newIssue.num, 2); // numbered from local's max (1) + 1
+  assert.deepEqual(newIssue.history, incoming[1].history); // carried over verbatim, no extra "merged in" entry appended
 });
 
 test('computeFieldDefsMerge: null with no incoming fields line, otherwise unions history and re-derives fieldDefs', () => {

@@ -31,8 +31,17 @@
 // authored this way are indistinguishable from ones made through the
 // browser.
 const path = require('path');
+const { ProxyAgent, setGlobalDispatcher } = require('undici');
 const core = require('./wigwag-core.js');
 const { FileProjectStore, CredentialStore, TRACKER_FILENAME } = require('./wigwag-file-store.js');
+
+// Node's built-in fetch does NOT honor HTTP_PROXY/HTTPS_PROXY on its own
+// (that needs either NODE_USE_ENV_PROXY=1 set before the process starts,
+// which we can't do from inside our own script, or a dispatcher wired up
+// like this at runtime) -- without this, pull/push/sync fail outright in
+// any proxied network (this project's own devcontainer sandbox included).
+const proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy;
+if (proxyUrl) setGlobalDispatcher(new ProxyAgent(proxyUrl));
 
 function findIssue(doc, numOrIdPrefix) {
   const byNum = doc.issues.find(i => String(i.num) === String(numOrIdPrefix));
@@ -240,25 +249,12 @@ async function cmdPull(ctx, doc, tokenFlag) {
   const result = await core.pullGithubFile({ fetchImpl: fetch, repo: doc.githubRepo, path: doc.githubRepoPath, branch: doc.githubRepoBranch, token });
   if (result.status === 'not-found') { console.log('No remote file yet at ' + doc.githubRepo + ' -- run push to create it.'); return; }
   if (result.status !== 'ok') throw new Error('Pull failed: ' + (result.message || result.status));
-  mergeRemoteIntoDoc(ctx, doc, core.parseJsonl(result.text, doc.fieldDefs));
+  mergeRemoteIntoDoc(doc, core.parseJsonl(result.text, doc.fieldDefs));
   console.log('Pulled and merged from ' + doc.githubRepo);
 }
 
-function mergeRemoteIntoDoc(ctx, doc, parsed) {
-  const { pairedIssues, newIncomingIssues, nextNum: startNum } = core.computeIssueMerge(doc.issues, parsed.issues, doc.fieldDefs);
-  const mergedIssues = [...pairedIssues];
-  let nextNum = startNum;
-  for (const incomingIssue of newIncomingIssues) {
-    const note = {
-      id: require('crypto').randomUUID(), time: core.formatNow(), actor: ctx.identity.label || ctx.identity.email, email: ctx.identity.email || '',
-      text: 'Merged in from import', field: null, origin: 'authored', sortKey: ctx.nextSortKey(), sig: null, sigRedacted: null, pubKey: null
-    };
-    mergedIssues.push({
-      id: incomingIssue.id, num: nextNum++, fieldRefs: incomingIssue.fieldRefs || {}, fieldLoading: {},
-      values: incomingIssue.values || {}, comments: incomingIssue.comments || [],
-      history: [...(incomingIssue.history || []), note]
-    });
-  }
+function mergeRemoteIntoDoc(doc, parsed) {
+  const { mergedIssues } = core.computeIssueMerge(doc.issues, parsed.issues, doc.fieldDefs);
   doc.issues = mergedIssues;
   const fieldsMerge = core.computeFieldDefsMerge(doc.projectHistory, parsed.fields, parsed.projectHistory, doc.fieldDefs);
   if (fieldsMerge) { doc.fieldDefs = fieldsMerge.mergedFieldDefs; doc.projectHistory = fieldsMerge.mergedProjectHistory; }
@@ -289,7 +285,7 @@ async function cmdPush(ctx, doc, tokenFlag) {
     // path), and retry with ITS sha, not the one that just failed.
     pre = await core.pullGithubFile(pullOpts);
     if (pre.status !== 'ok' && pre.status !== 'not-found') throw new Error('Push retry failed (could not determine remote state): ' + (pre.message || pre.status));
-    if (pre.status === 'ok') mergeRemoteIntoDoc(ctx, doc, core.parseJsonl(pre.text, doc.fieldDefs));
+    if (pre.status === 'ok') mergeRemoteIntoDoc(doc, core.parseJsonl(pre.text, doc.fieldDefs));
   }
 }
 

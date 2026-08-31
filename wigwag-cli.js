@@ -59,6 +59,15 @@ function fieldLabelToColId(fieldDefs, label) {
   return null;
 }
 
+// Matches wigwag.html's own displayName() exactly: email only, never a
+// label -- attribution is driven by identity email everywhere in the
+// real app (label is vestigial, not used for attribution any more), so
+// diverging here would mean the same identity signs as a different name
+// depending on whether the write came from the CLI or the browser.
+function displayName(identity) {
+  return identity.email || 'anonymous';
+}
+
 function resolveOptionLabel(fieldDef, value) {
   if (!value) return '—';
   const opt = ((fieldDef && fieldDef.options) || []).find(o => o.id === value);
@@ -94,7 +103,7 @@ async function makeContext(identityPath) {
 // signature, never a still-in-flight sig: null.
 async function commitHistoryEntry(ctx, doc, issueId, { text, field, value, fieldRef, origin }) {
   const entryBase = {
-    id: require('crypto').randomUUID(), time: core.formatNow(), actor: ctx.identity.label || ctx.identity.email, email: ctx.identity.email || '',
+    id: require('crypto').randomUUID(), time: core.formatNow(), actor: displayName(ctx.identity), email: ctx.identity.email || '',
     text, field: field || null, value: field ? value : undefined,
     fieldRef: (field && fieldRef !== undefined) ? fieldRef : undefined,
     origin: origin || 'authored', sortKey: ctx.nextSortKey()
@@ -120,7 +129,7 @@ async function commitHistoryEntry(ctx, doc, issueId, { text, field, value, field
 
 async function commitProjectHistoryEntry(ctx, doc, { text, field, value, origin }) {
   const entryBase = {
-    id: require('crypto').randomUUID(), time: core.formatNow(), actor: ctx.identity.label || ctx.identity.email, email: ctx.identity.email || '',
+    id: require('crypto').randomUUID(), time: core.formatNow(), actor: displayName(ctx.identity), email: ctx.identity.email || '',
     text, field: field || null, value: field ? value : undefined,
     origin: origin || 'authored', sortKey: ctx.nextSortKey()
   };
@@ -196,7 +205,7 @@ async function cmdComment(ctx, doc, numOrId, text) {
   if (!numOrId || !text) throw new Error('Usage: comment <num-or-id-prefix> "<text>"');
   const issue = findIssue(doc, numOrId);
   const entryBase = {
-    id: require('crypto').randomUUID(), author: ctx.identity.label || ctx.identity.email, email: ctx.identity.email || '', time: core.formatNow(), text,
+    id: require('crypto').randomUUID(), author: displayName(ctx.identity), email: ctx.identity.email || '', time: core.formatNow(), text,
     sortKey: ctx.nextSortKey()
   };
   await core.commitSignedEntry(entryBase, {
@@ -274,7 +283,7 @@ async function cmdPush(ctx, doc, tokenFlag) {
     const result = await core.pushGithubFile({
       ...pullOpts, text, sha,
       commitMessage: core.buildGithubCommitMessage(doc.issues.length),
-      authorName: ctx.identity.label || ctx.identity.email, authorEmail: ctx.identity.email || 'unknown@example.invalid'
+      authorName: displayName(ctx.identity), authorEmail: ctx.identity.email || 'unknown@example.invalid'
     });
     if (result.status === 'ok') { console.log('Pushed to ' + doc.githubRepo); return; }
     if (result.status !== 'conflict') throw new Error('Push failed: ' + (result.message || result.status));

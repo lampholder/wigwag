@@ -192,6 +192,11 @@ async function cmdShow(doc, numOrId) {
 
 async function cmdAddIssue(ctx, doc, title) {
   if (!title) throw new Error('Usage: add-issue "<title>"');
+  // A checkout that's never been pulled has no fieldDefs at all (see
+  // FileProjectStore.load()) -- without this check, an issue created
+  // here would silently have no title (deriveIssueValues has no 'title'
+  // field def to derive it against), not a loud, obvious failure.
+  if (!doc.fieldDefs.title) throw new Error('This project has no fields defined yet -- run "pull" first to adopt a remote project\'s fields.');
   const id = require('crypto').randomUUID();
   const num = doc.issues.reduce((m, i) => Math.max(m, i.num || 0), 0) + 1;
   doc.issues.push({ id, num, fieldRefs: {}, fieldLoading: {}, values: {}, comments: [], history: [] });

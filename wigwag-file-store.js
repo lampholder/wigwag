@@ -48,6 +48,17 @@ class FileProjectStore {
   // than trusting a possibly-stale stored copy, same as the browser).
   // Returns a fresh, empty doc if no tracker.jsonl exists yet -- the
   // equivalent of opening wigwag.html against a brand-new project.
+  //
+  // Deliberately {} here, NOT defaultFieldDefs() -- that's the app's
+  // "New Project" starter-field seed, a real opinionated shape (title/
+  // linked/type/priority/rag/teams/mitigation), not a neutral "nothing
+  // yet" placeholder. A first pull into an empty checkout merges this
+  // value against the remote's real fields (computeFieldDefsMerge); a
+  // non-empty placeholder here means every one of its fields survives
+  // that merge as if it were real local state, permanently polluting the
+  // REMOTE project's own field set once pushed. Confirmed live: this
+  // exact bug added 6 bogus fields (and 6 synthetic "Created field"
+  // backfill history entries) to lampholder/wigwag on 2026-08-31.
   load() {
     const config = this._loadConfig();
     const base = {
@@ -57,12 +68,12 @@ class FileProjectStore {
     };
     if (!fs.existsSync(this.trackerPath)) {
       return Object.assign(base, {
-        fieldDefs: core.defaultFieldDefs(), projectHistory: [],
+        fieldDefs: {}, projectHistory: [],
         projectNotes: '', projectComments: [], issues: []
       });
     }
     const text = fs.readFileSync(this.trackerPath, 'utf8');
-    const parsed = core.parseJsonl(text, config.fieldDefs || core.defaultFieldDefs());
+    const parsed = core.parseJsonl(text, config.fieldDefs || {});
     const { fieldDefs, projectHistory } = core.hydrateProject(parsed.fields || {}, parsed.projectHistory || []);
     return Object.assign(base, {
       projectId: parsed.projectId || base.projectId,

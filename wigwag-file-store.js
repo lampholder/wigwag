@@ -29,17 +29,49 @@ const { loadIdentity } = require('./wigwag-client.js');
 
 const TRACKER_FILENAME = 'tracker.jsonl';
 const CONFIG_FILENAME = '.wigwag-config.json';
+const LOCK_FILENAME = '.wigwag-lock';
+
+function isProcessAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch (e) { return e.code !== 'ESRCH'; }
+}
 
 class FileProjectStore {
   constructor(dir) {
     this.dir = dir;
     this.trackerPath = path.join(dir, TRACKER_FILENAME);
     this.configPath = path.join(dir, CONFIG_FILENAME);
+    this.lockPath = path.join(dir, LOCK_FILENAME);
   }
 
   _loadConfig() {
     if (!fs.existsSync(this.configPath)) return {};
     return JSON.parse(fs.readFileSync(this.configPath, 'utf8'));
+  }
+
+  // Exclusive advisory lock on this directory for the duration of a
+  // write -- a second CLI invocation against the same dir while one is
+  // already writing fails fast with a clear error instead of both
+  // racing to save() and one silently clobbering the other's changes.
+  // A lock whose recorded pid is no longer running (a crashed prior
+  // invocation, most likely) is detected as stale and taken over.
+  acquireLock() {
+    fs.mkdirSync(this.dir, { recursive: true });
+    try {
+      fs.writeFileSync(this.lockPath, JSON.stringify({ pid: process.pid, time: new Date().toISOString() }), { flag: 'wx' });
+      return;
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+    }
+    let holder = null;
+    try { holder = JSON.parse(fs.readFileSync(this.lockPath, 'utf8')); } catch (e) { /* unreadable -- treat as stale below */ }
+    if (holder && holder.pid && isProcessAlive(holder.pid)) {
+      throw new Error(`Another wigwag-cli.js process (pid ${holder.pid}, started ${holder.time}) is already writing to ${this.dir}.`);
+    }
+    fs.writeFileSync(this.lockPath, JSON.stringify({ pid: process.pid, time: new Date().toISOString() }));
+  }
+
+  releaseLock() {
+    try { fs.unlinkSync(this.lockPath); } catch (e) { /* already gone -- fine */ }
   }
 
   // Loads the project doc, hydrated the same way wigwag.html hydrates on
@@ -111,4 +143,4 @@ const CredentialStore = {
   }
 };
 
-module.exports = { FileProjectStore, CredentialStore, TRACKER_FILENAME, CONFIG_FILENAME };
+module.exports = { FileProjectStore, CredentialStore, TRACKER_FILENAME, CONFIG_FILENAME, LOCK_FILENAME };

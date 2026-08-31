@@ -257,6 +257,20 @@ function resolveToken(ctx, tokenFlag) {
   return tokenFlag || ctx.identity.githubToken || '';
 }
 
+// Fails loudly before ever attempting a write, rather than letting a bad
+// token surface as a confusing PUT failure deep inside pushGithubFile --
+// mirrors wigwag-client.js's ensureConnected, which does the same check
+// before the browser flow's first write.
+async function ensureWriteAccess(repo, token) {
+  const [owner, name] = repo.split('/');
+  const result = await core.probeGithubRepoAccess(owner, name, token, fetch);
+  if (result.status === 'write') return;
+  if (result.status === 'read') throw new Error(`This token can read ${repo} but not write to it.`);
+  if (result.reason === 'expired') throw new Error(`GitHub token is missing or expired for ${repo}.`);
+  if (result.reason === 'not-a-member') throw new Error(`No access to ${repo} with this token (or it doesn't exist).`);
+  throw new Error(`Could not verify access to ${repo} (network or GitHub API issue).`);
+}
+
 async function cmdPull(ctx, doc, tokenFlag) {
   if (!doc.githubRepo) throw new Error('No githubRepo configured -- edit .wigwag-config.json first (e.g. { "githubRepo": "owner/repo" }).');
   const token = resolveToken(ctx, tokenFlag);
@@ -279,6 +293,7 @@ function mergeRemoteIntoDoc(doc, parsed) {
 async function cmdPush(ctx, doc, tokenFlag) {
   if (!doc.githubRepo) throw new Error('No githubRepo configured -- edit .wigwag-config.json first (e.g. { "githubRepo": "owner/repo" }).');
   const token = resolveToken(ctx, tokenFlag);
+  await ensureWriteAccess(doc.githubRepo, token);
   const pullOpts = { fetchImpl: fetch, repo: doc.githubRepo, path: doc.githubRepoPath, branch: doc.githubRepoBranch, token };
   let pre = await core.pullGithubFile(pullOpts);
   if (pre.status !== 'ok' && pre.status !== 'not-found') throw new Error('Push failed (could not determine remote state): ' + (pre.message || pre.status));
@@ -345,13 +360,18 @@ async function main() {
   }
 
   const ctx = await makeContext(identityPath);
-  if (cmd === 'add-issue') await cmdAddIssue(ctx, doc, rest.join(' '));
-  else if (cmd === 'comment') await cmdComment(ctx, doc, rest[0], rest.slice(1).join(' '));
-  else if (cmd === 'set-field') await cmdSetField(ctx, doc, rest[0], rest[1], rest.slice(2).join(' '));
-  else if (cmd === 'pull') await cmdPull(ctx, doc, token);
-  else if (cmd === 'push') await cmdPush(ctx, doc, token);
-  else if (cmd === 'sync') await cmdSync(ctx, doc, token);
-  store.save(doc);
+  store.acquireLock();
+  try {
+    if (cmd === 'add-issue') await cmdAddIssue(ctx, doc, rest.join(' '));
+    else if (cmd === 'comment') await cmdComment(ctx, doc, rest[0], rest.slice(1).join(' '));
+    else if (cmd === 'set-field') await cmdSetField(ctx, doc, rest[0], rest[1], rest.slice(2).join(' '));
+    else if (cmd === 'pull') await cmdPull(ctx, doc, token);
+    else if (cmd === 'push') await cmdPush(ctx, doc, token);
+    else if (cmd === 'sync') await cmdSync(ctx, doc, token);
+    store.save(doc);
+  } finally {
+    store.releaseLock();
+  }
 }
 
 if (require.main === module) {

@@ -19,7 +19,7 @@ const os = require('os');
 const path = require('path');
 const core = require('./wigwag-core.js');
 const { FileProjectStore } = require('./wigwag-file-store.js');
-const { mergeRemoteIntoDoc } = require('./wigwag-cli.js');
+const { mergeRemoteIntoDoc, cmdPush, makeContext } = require('./wigwag-cli.js');
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'wigwag-cli-test-'));
@@ -66,4 +66,51 @@ test('mergeRemoteIntoDoc: does not stamp a synthetic "Merged in from import" not
   mergeRemoteIntoDoc(doc, parsed);
   assert.equal(doc.issues[0].history.length, 1);
   assert.equal(doc.issues[0].history[0].text, 'Title set to "A"');
+});
+
+async function fakeIdentityPath() {
+  const crypto = require('crypto').webcrypto;
+  const kp = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+  const priv = await crypto.subtle.exportKey('jwk', kp.privateKey);
+  const pub = await crypto.subtle.exportKey('jwk', kp.publicKey);
+  const identity = { id: 'test', label: 'Test', email: 'test@example.com', githubToken: 'tok', jiraProxyUrl: '', salesforceProxyUrl: '', signingPublicKeyJwk: pub, signingPrivateKeyJwk: priv };
+  const p = path.join(tmpDir(), 'identity');
+  fs.writeFileSync(p, 'Fake test identity.\n\n' + JSON.stringify(identity, null, 2) + '\n');
+  return p;
+}
+
+test('FileProjectStore locking: a second acquireLock while one is held fails fast; releaseLock frees it for the next caller', () => {
+  const dir = tmpDir();
+  const store = new FileProjectStore(dir);
+  store.acquireLock();
+  assert.throws(() => store.acquireLock(), /already writing/);
+  store.releaseLock();
+  assert.doesNotThrow(() => store.acquireLock());
+  store.releaseLock();
+});
+
+test('FileProjectStore locking: a lock held by a process that is no longer running is detected as stale and taken over', () => {
+  const dir = tmpDir();
+  const store = new FileProjectStore(dir);
+  // A pid essentially guaranteed not to be running right now.
+  fs.writeFileSync(path.join(dir, '.wigwag-lock'), JSON.stringify({ pid: 999999, time: new Date().toISOString() }));
+  assert.doesNotThrow(() => store.acquireLock());
+  store.releaseLock();
+});
+
+test('cmdPush: fails fast on a read-only token before ever attempting the write', async () => {
+  const ctx = await makeContext(await fakeIdentityPath());
+  const doc = { githubRepo: 'o/r', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', fieldDefs: {}, issues: [], projectHistory: [] };
+  const originalFetch = global.fetch;
+  let putAttempted = false;
+  global.fetch = async (url, opts) => {
+    if ((opts && opts.method) === 'PUT') putAttempted = true;
+    return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({ permissions: { push: false } }) };
+  };
+  try {
+    await assert.rejects(() => cmdPush(ctx, doc, null), /can read .* but not write/);
+    assert.equal(putAttempted, false);
+  } finally {
+    global.fetch = originalFetch;
+  }
 });

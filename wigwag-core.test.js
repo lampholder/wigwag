@@ -441,3 +441,14 @@ test('pushGithubFile: 200 returns the new sha, 409/422 map to conflict, other fa
   const serverError = await core.pushGithubFile({ fetchImpl: fakeFetch([{ status: 500 }]), repo: 'o/r', path: 'tracker.jsonl', branch: '', token: 't', text: 'x', commitMessage: 'msg', authorName: 'me' });
   assert.deepEqual(serverError, { status: 'error', message: 'GitHub returned 500' });
 });
+
+test('probeGithubRepoAccess: write only when permissions.push is true, read for a public repo with no token, refused for 401/404/network failure', async () => {
+  const fetchWithPermissions = (push) => fakeFetch([{ status: 200, body: { permissions: { push } } }]);
+  assert.deepEqual(await core.probeGithubRepoAccess('o', 'r', 'tok', fetchWithPermissions(true)), { status: 'write' });
+  assert.deepEqual(await core.probeGithubRepoAccess('o', 'r', 'tok', fetchWithPermissions(false)), { status: 'read' });
+  assert.deepEqual(await core.probeGithubRepoAccess('o', 'r', '', fakeFetch([{ status: 200, body: {} }])), { status: 'read' }); // public, unauthenticated
+  assert.deepEqual(await core.probeGithubRepoAccess('o', 'r', 'expired-tok', fakeFetch([{ status: 401 }])), { status: 'refused', reason: 'expired' });
+  assert.deepEqual(await core.probeGithubRepoAccess('o', 'r', 'tok', fakeFetch([{ status: 404 }])), { status: 'refused', reason: 'not-a-member' });
+  assert.deepEqual(await core.probeGithubRepoAccess('o', 'r', '', fakeFetch([{ status: 404 }])), { status: 'refused', reason: 'unknown' });
+  assert.deepEqual(await core.probeGithubRepoAccess('o', 'r', 'tok', fakeFetch([{ throw: 'network down' }])), { status: 'refused', reason: 'unknown' });
+});

@@ -1393,10 +1393,30 @@ async function pushGithubFile({ fetchImpl, repo, path, branch, token, text, sha,
   try { data = await res.json(); } catch (e) { return { status: 'error', message: 'Invalid response from GitHub' }; }
   return { status: 'ok', sha: data.content && data.content.sha };
 }
+// One request, with or without a token. GitHub returns 404 (not 403) for
+// a private repo a token can't see, same as for one that doesn't exist
+// at all, so both read as "refused" here; an unauthenticated 200 means
+// the repo is public (no permissions object comes back without a token,
+// so success alone is the signal).
+async function probeGithubRepoAccess(owner, repo, token, fetchImpl) {
+  try {
+    const headers = { Accept: 'application/vnd.github+json' };
+    if (token) headers.Authorization = 'Bearer ' + token;
+    const res = await fetchImpl('https://api.github.com/repos/' + encodeURIComponent(owner) + '/' + encodeURIComponent(repo), { headers, cache: 'no-store' });
+    if (res.status === 401) return { status: 'refused', reason: 'expired' };
+    if (res.status === 404) return { status: 'refused', reason: token ? 'not-a-member' : 'unknown' };
+    if (!res.ok) return { status: 'refused', reason: 'unknown' };
+    if (!token) return { status: 'read' };
+    const data = await res.json();
+    return { status: data.permissions && data.permissions.push ? 'write' : 'read' };
+  } catch (e) {
+    return { status: 'refused', reason: 'unknown' };
+  }
+}
 
 module.exports = {
   xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, COMMENT_READS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, truncate, splitHighlightSegments, relativeAge, formatNow, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, hydrateIssue, deriveFieldDefs, backfillProjectHistory, hydrateProject, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, evalRule, computeBoundValue, isFieldLocked, applyComputedToField, applyLinkedRules, sortValue, computeSortSnapshot,
   importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry,
   squashHistory, displayValueForHistory, buildSourceText, parseJsonl, entryKey, commentKey, unionByKey, mergeIssuePair, computeIssueMerge, computeFieldDefsMerge, computeDerivedChangeEntries,
-  buildGithubContentsUrl, buildGithubContentsHeaders, buildGithubCommitMessage, pullGithubFile, pushGithubFile
+  buildGithubContentsUrl, buildGithubContentsHeaders, buildGithubCommitMessage, pullGithubFile, pushGithubFile, probeGithubRepoAccess
 };

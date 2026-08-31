@@ -2122,6 +2122,42 @@ test.describe('Column value filters', () => {
     await expect(page.locator('[data-testid=row]')).toHaveCount(4); // i1, i2, i4, i9
   });
 
+  // Tracker issue #60 (1344b5af): switching to this project from another
+  // wigwag project is one of the explicit refresh triggers, same as a
+  // reload -- switchProject() already recomputes columnFilterExcludedIds
+  // fresh (see the constructor and switchProject() itself), this just
+  // proves it live rather than assuming from reading the code.
+  test('switching away to another project and back reapplies the filter fresh, same as a reload', async ({ page }) => {
+    await h.openColumnMenu(page, 'rag');
+    await page.locator('[data-testid=col-filter-option]').filter({ hasText: 'At risk' }).click(); // amber: i2, i4, i9
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=row]')).toHaveCount(3);
+
+    const projectId = JSON.parse(await page.evaluate(() => localStorage.getItem('git_native_tracker_milestones_v1'))).activeMilestoneId;
+    await page.goto(h.TRACKER_PATH + '#/project/' + projectId + '/issue/i1', { waitUntil: 'load' });
+    await page.waitForTimeout(500);
+    const statusCell = page.locator('[data-testid=slideover-field][data-col=rag]');
+    const trigger = statusCell.locator('span[style*="cursor: pointer"]').first();
+    await trigger.click();
+    await page.waitForTimeout(150);
+    await trigger.click();
+    await page.waitForTimeout(200);
+    await page.locator('[data-testid=select-option]').filter({ hasText: 'At risk' }).first().click();
+    await page.waitForTimeout(300);
+    await page.goto(h.TRACKER_PATH + '#/project/' + projectId, { waitUntil: 'load' });
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=row]')).toHaveCount(3); // i1 still hidden -- frozen
+
+    await h.openTrackerSwitcher(page);
+    await h.createNamedBlankProject(page, 'Scratch project for #60');
+    await page.waitForTimeout(300);
+    await h.openTrackerSwitcher(page);
+    await h.milestoneRow(page, 'Delivery tracker').click();
+    await page.waitForTimeout(400);
+    await expect(page.locator('[data-testid=row]')).toHaveCount(4); // i1, i2, i4, i9 -- refreshed by the switch
+  });
+
   test('a newly added row stays visible under an active filter even with a blank filtered field, until the filter is reapplied', async ({ page }) => {
     await h.openColumnMenu(page, 'rag');
     await page.locator('[data-testid=col-filter-option]').filter({ hasText: 'At risk' }).click();

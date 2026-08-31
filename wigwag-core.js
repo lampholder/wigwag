@@ -1086,19 +1086,37 @@ function sortValue(issue, colId, def) {
   }
   return issue.values[colId] || '';
 }
+// An issue's earliest logged event (its own "Created" entry, always the
+// lowest sortKey in its history chronologically) as a stable creation-
+// order key. Immutable once set -- unlike issue.num (which only reflects
+// the order a browser first became aware of an issue, not its true age:
+// an issue merged in from elsewhere gets numbered above all of a local
+// project's existing issues regardless of how old it actually is) or raw
+// array position (which a merge can reorder relative to true creation
+// order), this is preserved verbatim through every merge, so it's safe
+// to sort by on every render with no snapshotting needed.
+function issueCreatedAt(issue) {
+  const sortKeys = (issue.history || []).map(h => h.sortKey).filter(k => typeof k === 'number');
+  return sortKeys.length ? Math.min(...sortKeys) : 0;
+}
 // Row order should only change when the sort itself is set/changed or the
 // page is reloaded -- never as a side effect of editing a field, even the
 // sorted-by column. See wigwag.html's own switchProject/sortBy/boot-time
 // callers for where this gets (re)computed and why -- never on every
 // render, so there's no per-tick mechanism that could misbehave.
+// Ties (including two issues with no set value at all) fall back to
+// creation date, not sort stability -- Array.sort's stability reflects
+// current array position, which a merge can reorder independently of
+// true creation order.
 function computeSortSnapshot(sort, issues, fieldDefs) {
   if (!sort.colId) return null;
   const def = sort.colId === 'title' ? null : fieldDefs[sort.colId];
-  const withValues = issues.map(iss => ({ id: iss.id, values: deriveIssueValues(iss, fieldDefs) }));
+  const withValues = issues.map(iss => ({ id: iss.id, values: deriveIssueValues(iss, fieldDefs), createdAt: issueCreatedAt(iss) }));
   withValues.sort((a, b) => {
     const av = sortValue(a, sort.colId, def), bv = sortValue(b, sort.colId, def);
     const cmp = String(av).localeCompare(String(bv));
-    return sort.dir === 'asc' ? cmp : -cmp;
+    if (cmp !== 0) return sort.dir === 'asc' ? cmp : -cmp;
+    return a.createdAt - b.createdAt;
   });
   return withValues.map(i => i.id);
 }
@@ -1415,7 +1433,7 @@ async function probeGithubRepoAccess(owner, repo, token, fetchImpl) {
 }
 
 module.exports = {
-  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, COMMENT_READS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, truncate, splitHighlightSegments, relativeAge, formatNow, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, hydrateIssue, deriveFieldDefs, backfillProjectHistory, hydrateProject, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, evalRule, computeBoundValue, isFieldLocked, applyComputedToField, applyLinkedRules, sortValue, computeSortSnapshot,
+  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, COMMENT_READS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, truncate, splitHighlightSegments, relativeAge, formatNow, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, hydrateIssue, deriveFieldDefs, backfillProjectHistory, hydrateProject, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, evalRule, computeBoundValue, isFieldLocked, applyComputedToField, applyLinkedRules, sortValue, computeSortSnapshot, issueCreatedAt,
   importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry,
   squashHistory, displayValueForHistory, buildSourceText, parseJsonl, entryKey, commentKey, unionByKey, mergeIssuePair, computeIssueMerge, computeFieldDefsMerge, computeDerivedChangeEntries,
   buildGithubContentsUrl, buildGithubContentsHeaders, buildGithubCommitMessage, pullGithubFile, pushGithubFile, probeGithubRepoAccess

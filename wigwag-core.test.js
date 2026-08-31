@@ -191,7 +191,7 @@ test('sortValue: select/multiselect sort by configured option order, not alphabe
   assert.equal(core.sortValue({ values: { title: 'Hello' } }, 'title', null), 'Hello');
 });
 
-test('computeSortSnapshot: freezes an order by id, ties broken by live sortValue; null colId means no sort at all', () => {
+test('computeSortSnapshot: freezes an order by id; null colId means no sort at all', () => {
   const fieldDefs = { rag: { type: 'select', options: [{ id: 'g', label: 'Green' }, { id: 'r', label: 'Red' }] } };
   const issues = [
     { id: 'a', history: [{ field: 'rag', value: 'r', sortKey: 1 }] },
@@ -200,6 +200,25 @@ test('computeSortSnapshot: freezes an order by id, ties broken by live sortValue
   const snapshot = core.computeSortSnapshot({ colId: 'rag', dir: 'asc' }, issues, fieldDefs);
   assert.deepEqual(snapshot, ['b', 'a']); // green (idx 0) before red (idx 1)
   assert.equal(core.computeSortSnapshot({ colId: null }, issues, fieldDefs), null);
+});
+
+test('issueCreatedAt: the earliest sortKey in an issue\'s history, not issue.num or array position', () => {
+  const issue = { history: [{ sortKey: 30 }, { sortKey: 10 }, { sortKey: 20 }] };
+  assert.equal(core.issueCreatedAt(issue), 10);
+  assert.equal(core.issueCreatedAt({ history: [] }), 0);
+});
+
+test('computeSortSnapshot: a tied sort value falls back to creation date (issueCreatedAt), not array/insertion order', () => {
+  const fieldDefs = { rag: { type: 'select', options: [{ id: 'g', label: 'Green' }] } };
+  // Both share the same rag value (tied) -- 'b' is listed FIRST in the
+  // array but was actually created LATER (higher sortKey); a naive
+  // stable-sort-on-ties would wrongly keep array order.
+  const issues = [
+    { id: 'b', history: [{ field: 'rag', value: 'g', sortKey: 5 }] },
+    { id: 'a', history: [{ field: 'rag', value: 'g', sortKey: 1 }] }
+  ];
+  const snapshot = core.computeSortSnapshot({ colId: 'rag', dir: 'asc' }, issues, fieldDefs);
+  assert.deepEqual(snapshot, ['a', 'b']); // a (created first) before b, despite array order
 });
 
 // --- Phase 3: signing primitives + the shared two-phase commit ---

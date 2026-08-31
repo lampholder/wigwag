@@ -1731,6 +1731,27 @@ test.describe('Editing the sorted-by column does not reorder the row', () => {
     expect(titles[titles.length - 1]).toContain('New row while sorted');
   });
 
+  test('two new rows added while sorted both land at the end, ordered by creation date relative to each other', async ({ page }) => {
+    await h.sortByColumn(page, 'rag', 'ascending');
+    await page.keyboard.down('Control'); await page.keyboard.press('Space'); await page.keyboard.up('Control');
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=add-item-input]').fill('ZFirst new row (created first)');
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(250);
+    await page.keyboard.down('Control'); await page.keyboard.press('Space'); await page.keyboard.up('Control');
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=add-item-input]').fill('ASecond new row (created second)');
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(250);
+
+    const titles = await page.locator('[data-testid=title-cell]').allTextContents();
+    // Both new, neither in the frozen snapshot -- creation order, not a
+    // fallback string comparison that would put "ASecond..." (starts
+    // with A) ahead of "ZFirst..." alphabetically.
+    expect(titles[titles.length - 2]).toContain('ZFirst new row');
+    expect(titles[titles.length - 1]).toContain('ASecond new row');
+  });
+
   test('a page reload recomputes the row order fresh (the freeze is transient, not persisted)', async ({ page }) => {
     await h.sortByColumn(page, 'rag', 'ascending');
     await h.clickFieldToEdit(page, 1, 'rag'); // i1: On track -> Off track
@@ -1986,10 +2007,11 @@ test.describe('Column value filters', () => {
   });
 
   // The other half of "sticky" filtering: an edit that makes a currently-
-  // HIDDEN row start matching is revealed immediately, not stuck out of
-  // view until the filter is reapplied -- filtering only ever suppresses
-  // a row disappearing, never a row appearing.
-  test('editing a hidden row so it newly matches the filter reveals it immediately', async ({ page }) => {
+  // HIDDEN row start matching stays hidden too -- filtering is symmetric,
+  // frozen at the moment its own criteria last changed either way, not
+  // reactive to edits (or a sync-driven merge, which re-renders the same
+  // way) in either direction.
+  test('editing a hidden row so it newly matches the filter does not reveal it -- only reapplying the filter does', async ({ page }) => {
     await h.openColumnMenu(page, 'rag');
     await page.locator('[data-testid=col-filter-option]').filter({ hasText: 'At risk' }).click(); // amber: i2, i4, i9
     await page.mouse.click(700, 700);
@@ -2011,7 +2033,18 @@ test.describe('Column value filters', () => {
     await page.locator('[data-testid=select-option]').filter({ hasText: 'At risk' }).first().click();
     await page.waitForTimeout(300);
 
-    await expect(page.locator('[data-testid=row]')).toHaveCount(4); // revealed, no reapply needed
+    await page.goto(h.TRACKER_PATH + '#/project/' + projectId, { waitUntil: 'load' });
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=row]')).toHaveCount(3); // still hidden, sticky
+
+    // Reapplying the filter (toggling a value) recomputes the snapshot --
+    // NOW the edited row correctly appears.
+    await h.openColumnMenu(page, 'rag');
+    await page.locator('[data-testid=col-filter-option]').filter({ hasText: 'On track' }).click();
+    await page.locator('[data-testid=col-filter-option]').filter({ hasText: 'On track' }).click();
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=row]')).toHaveCount(4); // i1, i2, i4, i9
   });
 
   test('a newly added row stays visible under an active filter even with a blank filtered field, until the filter is reapplied', async ({ page }) => {

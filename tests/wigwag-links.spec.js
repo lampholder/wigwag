@@ -153,6 +153,104 @@ test.describe('wigwag: links -- issue-type fields', () => {
   });
 });
 
+// A link embedded PARTWAY through a title is a different case from the
+// above -- those all replace the WHOLE field value (creating a fieldRef,
+// resolved via the ref-branches in buildTextCell). Title (and any other
+// type:'issue' field) is deliberately single-line/never markdown-rendered,
+// so an embedded reference had no path to becoming a real pill at all
+// until this -- reported live: "wigwag: links aren't being rendered as
+// pills in issue titles... embedded partway through". Resolution reuses
+// the exact same resolveWigwagRef/openWigwagRef the whole-field case
+// already does; only the split-into-segments step is new.
+test.describe('wigwag: links -- embedded partway through a title', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  test('pasting a title with an embedded wigwag: link renders plain text either side of a resolved pill, in the table row', async ({ page }) => {
+    await h.clickTitleToEdit(page, 1);
+    await h.pasteText(page, 'See wigwag:/project/demo-milestone/issue/i2/ before shipping');
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(400);
+
+    const cell = h.titleCell(page, 1);
+    await expect(cell).toContainText('See');
+    await expect(cell).toContainText('before shipping');
+    const pill = cell.locator('[data-testid=wigwag-title-pill]');
+    await expect(pill).toHaveCount(1);
+    await expect(pill).toContainText("ACME – New rooms added to spaces don't show until sync");
+    await expect(pill.locator('svg')).toHaveCount(1);
+  });
+
+  test('a raw local-instance link (not yet canonical) embedded in a title is translated to wigwag: form on commit', async ({ page }) => {
+    await h.clickTitleToEdit(page, 1);
+    await h.pasteText(page, 'See http://localhost:8935/wigwag.html#/project/demo-milestone/issue/i2 before shipping');
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(400);
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    const iss = doc.issues.find(i => i.id === 'i1');
+    expect(h.latestFieldValue(iss, 'title')).toBe('See wigwag:/project/demo-milestone/issue/i2 before shipping');
+    await expect(h.titleCell(page, 1).locator('[data-testid=wigwag-title-pill]')).toHaveCount(1);
+  });
+
+  test('clicking the embedded pill navigates to the referenced issue, not the title\'s own row/slide-over', async ({ page, context }) => {
+    await h.clickTitleToEdit(page, 1);
+    await h.pasteText(page, 'See wigwag:/project/demo-milestone/issue/i2/ before shipping');
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(400);
+
+    const pagesBefore = context.pages().length;
+    await h.titleCell(page, 1).locator('[data-testid=wigwag-title-pill]').click();
+    await page.waitForTimeout(300);
+    expect(context.pages().length).toBe(pagesBefore); // no new tab
+    expect(await page.evaluate(() => location.hash)).toBe('#/project/demo-milestone/issue/i2');
+    await expect(page.locator('[data-testid=slideover]')).toHaveCount(1);
+  });
+
+  test('the same rendering applies in the slide-over header', async ({ page }) => {
+    await h.clickTitleToEdit(page, 1);
+    await h.pasteText(page, 'See wigwag:/project/demo-milestone/issue/i2/ before shipping');
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(400);
+
+    await page.evaluate(() => { location.hash = '#/project/demo-milestone/issue/i1'; });
+    await page.waitForTimeout(500);
+    const slideover = page.locator('[data-testid=slideover]');
+    const pill = slideover.locator('[data-testid=wigwag-title-pill]');
+    await expect(pill).toHaveCount(1);
+    await expect(slideover.locator('[data-testid=slideover-title-mixed]')).toContainText('See');
+    await expect(slideover.locator('[data-testid=slideover-title-mixed]')).toContainText('before shipping');
+
+    await pill.click();
+    await page.waitForTimeout(300);
+    expect(await page.evaluate(() => location.hash)).toBe('#/project/demo-milestone/issue/i2');
+  });
+
+  test('a title with no embedded link renders exactly as before (unaffected)', async ({ page }) => {
+    await h.clickTitleToEdit(page, 1);
+    await h.pasteText(page, 'Just an ordinary title, no links here');
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(400);
+
+    const cell = h.titleCell(page, 1);
+    await expect(cell).toContainText('Just an ordinary title, no links here');
+    await expect(cell.locator('[data-testid=wigwag-title-pill]')).toHaveCount(0);
+  });
+
+  test('a keyword filter still highlights matches in the plain-text portions around the pill', async ({ page }) => {
+    await h.clickTitleToEdit(page, 1);
+    await h.pasteText(page, 'See wigwag:/project/demo-milestone/issue/i2/ before SHIPPING deadline');
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(400);
+
+    await page.locator('[data-testid=filter-input]').fill('shipping');
+    await page.waitForTimeout(200);
+    const cell = h.titleCell(page, 1);
+    await expect(cell.locator('[data-testid=filter-match]')).toHaveCount(1);
+    await expect(cell.locator('[data-testid=filter-match]').first()).toHaveText('SHIPPING');
+    await expect(cell.locator('[data-testid=wigwag-title-pill]')).toHaveCount(1); // pill unaffected
+  });
+});
+
 test.describe('wigwag: links -- prose (comments, notes, multiline text fields)', () => {
   test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
 

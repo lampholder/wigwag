@@ -118,6 +118,24 @@ test('matchingIssuesByIdPrefix: below 4 chars, non-hex, or zero real matches all
   assert.deepEqual(core.matchingIssuesByIdPrefix(issues, 'face'), []); // hex-shaped, 4+ chars, but matches nothing -- a real keyword like "face" or "deadbeef" itself must never trap the user in jump mode with no results
 });
 
+test('splitEmbeddedWigwagLinks: finds a wigwag: URI embedded mid-string, leaving surrounding text as separate plain segments', () => {
+  const segs = core.splitEmbeddedWigwagLinks('See wigwag:/project/abc/issue/i2/ for context');
+  assert.deepEqual(segs, [
+    { text: 'See ', isLink: false },
+    { text: 'wigwag:/project/abc/issue/i2/', isLink: true },
+    { text: ' for context', isLink: false }
+  ]);
+});
+
+test('splitEmbeddedWigwagLinks: plain text with nothing embedded returns a single non-link segment; also handles the wigwag:/remote/ form and multiple links', () => {
+  assert.deepEqual(core.splitEmbeddedWigwagLinks('just a normal title'), [{ text: 'just a normal title', isLink: false }]);
+  assert.deepEqual(core.splitEmbeddedWigwagLinks(''), [{ text: '', isLink: false }]);
+  const remote = core.splitEmbeddedWigwagLinks('wigwag:/remote/github.com/acme/repo/issue/i9');
+  assert.deepEqual(remote, [{ text: 'wigwag:/remote/github.com/acme/repo/issue/i9', isLink: true }]);
+  const two = core.splitEmbeddedWigwagLinks('a wigwag:/project/x/ and b wigwag:/project/y/');
+  assert.deepEqual(two.filter(s => s.isLink).map(s => s.text), ['wigwag:/project/x/', 'wigwag:/project/y/']);
+});
+
 test('textMentionsEmail: tracker issue #65 (178b0afa) -- a literal "@" immediately before the email, word-bounded, case-insensitive', () => {
   assert.equal(core.textMentionsEmail('cc @tom@lant.uk please review', 'tom@lant.uk'), true);
   assert.equal(core.textMentionsEmail('CC @TOM@LANT.UK please review', 'tom@lant.uk'), true);

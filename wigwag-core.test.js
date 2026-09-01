@@ -118,6 +118,15 @@ test('matchingIssuesByIdPrefix: below 4 chars, non-hex, or zero real matches all
   assert.deepEqual(core.matchingIssuesByIdPrefix(issues, 'face'), []); // hex-shaped, 4+ chars, but matches nothing -- a real keyword like "face" or "deadbeef" itself must never trap the user in jump mode with no results
 });
 
+test('textMentionsEmail: tracker issue #65 (178b0afa) -- a literal "@" immediately before the email, word-bounded, case-insensitive', () => {
+  assert.equal(core.textMentionsEmail('cc @tom@lant.uk please review', 'tom@lant.uk'), true);
+  assert.equal(core.textMentionsEmail('CC @TOM@LANT.UK please review', 'tom@lant.uk'), true);
+  assert.equal(core.textMentionsEmail('@tom@lant.uk.evil.com is not tom', 'tom@lant.uk'), false); // word boundary -- not a substring match
+  assert.equal(core.textMentionsEmail('my email is tom@lant.uk, no @ before it', 'tom@lant.uk'), false); // bare email, no @-mention
+  assert.equal(core.textMentionsEmail('', 'tom@lant.uk'), false);
+  assert.equal(core.textMentionsEmail('@tom@lant.uk', ''), false);
+});
+
 test('renderMarkdown: bold/emphasis render as real elements, plain text passes through', () => {
   assert.equal(core.renderMarkdown('**bold** and _em_'), '<p><strong>bold</strong> and <em>em</em></p>');
   assert.match(core.renderMarkdown('plain text'), /plain text/);

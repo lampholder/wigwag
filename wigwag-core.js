@@ -399,6 +399,32 @@ function computeColumnFilterExcludedIds(columnFilters, issues, fieldDefs) {
     .map(iss => iss.id);
 }
 const COMMENT_READS_KEY = 'git_native_tracker_comment_reads_v1';
+// Mention notifications (tracker issue #65, 178b0afa): a per-browser
+// on/off preference (like appearance/columnWidths -- not project data,
+// never exported) and a capped log of comment ids already delivered as a
+// browser notification, so a poll that re-sees an already-notified
+// comment (or a fresh page load re-hydrating the same project) never
+// re-fires for it. Capped generously since it only needs to outlive
+// however long comment ids realistically stick around in local state.
+const MENTION_NOTIFICATIONS_KEY = 'git_native_tracker_mention_notifications_v1';
+const NOTIFIED_MENTIONS_KEY = 'git_native_tracker_notified_mentions_v1';
+const NOTIFIED_MENTIONS_CAP = 1000;
+// A mention is a literal "@" immediately followed by the target's email,
+// word-bounded (\b after the email) so "@tom@lant.uk.evil.com" doesn't
+// also count as mentioning "tom@lant.uk". Deliberately not a bare-email
+// match -- comments already autolink bare emails as person pills, and
+// treating every such occurrence as an intentional mention would over-
+// notify constantly (a GitHub reference, a "cc'd" name in prose, etc.).
+function textMentionsEmail(text, email) {
+  if (!text || !email) return false;
+  const esc = String(email).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Negative lookahead (not \b) for the trailing boundary -- "." and "-"
+  // are non-word chars, so \b alone would still call "@tom@lant.uk" a
+  // match inside "@tom@lant.uk.evil.com" (a boundary exists right after
+  // "uk" either way). Anything that could extend the email -- word char,
+  // dot, hyphen -- must NOT follow the match.
+  return new RegExp('@' + esc + '(?![\\w.-])', 'i').test(text);
+}
 // Sort (ascending/descending): cosmetic-only, per-browser, per-project --
 // same reasoning again. { [projectId]: { colId, dir } }.
 const SORT_KEY = 'git_native_tracker_sort_v1';
@@ -1499,7 +1525,7 @@ async function probeGithubRepoAccess(owner, repo, token, fetchImpl) {
 }
 
 module.exports = {
-  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, COMMENT_READS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, relativeAge, formatNow, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, hydrateIssue, deriveFieldDefs, backfillProjectHistory, hydrateProject, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, evalRule, computeBoundValue, isFieldLocked, applyComputedToField, applyLinkedRules, sortValue, computeSortSnapshot, issueCreatedAt,
+  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, COMMENT_READS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, relativeAge, formatNow, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, hydrateIssue, deriveFieldDefs, backfillProjectHistory, hydrateProject, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, evalRule, computeBoundValue, isFieldLocked, applyComputedToField, applyLinkedRules, sortValue, computeSortSnapshot, issueCreatedAt,
   importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry,
   squashHistory, displayValueForHistory, buildSourceText, parseJsonl, entryKey, commentKey, unionByKey, mergeIssuePair, computeIssueMerge, computeFieldDefsMerge, computeDerivedChangeEntries,
   buildGithubContentsUrl, buildGithubContentsHeaders, buildGithubCommitMessage, pullGithubFile, pushGithubFile, probeGithubRepoAccess

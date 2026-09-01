@@ -102,6 +102,22 @@ test('splitHighlightSegments: every occurrence, case-insensitive, non-matching t
   assert.equal(segs.map(s => s.text).join(''), 'Add JSONL schema validation on Schema Import');
 });
 
+test('matchingIssuesByIdPrefix: tracker issue #62 (bb9acbd4) -- prefix match against issue.id, capped at 8, sorted ascending', () => {
+  const issues = [{ id: '3f9a21c4-aaaa' }, { id: '3f9ab000-bbbb' }, { id: 'deadbeef-cccc' }, { id: '1234-dddd' }];
+  assert.deepEqual(core.matchingIssuesByIdPrefix(issues, '3f9a').map(i => i.id), ['3f9a21c4-aaaa', '3f9ab000-bbbb']);
+  assert.deepEqual(core.matchingIssuesByIdPrefix(issues, '#3f9a').map(i => i.id), ['3f9a21c4-aaaa', '3f9ab000-bbbb']); // leading # stripped
+  assert.deepEqual(core.matchingIssuesByIdPrefix(issues, '3F9A').map(i => i.id), ['3f9a21c4-aaaa', '3f9ab000-bbbb']); // case-insensitive
+  assert.deepEqual(core.matchingIssuesByIdPrefix(issues, '9a21').map(i => i.id), []); // prefix only, never substring
+});
+
+test('matchingIssuesByIdPrefix: below 4 chars, non-hex, or zero real matches all fall through to "not a jump query"', () => {
+  const issues = [{ id: 'deadbeef-cccc' }];
+  assert.deepEqual(core.matchingIssuesByIdPrefix(issues, 'dea'), []); // too short
+  assert.deepEqual(core.matchingIssuesByIdPrefix(issues, 'ordinary keyword'), []); // not hex-shaped
+  assert.deepEqual(core.matchingIssuesByIdPrefix(issues, 'deadZZZZ'), []); // hex-shaped-ish, hyphen/hex only, but ZZZZ isn't hex
+  assert.deepEqual(core.matchingIssuesByIdPrefix(issues, 'face'), []); // hex-shaped, 4+ chars, but matches nothing -- a real keyword like "face" or "deadbeef" itself must never trap the user in jump mode with no results
+});
+
 test('renderMarkdown: bold/emphasis render as real elements, plain text passes through', () => {
   assert.equal(core.renderMarkdown('**bold** and _em_'), '<p><strong>bold</strong> and <em>em</em></p>');
   assert.match(core.renderMarkdown('plain text'), /plain text/);

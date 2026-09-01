@@ -9,6 +9,7 @@
   },
   "scripts": {
     "test": "playwright test",
+    "serve": "node serve.js",
     "jira-proxy": "node jira-proxy.js",
     "salesforce-proxy": "node salesforce-proxy.js",
     "github-oauth-proxy": "node github-oauth-proxy.js",

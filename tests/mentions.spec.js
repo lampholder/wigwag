@@ -84,6 +84,29 @@ test.describe('Settings: mention notifications toggle', () => {
     expect(persisted).not.toBe('1');
   });
 
+  // Confirmed live against a real (non-headless-limited) check: Chrome
+  // does not offer the Notifications permission at all for file:// origins
+  // -- no prompt, and the permission doesn't even appear in the page's own
+  // site-permissions panel. Opening wigwag.html directly (the normal way
+  // to use it, per this project's own CLAUDE.md) silently makes the whole
+  // feature inert with no error anywhere -- surfaced explicitly instead,
+  // pointing at the `npm run serve` alternative (serve.js).
+  test('opening the file directly (file://) shows a distinct explanation instead of the generic "blocked" message', async ({ page }) => {
+    await stubNotifications(page, { permission: 'denied' }); // matches the real file:// behavior confirmed live
+    await h.useFastTimers(page);
+    await h.seedDemoMilestone(page);
+    const path = require('path');
+    await page.goto('file://' + path.join(__dirname, '..', 'wigwag.html'), { waitUntil: 'load' });
+    await page.waitForTimeout(500);
+
+    await h.openSettingsSection(page, 'notifications');
+    await page.locator('[data-testid=settings-mention-toggle]').click();
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=settings-mention-file-origin]')).toBeVisible();
+    await expect(page.locator('[data-testid=settings-mention-file-origin]')).toContainText('npm run serve');
+    await expect(page.locator('[data-testid=settings-mention-blocked]')).toHaveCount(0); // not the generic message too
+  });
+
   test('the preference survives a reload', async ({ page }) => {
     await stubNotifications(page);
     await h.gotoTracker(page);

@@ -176,8 +176,72 @@ test.describe('wigwag: links -- embedded partway through a title', () => {
     await expect(cell).toContainText('before shipping');
     const pill = cell.locator('[data-testid=wigwag-title-pill]');
     await expect(pill).toHaveCount(1);
-    await expect(pill).toContainText("ACME – New rooms added to spaces don't show until sync");
+    // The pill's own visible text is capped (see the next test) so it stays
+    // a compact chip regardless of how long the resolved label is -- the
+    // full, untruncated label is still there for a screen reader / hover
+    // via title=.
+    await expect(pill).toHaveAttribute('title', "Delivery tracker / ACME – New rooms added to spaces don't show until sync");
     await expect(pill.locator('svg')).toHaveCount(1);
+  });
+
+  // Regression, found live: text-overflow:ellipsis on a nowrap line
+  // containing the pill (a non-text inline-flex child) doesn't ellipsize
+  // gracefully once the combined line overflows -- the browser can hide
+  // the WHOLE pill rather than truncating around it, since an untruncated
+  // resolved label is easily wider than the entire title column. A title
+  // that used to render as "See <pill> before shipping" was collapsing to
+  // just "See …", silently losing the pill and all the trailing text. The
+  // real fix is bounding the pill's own rendered width (truncating its
+  // label, capping its own max-width) rather than the container's
+  // overflow behavior -- CSS-only ellipsis has no DOM-text signal to
+  // assert on, so this checks the pill's actual rendered width, not text.
+  test('a long resolved label is capped so the pill stays a narrow, bounded chip', async ({ page }) => {
+    await h.clickTitleToEdit(page, 1);
+    await h.pasteText(page, 'See wigwag:/project/demo-milestone/issue/i2/ before shipping');
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(400);
+
+    const cell = h.titleCell(page, 1);
+    const pill = cell.locator('[data-testid=wigwag-title-pill]');
+    const pillText = await pill.textContent();
+    expect(pillText.length).toBeLessThan(40); // capped, not the full ~75-char resolved label
+    expect(pillText).toContain('…');
+    const box = await pill.boundingBox();
+    expect(box.width).toBeLessThan(200); // stays a compact chip, not free to grow with the label
+  });
+
+  // Follow-up, also caught live: the truncation above was unconditional,
+  // even in "Wrap text" mode -- where the column no longer clips anything
+  // (word-break:break-word, overflow:visible) so there's no overflow
+  // problem left to solve, and a permanently-truncated pill there is just
+  // a regression, not a fix for anything. Wrap mode always shows the pill's
+  // full label; the slide-over's own title container has the same "nothing
+  // gets clipped" property (a plain block-level div, no nowrap/ellipsis at
+  // all) and always shows the full label too, unconditionally.
+  test('"Wrap text" on the title column shows the pill\'s full, untruncated label', async ({ page }) => {
+    await h.clickTitleToEdit(page, 1);
+    await h.pasteText(page, 'See wigwag:/project/demo-milestone/issue/i2/ before shipping');
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(400);
+
+    const pill = h.titleCell(page, 1).locator('[data-testid=wigwag-title-pill]');
+    expect(await pill.textContent()).not.toBe("Delivery tracker / ACME – New rooms added to spaces don't show until sync");
+
+    await page.locator('[data-testid=title-wrap-toggle]').click();
+    await page.waitForTimeout(300);
+    expect(await pill.textContent()).toBe("Delivery tracker / ACME – New rooms added to spaces don't show until sync");
+  });
+
+  test('the slide-over header always shows the pill\'s full label, never truncated', async ({ page }) => {
+    await h.clickTitleToEdit(page, 1);
+    await h.pasteText(page, 'See wigwag:/project/demo-milestone/issue/i2/ before shipping');
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(400);
+
+    await page.evaluate(() => { location.hash = '#/project/demo-milestone/issue/i1'; });
+    await page.waitForTimeout(500);
+    const pill = page.locator('[data-testid=slideover] [data-testid=wigwag-title-pill]');
+    expect(await pill.textContent()).toBe("Delivery tracker / ACME – New rooms added to spaces don't show until sync");
   });
 
   test('a raw local-instance link (not yet canonical) embedded in a title is translated to wigwag: form on commit', async ({ page }) => {

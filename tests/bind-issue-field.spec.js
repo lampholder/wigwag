@@ -76,7 +76,35 @@ test.describe('Binding an issue-type field to another field ("copy field")', () 
     const labels = await row.locator('[data-testid=rule-row-then-copy-field] option').allTextContents();
     expect(labels).toContain('— leave blank —');
     expect(labels.some(l => l.includes('Related'))).toBe(true);
+    // Regression, found live: Title was wrongly excluded from copy
+    // candidates (copied reflexively from a DIFFERENT context --
+    // subjectGroups()'s "Other fields in this row" condition-subject
+    // list, which excludes Title for an unrelated reason). Title is an
+    // ordinary issue-type field that can carry a real fieldRef same as
+    // any other -- "copy the key issue itself when it's a support issue"
+    // is a real use case that needs it offered here.
+    expect(labels.some(l => l.includes('Issue'))).toBe(true);
     expect(labels).not.toContain('Remedy'); // can't copy itself
+  });
+
+  // Regression, found live: bindableSources() (the "BOUND SOURCE"
+  // dropdown itself, not the copy-field THEN dropdown above) never
+  // excluded the field currently being edited -- binding a field to
+  // itself as its own linked source is nonsensical (its own
+  // source.isLinked/source.github/etc. would depend on its own
+  // not-yet-computed state).
+  test('a field cannot be set as its own BOUND SOURCE', async ({ page }) => {
+    const remedyId = await addField(page, 'Remedy', 'issue');
+    await h.openFieldEditor(page, remedyId);
+    const remedyLabels = await page.locator('[data-testid=field-editor-source-select] option').allTextContents();
+    expect(remedyLabels).not.toContain('Remedy');
+    expect(remedyLabels).toEqual(expect.arrayContaining(['— None —', 'Issue', 'Related']));
+
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(200);
+    await h.openFieldEditor(page, 'linked');
+    const relatedLabels = await page.locator('[data-testid=field-editor-source-select] option').allTextContents();
+    expect(relatedLabels).not.toContain('Related');
   });
 
   test('a matching row copies the source field\'s resolved value AND real link -- the target renders as a real, locked pill, not plain text', async ({ page }) => {

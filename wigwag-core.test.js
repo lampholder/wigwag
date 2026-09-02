@@ -224,6 +224,23 @@ test('computeBoundValue / isFieldLocked: unlinked or ruleless fields are never l
   assert.equal(core.computeBoundValue(linkedIssue, noRuleDef).isLinked, false);
 });
 
+test('isFieldLocked: tracker issue #66 (bfdbe595) -- locked only while the rule has a real (non-null) answer, not merely while the source is linked', () => {
+  const def = { type: 'select', rule: 'source.github.labels.includes("bug") ? "bug" : null', linkedSourceId: 'related' };
+  const noMatch = { values: { related: 'x' }, fieldRefs: { related: { system: 'github', labels: ['enhancement'] } } };
+  const bound = core.computeBoundValue(noMatch, def);
+  assert.equal(bound.isLinked, true); // source IS linked...
+  assert.equal(bound.computed, null); // ...but the rule itself has nothing to say for this issue
+  assert.equal(core.isFieldLocked(noMatch, def), false); // so it's open for the user to fill in by hand
+
+  const match = { values: { related: 'x' }, fieldRefs: { related: { system: 'github', labels: ['bug'] } } };
+  assert.equal(core.isFieldLocked(match, def), true); // a real computed value stays locked, unchanged behavior
+
+  // A multiselect rule deliberately returning [] ("no options") is a real
+  // answer, not null -- must stay locked, not become overridable.
+  const multiDef = { type: 'multiselect', rule: '[]', linkedSourceId: 'related' };
+  assert.equal(core.isFieldLocked(match, multiDef), true);
+});
+
 test('applyComputedToField: resolves a select computed value to its option id, leaves non-matches null', () => {
   const def = { type: 'select', options: [{ id: 'bug', label: 'Bug' }] };
   assert.equal(core.applyComputedToField({ type: null }, 'type', def, 'bug').type, 'bug'); // by id
@@ -243,6 +260,26 @@ test('applyLinkedRules: only overwrites fields that are actually bound+linked, l
 
   const alreadyApplied = core.applyLinkedRules(result, fieldDefs);
   assert.equal(alreadyApplied, result); // same reference -- no-op when nothing changed
+});
+
+test('applyLinkedRules: tracker issue #66 (bfdbe595) -- a null-computed field is left completely untouched, so a manual override survives repeated calls', () => {
+  const fieldDefs = {
+    type: { type: 'select', options: [{ id: 'bug', label: 'Bug' }], rule: 'source.github.labels.includes("bug") ? "bug" : null', linkedSourceId: 'related' }
+  };
+  const issue = { values: { type: 'manually-typed-override', related: 'x' }, fieldRefs: { related: { system: 'github', labels: ['enhancement'] } } };
+  // The rule computes null for this issue (no "bug" label) -- the old
+  // behavior would have clobbered the override back to null every call;
+  // it must now survive completely untouched, repeatedly.
+  const once = core.applyLinkedRules(issue, fieldDefs);
+  assert.equal(once, issue); // not even a new object -- truly untouched
+  assert.equal(once.values.type, 'manually-typed-override');
+  const twice = core.applyLinkedRules(once, fieldDefs);
+  assert.equal(twice.values.type, 'manually-typed-override');
+
+  // Once the source starts computing a real value, the override is
+  // silently discarded on the very next call -- documented, not a bug.
+  const nowLinked = { ...issue, fieldRefs: { related: { system: 'github', labels: ['bug'] } } };
+  assert.equal(core.applyLinkedRules(nowLinked, fieldDefs).values.type, 'bug');
 });
 
 test('sortValue: select/multiselect sort by configured option order, not alphabetically; unset sorts last', () => {

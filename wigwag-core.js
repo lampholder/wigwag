@@ -1147,11 +1147,16 @@ function computeBoundValue(issue, def) {
 }
 // Whether a field is currently rule-derived (and therefore locked from
 // manual/bulk edit) for a specific issue -- every cell builder already
-// inlines this same computeBoundValue(...).isLinked check; bulk
-// Set-field is the first caller that needs it outside a per-cell
-// render, hence pulling it out to a name.
+// inlines this same check; bulk Set-field is the first caller that needs
+// it outside a per-cell render, hence pulling it out to a name.
+// Locked only while the rule has a REAL (non-null) answer -- tracker
+// issue #66 (bfdbe595): a rule that computes null for this issue leaves
+// the field open for the user to fill in by hand instead of permanently
+// blank. computed:[] (a multiselect rule deliberately choosing "no
+// options") is a real answer, not null, and stays locked.
 function isFieldLocked(issue, def) {
-  return computeBoundValue(issue, def).isLinked;
+  const bound = computeBoundValue(issue, def);
+  return bound.isLinked && bound.computed != null;
 }
 // select: computed matched against option id/label -> that option's id (or
 // null if nothing matches). multiselect: computed may be an array or a
@@ -1181,7 +1186,14 @@ function applyLinkedRules(iss, fieldDefs) {
   for (const colId in fieldDefs) {
     const def = fieldDefs[colId];
     const bound = computeBoundValue(iss, def);
-    if (!bound.isLinked) continue;
+    // A null computed value means "hands off" (see isFieldLocked above) --
+    // don't clear or overwrite whatever's currently there, whether that's
+    // blank (never touched) or a manual override the user typed in while
+    // the rule had nothing to say. The moment the rule computes a real
+    // value again, this resumes overwriting on the very next call, same
+    // as it always has -- the override is discarded with no special
+    // tracking needed anywhere.
+    if (!bound.isLinked || bound.computed == null) continue;
     values = applyComputedToField(values, colId, def, bound.computed);
   }
   return values === iss.values ? iss : { ...iss, values };

@@ -306,7 +306,12 @@ test.describe('Bound value panel: row-based conditions', () => {
     await page.waitForTimeout(200);
 
     await expect(h.fieldCell(page, 7, 'priority')).toHaveText('P2'); // row 7 has the "bug" label
-    await expect(h.fieldCell(page, 1, 'priority')).toHaveText('—'); // row 1 doesn't -- falls through to the (blank) fallback
+    // row 1 doesn't -- falls through to the (blank) fallback. Tracker
+    // issue #66 (bfdbe595): a null-computed row is no longer forcibly
+    // cleared, just left alone (and unlocked) -- row 1's priority was
+    // already "P2" in the seed data before binding, and that pre-existing
+    // value survives untouched rather than being blanked out.
+    await expect(h.fieldCell(page, 1, 'priority')).toHaveText('P2');
   });
 
   test('"Other fields in this row" excludes the field currently being edited (can\'t read itself) and excludes Title', async ({ page }) => {
@@ -474,7 +479,15 @@ test.describe('Bound value panel: ANDing multiple criteria within one row', () =
 test.describe('Bound value panel: the null-fallback rule (do not seed the first option)', () => {
   test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
 
-  test('rebuilding a hand-written expression as rows starts with a blank/null fallback, not the field\'s first option', async ({ page }) => {
+  // Tracker issue #66 (bfdbe595) changed what happens once every row falls
+  // through to the null fallback: a null-computed field is no longer
+  // forcibly cleared on every render, just left alone and unlocked (Part
+  // 1) -- so row 1's "Enhancement" (last computed before the rebuild)
+  // stays exactly where it is, now as an ordinary editable value, rather
+  // than being blanked out. The fallback-select-defaults-to-null
+  // assertion below (the field's own DESCRIBE title) is unaffected --
+  // still verified directly.
+  test('rebuilding a hand-written expression as rows starts with a blank/null fallback, not the field\'s first option -- the field itself unlocks rather than getting blanked', async ({ page }) => {
     // "type" ships with a real hand-authored rule and no ruleRows -- opens
     // in advanced mode.
     const before = await h.fieldCell(page, 1, 'type').textContent();
@@ -498,9 +511,13 @@ test.describe('Bound value panel: the null-fallback rule (do not seed the first 
     await page.mouse.click(50, 50);
     await page.waitForTimeout(200);
 
-    // The real, applied field value on every previously-computed row must
-    // have gone blank -- not silently jumped to option #1.
-    await expect(h.fieldCell(page, 1, 'type')).toHaveText('—');
+    // The field's last real value stays exactly where it was -- not
+    // reset, not jumped to option #1 -- but the field is now unlocked:
+    // clicking it opens the normal option popover instead of doing
+    // nothing.
+    await expect(h.fieldCell(page, 1, 'type')).toHaveText(before);
+    await h.clickFieldToEdit(page, 1, 'type');
+    await expect(page.locator('[data-testid=select-option]').first()).toBeVisible();
   });
 
   test('a multiselect field rebuilt as rows seeds an empty array, not its first option, either', async ({ page }) => {
@@ -645,5 +662,89 @@ test.describe('Bound value panel: results table', () => {
     await page.waitForTimeout(400);
     // seed data: "Related" is linked on issue rows 4 and 5 only.
     await expect(page.locator('[data-testid=rule-preview-caption]')).toContainText('of 9 rows have something linked');
+  });
+});
+
+// Tracker issue #66 (bfdbe595), Part 1: a bound field is locked only
+// while its rule actually has a real (non-null) answer for a given row --
+// not merely while its linked source is linked. A row where the rule
+// falls through to the (blank) fallback becomes a normal, human-editable
+// field instead of permanently locked-and-blank.
+test.describe('Bound value panel: null-computed rows are overridable', () => {
+  test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
+
+  test('a select field whose rule computes null for this row is human-editable, not locked', async ({ page }) => {
+    await openRowsFor(page, 'priority', 'Issue');
+    await page.locator('[data-testid=rule-add-row]').click();
+    await page.waitForTimeout(150);
+    const row = page.locator('[data-testid=rule-row]').first();
+    await row.locator('[data-testid=rule-row-subject]').selectOption('source.github?.labels');
+    await row.locator('[data-testid=rule-row-op]').selectOption('includes');
+    await row.locator('[data-testid=rule-row-operand]').fill('bug');
+    await page.waitForTimeout(150);
+    await row.locator('[data-testid=rule-row-then]').selectOption({ label: 'P0' });
+    await page.waitForTimeout(300);
+    await page.locator('[data-testid=rule-builder] >> text=✕').first().click();
+    await page.waitForTimeout(400);
+    await page.mouse.click(50, 50);
+    await page.waitForTimeout(200);
+
+    // row 1 is GitHub-linked but has no "bug" label -- rule computes
+    // null (no fallback set), so it must now be editable, not locked.
+    // Its priority was already "P2" in the seed data before binding
+    // (unrelated, pre-existing) -- that value must survive untouched
+    // (applyLinkedRules leaves a null-computed field alone, it doesn't
+    // clear it), and the user must be able to change it by hand.
+    await expect(h.fieldCell(page, 1, 'priority')).toHaveText('P2');
+    await h.clickFieldToEdit(page, 1, 'priority');
+    await expect(page.locator('[data-testid=select-option]').filter({ hasText: 'P1' })).toBeVisible();
+    await page.locator('[data-testid=select-option]').filter({ hasText: 'P1' }).click();
+    await page.waitForTimeout(300);
+    await expect(h.fieldCell(page, 1, 'priority')).toHaveText('P1');
+
+    // row 7 (has the "bug" label, rule computes a real value) stays
+    // locked exactly as today -- clicking it opens no popover.
+    await h.clickFieldToEdit(page, 7, 'priority');
+    await expect(page.locator('[data-testid=select-option]')).toHaveCount(0);
+  });
+
+  test('the manual override survives an unrelated re-render, and is silently replaced once the rule starts computing a real value', async ({ page }) => {
+    await openRowsFor(page, 'priority', 'Issue');
+    await page.locator('[data-testid=rule-add-row]').click();
+    await page.waitForTimeout(150);
+    const row = page.locator('[data-testid=rule-row]').first();
+    await row.locator('[data-testid=rule-row-subject]').selectOption('source.github?.labels');
+    await row.locator('[data-testid=rule-row-op]').selectOption('includes');
+    await row.locator('[data-testid=rule-row-operand]').fill('bug');
+    await page.waitForTimeout(150);
+    await row.locator('[data-testid=rule-row-then]').selectOption({ label: 'P0' });
+    await page.waitForTimeout(300);
+    await page.locator('[data-testid=rule-builder] >> text=✕').first().click();
+    await page.waitForTimeout(400);
+    await page.mouse.click(50, 50);
+    await page.waitForTimeout(200);
+
+    await h.clickFieldToEdit(page, 1, 'priority');
+    await page.locator('[data-testid=select-option]').filter({ hasText: 'P1' }).click();
+    await page.waitForTimeout(300);
+
+    // An unrelated edit elsewhere triggers a re-render -- the override
+    // must not get clobbered back to blank (the old bug: applyLinkedRules
+    // re-applied null on every single render).
+    await h.clickFieldToEdit(page, 2, 'mitigation');
+    await h.typeAndCommit(page, 'unrelated edit to trigger a re-render');
+    await page.waitForTimeout(300);
+    await expect(h.fieldCell(page, 1, 'priority')).toHaveText('P1');
+
+    // Refresh row 1's linked issue so its GitHub labels now genuinely
+    // include "bug" -- the rule starts computing a real value and
+    // silently replaces the override, same as any other bound field
+    // re-deriving from a fresh sync.
+    await page.route('https://api.github.com/repos/acme/app/issues/3298', async (route) => {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Sidebar sizing does not stick between application starts', state: 'open', labels: [{ name: 'bug' }] }) });
+    });
+    await h.refreshRow(page, 1);
+    await page.waitForTimeout(400);
+    await expect(h.fieldCell(page, 1, 'priority')).toHaveText('P0');
   });
 });

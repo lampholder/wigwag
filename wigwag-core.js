@@ -1198,6 +1198,31 @@ function applyLinkedRules(iss, fieldDefs) {
   }
   return values === iss.values ? iss : { ...iss, values };
 }
+// Tracker issue #66 (bfdbe595), Part 2: an issue-type bound field's THEN
+// can be "copy field X" instead of a literal/expression -- row.then still
+// compiles to a plain expression (values.X, via the existing "=" escape
+// hatch) so computeBoundValue's own single-expression evaluation needs no
+// changes for the VALUE. But a copied field's REAL link (fieldRef) can't
+// come out of a bare expression evaluation, and computeBoundValue only
+// ever sees the one fully-compiled rule string, not which row matched --
+// so this re-runs the same one-row-at-a-time match rulePreview's results
+// table already does, purely to find row.thenCopyFieldRefFrom for the
+// winning row. Returns null for advanced/hand-written mode (no ruleRows
+// at all), no match, or a row that isn't a field-copy -- the normal
+// literal/expression path, unaffected.
+function computeBoundFieldRef(issue, def) {
+  const rows = Array.isArray(def.ruleRows) ? def.ruleRows : null;
+  if (!rows || !def.linkedSourceId) return null;
+  const source = buildSource(issue, def.linkedSourceId);
+  if (!source.isLinked) return null;
+  for (const r of rows) {
+    if (!ruleRowCriteria(r).length) continue;
+    if (evalRule(ruleRowCondition(r), source, issue.values) === true) {
+      return r.thenCopyFieldRefFrom ? ((issue.fieldRefs && issue.fieldRefs[r.thenCopyFieldRefFrom]) || null) : null;
+    }
+  }
+  return null;
+}
 function sortValue(issue, colId, def) {
   if (colId === 'title') return issue.values.title || '';
   if (!def) return '';
@@ -1471,7 +1496,16 @@ function computeDerivedChangeEntries(issue, beforeValues, fieldDefs) {
     const displayVal = displayValueForHistory(def, after);
     const source = buildSource(issue, def.linkedSourceId);
     const derivedFrom = source.text ? ('state of ' + source.text + ' in column ' + srcLabel) : srcLabel;
-    entries.push({ colId, text: (def.label || colId) + ' set to ' + displayVal + ' (derived from ' + derivedFrom + ')', value: after });
+    // Tracker issue #66 (bfdbe595), Part 2: a "copy field X" bound row
+    // carries X's own real fieldRef along with its value -- copied here
+    // via commitSignedEntry's normal fieldRef param, so it lands in real
+    // signed history and therefore in issue.fieldRefs (deriveIssueFieldRefs),
+    // exactly like a link a person pasted in directly. Any OTHER field
+    // bound with this one as its own linkedSourceId can then read
+    // source.github/source.jira/etc. from it for real, not just matching
+    // text. null for every other bound field type/mode, unaffected.
+    const fieldRef = computeBoundFieldRef(issue, def);
+    entries.push({ colId, text: (def.label || colId) + ' set to ' + displayVal + ' (derived from ' + derivedFrom + ')', value: after, fieldRef });
   }
   return entries;
 }
@@ -1560,7 +1594,7 @@ async function probeGithubRepoAccess(owner, repo, token, fetchImpl) {
 }
 
 module.exports = {
-  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, COMMENT_READS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, formatNow, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, hydrateIssue, deriveFieldDefs, backfillProjectHistory, hydrateProject, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, evalRule, computeBoundValue, isFieldLocked, applyComputedToField, applyLinkedRules, sortValue, computeSortSnapshot, issueCreatedAt,
+  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, COMMENT_READS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, formatNow, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, hydrateIssue, deriveFieldDefs, backfillProjectHistory, hydrateProject, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, evalRule, computeBoundValue, isFieldLocked, applyComputedToField, applyLinkedRules, computeBoundFieldRef, sortValue, computeSortSnapshot, issueCreatedAt,
   importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry,
   squashHistory, displayValueForHistory, buildSourceText, parseJsonl, entryKey, commentKey, unionByKey, mergeIssuePair, computeIssueMerge, computeFieldDefsMerge, computeDerivedChangeEntries,
   buildGithubContentsUrl, buildGithubContentsHeaders, buildGithubCommitMessage, pullGithubFile, pushGithubFile, probeGithubRepoAccess

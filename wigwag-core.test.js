@@ -538,6 +538,52 @@ test('computeDerivedChangeEntries: only reports rule-bound fields whose value ac
   assert.equal(unchanged.length, 0);
 });
 
+test('computeBoundFieldRef: tracker issue #66 (bfdbe595) -- resolves the matching row\'s thenCopyFieldRefFrom to that field\'s real fieldRef', () => {
+  const relatedRef = { system: 'jira', key: 'SUP-123' };
+  const def = {
+    type: 'issue', linkedSourceId: 'title',
+    ruleRows: [{ criteria: [{ subject: 'values.related', op: 'startsWith', operand: 'SUP' }], then: '=values.related', thenCopyFieldRefFrom: 'related' }]
+  };
+  const issue = { values: { related: 'SUP-123' }, fieldRefs: { title: { system: 'github', labels: [] }, related: relatedRef } };
+  assert.deepEqual(core.computeBoundFieldRef(issue, def), relatedRef);
+
+  const noMatch = { values: { related: 'OTHER-1' }, fieldRefs: { title: { system: 'github', labels: [] }, related: relatedRef } };
+  assert.equal(core.computeBoundFieldRef(noMatch, def), null);
+
+  // Source (linkedSourceId, here "title") not linked at all -- null,
+  // regardless of what any row would otherwise match.
+  const notLinked = { values: { related: 'SUP-123' }, fieldRefs: { related: relatedRef } };
+  assert.equal(core.computeBoundFieldRef(notLinked, def), null);
+
+  // Advanced/hand-written mode (no ruleRows at all) -- null, never crashes.
+  assert.equal(core.computeBoundFieldRef(issue, { ...def, ruleRows: undefined, rule: 'null' }), null);
+
+  // A matching row with a plain literal/expression THEN (no
+  // thenCopyFieldRefFrom) -- null, the ordinary non-field-copy case.
+  const plainDef = { ...def, ruleRows: [{ criteria: def.ruleRows[0].criteria, then: 'literal' }] };
+  assert.equal(core.computeBoundFieldRef(issue, plainDef), null);
+});
+
+test('computeDerivedChangeEntries: tracker issue #66 (bfdbe595) -- a "copy field" bound row carries the copied fieldRef through', () => {
+  const relatedRef = { system: 'jira', key: 'SUP-123' };
+  const fieldDefs = {
+    related: { type: 'issue' },
+    title: { type: 'issue' },
+    remedy: {
+      type: 'issue', linkedSourceId: 'title', label: 'Remedy',
+      ruleRows: [{ criteria: [{ subject: 'values.related', op: 'startsWith', operand: 'SUP' }], then: '=values.related', thenCopyFieldRefFrom: 'related' }]
+    }
+  };
+  const issue = {
+    values: { related: 'SUP-123', remedy: 'SUP-123', title: 'x' },
+    fieldRefs: { title: { system: 'github', labels: [] }, related: relatedRef }
+  };
+  const entries = core.computeDerivedChangeEntries(issue, { remedy: null }, fieldDefs);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].colId, 'remedy');
+  assert.deepEqual(entries[0].fieldRef, relatedRef);
+});
+
 test('buildGithubContentsUrl / buildGithubContentsHeaders / buildGithubCommitMessage: pure string building', () => {
   assert.equal(core.buildGithubContentsUrl('owner/repo', 'tracker.jsonl', ''), 'https://api.github.com/repos/owner/repo/contents/tracker.jsonl');
   assert.equal(core.buildGithubContentsUrl('owner/repo', 'a/b.jsonl', 'main'), 'https://api.github.com/repos/owner/repo/contents/a/b.jsonl?ref=main');

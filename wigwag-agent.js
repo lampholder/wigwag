@@ -13,12 +13,22 @@
 //
 // Usage:
 //   node wigwag-agent.js list
+//   node wigwag-agent.js next
 //   node wigwag-agent.js show <num-or-id-prefix>
 //   node wigwag-agent.js add-issue "Title text"
 //   node wigwag-agent.js comment <num-or-id-prefix> "Comment text"
 //   node wigwag-agent.js set-field <num-or-id-prefix> "<Field label>" <value>
 //     (value is an option's exact label for a select field, or plain
 //     text for a text field)
+//
+// `next` is the polling primitive for tracker issue #71 (cf3ea04c):
+// driving a Claude Code loop directly off wigwag issues, scoped to
+// whichever ones a human has explicitly promoted to Status = "Next" --
+// never anything else, regardless of how stale/actionable-looking another
+// issue is. Deliberately narrow: this tracker is live and shared, and
+// autonomous action should only ever touch what was explicitly handed
+// over. See #71's own comments for the fuller loop design (In Progress
+// while working, Done or Blocked-with-a-comment when finished).
 //
 // Each invocation connects fresh (see wigwag-client.js's connect()) --
 // there's no persistent profile, so every call re-syncs from GitHub
@@ -36,6 +46,13 @@ async function cmdList(client) {
   const { projectId, issues } = await client.list();
   console.log(`Project ${projectId} -- ${issues.length} issues\n`);
   for (const iss of issues) console.log(formatIssueLine(iss));
+}
+
+async function cmdNext(client) {
+  const { projectId, issues } = await client.list();
+  const next = issues.filter(iss => iss.status === 'Next');
+  console.log(`Project ${projectId} -- ${next.length} issue(s) with Status "Next"\n`);
+  for (const iss of next) console.log(formatIssueLine(iss));
 }
 
 async function cmdShow(client, numOrId) {
@@ -83,14 +100,16 @@ async function main() {
   const [cmd, ...args] = process.argv.slice(2);
   const commands = {
     list: (client) => cmdList(client),
+    next: (client) => cmdNext(client),
     show: (client) => cmdShow(client, args[0]),
     'add-issue': (client) => cmdAddIssue(client, args.join(' ')),
     comment: (client) => cmdComment(client, args[0], args.slice(1).join(' ')),
     'set-field': (client) => cmdSetField(client, args[0], args[1], args.slice(2).join(' ')),
   };
   if (!commands[cmd]) {
-    console.log('Usage: node wigwag-agent.js <list|show|add-issue|comment|set-field> [args]');
+    console.log('Usage: node wigwag-agent.js <list|next|show|add-issue|comment|set-field> [args]');
     console.log('  list');
+    console.log('  next');
     console.log('  show <num-or-id-prefix>');
     console.log('  add-issue "<title>"');
     console.log('  comment <num-or-id-prefix> "<text>"');

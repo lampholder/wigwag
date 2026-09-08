@@ -389,14 +389,19 @@ test.describe('Selection does not leak across project switch', () => {
 });
 
 test.describe('Retired "Refresh all linked issues" toolbar button', () => {
-  test('no longer exists on desktop, while the mobile overflow menu\'s own refresh entry is untouched', async ({ page }) => {
+  // The mobile overflow menu's own "Refresh linked issues" entry was
+  // itself retired by tracker #75/6eb65418 (design_handoff_mobile_view,
+  // mobile.zip) -- replaced there with the "Apply update…"/"Import
+  // project…" paste flows, matching what desktop actually uses now. See
+  // tests/mobile.spec.js's M3 coverage for the current overflow menu.
+  test('no longer exists on desktop or in the mobile overflow menu', async ({ page }) => {
     await h.gotoTracker(page);
     await expect(page.locator('[data-testid=btn-refresh-all]')).toHaveCount(0);
 
     await page.setViewportSize({ width: 390, height: 844 });
     await page.waitForTimeout(200);
     await page.locator('[data-testid=btn-overflow]').click();
-    await expect(page.locator('[data-testid=mobile-overflow-refresh]')).toBeVisible();
-    await expect(page.locator('[data-testid=mobile-overflow-refresh]')).toContainText('Refresh linked issues');
+    await expect(page.locator('[data-testid=mobile-overflow-apply-update]')).toBeVisible();
+    await expect(page.locator('[data-testid=mobile-overflow-refresh]')).toHaveCount(0);
   });
 });

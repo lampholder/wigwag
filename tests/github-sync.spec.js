@@ -78,6 +78,103 @@ test.describe('GitHub repo sync', () => {
     await expect(h.fieldCell(page, 8, 'mitigation')).toContainText('Root cause identified');
   });
 
+  // Real, live-reported data-loss bug (2026-09-07): "Project-level notes
+  // keep disappearing!" -- startMerge()/applyMergedIssues() (every GitHub
+  // pull: initial connect, background poll, "Apply update...") never read
+  // parsed.projectNotes/projectComments at all, safe for issues (real
+  // signed-history merge) but not for notes -- a device that never wrote
+  // its own notes kept an empty local copy forever no matter how many
+  // times it pulled a remote copy that had real ones, and its own NEXT
+  // push (even from a totally unrelated edit) silently wrote that blank
+  // value back, erasing the remote's real notes. Confirmed via a real
+  // two-browser-context repro before fixing. Fix: adopt remote notes only
+  // into a genuinely empty local slot -- never overwrites existing local
+  // content, so it can't clobber an in-progress local edit either.
+  test.describe('Project notes surviving a GitHub pull/push cycle', () => {
+    test('a device with no local notes yet adopts the remote\'s notes on its first connect', async ({ page }) => {
+      const gh = h.mockGithubContentsApi(page, REPO);
+      await h.gotoTracker(page);
+      await page.locator('[data-testid=btn-export]').click();
+      const [dl] = await Promise.all([
+        page.waitForEvent('download'),
+        page.locator('[data-testid=btn-export-jsonl]').click(),
+      ]);
+      const fs = require('fs');
+      const lines = fs.readFileSync(await dl.path(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+      const fieldsLine = lines.find(l => l.type === 'fields');
+      fieldsLine.projectNotes = "Someone else's real project notes.";
+      gh.getResponses = [{ status: 200, sha: 'sha-with-notes', text: lines.map(l => JSON.stringify(l)).join('\n') }];
+
+      await h.setGithubRepoSync(page, { repo: REPO, token: 'ghp_faketoken' });
+      await page.reload({ waitUntil: 'networkidle' });
+      await page.waitForTimeout(500);
+
+      await page.locator('[data-testid=btn-notes]').click();
+      await page.waitForTimeout(300);
+      await expect(page.locator('[data-testid=notes-body]')).toContainText("Someone else's real project notes.");
+    });
+
+    test('after adopting remote notes, an unrelated edit\'s own push still carries them forward (does not blank them)', async ({ page }) => {
+      const gh = h.mockGithubContentsApi(page, REPO);
+      await h.gotoTracker(page);
+      await page.locator('[data-testid=btn-export]').click();
+      const [dl] = await Promise.all([
+        page.waitForEvent('download'),
+        page.locator('[data-testid=btn-export-jsonl]').click(),
+      ]);
+      const fs = require('fs');
+      const lines = fs.readFileSync(await dl.path(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+      const fieldsLine = lines.find(l => l.type === 'fields');
+      fieldsLine.projectNotes = "Someone else's real project notes.";
+      gh.getResponses = [{ status: 200, sha: 'sha-with-notes', text: lines.map(l => JSON.stringify(l)).join('\n') }];
+
+      await h.setGithubRepoSync(page, { repo: REPO, token: 'ghp_faketoken' });
+      await page.reload({ waitUntil: 'networkidle' });
+      await page.waitForTimeout(500);
+
+      await h.clickFieldToEdit(page, 1, 'mitigation');
+      await h.typeAndCommit(page, 'an unrelated edit');
+      await page.waitForTimeout(600);
+      await h.waitUntil(() => Promise.resolve(gh.pushCount >= 1));
+
+      const pushed = Buffer.from(gh.pushes[gh.pushes.length - 1].content, 'base64').toString('utf8');
+      expect(pushed).toContain("Someone else's real project notes.");
+    });
+
+    test('a remote copy never overwrites notes this device has already written locally', async ({ page }) => {
+      const gh = h.mockGithubContentsApi(page, REPO);
+      gh.getResponses = [{ status: 404 }];
+      await h.gotoTracker(page);
+      await h.setGithubRepoSync(page, { repo: REPO, token: 'ghp_faketoken' });
+      await h.waitUntil(() => Promise.resolve(gh.pushCount >= 1));
+
+      await page.locator('[data-testid=btn-notes]').click();
+      await page.waitForTimeout(300);
+      await page.locator('[data-testid=notes-edit-btn]').click();
+      await page.waitForTimeout(150);
+      await page.locator('[data-testid=notes-textarea]').fill("This device's own notes.");
+      await page.locator('[data-testid=notes-save-btn]').click();
+      await page.waitForTimeout(600);
+      await page.locator('[data-testid=notes-close-btn]').click();
+      await page.waitForTimeout(200);
+
+      // Now a background poll brings in a DIFFERENT remote copy (as if
+      // another device had briefly raced in first) -- local notes must
+      // not be clobbered by it.
+      const lines = require('fs').readFileSync(require('path').join(__dirname, 'fixtures', 'demo-milestone.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+      const fieldsLine = lines.find(l => l.type === 'fields');
+      fieldsLine.projectNotes = "A different device's conflicting notes.";
+      gh.getResponses.push({ status: 200, sha: 'sha-conflicting', text: lines.map(l => JSON.stringify(l)).join('\n') });
+      await page.evaluate(() => { window.__wigwagPollIntervalMs = 200; });
+      await page.waitForTimeout(800);
+
+      await page.locator('[data-testid=btn-notes]').click();
+      await page.waitForTimeout(300);
+      await expect(page.locator('[data-testid=notes-body]')).toContainText("This device's own notes.");
+      await expect(page.locator('[data-testid=notes-body]')).not.toContainText('conflicting');
+    });
+  });
+
   // Regression for a real live-data incident (2026-08-31): a deleted
   // field used to be resurrected the moment ANY merge brought in a
   // "stale" remote snapshot that still had it (another tab, another

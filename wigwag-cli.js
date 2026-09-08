@@ -159,6 +159,15 @@ async function applyRulesAndLogDerived(ctx, doc, issueId) {
   for (const e of entries) await commitHistoryEntry(ctx, doc, issueId, { text: e.text, field: e.colId, value: e.value, origin: 'derived' });
 }
 
+async function cmdNext(doc) {
+  const statusColId = fieldLabelToColId(doc.fieldDefs, 'Status');
+  const next = doc.issues.filter(iss => statusColId && resolveOptionLabel(doc.fieldDefs[statusColId], iss.values[statusColId]) === 'Next');
+  console.log(`Project ${doc.projectId || '(none yet)'} -- ${next.length} issue(s) with Status "Next"\n`);
+  for (const iss of next.slice().sort((a, b) => a.num - b.num)) {
+    console.log(`#${String(iss.num).padEnd(3)} [${iss.id.slice(0, 8)}]  ${iss.values.title || '(untitled)'}`);
+  }
+}
+
 async function cmdList(doc) {
   const statusColId = fieldLabelToColId(doc.fieldDefs, 'Status');
   console.log(`Project ${doc.projectId || '(none yet)'} -- ${doc.issues.length} issues\n`);
@@ -337,14 +346,15 @@ async function main() {
   const usage = () => {
     console.log('Usage: node wigwag-cli.js [--dir <path>] [--identity <path>] [--token <ghp_...>] <command> [args]');
     console.log('  list');
+    console.log('  next');
     console.log('  show <num-or-id-prefix>');
     console.log('  add-issue "<title>"');
     console.log('  comment <num-or-id-prefix> "<text>"');
     console.log('  set-field <num-or-id-prefix> "<field label>" <value>');
     console.log('  pull | push | sync');
   };
-  const readOnly = { list: true, show: true };
-  if (!cmd || !['list', 'show', 'add-issue', 'comment', 'set-field', 'pull', 'push', 'sync'].includes(cmd)) {
+  const readOnly = { list: true, next: true, show: true };
+  if (!cmd || !['list', 'next', 'show', 'add-issue', 'comment', 'set-field', 'pull', 'push', 'sync'].includes(cmd)) {
     usage();
     process.exitCode = cmd ? 1 : 0;
     return;
@@ -352,14 +362,46 @@ async function main() {
 
   const store = new FileProjectStore(dir);
   const doc = store.load();
+  const ctx = await makeContext(identityPath);
+
+  // Unlike wigwag.html, this CLI has no background poll -- a one-shot
+  // process has no "next time" to catch up on a remote that moved since
+  // the last pull. pull/push/sync already pull fresh state as an inherent
+  // part of what they do (push conflict-checks its own sha; sync calls
+  // pull explicitly); every other command would otherwise silently read
+  // or write against however stale the local checkout happens to be, with
+  // no indication anything was out of date. Best-effort: a failed pre-pull
+  // warns rather than aborting the command outright, matching pull's own
+  // "no remote file yet" tolerance -- an offline/degraded network
+  // shouldn't make `list` unusable, it should just say so.
+  const NEEDS_PRE_PULL = { list: true, next: true, show: true, 'add-issue': true, comment: true, 'set-field': true };
+  if (doc.githubRepo && NEEDS_PRE_PULL[cmd]) {
+    try {
+      await cmdPull(ctx, doc, token);
+    } catch (e) {
+      console.error('Warning: could not pull remote changes before continuing (' + e.message + ') -- proceeding with local state, which may be stale.');
+    }
+  }
 
   if (readOnly[cmd]) {
     if (cmd === 'list') await cmdList(doc);
+    else if (cmd === 'next') await cmdNext(doc);
     else await cmdShow(doc, rest[0]);
     return;
   }
 
-  const ctx = await makeContext(identityPath);
+  // add-issue/comment/set-field used to only ever land in the LOCAL
+  // checkout -- store.save(doc) persisted the edit to disk, but nothing
+  // pushed it to the actual shared repo unless a separate push/sync was
+  // run afterward, a trivially easy step to forget (confirmed live: it
+  // was). wigwag.html itself auto-pushes every edit (debounced) -- this
+  // CLI should behave the same way whenever a remote is configured,
+  // rather than silently leaving writes unpublished by default. The local
+  // save always happens first (never lose the edit even if the push
+  // fails), then the push itself is NOT swallowed on failure -- unlike
+  // the best-effort pre-pull above, a write that was supposed to reach
+  // the shared tracker and didn't must surface loudly, not silently.
+  const WRITE_THEN_PUBLISH = { 'add-issue': true, comment: true, 'set-field': true };
   store.acquireLock();
   try {
     if (cmd === 'add-issue') await cmdAddIssue(ctx, doc, rest.join(' '));
@@ -369,6 +411,10 @@ async function main() {
     else if (cmd === 'push') await cmdPush(ctx, doc, token);
     else if (cmd === 'sync') await cmdSync(ctx, doc, token);
     store.save(doc);
+    if (doc.githubRepo && WRITE_THEN_PUBLISH[cmd]) {
+      await cmdPush(ctx, doc, token);
+      store.save(doc); // cmdPush may itself pull+merge on a conflict retry -- persist that too
+    }
   } finally {
     store.releaseLock();
   }
@@ -378,4 +424,4 @@ if (require.main === module) {
   main().catch(err => { console.error(err.message || err); process.exitCode = 1; });
 }
 
-module.exports = { cmdList, cmdShow, cmdAddIssue, cmdComment, cmdSetField, cmdPull, cmdPush, cmdSync, mergeRemoteIntoDoc, makeContext, findIssue, fieldLabelToColId };
+module.exports = { cmdList, cmdNext, cmdShow, cmdAddIssue, cmdComment, cmdSetField, cmdPull, cmdPush, cmdSync, mergeRemoteIntoDoc, makeContext, findIssue, fieldLabelToColId, main };

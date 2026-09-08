@@ -393,6 +393,26 @@ test.describe('Text fields: multiline markdown', () => {
     expect(await cell.locator('[data-testid=text-field-md]').count()).toBe(0);
   });
 
+  // Same click-to-edit-wrapper-catches-the-bubbled-link-click bug as
+  // project notes (see tests/project-notes.spec.js) -- the field-cell div
+  // wrapping [data-testid=text-field-md] enters edit mode on any click
+  // that reaches it, and a raw <a> from the markdown pipeline has no
+  // per-element binding of its own to stop that bubble.
+  test('clicking a link inside the rendered cell only opens it -- it does not also enter edit mode', async ({ page }) => {
+    await h.clickFieldToEdit(page, 1, 'mitigation');
+    await h.fieldCell(page, 1, 'mitigation').locator('[data-testid=text-field-edit-textarea]').fill('See https://example.com/doc for details');
+    await page.keyboard.press('Control+Enter');
+    await page.waitForTimeout(200);
+
+    const link = h.fieldCell(page, 1, 'mitigation').locator('[data-testid=text-field-md] a', { hasText: 'https://example.com/doc' });
+    const [popup] = await Promise.all([
+      page.context().waitForEvent('page'),
+      link.click(),
+    ]);
+    await popup.close();
+    await expect(h.fieldCell(page, 1, 'mitigation').locator('[data-testid=text-field-edit-textarea]')).toHaveCount(0);
+  });
+
   test('"Wrap text" toggles the line-clamp between 1 and 6 lines', async ({ page }) => {
     const md = h.fieldCell(page, 7, 'mitigation').locator('[data-testid=text-field-md]');
     const clampBefore = await md.evaluate(el => getComputedStyle(el).webkitLineClamp);

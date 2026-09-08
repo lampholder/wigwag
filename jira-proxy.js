@@ -12,10 +12,20 @@
 // Nothing here talks to anything except Jira itself and localhost — no
 // telemetry, no third-party relay. Point the tracker's Settings > Jira proxy
 // URL at http://localhost:8934 (or whatever PORT you set) once this is running.
+//
+// Binds to loopback only, and requires every request to carry a shared
+// secret (X-Wigwag-Proxy-Secret) matching this process's own — otherwise
+// any local process, or any website the browser visits, could already
+// reach this and read real Jira data via a plain cross-origin fetch. The
+// secret is auto-generated and persisted on first run (see
+// proxy-shared.js) unless JIRA_PROXY_SECRET is set explicitly; either way,
+// paste the same value into Settings > Integrations > Jira proxy secret.
 const http = require('http');
+const { HOST, secretFor, requireSecret } = require('./proxy-shared');
 
 const PORT = parseInt(process.env.PORT || '8934', 10);
 const BASE_URL = (process.env.JIRA_BASE_URL || '').replace(/\/$/, '');
+const SECRET = secretFor(__dirname, 'jira', 'JIRA_PROXY_SECRET');
 
 // Whichever credential pair is present picks Cloud (Basic, API v3) vs.
 // Server/Data Center (Bearer PAT, API v2) — no separate mode flag to set.
@@ -47,7 +57,7 @@ function adfToText(node) {
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Wigwag-Proxy-Secret');
 }
 
 http.createServer(async (req, res) => {
@@ -60,6 +70,7 @@ http.createServer(async (req, res) => {
     res.end('Jira proxy running. BASE_URL=' + (BASE_URL || '(not set)') + ' auth=' + (authConfig() ? 'configured' : 'MISSING'));
     return;
   }
+  if (!requireSecret(req, res, SECRET)) return;
 
   const m = url.pathname.match(/^\/issue\/([^/]+)$/);
   if (!m) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'not found' })); return; }
@@ -123,8 +134,8 @@ http.createServer(async (req, res) => {
     res.writeHead(502, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Could not reach Jira: ' + err.message }));
   }
-}).listen(PORT, () => {
-  console.log('Jira proxy listening on http://localhost:' + PORT);
+}).listen(PORT, HOST, () => {
+  console.log('Jira proxy listening on http://' + HOST + ':' + PORT);
   console.log('  BASE_URL: ' + (BASE_URL || '(not set — requests will fail until you set JIRA_BASE_URL)'));
   console.log('  auth: ' + (authConfig() ? 'configured' : '(not set — requests will fail until you set JIRA_EMAIL+JIRA_API_TOKEN or JIRA_PAT)'));
 });

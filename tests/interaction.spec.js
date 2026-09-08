@@ -2025,6 +2025,29 @@ test.describe('Column value filters', () => {
     await expect(page.locator('[data-testid=row]')).toHaveCount(3); // i2, i7, i9 (type=bug alone)
   });
 
+  // "Select all" sits next to "Clear" once you've partially selected some
+  // values -- same end result as Clear (nothing excluded), but checks
+  // every box explicitly rather than removing the filter, for anyone who
+  // wants to flip straight from "some" to "all" without unchecking their
+  // way there first.
+  test('"Select all" appears once some values are selected, and checks every option', async ({ page }) => {
+    await h.openColumnMenu(page, 'rag');
+    await expect(page.locator('[data-testid=col-filter-select-all]')).toHaveCount(0); // not shown unfiltered
+
+    await page.locator('[data-testid=col-filter-option]').filter({ hasText: 'At risk' }).click();
+    await expect(page.locator('[data-testid=col-filter-select-all]')).toBeVisible();
+
+    await page.locator('[data-testid=col-filter-select-all]').click();
+    await page.waitForTimeout(150);
+    const optionCount = await page.locator('[data-testid=col-filter-option]').count();
+    const checkedCount = await page.locator('[data-testid=col-filter-option]').filter({ hasText: '✓' }).count();
+    expect(checkedCount).toBe(optionCount); // every option, including "(No value)", now checked
+
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=row]')).toHaveCount(9); // nothing excluded
+  });
+
   // Filters are a cosmetic, per-browser, per-milestone preference now (same
   // treatment as column widths/order) -- they persist across a milestone
   // switch and a reload, rather than resetting. A different milestone
@@ -2973,7 +2996,7 @@ test.describe('Delete project (project panel danger zone)', () => {
     await page.locator('[data-testid=btn-confirm-delete-project]').click();
     await page.waitForTimeout(400);
 
-    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('New project');
+    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Untitled Project 1');
     await expect(page.locator('[data-testid=row]')).toHaveCount(0);
     await h.openTrackerSwitcher(page);
     await expect(page.locator('[data-testid=switcher-project-row]')).toHaveCount(1);

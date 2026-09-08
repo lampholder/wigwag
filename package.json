@@ -13,6 +13,9 @@
     "jira-proxy": "node jira-proxy.js",
     "salesforce-proxy": "node salesforce-proxy.js",
     "github-oauth-proxy": "node github-oauth-proxy.js",
+    "github-data-proxy": "node github-data-proxy.js",
+    "google-drive-proxy": "node google-drive-proxy.js",
+    "push-relay": "node push-relay.js",
     "tauri": "tauri"
   },
   "keywords": [],
@@ -25,6 +28,7 @@
     "playwright": "^1.62.1"
   },
   "dependencies": {
-    "undici": "^8.10.0"
+    "undici": "^8.10.0",
+    "web-push": "^3.6.7"
   }
 }

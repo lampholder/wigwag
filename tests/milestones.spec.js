@@ -53,25 +53,53 @@ test.describe('Tracker switcher', () => {
 
   // "+ New project" (previously labelled "+ Add project") used to open a
   // panel (blank/naming/import-file/paste) -- it now just creates a
-  // project immediately, named "Untitled" (then "Untitled 2",
-  // "Untitled 3", ...) since import is already handled by the dedicated
-  // app-bar "Import project..." menu.
-  test('"New project" creates a project named "Untitled 1", then "Untitled 2" etc, with no naming step or import options', async ({ page }) => {
+  // project immediately, named "Untitled Project 1" (then "Untitled
+  // Project 2", "Untitled Project 3", ...) since import is already
+  // handled by the dedicated app-bar "Import project..." menu.
+  test('"New project" creates a project named "Untitled Project 1", then "Untitled Project 2" etc, with no naming step or import options', async ({ page }) => {
     await h.openTrackerSwitcher(page);
     await expect(page.locator('[data-testid=btn-switcher-new-project]')).toHaveText('New project in Personal'); // no "+" -- neither this nor Import project is marked, both create a project; names the target identity since creating is a write
     await h.addBlankProject(page);
-    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Untitled 1');
+    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Untitled Project 1');
     await expect(page.locator('[data-testid=row]')).toHaveCount(0);
 
     await h.openTrackerSwitcher(page);
     await h.addBlankProject(page);
-    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Untitled 2');
+    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Untitled Project 2');
 
     await h.openTrackerSwitcher(page);
     await expect(page.locator('[data-testid=new-milestone-name-input]')).toHaveCount(0);
     await expect(page.locator('[data-testid=btn-import-milestone]')).toHaveCount(0);
     await expect(page.locator('[data-testid=btn-paste-milestone]')).toHaveCount(0);
-    await expect(page.locator('[data-testid=switcher-project-row]')).toHaveCount(3); // Delivery tracker, Untitled 1, Untitled 2
+    await expect(page.locator('[data-testid=switcher-project-row]')).toHaveCount(3); // Delivery tracker, Untitled Project 1, Untitled Project 2
+  });
+
+  // The numbering is strictly the highest existing "Untitled Project N" + 1
+  // -- it does NOT fill a gap left by a deleted/renamed one. Deleting
+  // "Untitled Project 1" while "Untitled Project 2" survives must still
+  // produce "Untitled Project 3" next, not a reused "Untitled Project 1".
+  test('deleting "Untitled Project 1" does not free up that number -- the next one is still highest+1', async ({ page }) => {
+    await h.openTrackerSwitcher(page);
+    await h.addBlankProject(page); // Untitled Project 1, now active
+    await h.openTrackerSwitcher(page);
+    await h.addBlankProject(page); // Untitled Project 2, now active
+
+    // Switch to and delete Untitled Project 1.
+    await h.openTrackerSwitcher(page);
+    await h.milestoneRow(page, 'Untitled Project 1').click();
+    await page.waitForTimeout(300);
+    await page.locator('[data-testid=btn-notes]').click();
+    await page.waitForTimeout(300);
+    await h.selectProjectPanelSection(page, 'danger');
+    await page.locator('[data-testid=btn-delete-project]').click();
+    await page.waitForTimeout(200);
+    await page.locator('[data-testid=delete-project-name-input]').fill('Untitled Project 1');
+    await page.locator('[data-testid=btn-confirm-delete-project]').click();
+    await page.waitForTimeout(400);
+
+    await h.openTrackerSwitcher(page);
+    await h.addBlankProject(page);
+    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Untitled Project 3');
   });
 
   // Rename moved off the header (inline edit) and into the project panel,
@@ -286,5 +314,19 @@ test.describe('Fresh-install bootstrap wire format stability', () => {
     expect(index.milestones).toEqual([{ id, name: 'My Real Project', identityId: expect.any(String) }]);
     expect(index.activeProjectId).toBeUndefined();
     expect(index.projects).toBeUndefined();
+  });
+
+  // A genuinely empty browser -- no PROJECTS_KEY at all -- exercises
+  // bootstrapFirstProjectIfNeeded() for real, unlike every other test in
+  // this file (they all pre-seed the index via gotoTracker()/addInitScript,
+  // so the guard at the top of that function always short-circuits it).
+  test('a genuinely fresh browser (no seeded storage) bootstraps its first project as "Untitled Project 1"', async ({ page }) => {
+    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Untitled Project 1');
+    const index = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1')));
+    expect(index.milestones).toHaveLength(1);
+    expect(index.milestones[0].name).toBe('Untitled Project 1');
   });
 });

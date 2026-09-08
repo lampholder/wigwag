@@ -4,7 +4,27 @@ playwright-report/
 src-tauri/target/
 src-tauri/dist/
 src-tauri/gen/
+.DS_Store
+
+# This sandbox's own devcontainer config (allowed-domains.txt etc.) --
+# infrastructure for running Claude Code here, not part of the project.
+.devcontainer/
 
 # Holds a real GitHub token and a persisted signing identity for
 # wigwag-agent.js (see CLAUDE.md) -- never to be committed.
 wigwag_tracker
+
+# wigwag-cli.js's local checkout of the live lampholder/wigwag tracker --
+# a synced mirror (tracker.jsonl + .wigwag-config.json), regenerable via
+# `node wigwag-cli.js pull`, not source.
+.wigwag-cli-checkout/
+
+# Auto-generated shared secrets for the local *-proxy.js relays (see
+# proxy-shared.js) -- local-machine-only credentials, never to be committed.
+.*-proxy-secret
+
+# push-relay.js's own generated VAPID keypair and its subscriber list
+# (real emails + real push endpoints) -- local-machine-only, never to be
+# committed.
+.push-relay-vapid.json
+.push-relay-subscriptions.json

@@ -409,21 +409,19 @@ const COMMENT_READS_KEY = 'git_native_tracker_comment_reads_v1';
 const MENTION_NOTIFICATIONS_KEY = 'git_native_tracker_mention_notifications_v1';
 const NOTIFIED_MENTIONS_KEY = 'git_native_tracker_notified_mentions_v1';
 const NOTIFIED_MENTIONS_CAP = 1000;
-// A mention is a literal "@" immediately followed by the target's email,
-// word-bounded (\b after the email) so "@tom@lant.uk.evil.com" doesn't
-// also count as mentioning "tom@lant.uk". Deliberately not a bare-email
-// match -- comments already autolink bare emails as person pills, and
-// treating every such occurrence as an intentional mention would over-
-// notify constantly (a GitHub reference, a "cc'd" name in prose, etc.).
+// A mention is the target's email appearing anywhere in the text, with or
+// without a leading "@", word-bounded on both sides so "tom@lant.uk.evil.com"
+// or "nottom@lant.uk" don't also count as mentioning "tom@lant.uk".
 function textMentionsEmail(text, email) {
   if (!text || !email) return false;
   const esc = String(email).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  // Negative lookahead (not \b) for the trailing boundary -- "." and "-"
-  // are non-word chars, so \b alone would still call "@tom@lant.uk" a
-  // match inside "@tom@lant.uk.evil.com" (a boundary exists right after
-  // "uk" either way). Anything that could extend the email -- word char,
-  // dot, hyphen -- must NOT follow the match.
-  return new RegExp('@' + esc + '(?![\\w.-])', 'i').test(text);
+  // Negative lookahead/lookbehind (not \b) for both boundaries -- "." and
+  // "-" are non-word chars, so \b alone would still call this a match
+  // inside "nottom@lant.uk.evil.com" (a boundary exists right after "uk",
+  // and before "tom", either way). Anything that could extend the email on
+  // either side -- word char, dot, hyphen -- must not be adjacent to the
+  // match.
+  return new RegExp('(?<![\\w.-])' + esc + '(?![\\w.-])', 'i').test(text);
 }
 // Sort (ascending/descending): cosmetic-only, per-browser, per-project --
 // same reasoning again. { [projectId]: { colId, dir } }.

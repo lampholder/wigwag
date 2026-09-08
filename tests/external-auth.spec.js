@@ -88,6 +88,24 @@ test.describe('Jira linking', () => {
     await expect(anchor).toHaveAttribute('href', 'https://mock.atlassian.net/browse/TRK-999');
   });
 
+  // Regression: once a field resolves to a Jira issue, its stored value
+  // becomes the resolved title text -- the key the user actually typed
+  // only survives as the small ref-chip's fieldRef metadata, which the
+  // keyword filter never checked, so searching for the key itself found
+  // nothing.
+  test('the keyword filter matches a linked field\'s Jira key, not just the resolved title text', async ({ page }) => {
+    await h.clickTitleToEdit(page, 3);
+    await h.pasteText(page, 'TRK-999');
+    await page.keyboard.press('Tab');
+    await h.waitForTitleResolved(page, 3);
+
+    await page.locator('[data-testid=filter-input]').fill('TRK-999');
+    await page.waitForTimeout(200);
+
+    await expect(page.locator('[data-testid=row]')).toHaveCount(1);
+    await expect(page.locator('[data-testid=row]')).toContainText('Mocked Jira ticket title');
+  });
+
   test('pasting a full Jira browse URL resolves it too, not just a bare key', async ({ page }) => {
     // Regression: jiraKeyMatch used to only recognize a bare key (TRK-999) —
     // a full browse URL fell through to refInfo()'s generic-URL fallback and
@@ -144,6 +162,31 @@ test.describe('Jira linking', () => {
     await page.waitForTimeout(500);
 
     await expect(h.fieldCell(page, 3, 'linked')).toContainText('TRK-999');
+    const history = await h.getHistoryEntriesFor(page, 'i3');
+    expect(history.some(t => t.toLowerCase().includes('could not fetch from jira'))).toBe(true);
+  });
+
+  // Real bug report: refreshing an already-linked field while the proxy is
+  // unreachable was silently REPLACING the resolved title with the bare
+  // "TRK-999" placeholder -- a failed refresh should never regress an
+  // already-successful fetch. Distinct from the test above, which only
+  // covers a FIRST link attempt failing (where the placeholder is correct,
+  // since there's nothing yet to preserve).
+  test('a failed refresh of an already-linked field preserves the existing resolved title, not the bare key', async ({ page }) => {
+    await h.clickFieldToEdit(page, 3, 'linked');
+    await h.pasteText(page, 'TRK-999');
+    await page.keyboard.press('Tab');
+    await h.waitForFieldResolved(page, 3, 'linked');
+    await expect(h.fieldCell(page, 3, 'linked')).toContainText('Mocked Jira ticket title');
+
+    await page.route('http://localhost:8934/**', route => route.abort());
+    await h.refreshRow(page, 3);
+    await page.waitForTimeout(500);
+
+    await expect(h.fieldCell(page, 3, 'linked')).toContainText('Mocked Jira ticket title');
+    const doc = await h.readActiveMilestoneDoc(page);
+    const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'linked');
+    expect(ref).toMatchObject({ system: 'jira', key: 'TRK-999' }); // unchanged, not clobbered with an empty fallback fieldRef
     const history = await h.getHistoryEntriesFor(page, 'i3');
     expect(history.some(t => t.toLowerCase().includes('could not fetch from jira'))).toBe(true);
   });

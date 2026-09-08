@@ -83,13 +83,55 @@ test.describe('Multiple identities: switcher scopes, projects, breadcrumb', () =
     const scopes = page.locator('[data-testid=switcher-scope-row]');
     await expect(scopes).toHaveCount(2);
     const texts = (await scopes.allTextContents()).map(t => t.replace(/\s+/g, ' ').trim());
-    expect(texts[0]).toContain('Personal');
-    expect(texts[0]).toContain('tom@personal.com');
-    expect(texts[1]).toContain('Northwind');
-    expect(texts[1]).toContain('tom@northwind.com');
+    // Alphabetical, not creation order -- seedTwoIdentities creates Personal
+    // first and Northwind second, but "Northwind" < "Personal" alphabetically.
+    expect(texts[0]).toContain('Northwind');
+    expect(texts[0]).toContain('tom@northwind.com');
+    expect(texts[1]).toContain('Personal');
+    expect(texts[1]).toContain('tom@personal.com');
     // Every real identity gets a cog -- not just the previewed one.
     await expect(page.locator('[data-testid=switcher-scope-settings-btn]')).toHaveCount(2);
     await expect(page.locator('[data-testid=btn-switcher-settings]')).toHaveCount(0); // the old right-column link is gone
+  });
+
+  // #78: identities used to list in raw creation order -- no sort at all.
+  // Seeded here deliberately out of both creation and alphabetical order
+  // (Zulu, Alpha, Mike) so a passing test can't be an accident of the
+  // fixture happening to already be alphabetical.
+  test('identities list alphabetically by label, regardless of creation order', async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem('git_native_tracker_identities_v1', JSON.stringify({
+        activeIdentityId: 'id-zulu',
+        identities: [
+          { id: 'id-zulu', label: 'Zulu Corp', email: 'a@zulu.com', githubToken: '', jiraProxyUrl: '', signingPublicKeyJwk: null, signingPrivateKeyJwk: null },
+          { id: 'id-alpha', label: 'Alpha Inc', email: 'b@alpha.com', githubToken: '', jiraProxyUrl: '', signingPublicKeyJwk: null, signingPrivateKeyJwk: null },
+          { id: 'id-mike', label: 'Mike LLC', email: 'c@mike.com', githubToken: '', jiraProxyUrl: '', signingPublicKeyJwk: null, signingPrivateKeyJwk: null },
+        ],
+        lastActiveProjectByIdentity: {}
+      }));
+      localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({
+        activeMilestoneId: 'p-zulu',
+        milestones: [
+          { id: 'p-zulu', name: 'Zulu Project', identityId: 'id-zulu' },
+          { id: 'p-alpha', name: 'Alpha Project', identityId: 'id-alpha' },
+          { id: 'p-mike', name: 'Mike Project', identityId: 'id-mike' },
+        ]
+      }));
+      const blankDoc = { fieldDefs: { title: { label: 'Issue', type: 'text' } }, issues: [], hiddenFieldIds: [], githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', githubTokenOverride: '', projectNotes: '', projectComments: [] };
+      localStorage.setItem('git_native_tracker_v1:p-zulu', JSON.stringify(blankDoc));
+      localStorage.setItem('git_native_tracker_v1:p-alpha', JSON.stringify(blankDoc));
+      localStorage.setItem('git_native_tracker_v1:p-mike', JSON.stringify(blankDoc));
+    });
+    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(400);
+
+    await h.openTrackerSwitcher(page);
+    const scopes = page.locator('[data-testid=switcher-scope-row]');
+    await expect(scopes).toHaveCount(3);
+    const texts = (await scopes.allTextContents()).map(t => t.replace(/\s+/g, ' ').trim());
+    expect(texts[0]).toContain('Alpha Inc');
+    expect(texts[1]).toContain('Mike LLC');
+    expect(texts[2]).toContain('Zulu Corp');
   });
 
   test('clicking outside the open switcher closes it', async ({ page }) => {
@@ -151,7 +193,7 @@ test.describe('Multiple identities: switcher scopes, projects, breadcrumb', () =
     await expect(page.getByText('Project A', { exact: true })).toHaveCount(0);
 
     // A real, named project exists -- not the null-projectId fallback.
-    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Untitled 1');
+    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Untitled Project 1');
     const idx = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1')));
     const active = idx.milestones.find(m => m.id === idx.activeMilestoneId);
     expect(active).toBeTruthy();

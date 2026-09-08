@@ -84,6 +84,27 @@ test.describe('Project notes', () => {
     await expect(page.locator('[data-testid=notes-body]')).toContainText('for the steps.');
   });
 
+  // The whole notes-body-wrap div is a click-to-edit target, but the
+  // rendered markdown inside it is raw innerHTML -- a link click bubbles
+  // up through the DOM to that wrapper's own click handler same as any
+  // other click would. It should open the link, not also drop the panel
+  // into edit mode underneath the new tab.
+  test('clicking a link inside the rendered notes only opens it -- it does not also enter edit mode', async ({ page }) => {
+    await openNotes(page);
+    await page.locator('[data-testid=notes-edit-btn]').click();
+    await page.locator('[data-testid=notes-textarea]').fill('See https://example.com/runbook for the steps.');
+    await page.locator('[data-testid=notes-save-btn]').click();
+    await page.waitForTimeout(200);
+
+    const link = page.locator('[data-testid=notes-body] a[href="https://example.com/runbook"]');
+    const [popup] = await Promise.all([
+      page.context().waitForEvent('page'),
+      link.click(),
+    ]);
+    await popup.close();
+    await expect(page.locator('[data-testid=notes-textarea]')).toHaveCount(0);
+  });
+
   test('Cancel discards the draft without touching the saved notes', async ({ page }) => {
     await openNotes(page);
     await page.locator('[data-testid=notes-edit-btn]').click();

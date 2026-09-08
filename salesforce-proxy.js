@@ -57,11 +57,21 @@
 // unlike `fields` -- silently drops anything that doesn't apply to that
 // particular object rather than erroring; harmless to list fields from
 // several different object types at once.
+// Binds to loopback only, and requires every request to carry a shared
+// secret (X-Wigwag-Proxy-Secret) matching this process's own — otherwise
+// any local process, or any website the browser visits, could already
+// reach this and read real Salesforce data via a plain cross-origin
+// fetch. The secret is auto-generated and persisted on first run (see
+// proxy-shared.js) unless SF_PROXY_SECRET is set explicitly; either way,
+// paste the same value into Settings > Integrations > Salesforce proxy
+// secret.
 const http = require('http');
+const { HOST, secretFor, requireSecret } = require('./proxy-shared');
 
 const PORT = parseInt(process.env.PORT || '8936', 10);
 const API_VERSION = 'v59.0';
 const EXACT_FIELDS = (process.env.SF_FIELDS || '').split(',').map(s => s.trim()).filter(Boolean);
+const SECRET = secretFor(__dirname, 'salesforce', 'SF_PROXY_SECRET');
 
 function tokenModeAuth() {
   if (process.env.SF_INSTANCE_URL && process.env.SF_ACCESS_TOKEN) {
@@ -177,7 +187,7 @@ function reauthableMode() {
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Wigwag-Proxy-Secret');
 }
 
 // keyPrefix -> object API name (e.g. "006" -> "Opportunity"), resolved
@@ -252,6 +262,7 @@ http.createServer(async (req, res) => {
     res.end('Salesforce proxy running. auth=' + authModeLabel());
     return;
   }
+  if (!requireSecret(req, res, SECRET)) return;
 
   const m = url.pathname.match(/^\/record\/([^/]+)$/);
   if (!m) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'not found' })); return; }
@@ -310,8 +321,8 @@ http.createServer(async (req, res) => {
     res.writeHead(502, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Could not reach Salesforce: ' + err.message }));
   }
-}).listen(PORT, () => {
-  console.log('Salesforce proxy listening on http://localhost:' + PORT);
+}).listen(PORT, HOST, () => {
+  console.log('Salesforce proxy listening on http://' + HOST + ':' + PORT);
   console.log('  auth: ' + authModeLabel());
   console.log('  fields: ' + (EXACT_FIELDS.length ? 'exact list -- ' + EXACT_FIELDS.join(', ') : 'every field on the record (auto-describe)'));
 });

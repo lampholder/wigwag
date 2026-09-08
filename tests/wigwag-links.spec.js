@@ -184,18 +184,12 @@ test.describe('wigwag: links -- embedded partway through a title', () => {
     await expect(pill.locator('svg')).toHaveCount(1);
   });
 
-  // Regression, found live: text-overflow:ellipsis on a nowrap line
-  // containing the pill (a non-text inline-flex child) doesn't ellipsize
-  // gracefully once the combined line overflows -- the browser can hide
-  // the WHOLE pill rather than truncating around it, since an untruncated
-  // resolved label is easily wider than the entire title column. A title
-  // that used to render as "See <pill> before shipping" was collapsing to
-  // just "See …", silently losing the pill and all the trailing text. The
-  // real fix is bounding the pill's own rendered width (truncating its
-  // label, capping its own max-width) rather than the container's
-  // overflow behavior -- CSS-only ellipsis has no DOM-text signal to
-  // assert on, so this checks the pill's actual rendered width, not text.
-  test('a long resolved label is capped so the pill stays a narrow, bounded chip', async ({ page }) => {
+  // A wigwag pill embedded in a title shows a short "#<issue-id-prefix>"
+  // instead of the resolved issue's full name -- the full "Project /
+  // Issue title" is still there, just moved to the hover tooltip
+  // (title=, asserted in the previous test), so the pill stays a compact,
+  // fixed-width chip regardless of how long the resolved name is.
+  test('the pill shows a short "#id", not the resolved title, however long it is', async ({ page }) => {
     await h.clickTitleToEdit(page, 1);
     await h.pasteText(page, 'See wigwag:/project/demo-milestone/issue/i2/ before shipping');
     await page.keyboard.press('Tab');
@@ -203,33 +197,29 @@ test.describe('wigwag: links -- embedded partway through a title', () => {
 
     const cell = h.titleCell(page, 1);
     const pill = cell.locator('[data-testid=wigwag-title-pill]');
-    const pillText = await pill.textContent();
-    expect(pillText.length).toBeLessThan(40); // capped, not the full ~75-char resolved label
-    expect(pillText).toContain('…');
+    expect(await pill.textContent()).toBe('#i2');
     const box = await pill.boundingBox();
-    expect(box.width).toBeLessThan(200); // stays a compact chip, not free to grow with the label
+    expect(box.width).toBeLessThan(80); // a short id chip, not free to grow with the resolved label
   });
 
-  // Follow-up, also caught live: the truncation above was unconditional,
-  // even in "Wrap text" mode -- where the column no longer clips anything
-  // (word-break:break-word, overflow:visible) so there's no overflow
-  // problem left to solve, and a permanently-truncated pill there is just
-  // a regression, not a fix for anything. Wrap mode always shows the pill's
-  // full label; the slide-over's own title container has the same "nothing
-  // gets clipped" property (a plain block-level div, no nowrap/ellipsis at
-  // all) and always shows the full label too, unconditionally.
-  test('"Wrap text" on the title column shows the pill\'s full, untruncated label', async ({ page }) => {
+  // Regression guard: this used to be conditional (short id normally,
+  // full label once "Wrap text" removed the overflow problem it was
+  // solving) -- now that the pill is never a "boxed chip" competing for
+  // line space (it's inline text, capped for its own sake, not the
+  // line's), there's no reason for wrap mode to change it. It stays the
+  // same short "#id" either way.
+  test('"Wrap text" on the title column does not change the pill\'s short-id rendering', async ({ page }) => {
     await h.clickTitleToEdit(page, 1);
     await h.pasteText(page, 'See wigwag:/project/demo-milestone/issue/i2/ before shipping');
     await page.keyboard.press('Tab');
     await page.waitForTimeout(400);
 
     const pill = h.titleCell(page, 1).locator('[data-testid=wigwag-title-pill]');
-    expect(await pill.textContent()).not.toBe("Delivery tracker / ACME – New rooms added to spaces don't show until sync");
+    expect(await pill.textContent()).toBe('#i2');
 
     await page.locator('[data-testid=title-wrap-toggle]').click();
     await page.waitForTimeout(300);
-    expect(await pill.textContent()).toBe("Delivery tracker / ACME – New rooms added to spaces don't show until sync");
+    expect(await pill.textContent()).toBe('#i2');
   });
 
   test('the slide-over header always shows the pill\'s full label, never truncated', async ({ page }) => {
@@ -331,7 +321,10 @@ test.describe('wigwag: links -- prose (comments, notes, multiline text fields)',
 
     const commentMd = page.locator('[data-testid=comment-md]').last();
     const pill = commentMd.locator('.wigwag-ref-pill');
-    await expect(pill).toContainText("ACME – New rooms added to spaces don't show until sync");
+    // Shows a short "#<id>", not the resolved title -- the full "Project /
+    // Issue title" is on the pill's own hover tooltip instead.
+    await expect(pill).toHaveText('#i2');
+    await expect(pill).toHaveAttribute('title', "Delivery tracker / ACME – New rooms added to spaces don't show until sync");
     expect(await pill.locator('svg').count()).toBe(1);
 
     const pagesBefore = context.pages().length;

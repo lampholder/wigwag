@@ -106,19 +106,20 @@ test.describe('JSONL export/import', () => {
     expect(issue1.history.some(hh => !hh.field)).toBe(true); // e.g. "Created" is kept
   });
 
-  test('"Import & merge…" unions an incoming file\'s issues with the current ones', async ({ page }) => {
+  test('"Import & merge…" (now "Apply update...") imports a project-id-less file as a new project, never merging into the current one', async ({ page }) => {
     const fixture = Buffer.from(
-      JSON.stringify({ type: 'fields', fields: {}, columnOrder: [] }) + '\n' +
+      JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, columnOrder: [] }) + '\n' +
       JSON.stringify({ type: 'issue', id: 'new1', num: 100, jira: null, fieldRefs: {}, values: { title: 'Merged-in issue' }, comments: [], history: [] }) + '\n'
     );
     // The fixture carries no project id, so it reads as a brand new project
-    // to apply-update's own mismatch warning -- accept it, same as a real
-    // user confirming they mean to merge it into the current one anyway.
+    // to apply-update's own mismatch warning -- accepting it imports it as
+    // its own project (mirrors "Import project from file..."), it never
+    // merges into whatever's currently open.
     page.once('dialog', d => d.accept());
     await page.locator('[data-testid=merge-file-input]').setInputFiles({ name: 'incoming.jsonl', mimeType: 'application/octet-stream', buffer: fixture });
     await page.waitForTimeout(300);
-    const count = await page.locator('[data-testid=row]').count();
-    expect(count).toBe(10); // 9 seed issues + 1 merged in
+    await expect(page.locator('[data-testid=row]')).toHaveCount(1); // just the new project's own issue
+    await expect(page.locator('[data-testid=row]')).toContainText('Merged-in issue');
   });
 
   test('"Paste from clipboard…" creates a new project from pasted JSONL, without touching the current one', async ({ page }) => {
@@ -179,9 +180,9 @@ test.describe('JSONL export/import', () => {
     await expect(page.locator('[data-testid=btn-apply-update-from-file]')).toHaveCount(0);
   });
 
-  test('"Apply update..." → "Paste from clipboard..." merges pasted JSONL into the current project', async ({ page }) => {
+  test('"Apply update..." → "Paste from clipboard..." with no project id in the paste imports it as a new project, never merging into the current one', async ({ page }) => {
     const pastedJsonl = [
-      JSON.stringify({ type: 'fields', fields: {}, columnOrder: [] }),
+      JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, columnOrder: [] }),
       JSON.stringify({ type: 'issue', id: 'pasted-merge-1', num: 200, fieldRefs: {}, values: { title: 'Pasted-in via merge' }, comments: [], history: [] })
     ].join('\n');
 
@@ -199,9 +200,13 @@ test.describe('JSONL export/import', () => {
     await page.waitForTimeout(400);
 
     await expect(page.locator('[data-testid=paste-merge-modal]')).toHaveCount(0);
-    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Delivery tracker'); // merged into the current project, not a new one
-    const count = await page.locator('[data-testid=row]').count();
-    expect(count).toBe(10); // 9 seed issues + 1 pasted-in
+    // Imported as its own new project (named from the "Pasted update"
+    // fallback, same convention "Import project from file..." uses for a
+    // paste with no projectName of its own) -- never merged into
+    // "Delivery tracker".
+    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Pasted update');
+    await expect(page.locator('[data-testid=row]')).toHaveCount(1);
+    await expect(page.locator('[data-testid=row]')).toContainText('Pasted-in via merge');
   });
 });
 
@@ -596,7 +601,13 @@ test.describe('Import / Apply-update: shared project-identity warnings', () => {
     expect(chooser).toBeTruthy();
   });
 
-  test('"Apply update..." warns before merging in a file for a project that does not match the one currently open, and proceeds on confirm', async ({ page }) => {
+  // Regression: this used to offer "merge it into the CURRENT project
+  // anyway" on confirm -- silently folding a different project's issues
+  // into whatever's open. It must now never do that; the only two
+  // outcomes are "leave the current project alone" (dismiss) or "bring
+  // the file in the right way" (confirm: as a new project here, since
+  // this one matches no project already in this browser).
+  test('"Apply update..." never merges a mismatched file into the current project -- it offers to import it as a new one instead', async ({ page }) => {
     const foreignJsonl = [
       JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, projectHistory: [], id: 'foreign-project-id', name: 'Foreign Project' }),
       JSON.stringify({ type: 'issue', id: 'f1', num: 1, comments: [], history: [{ id: 'fh1', time: new Date().toISOString(), actor: 'Tester', email: 't@example.com', text: 'title set', field: 'title', value: 'Foreign issue', origin: 'authored', sortKey: Date.now(), sig: null, pubKey: null }] })
@@ -614,6 +625,7 @@ test.describe('Import / Apply-update: shared project-identity warnings', () => {
     await page.waitForTimeout(400);
     expect(dialogMsg).toContain('brand new project');
     await expect(page.locator('[data-testid=row]')).toHaveCount(9); // dismissed -- nothing merged
+    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Delivery tracker');
 
     page.once('dialog', d => d.accept());
     await page.locator('[data-testid=btn-import-merge]').click();
@@ -624,8 +636,57 @@ test.describe('Import / Apply-update: shared project-identity warnings', () => {
     ]);
     await chooser2.setFiles({ name: 'foreign2.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(foreignJsonl) });
     await page.waitForTimeout(400);
-    await expect(page.locator('[data-testid=row]')).toHaveCount(10); // confirmed -- merged into the current project
-    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Delivery tracker'); // apply-update never switches projects
+    // Confirmed -- imported as its OWN new project (a plain
+    // navigation to it, same as "Import project from file..." already
+    // does), never merged into "Delivery tracker" -- if it had been,
+    // this would show 10 rows under the original title instead.
+    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Foreign Project');
+    await expect(page.locator('[data-testid=row]')).toHaveCount(1);
+    await expect(page.locator('[data-testid=row]')).toContainText('Foreign issue');
+  });
+
+  test('"Apply update..." for a file matching a DIFFERENT existing project offers to switch there and apply it, never merging into the currently open one', async ({ page }) => {
+    await h.openTrackerSwitcher(page);
+    await h.createNamedBlankProject(page, 'Other Project');
+    await page.waitForTimeout(300);
+    const otherProjectId = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1')).activeMilestoneId);
+
+    await h.openTrackerSwitcher(page);
+    await h.milestoneRow(page, 'Delivery tracker').click();
+    await page.waitForTimeout(300);
+
+    const updateForOther = [
+      JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, projectHistory: [], id: otherProjectId, name: 'Other Project' }),
+      JSON.stringify({ type: 'issue', id: 'op1', num: 1, comments: [], history: [{ id: 'oph1', time: new Date().toISOString(), actor: 'Tester', email: 't@example.com', text: 'title set', field: 'title', value: 'Landed on the other project', origin: 'authored', sortKey: Date.now(), sig: null, pubKey: null }] })
+    ].join('\n');
+
+    let dialogMsg = null;
+    page.once('dialog', async d => { dialogMsg = d.message(); await d.dismiss(); });
+    await page.locator('[data-testid=btn-import-merge]').click();
+    await page.waitForTimeout(150);
+    const [chooser1] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      page.locator('[data-testid=btn-apply-update-from-file]').click(),
+    ]);
+    await chooser1.setFiles({ name: 'other-update.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(updateForOther) });
+    await page.waitForTimeout(400);
+    expect(dialogMsg).toContain('Other Project');
+    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Delivery tracker'); // dismissed -- stayed put
+
+    page.once('dialog', d => d.accept());
+    await page.locator('[data-testid=btn-import-merge]').click();
+    await page.waitForTimeout(150);
+    const [chooser2] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      page.locator('[data-testid=btn-apply-update-from-file]').click(),
+    ]);
+    await chooser2.setFiles({ name: 'other-update2.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(updateForOther) });
+    await page.waitForTimeout(500);
+    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Other Project'); // switched to it
+    await expect(page.locator('[data-testid=row]')).toContainText('Landed on the other project');
+
+    await h.openTrackerSwitcher(page);
+    await expect(page.locator('[data-testid=switcher-project-row]')).toHaveCount(2); // no duplicate created
   });
 
   test('"Import project from file..." for a file matching a DIFFERENT existing (non-active) project warns, then switches to and merges into that project', async ({ page }) => {

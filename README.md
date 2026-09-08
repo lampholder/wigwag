@@ -71,7 +71,20 @@ GitHub/Jira or repo sync (see below).
 - **"Import from file…"** (in the milestone switcher) creates a brand new
   milestone from a file instead of touching your current one.
 
-## Linking to private GitHub repos, Jira & Salesforce
+## Linking to private GitHub repos, Jira, Salesforce & Google Drive
+
+Every local relay below (`jira-proxy.js`, `salesforce-proxy.js`,
+`github-data-proxy.js`, `google-drive-proxy.js`) shares the same two
+protections, via `proxy-shared.js`: it binds to `127.0.0.1` only (never
+reachable from the network), and it requires every request to carry a
+shared secret — otherwise, a bare loopback port with open CORS means any
+other local process, or any website your browser visits, could already
+reach it and read your real Jira/Salesforce/GitHub/Drive data with a plain
+cross-origin `fetch()`. Each proxy auto-generates its own secret on first
+run and prints/persists it once (next to the script, as a dotfile) — copy
+that value into the matching Settings > Integrations field, or set
+`JIRA_PROXY_SECRET`/`SF_PROXY_SECRET`/`GITHUB_PROXY_SECRET`/
+`GDRIVE_PROXY_SECRET` yourself.
 
 - **Private GitHub repos**: open Settings (gear icon) and paste a personal
   access token with `repo` read access. Stored only in `localStorage`, in a
@@ -139,6 +152,87 @@ GitHub/Jira or repo sync (see below).
   (find exact API names in Setup → Object Manager → <object> → Fields &
   Relationships; custom fields end in `__c`). See the comment at the top
   of `salesforce-proxy.js` for details.
+- **GitHub, via a proxy instead of directly (optional)**: GitHub's own API
+  already sends permissive CORS headers, so linking a GitHub issue/PR works
+  out of the box with no proxy at all — this is purely for anyone who'd
+  rather the token never touch the browser, or who's pointing at a GitHub
+  Enterprise Server instance:
+  ```
+  GITHUB_TOKEN=ghp_xxxx npm run github-data-proxy
+  ```
+  (or add `GITHUB_API_BASE_URL=https://ghe.yourco.internal/api/v3` for
+  Enterprise Server). Point Settings > Integrations > GitHub proxy URL at
+  wherever it's listening (`http://localhost:8937` by default) — leave it
+  blank and the tracker keeps fetching GitHub directly, same as today.
+- **Google Drive links as named file pills**: a bare Drive/Docs/Sheets/
+  Slides/Forms link anywhere rendered markdown appears (project notes,
+  comments, multiline text fields) is shown with the file's real name and
+  its own file-type icon instead of a raw URL. This is display only —
+  unlike Jira/Salesforce/GitHub, it's never a linkable/bindable field, and
+  nothing about how the link is stored changes.
+  ```
+  GDRIVE_ACCESS_TOKEN=ya29.xxxx npm run google-drive-proxy
+  ```
+  (a pre-obtained OAuth access token — simplest, but expires and needs a
+  manual refresh + restart, same trade-off as Jira's PAT mode; grab one via
+  `gcloud auth print-access-token` against an account with Drive access, or
+  the OAuth2 Playground). Point Settings > Integrations > Google Drive
+  proxy URL at wherever it's listening (`http://localhost:8938` by
+  default). Without it configured, a Drive link still renders as a normal,
+  working link — it just won't resolve to a real file name.
+
+## Installing on your phone, with push notifications
+
+wigwag can be installed like a real app on iOS (Add to Home Screen) and
+kept notified of @mentions even while fully closed, via a self-hosted
+push relay. Two independent pieces:
+
+- **Installability**: `manifest.json` + `sw.js` (a minimal service
+  worker — no offline caching, no fetch interception, registered purely
+  because Web Push requires one) ship alongside `wigwag.html`
+  automatically; nothing to configure. Service workers only register in a
+  *secure context* — that means real `https://`, or `http://localhost`
+  from the same machine. A plain `http://` address (e.g. `npm run serve`
+  reached from your phone over your LAN) does **not** count, and Safari
+  on iOS enforces this strictly with no LAN exception. If you don't have
+  an https-served copy yet, the fastest way to get one for testing is
+  tunneling your local server: `ngrok http 8933` (matching `npm run
+  serve`'s default port) prints a temporary `https://…ngrok-free.app` URL
+  that proxies straight to it — use that URL on your phone instead of the
+  LAN address. Once you're on an https origin, on iOS use Share > **Add
+  to Home Screen**. **Web Push on iOS only works for a page actually
+  added to the home screen this way — never a plain Safari tab.**
+- **Push delivery while closed**: needs `push-relay.js` running
+  somewhere with its own outbound internet access (your laptop, a home
+  server — it does **not** need to be publicly reachable; it polls
+  GitHub itself the same way the app's own background sync already does,
+  rather than needing GitHub to reach it via a webhook):
+  ```
+  npm run push-relay
+  ```
+  On first run it prints a URL (`http://localhost:8939` by default), a
+  shared secret, and generates a VAPID keypair (persisted next to the
+  script, alongside its subscriber list — see its own header comment for
+  every detail, including the optional `GITHUB_TOKEN` and `VAPID_SUBJECT`
+  env vars). From the installed home-screen app, open Settings >
+  Notifications > **Push notifications (beta)**, paste in the relay's URL
+  and secret, and click **Enable push notifications on this device**.
+  Same loopback-bind + shared-secret protection as every proxy above, via
+  the same `proxy-shared.js`.
+
+This is separate from, and doesn't replace, the existing in-tab
+`Notification` mention alert (Settings > Notifications > "Notify me when
+I'm @mentioned…") — that one only ever fires while a tab is open (even
+backgrounded); push notifications are for when the app is fully closed.
+
+Beyond @mentions, any single issue can be individually subscribed to
+(the **Subscribe** button in its slide-over) to get notified of *every*
+new comment or field/status change on it, not just ones that mention
+you — useful for an issue you're following closely regardless of
+whether anyone's tagging you in it. Subscribing only takes effect for
+push (closed-app) delivery once you've enabled push notifications per
+the section above; the in-tab alert fires for subscribed issues either
+way.
 
 ## Syncing the tracker's own data to a GitHub repo
 
@@ -207,8 +301,13 @@ minutes) that this is the actual bar, not an aspiration.
   and the only safe workflow for changing it. Read this first.
 - **`docs/FORMAT.md`** — the `.jsonl` data format spec: field provenance,
   history/signing, the merge algorithm, what's explicitly out of scope.
-- **`jira-proxy.js`** / **`github-oauth-proxy.js`** — the two optional local
-  relay processes described above.
+- **`jira-proxy.js`** / **`salesforce-proxy.js`** / **`github-data-proxy.js`**
+  / **`google-drive-proxy.js`** / **`github-oauth-proxy.js`** — the optional
+  local relay processes described above. **`proxy-shared.js`** holds the
+  loopback-bind + shared-secret logic all but the OAuth proxy use.
+- **`manifest.json`** / **`sw.js`** / **`push-relay.js`** — PWA
+  installability and push-notification support described above.
+  `push-relay.js` also uses `proxy-shared.js`.
 - **`wigwag-agent.js`** / **`wigwag_tracker`** — this project's own backlog
   lives in a real, live wigwag tracker (not a markdown TODO file) --
   `wigwag_tracker` holds the link and a persistent bot identity,

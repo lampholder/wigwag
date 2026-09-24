@@ -47,6 +47,20 @@ test.describe('Row selection: mouse interactions', () => {
     await expect(page.locator('[data-testid=bulk-action-bar]')).toContainText('3 selected of 9');
   });
 
+  // Tracker #99 (fad640df): shift-clicking to range-select also triggered
+  // the browser's own native "extend text selection to here" gesture --
+  // it fires on mousedown, before our click handler's shiftKey check ever
+  // runs, so the selected rows' text visibly highlighted as a side effect.
+  test('shift-click range-select does not leave a native browser text selection behind', async ({ page }) => {
+    await h.gotoTracker(page);
+    await page.locator('[data-testid=row]').nth(0).locator('[data-testid=row-select-checkbox]').click();
+    await page.locator('[data-testid=row]').nth(3).locator('[data-testid=row-select-checkbox]').click({ modifiers: ['Shift'] });
+    await expect(page.locator('[data-testid=bulk-action-bar]')).toContainText('4 selected of 9');
+
+    const selectionText = await page.evaluate(() => window.getSelection().toString());
+    expect(selectionText).toBe('');
+  });
+
   test('header checkbox selects everything currently matching the filter (the only ceiling -- no separate "select all N" escalation), and toggles back to none', async ({ page }) => {
     await h.gotoTracker(page);
     await page.locator('[data-testid=header-select-checkbox]').click();

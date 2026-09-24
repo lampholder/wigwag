@@ -217,7 +217,8 @@ test.describe('wigwag: links -- embedded partway through a title', () => {
     const pill = h.titleCell(page, 1).locator('[data-testid=wigwag-title-pill]');
     expect(await pill.textContent()).toBe('#i2');
 
-    await page.locator('[data-testid=title-wrap-toggle]').click();
+    await h.openTitleMenu(page);
+    await page.locator('[data-testid=title-menu-wrap]').click();
     await page.waitForTimeout(300);
     expect(await pill.textContent()).toBe('#i2');
   });
@@ -316,7 +317,7 @@ test.describe('wigwag: links -- prose (comments, notes, multiline text fields)',
 
     const doc = await h.readActiveMilestoneDoc(page);
     const iss = doc.issues.find(i => i.id === 'i1');
-    const lastComment = iss.comments[iss.comments.length - 1];
+    const lastComment = iss.commentStreams.comments[iss.commentStreams.comments.length - 1];
     expect(lastComment.text).toBe('See wigwag:/project/demo-milestone/issue/i2 for context.');
 
     const commentMd = page.locator('[data-testid=comment-md]').last();
@@ -347,7 +348,7 @@ test.describe('wigwag: links -- prose (comments, notes, multiline text fields)',
     await page.waitForTimeout(400);
     const doc = await h.readActiveMilestoneDoc(page);
     const iss = doc.issues.find(i => i.id === 'i2');
-    const live = iss.comments.filter(c => !c.redacted);
+    const live = iss.commentStreams.comments.filter(c => !c.redacted);
     expect(live[live.length - 1].text).toBe('Updated: wigwag:/project/demo-milestone/issue/i1');
   });
 
@@ -404,7 +405,7 @@ test.describe('wigwag: links -- grammar (?from=, wigwag:/remote/..., unknown-pro
     await page.keyboard.press('Control+Enter');
     await page.waitForTimeout(400);
     const doc = await h.readActiveMilestoneDoc(page);
-    const lastComment = doc.issues.find(i => i.id === 'i1').comments.slice(-1)[0];
+    const lastComment = doc.issues.find(i => i.id === 'i1').commentStreams.comments.slice(-1)[0];
     expect(lastComment.text).toBe('See wigwag:/project/demo-milestone/issue/i2?from=github.com%2Facme%2Fdemo&path=tracker.jsonl for context.');
   });
 

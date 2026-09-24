@@ -124,7 +124,14 @@ test.describe('Jira linking', () => {
     expect(h.latestFieldRef(doc.issues.find(i => i.num === 3), 'title')).toMatchObject({ system: 'jira', key: 'TRK-999' });
   });
 
-  test('the linked field is stored with a system:"jira" tag carrying the full resolved shape', async ({ page }) => {
+  // Tracker #112 (b564316d): the persisted fieldRef is display-only now --
+  // owner/repo/num-equivalent (here key/browseUrl) is all the pill ever
+  // renders. labels/description/etc are used only in-memory at fetch/
+  // refresh time (to recompute any bound field against real data) and
+  // never reach persisted state -- data minimization, so a link can never
+  // accidentally ship unrelated bridged-source material into the shared,
+  // git-synced file.
+  test('the linked field is stored with a system:"jira" tag carrying only display fields, not the full resolved shape', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'TRK-999');
     await page.keyboard.press('Tab');
@@ -132,10 +139,9 @@ test.describe('Jira linking', () => {
 
     const doc = await h.readActiveMilestoneDoc(page);
     const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'linked');
-    expect(ref).toMatchObject({
-      system: 'jira', key: 'TRK-999', labels: ['bug', 'urgent'],
-      description: 'A mocked description.', browseUrl: 'https://mock.atlassian.net/browse/TRK-999',
-    });
+    expect(ref).toMatchObject({ system: 'jira', key: 'TRK-999', browseUrl: 'https://mock.atlassian.net/browse/TRK-999' });
+    expect(ref).not.toHaveProperty('labels');
+    expect(ref).not.toHaveProperty('description');
   });
 
   test('the row refresh button re-fetches an existing Jira link', async ({ page }) => {
@@ -191,7 +197,12 @@ test.describe('Jira linking', () => {
     expect(history.some(t => t.toLowerCase().includes('could not fetch from jira'))).toBe(true);
   });
 
-  test('bound-source rules can read source.jira.labels / source.jira.description from a Jira-linked source field', async ({ page }) => {
+  // Tracker #112 (b564316d): a bound field can no longer be computed live,
+  // on the spot, from an already-linked source -- the persisted fieldRef
+  // is display-only, so there's nothing to evaluate the rule against until
+  // a refresh puts real data in hand. Setting the rule alone leaves the
+  // field open/blank; refreshing the source is what actually computes it.
+  test('bound-source rules can read source.jira.labels / source.jira.description from a Jira-linked source field, once refreshed', async ({ page }) => {
     // "Related" (type 'issue') is a valid bound-source candidate; plain text
     // fields like Mitigation are not (see select-fields.spec.js).
     await h.clickFieldToEdit(page, 3, 'linked');
@@ -201,7 +212,10 @@ test.describe('Jira linking', () => {
 
     await h.openFieldEditor(page, 'type');
     await h.setBoundSourceAndRule(page, 'Related', 'source.jira.labels.includes("urgent") ? "bug" : "chore"');
+    await expect(h.fieldCell(page, 3, 'type')).not.toHaveText(/Bug|Enhancement/); // nothing computed yet -- no refresh has happened since the rule was set
 
+    await h.refreshRow(page, 3);
+    await page.waitForTimeout(300);
     await expect(h.fieldCell(page, 3, 'type')).toHaveText(/Bug/);
   });
 
@@ -246,7 +260,13 @@ test.describe('Salesforce linking', () => {
     await expect(anchor).toHaveAttribute('href', SF_URL);
   });
 
-  test('the linked field is stored with a system:"salesforce" tag carrying the full resolved shape', async ({ page }) => {
+  // Tracker #112 (b564316d): same data-minimization change as Jira above --
+  // objectType/status/owner/lastModified/fields (the record's whole
+  // Compact Layout) are used only in-memory at fetch/refresh time, never
+  // persisted. This matters even more for Salesforce, where "fields" could
+  // otherwise ship an entire record's worth of admin-configured data
+  // (e.g. revenue figures) into the shared file just because a link exists.
+  test('the linked field is stored with a system:"salesforce" tag carrying only display fields, not the full resolved shape', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, SF_URL);
     await page.keyboard.press('Tab');
@@ -254,10 +274,10 @@ test.describe('Salesforce linking', () => {
 
     const doc = await h.readActiveMilestoneDoc(page);
     const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'linked');
-    expect(ref).toMatchObject({
-      system: 'salesforce', id: SF_ID, objectType: 'Opportunity', name: 'Mocked Opportunity',
-      status: 'Negotiation/Review', url: SF_URL,
-    });
+    expect(ref).toMatchObject({ system: 'salesforce', id: SF_ID, name: 'Mocked Opportunity', url: SF_URL });
+    expect(ref).not.toHaveProperty('objectType');
+    expect(ref).not.toHaveProperty('status');
+    expect(ref).not.toHaveProperty('fields');
   });
 
   test('the row refresh button re-fetches an existing Salesforce link', async ({ page }) => {
@@ -288,7 +308,11 @@ test.describe('Salesforce linking', () => {
     expect(history.some(t => t.toLowerCase().includes('could not fetch from salesforce'))).toBe(true);
   });
 
-  test('bound-source rules can read source.salesforce.status / .objectType from a Salesforce-linked source field', async ({ page }) => {
+  // Tracker #112 (b564316d): see the equivalent Jira test above for why a
+  // refresh is required now -- the persisted fieldRef no longer carries
+  // objectType/status, so there's nothing to compute the rule against
+  // until a refresh puts the real record in hand.
+  test('bound-source rules can read source.salesforce.status / .objectType from a Salesforce-linked source field, once refreshed', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, SF_URL);
     await page.keyboard.press('Tab');
@@ -296,7 +320,10 @@ test.describe('Salesforce linking', () => {
 
     await h.openFieldEditor(page, 'type');
     await h.setBoundSourceAndRule(page, 'Related', 'source.salesforce.objectType === "Opportunity" ? "bug" : "chore"');
+    await expect(h.fieldCell(page, 3, 'type')).not.toHaveText(/Bug|Enhancement/);
 
+    await h.refreshRow(page, 3);
+    await page.waitForTimeout(300);
     await expect(h.fieldCell(page, 3, 'type')).toHaveText(/Bug/);
   });
 
@@ -359,7 +386,12 @@ test.describe('Jira linking: expanded field set', () => {
     await h.gotoTracker(page);
   });
 
-  test('the full field set (status, priority, assignee, dates, components, ...) is persisted into fieldRefs', async ({ page }) => {
+  // Tracker #112 (b564316d): this is now the opposite assertion -- the
+  // whole point of the fix is that this expanded field set (status,
+  // priority, assignee, dates, components, ...) is available to a bound
+  // rule ONLY in-memory, at the moment of fetch/refresh, and never
+  // persisted into fieldRefs at all.
+  test('the full field set (status, priority, assignee, dates, components, ...) is NOT persisted into fieldRefs', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'TRK-999');
     await page.keyboard.press('Tab');
@@ -367,14 +399,15 @@ test.describe('Jira linking: expanded field set', () => {
 
     const doc = await h.readActiveMilestoneDoc(page);
     const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'linked');
-    expect(ref).toMatchObject({
-      status: 'In Progress', statusCategory: 'indeterminate', issueType: 'Bug', priority: 'High',
-      assignee: 'Priya Sharma', reporter: 'Jordan Lee', dueDate: '2026-03-01',
-      components: ['backend', 'api'], fixVersions: ['v2.0'], project: 'TRK',
-    });
+    expect(ref).toMatchObject({ system: 'jira', key: 'TRK-999' });
+    for (const key of ['status', 'statusCategory', 'issueType', 'priority', 'assignee', 'reporter', 'dueDate', 'components', 'fixVersions', 'project', 'description', 'labels']) {
+      expect(ref).not.toHaveProperty(key);
+    }
   });
 
-  test('a bound-source rule can branch on source.jira.status', async ({ page }) => {
+  // See the equivalent test in "Jira linking" above for why a refresh is
+  // required now, not just setting the rule.
+  test('a bound-source rule can branch on source.jira.status, once refreshed', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'TRK-999');
     await page.keyboard.press('Tab');
@@ -382,7 +415,10 @@ test.describe('Jira linking: expanded field set', () => {
 
     await h.openFieldEditor(page, 'type');
     await h.setBoundSourceAndRule(page, 'Related', 'source.jira.status === "In Progress" ? "bug" : "chore"');
+    await expect(h.fieldCell(page, 3, 'type')).not.toHaveText(/Bug|Enhancement/);
 
+    await h.refreshRow(page, 3);
+    await page.waitForTimeout(300);
     await expect(h.fieldCell(page, 3, 'type')).toHaveText(/Bug/);
   });
 
@@ -390,7 +426,16 @@ test.describe('Jira linking: expanded field set', () => {
   // handoff replaced it with the results table, which shows what every
   // row actually computes, not a static example) -- an advanced-mode
   // expression reading the specific fields is how these now get exercised.
-  test('the rule editor\'s advanced expression can read the expanded Jira field set', async ({ page }) => {
+  //
+  // Tracker #112 (b564316d): the preview evaluates straight off the
+  // PERSISTED fieldRef (buildSource), which is now display-only -- it has
+  // no live payload to show, so status/priority/etc. all read as empty
+  // defaults here, same as any other never-refreshed bound field. This is
+  // the correct, if less immediately useful, behavior: showing the old
+  // rich preview would mean either faking data that isn't really stored,
+  // or the preview quietly having access to something a bound field
+  // itself no longer does.
+  test('the rule editor\'s advanced expression reads empty defaults for the Jira field set until a refresh actually populates it', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'TRK-999');
     await page.keyboard.press('Tab');
@@ -408,16 +453,17 @@ test.describe('Jira linking: expanded field set', () => {
     );
     await page.waitForTimeout(300);
 
-    // The results table truncates its Result column to 60 chars -- keep
-    // the assertion within that so it isn't itself clipped by "…".
     const row3 = page.locator('[data-testid=rule-preview-row]').nth(2); // issue num 3 is the seed's 3rd row
-    await expect(row3).toContainText('no-gh|In Progress,High,Priya Sharma');
+    await expect(row3).toContainText('no-gh|,,,,,');
   });
 
   test('source.jira / source.github are null (not an empty-shaped object) unless the link is actually that system', async ({ page }) => {
     // GitHub-linked: source.jira must be falsey, so a rule can branch with a
     // plain truthy check instead of needing to know which system a field is
-    // linked to.
+    // linked to. status/issueType read as empty defaults, same rationale as
+    // the Jira preview test above (tracker #112) -- only the isLinked/
+    // which-system-is-it structure is meaningfully testable without a
+    // refresh, not the field values themselves.
     await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/3');
     await page.keyboard.press('Tab');
@@ -435,7 +481,7 @@ test.describe('Jira linking: expanded field set', () => {
     );
     await page.waitForTimeout(300);
     let row3 = page.locator('[data-testid=rule-preview-row]').nth(2);
-    await expect(row3).toContainText('gh:open,Issue|no-jira');
+    await expect(row3).toContainText('gh:,|no-jira');
 
     await page.locator('[data-testid=rule-builder] >> text=✕').first().click();
     await page.waitForTimeout(400);
@@ -453,10 +499,16 @@ test.describe('Jira linking: expanded field set', () => {
     await expect(row3).toContainText('no-gh|jira');
   });
 
+  // Tracker #112 (b564316d): the persisted ref is display-only regardless
+  // of API shape now, so "does it default cleanly" only remains a live
+  // question for the IN-MEMORY payload a bound rule evaluates against at
+  // refresh time -- confirmed below via a rule that reads a field this
+  // old-shaped response never sends at all.
   test('an old-shaped fixture missing the new fields still resolves cleanly (backward compatible)', async ({ page }) => {
     // A local proxy someone hasn't restarted yet after this change only
     // ever sends the original {title, description, labels, browseUrl}
-    // shape -- confirm that degrades to empty defaults, not a crash.
+    // shape -- confirm a rule reading a newer field (status) against it
+    // degrades to an empty default, not a crash.
     // Must be page.route (not context.route): beforeEach's mockJiraProxy
     // already installed a page-level route for this same URL pattern, and
     // page routes take precedence over context routes regardless of
@@ -476,7 +528,12 @@ test.describe('Jira linking: expanded field set', () => {
     const doc = await h.readActiveMilestoneDoc(page);
     const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'linked');
     expect(ref.key).toBe('TRK-1000'); // the explicit key param wins even though data.key is absent
-    expect(ref.status).toBe('');
-    expect(ref.components).toEqual([]);
+    expect(ref).not.toHaveProperty('status'); // display-only shape -- never persisted regardless of API response
+
+    await h.openFieldEditor(page, 'type');
+    await h.setBoundSourceAndRule(page, 'Related', 'source.jira.status === "" ? "bug" : "chore"');
+    await h.refreshRow(page, 3);
+    await page.waitForTimeout(300);
+    await expect(h.fieldCell(page, 3, 'type')).toHaveText(/Bug/); // no crash, empty default matched
   });
 });

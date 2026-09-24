@@ -326,7 +326,7 @@ test.describe('Remote lookups persist with the data', () => {
     expect(after).toBe(before);
   });
 
-  test('the resolved ref (owner/repo/num/labels) is part of persisted state, not just the display text', async ({ page }) => {
+  test('the resolved ref (owner/repo/num) is part of persisted state, not just the display text', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/1');
     await page.keyboard.press('Tab');
@@ -571,6 +571,35 @@ test.describe('Comment-indicator column', () => {
     await expect(indicator).toHaveAttribute('title', 'Add a comment');
   });
 
+  // Regression test: the badge used to be positioned absolutely relative
+  // to the whole (possibly tall, wrapped-text) cell rather than the icon
+  // itself, so a tall row left it floating far above the speech bubble.
+  test('the badge stays glued to the speech-bubble icon even when wrapping makes the row tall', async ({ page }) => {
+    const indicator = h.row(page, 2).locator('[data-testid=comment-indicator]');
+    const badge = indicator.locator('[data-testid=comment-count-badge]');
+    await expect(badge).toBeVisible();
+
+    const measure = async () => {
+      const badgeBox = await badge.boundingBox();
+      const iconBox = await indicator.locator('svg').boundingBox();
+      return { topDelta: badgeBox.y - iconBox.y, rightDelta: (badgeBox.x + badgeBox.width) - (iconBox.x + iconBox.width) };
+    };
+    const before = await measure();
+
+    await h.clickTitleToEdit(page, 2);
+    await h.typeAndCommit(page, 'A title long enough that, once wrapping is enabled, this row becomes considerably taller than a normal single-line row');
+    await h.openTitleMenu(page);
+    await page.locator('[data-testid=title-menu-wrap]').click();
+    await page.waitForTimeout(200);
+
+    const rowBox = await h.row(page, 2).boundingBox();
+    expect(rowBox.height).toBeGreaterThan(60); // confirm the row actually grew
+
+    const after = await measure();
+    expect(Math.abs(after.topDelta - before.topDelta)).toBeLessThan(0.5);
+    expect(Math.abs(after.rightDelta - before.rightDelta)).toBeLessThan(0.5);
+  });
+
   test('a row with comments shows a count badge and the latest comment as a tooltip', async ({ page }) => {
     // seed row 2 has exactly one comment: "Confirmed on staging, filed with the sync team."
     // Never having been opened, it's unread -- the badge's count IS the
@@ -613,7 +642,7 @@ test.describe('Comment-indicator column', () => {
     // without this browser having opened the issue again.
     const doc = await h.readActiveMilestoneDoc(page);
     const iss = doc.issues.find(i => i.num === 2);
-    iss.comments.push({ id: 'c-new', author: 'jordan', email: 'jordan@example.com', time: 'just now', text: 'A brand new comment', sortKey: Date.now() + 999999 });
+    iss.commentStreams.comments.push({ id: 'c-new', author: 'jordan', email: 'jordan@example.com', time: 'just now', text: 'A brand new comment', sortKey: Date.now() + 999999 });
     await h.writeActiveMilestoneDoc(page, doc);
     await page.reload();
     await page.waitForTimeout(400);
@@ -654,7 +683,7 @@ test.describe('Comment-indicator column', () => {
 
     // The append-only log now has 2 raw entries for this one comment...
     const doc = await h.readActiveMilestoneDoc(page);
-    expect(doc.issues[0].comments.length).toBe(2);
+    expect(doc.issues[0].commentStreams.comments.length).toBe(2);
     // ...but the badge still counts it as a single visible (and already
     // read) note, not a newly unread one.
     await expect(badge).toHaveCount(0);
@@ -812,11 +841,16 @@ test.describe('Detail slide-over', () => {
 
   // Regression test: the slide-over's select/multiselect popovers used to
   // be a stripped-down copy of the in-row popover's markup (no "Select
-  // an item(s)" header, no filter box, no current-selection indicator).
-  // The multiselect version also referenced a field (opt.checked) that
-  // never existed on the cell data (the real field is opt.selected), so
-  // its checkmark silently never rendered in either state.
-  test('select and multiselect popovers match the in-row ones exactly (header, filter box, current-selection indicator)', async ({ page }) => {
+  // an item(s)" header, no current-selection indicator). The multiselect
+  // version also referenced a field (opt.checked) that never existed on
+  // the cell data (the real field is opt.selected), so its checkmark
+  // silently never rendered in either state.
+  //
+  // The single-select popover's filter box was later removed entirely
+  // (tracker #81) since it rarely had enough options to warrant one --
+  // multiselect keeps its own filter box, so this test now asserts the
+  // two popovers deliberately differ on that point.
+  test('select and multiselect popovers match the in-row ones (header, current-selection indicator); only multiselect keeps a filter box', async ({ page }) => {
     await h.openSlideover(page, 2); // seed row 2: RAG = amber ("At risk"), teams = ["platform"]
 
     const ragField = page.locator('[data-testid=slideover-field][data-col=rag]');
@@ -825,7 +859,7 @@ test.describe('Detail slide-over', () => {
     await ragField.click();
     await page.waitForTimeout(150);
     await expect(page.getByText('Select an item', { exact: true })).toBeVisible();
-    await expect(page.locator('input[placeholder="Filter options"]')).toBeVisible();
+    await expect(page.locator('input[placeholder="Filter options"]')).toHaveCount(0);
     const selectedRow = page.locator('div', { hasText: 'At risk' }).filter({ has: page.locator('text=✓') });
     expect(await selectedRow.count()).toBeGreaterThan(0);
     await page.keyboard.press('Escape');
@@ -1173,11 +1207,12 @@ test.describe('Activity history', () => {
 
     // Comments are unaffected -- still plain text (rendered via the
     // markdown pipeline, but plain text round-trips through it unchanged),
-    // no pill markup.
+    // no pill markup. The compose box only renders for the active tab
+    // (comment_stream.zip UX pass), so switch back to Comments first.
+    await slideover.locator('[data-testid=activity-tab-comments]').click();
+    await page.waitForTimeout(150);
     await page.locator('[data-testid=new-comment-input]').fill('Just a plain comment');
     await page.locator('button', { hasText: 'Post' }).click();
-    await page.waitForTimeout(150);
-    await slideover.locator('[data-testid=activity-tab-comments]').click();
     await page.waitForTimeout(150);
     await expect(entries.first()).toContainText('Just a plain comment');
   });
@@ -1288,7 +1323,7 @@ test.describe('Comments: markdown rendering and append-only editing', () => {
     // data-structures.spec.js): the original entry survives as a
     // content-free tombstone, not with its old text intact.
     const doc = await h.readActiveMilestoneDoc(page);
-    const comments = doc.issues[0].comments;
+    const comments = doc.issues[0].commentStreams.comments;
     expect(comments.length).toBe(2); // tombstoned original + live edit, not just 1 survivor
     expect(comments[0].id).toBe(comments[1].id); // same comment, same id across both entries
 
@@ -1315,7 +1350,7 @@ test.describe('Comments: markdown rendering and append-only editing', () => {
     await expect(page.locator('[data-testid=comment-edit-input]')).toHaveCount(0);
     await expect(page.locator('[data-testid=comment-md]').first()).toContainText('do not touch this');
     const doc = await h.readActiveMilestoneDoc(page);
-    expect(doc.issues[0].comments.length).toBe(1);
+    expect(doc.issues[0].commentStreams.comments.length).toBe(1);
   });
 
   test('without a matching identity, comments show no edit affordance at all', async ({ page }) => {
@@ -1326,7 +1361,7 @@ test.describe('Comments: markdown rendering and append-only editing', () => {
     // longer lets through without an identity.
     const doc = await h.readActiveMilestoneDoc(page);
     const issue = doc.issues.find(i => i.num === 1);
-    issue.comments.push({ id: 'c-no-identity', author: 'anonymous', email: '', time: 'Jul 1', text: 'a comment with no identity set', sortKey: Date.now() });
+    issue.commentStreams.comments.push({ id: 'c-no-identity', author: 'anonymous', email: '', time: 'Jul 1', text: 'a comment with no identity set', sortKey: Date.now() });
     await h.writeActiveMilestoneDoc(page, doc);
     await page.reload();
     await page.waitForTimeout(300);
@@ -1343,7 +1378,7 @@ test.describe('Comments: markdown rendering and append-only editing', () => {
   test('two distinct legacy comments with no id each get their own bubble, and neither is editable', async ({ page }) => {
     await setIdentity(page, 'me@example.com');
     const doc = await h.readActiveMilestoneDoc(page);
-    doc.issues[0].comments.push(
+    doc.issues[0].commentStreams.comments.push(
       { author: 'jordan', time: 'Aug 1', text: 'first legacy note', sortKey: 5001 },
       { author: 'jordan', time: 'Aug 2', text: 'second legacy note', sortKey: 5002 }
     );
@@ -2025,23 +2060,39 @@ test.describe('Column value filters', () => {
     await expect(page.locator('[data-testid=row]')).toHaveCount(3); // i2, i7, i9 (type=bug alone)
   });
 
-  // "Select all" sits next to "Clear" once you've partially selected some
-  // values -- same end result as Clear (nothing excluded), but checks
-  // every box explicitly rather than removing the filter, for anyone who
-  // wants to flip straight from "some" to "all" without unchecking their
-  // way there first.
-  test('"Select all" appears once some values are selected, and checks every option', async ({ page }) => {
+  // "Select all" is always available, even from a fresh/unfiltered state
+  // (live report: it used to only appear once something was already
+  // selected, leaving no quick way to jump straight to "every box
+  // checked" from scratch) -- "Clear" stays conditional on there actually
+  // being a filter to clear.
+  test('"Select all" is always visible, even unfiltered, and checks every option', async ({ page }) => {
     await h.openColumnMenu(page, 'rag');
-    await expect(page.locator('[data-testid=col-filter-select-all]')).toHaveCount(0); // not shown unfiltered
-
-    await page.locator('[data-testid=col-filter-option]').filter({ hasText: 'At risk' }).click();
-    await expect(page.locator('[data-testid=col-filter-select-all]')).toBeVisible();
+    await expect(page.locator('[data-testid=col-filter-select-all]')).toBeVisible(); // shown even fresh/unfiltered
+    await expect(page.locator('[data-testid=col-filter-clear]')).toHaveCount(0); // nothing to clear yet
 
     await page.locator('[data-testid=col-filter-select-all]').click();
     await page.waitForTimeout(150);
     const optionCount = await page.locator('[data-testid=col-filter-option]').count();
     const checkedCount = await page.locator('[data-testid=col-filter-option]').filter({ hasText: '✓' }).count();
     expect(checkedCount).toBe(optionCount); // every option, including "(No value)", now checked
+    await expect(page.locator('[data-testid=col-filter-select-all]')).toBeVisible(); // still there, not a one-shot toggle
+    await expect(page.locator('[data-testid=col-filter-clear]')).toBeVisible(); // now filtered (all-selected still counts), so Clear appears too
+
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=row]')).toHaveCount(9); // nothing excluded -- selecting every option is a no-op on the table
+  });
+
+  test('"Select all" still works once some values are already selected, replacing a partial selection with every option', async ({ page }) => {
+    await h.openColumnMenu(page, 'rag');
+    await page.locator('[data-testid=col-filter-option]').filter({ hasText: 'At risk' }).click();
+    await expect(page.locator('[data-testid=col-filter-clear]')).toBeVisible();
+
+    await page.locator('[data-testid=col-filter-select-all]').click();
+    await page.waitForTimeout(150);
+    const optionCount = await page.locator('[data-testid=col-filter-option]').count();
+    const checkedCount = await page.locator('[data-testid=col-filter-option]').filter({ hasText: '✓' }).count();
+    expect(checkedCount).toBe(optionCount);
 
     await page.mouse.click(700, 700);
     await page.waitForTimeout(150);
@@ -2221,6 +2272,89 @@ test.describe('Column value filters', () => {
   });
 });
 
+// Tracker #105: a keyword match that an active column filter is silently
+// excluding is easy to miss with no trace it ever matched -- a hint next
+// to the filter box surfaces it, with an escape hatch back to seeing it.
+// i4 "Users can't track work that lives outside GitHub" (amber) and i5
+// "Auto-link issue titles to their GitHub/Jira source" (green) both match
+// the keyword "GitHub"; i7 "Multiselect field..." (red) does not.
+test.describe('Hidden keyword matches (column filters)', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  test('no hint with only a keyword filter active, no column filter', async ({ page }) => {
+    await page.locator('[data-testid=filter-input]').fill('GitHub');
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=hidden-by-column-filters-hint]')).toHaveCount(0);
+  });
+
+  test('no hint with only a column filter active, no keyword', async ({ page }) => {
+    await h.openColumnMenu(page, 'rag');
+    await page.locator('[data-testid=col-filter-option]').filter({ hasText: 'On track' }).click(); // green
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=hidden-by-column-filters-hint]')).toHaveCount(0);
+  });
+
+  test('no hint when the column filter does not actually hide any keyword match', async ({ page }) => {
+    await h.openColumnMenu(page, 'rag');
+    await page.locator('[data-testid=col-filter-option]').filter({ hasText: 'On track' }).click(); // green: i1, i5, i8
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=filter-input]').fill('Auto-link'); // only matches i5, which is green -- nothing hidden
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=hidden-by-column-filters-hint]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=row]')).toHaveCount(1);
+  });
+
+  test('shows a count and restores hidden rows when at least one keyword match survives', async ({ page }) => {
+    await h.openColumnMenu(page, 'rag');
+    await page.locator('[data-testid=col-filter-option]').filter({ hasText: 'On track' }).click(); // green: i1, i5, i8
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=filter-input]').fill('GitHub'); // matches i4 (amber, hidden) and i5 (green, visible)
+
+    await expect(page.locator('[data-testid=row]')).toHaveCount(1); // just i5
+    const hint = page.locator('[data-testid=hidden-by-column-filters-hint]');
+    await expect(hint).toContainText('1 match hidden by column filters');
+    await expect(hint).not.toContainText('shown faded');
+
+    await page.locator('[data-testid=hidden-by-column-filters-clear]').click();
+    await page.waitForTimeout(150);
+    await expect(hint).toHaveCount(0);
+    await expect(page.locator('[data-testid=row]')).toHaveCount(2); // i4 and i5, keyword filter untouched
+  });
+
+  test('falls back to showing every keyword match faded when the column filter would otherwise leave the table empty', async ({ page }) => {
+    await h.openColumnMenu(page, 'rag');
+    await page.locator('[data-testid=col-filter-option]').filter({ hasText: 'Off track' }).click(); // red: i7 only
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=filter-input]').fill('GitHub'); // matches i4, i5 -- neither is red
+
+    const rows = page.locator('[data-testid=row]');
+    await expect(rows).toHaveCount(2); // both keyword matches shown despite neither passing the column filter
+    const opacities = await rows.evaluateAll(els => els.map(el => getComputedStyle(el).opacity));
+    expect(opacities).toEqual(['0.5', '0.5']);
+    await expect(page.locator('[data-testid=hidden-by-column-filters-hint]')).toContainText('shown faded below');
+  });
+
+  test('does not show the hint, and does not apply the dimmed fallback, in Kanban view', async ({ page }) => {
+    await h.openColumnMenu(page, 'rag');
+    await page.locator('[data-testid=col-filter-option]').filter({ hasText: 'Off track' }).click(); // red: i7 only
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=filter-input]').fill('GitHub');
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=hidden-by-column-filters-hint]')).toBeVisible();
+
+    await h.openColumnMenu(page, 'type');
+    await page.locator('[data-testid=col-menu-group-by]').click();
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=kanban-board]')).toBeVisible();
+    await expect(page.locator('[data-testid=hidden-by-column-filters-hint]')).toHaveCount(0);
+  });
+});
+
 // Column order is cosmetic like column widths/wrap/filters: persists per
 // browser, per milestone, across reload and switching -- but is excluded
 // from persist()'s document blob and buildSourceText()'s exported fields
@@ -2232,6 +2366,27 @@ test.describe('Column order', () => {
     await h.openColumnMenu(page, colId);
     await page.getByText('Move to start', { exact: true }).click();
     await page.waitForTimeout(150);
+  }
+
+  // Tracker #92-adjacent feature: Title and the comment-indicator column
+  // used to be hardcoded ahead of columnOrder's own render loop, so no
+  // field could ever land to their left or between them. Both now occupy
+  // real (sentinel) slots in columnOrder, so a field's left-to-right
+  // screen position -- not just its position among [data-testid=col-header]
+  // elements -- is the only reliable way to check placement relative to
+  // them.
+  async function headerOrderIds(page) {
+    const items = [];
+    const titleBox = await page.locator('[data-testid=title-col-header]').boundingBox();
+    items.push({ id: '__title__', x: titleBox.x });
+    const commentsBox = await page.locator('div[title="Comments"]').boundingBox();
+    items.push({ id: '__comments__', x: commentsBox.x });
+    for (const el of await page.locator('[data-testid=col-header]').all()) {
+      const box = await el.boundingBox();
+      items.push({ id: await el.getAttribute('data-col'), x: box.x });
+    }
+    items.sort((a, b) => a.x - b.x);
+    return items.map(i => i.id);
   }
 
   test('a reorder persists across reload', async ({ page }) => {
@@ -2333,6 +2488,71 @@ test.describe('Column order', () => {
   test('column headers disable text selection so a click-drag starts a reorder, not a text selection', async ({ page }) => {
     expect(await h.colHeader(page, 'type').evaluate(el => getComputedStyle(el).userSelect)).toBe('none');
     expect(await page.locator('[data-testid=title-col-header]').evaluate(el => getComputedStyle(el).userSelect)).toBe('none');
+  });
+
+  test('a field can be dropped on the left half of the Title header, moving it before Title', async ({ page }) => {
+    const before = await headerOrderIds(page);
+    expect(before[0]).toBe('__title__'); // sanity: Title starts in its default front position
+
+    const titleBox = await page.locator('[data-testid=title-col-header]').boundingBox();
+    await h.colHeader(page, 'rag').dragTo(page.locator('[data-testid=title-col-header]'), { targetPosition: { x: 2, y: titleBox.height / 2 } });
+    await page.waitForTimeout(150);
+
+    const after = await headerOrderIds(page);
+    expect(after[0]).toBe('rag');
+    expect(after[1]).toBe('__title__');
+
+    await page.reload();
+    await page.waitForTimeout(300);
+    expect(await headerOrderIds(page)).toEqual(after);
+  });
+
+  test('a field can be dropped on the right half of the Title header, moving it between Title and Comments', async ({ page }) => {
+    const titleBox = await page.locator('[data-testid=title-col-header]').boundingBox();
+    await h.colHeader(page, 'rag').dragTo(page.locator('[data-testid=title-col-header]'), { targetPosition: { x: titleBox.width - 2, y: titleBox.height / 2 } });
+    await page.waitForTimeout(150);
+
+    const after = await headerOrderIds(page);
+    expect(after[0]).toBe('__title__');
+    expect(after[1]).toBe('rag');
+    expect(after[2]).toBe('__comments__');
+  });
+
+  test('a field can be dropped on the right half of the Comments header, moving it after Comments', async ({ page }) => {
+    const commentsHeader = page.locator('div[title="Comments"]');
+    const commentsBox = await commentsHeader.boundingBox();
+    await h.colHeader(page, 'rag').dragTo(commentsHeader, { targetPosition: { x: commentsBox.width - 2, y: commentsBox.height / 2 } });
+    await page.waitForTimeout(150);
+
+    const after = await headerOrderIds(page);
+    expect(after[0]).toBe('__title__');
+    expect(after[1]).toBe('__comments__');
+    expect(after[2]).toBe('rag');
+  });
+
+  test('"Move to start" now lands a field before Title too, not just at index 0 among fields', async ({ page }) => {
+    await moveColumnToStart(page, 'rag');
+    const after = await headerOrderIds(page);
+    expect(after[0]).toBe('rag');
+    expect(after[1]).toBe('__title__');
+  });
+
+  test('the Comments header itself is not draggable -- only a valid drop target, matching Title', async ({ page }) => {
+    const before = await headerOrderIds(page);
+    await page.locator('div[title="Comments"]').dragTo(h.colHeader(page, 'rag'));
+    await page.waitForTimeout(150);
+    expect(await headerOrderIds(page)).toEqual(before);
+  });
+
+  test('a pre-existing columnOrder from before Title/Comments were placeable (no sentinels) keeps them in their historical front position', async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem('git_native_tracker_col_order_v1', JSON.stringify({ 'demo-milestone': ['rag', 'type', 'priority', 'linked', 'teams', 'mitigation'] }));
+    });
+    await h.gotoTracker(page);
+    const order = await headerOrderIds(page);
+    expect(order[0]).toBe('__title__');
+    expect(order[1]).toBe('__comments__');
+    expect(order[2]).toBe('rag');
   });
 });
 
@@ -2442,13 +2662,14 @@ test.describe('Wrap vs truncate per column', () => {
     await page.waitForTimeout(150);
   }
 
-  test('title: truncates by default, and its dedicated header icon switches it to full wrap', async ({ page }) => {
+  test('title: truncates by default, and its "..." menu\'s Wrap text item switches it to full wrap', async ({ page }) => {
     await setLongTitle(page);
     const span = h.titleCell(page, 1).locator('span').first();
     await expect(span).toHaveCSS('white-space', 'nowrap');
     const before = await h.row(page, 1).boundingBox();
 
-    await page.locator('[data-testid=title-wrap-toggle]').click();
+    await h.openTitleMenu(page);
+    await page.locator('[data-testid=title-menu-wrap]').click();
     await page.waitForTimeout(150);
 
     await expect(span).toHaveCSS('white-space', 'normal');
@@ -2488,7 +2709,8 @@ test.describe('Wrap vs truncate per column', () => {
 
   test('wrap preferences persist across reload and are excluded from export', async ({ page }) => {
     await setLongTitle(page);
-    await page.locator('[data-testid=title-wrap-toggle]').click();
+    await h.openTitleMenu(page);
+    await page.locator('[data-testid=title-menu-wrap]').click();
     await page.waitForTimeout(150);
     await h.clickFieldToEdit(page, 2, 'mitigation');
     await h.typeAndCommit(page, LONG_TEXT);
@@ -2505,6 +2727,57 @@ test.describe('Wrap vs truncate per column', () => {
     const sourceText = await h.readSourceViewText(page);
     expect(sourceText).not.toContain('columnWrap');
     expect(sourceText).not.toContain('titleWrap');
+  });
+});
+
+// Tracker #92: Title's column controls (sort, wrap, freeze) used to be
+// three always-visible inline icons -- consolidated into a single "..."
+// menu instead, matching every field column's own convention.
+test.describe('Title column "..." menu', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  test('no inline sort/wrap/freeze icons remain on the title header by default', async ({ page }) => {
+    await expect(page.locator('[data-testid=title-wrap-toggle]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=title-freeze-toggle]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=title-menu-trigger]')).toBeVisible();
+  });
+
+  test('opening it lists exactly Sort ascending, Sort descending, Freeze up to here, and Wrap text -- nothing else', async ({ page }) => {
+    await h.openTitleMenu(page);
+    await expect(page.getByText('Sort ascending', { exact: true })).toBeVisible();
+    await expect(page.getByText('Sort descending', { exact: true })).toBeVisible();
+    await expect(page.locator('[data-testid=title-menu-freeze]')).toBeVisible();
+    await expect(page.locator('[data-testid=title-menu-wrap]')).toContainText('Wrap text');
+    // Field-only items don't make sense for the fixed Title column.
+    await expect(page.getByText('Edit field…', { exact: true })).toHaveCount(0);
+    await expect(page.getByText('Hide field', { exact: true })).toHaveCount(0);
+    await expect(page.getByText('Group by this', { exact: true })).toHaveCount(0);
+  });
+
+  test('Sort ascending/descending actually sort by title, showing ✕ next to whichever is active', async ({ page }) => {
+    await h.openTitleMenu(page);
+    await page.getByText('Sort ascending', { exact: true }).click();
+    await page.waitForTimeout(200);
+    const titles = await page.locator('[data-testid=title-cell] span').first().allTextContents();
+    await h.openTitleMenu(page);
+    const ascRow = page.locator('div').filter({ hasText: 'Sort ascending' }).last();
+    await expect(ascRow).toContainText('✕');
+    await ascRow.click(); // clicking the active direction again clears the sort
+    await page.waitForTimeout(200);
+    await h.openTitleMenu(page);
+    await expect(page.locator('div').filter({ hasText: 'Sort ascending' }).last()).not.toContainText('✕');
+  });
+
+  test('closes on outside click, and reopens showing state that survived the round trip', async ({ page }) => {
+    await h.openTitleMenu(page);
+    await page.locator('[data-testid=title-menu-wrap]').click();
+    await page.waitForTimeout(150);
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(150);
+    await expect(page.getByText('Sort ascending', { exact: true })).toHaveCount(0);
+
+    await h.openTitleMenu(page);
+    await expect(page.locator('[data-testid=title-menu-wrap]')).toContainText('✓');
   });
 });
 
@@ -2551,12 +2824,16 @@ test.describe('App bar / Project bar / footer', () => {
     await expect(page.locator('[data-testid=btn-import-project-appbar]')).toHaveCount(0);
   });
 
-  test('"Import project…" (in the switcher\'s own footer) offers From file… and Paste from clipboard…, same shape as Apply update…', async ({ page }) => {
+  // Tracker #143 (dfb378b2), Part B of new_bits.zip's Send/Receive/Search
+  // handoff: "Import project…" is gone from the switcher's own footer
+  // entirely (Receive now covers that job too) -- the footer keeps only
+  // a standalone "Connect remote…", right-aligned.
+  test('the switcher\'s own footer keeps only "Connect remote…", right-aligned -- "Import project…" is gone', async ({ page }) => {
     await h.openTrackerSwitcher(page);
-    await page.locator('[data-testid=btn-import-project-appbar]').click();
-    await page.waitForTimeout(150);
-    await expect(page.locator('[data-testid=btn-import-project-from-file]')).toHaveText('From file…');
-    await expect(page.locator('[data-testid=btn-import-project-from-paste]')).toHaveText('Paste from clipboard…');
+    await expect(page.locator('[data-testid=btn-import-project-appbar]')).toHaveCount(0);
+    const connectBtn = page.locator('[data-testid=btn-connect-remote-appbar]');
+    await expect(connectBtn).toHaveText('Connect remote…');
+    await expect(connectBtn).toBeVisible();
   });
 
   test('the footer shows format version, last-updated (once there is real history), and View source, with no issue count or filename', async ({ page }) => {
@@ -2582,38 +2859,101 @@ test.describe('App bar / Project bar / footer', () => {
     expect(width).toBe('340px');
   });
 
-  test('the Share button is outlined, not filled -- nothing in either bar is a solid/primary button', async ({ page }) => {
-    const bg = await page.locator('[data-testid=btn-export]').evaluate(el => getComputedStyle(el).backgroundColor);
-    expect(bg).toBe('rgb(255, 255, 255)');
+  // The header buttons' background went from solid var(--surface) to a
+  // translucent color-mix of it (tracker #83, so the generated header mesh
+  // shows through slightly) -- sampled via a canvas pixel read rather than
+  // string-matching getComputedStyle's own color-mix() serialization, which
+  // isn't a stable/simple string to assert on directly. What this test
+  // actually guards -- not a solid/primary accent fill -- still holds: the
+  // color is still white-based (untinted), just no longer fully opaque.
+  test('the Share button is a translucent white tint, not filled with a solid/primary color', async ({ page }) => {
+    const [r, g, b, a] = await page.locator('[data-testid=btn-export]').evaluate(el => {
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = 1;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = getComputedStyle(el).backgroundColor;
+      ctx.fillRect(0, 0, 1, 1);
+      return Array.from(ctx.getImageData(0, 0, 1, 1).data);
+    });
+    expect(r).toBeGreaterThan(250);
+    expect(g).toBeGreaterThan(250);
+    expect(b).toBeGreaterThan(250);
+    expect(a).toBeLessThan(255); // translucent, not solid
+    expect(a).toBeGreaterThan(190); // ~80% opaque, not barely-there
   });
 });
 
 test.describe('Share menu restructure', () => {
   test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
 
-  test('"Apply update..." replaces the old "Import & merge..." label on the same merge-into-current-project button', async ({ page }) => {
-    await expect(page.locator('[data-testid=btn-import-merge]')).toHaveText('Apply update…');
+  test('the toolbar buttons read "Send" and "Receive" (formerly "Share"/"Apply update...")', async ({ page }) => {
+    await expect(page.locator('[data-testid=btn-export]')).toHaveText('Send');
+    await expect(page.locator('[data-testid=btn-import-merge]')).toHaveText('Receive');
   });
 
-  test('the Share menu lists Save project file / Copy to clipboard / Save as interactive HTML / Export as JSONL (squashed), in that order, with sub-copy on the first two', async ({ page }) => {
+  // Receive (import) and Send (export) are semantic opposites -- their
+  // icons should be too: an arrow into a tray vs. an arrow out of one,
+  // sharing the same tray shape.
+  test('"Receive" has an icon, the mirror image of Send\'s own icon', async ({ page }) => {
+    const applyIcon = page.locator('[data-testid=btn-import-merge] svg');
+    const shareIcon = page.locator('[data-testid=btn-export] svg');
+    await expect(applyIcon).toHaveCount(1);
+    await expect(shareIcon).toHaveCount(1);
+    const applyTray = await applyIcon.locator('path').nth(1).getAttribute('d');
+    const shareTray = await shareIcon.locator('path').nth(1).getAttribute('d');
+    expect(applyTray).toBe(shareTray); // same tray shape, shared between both
+    const applyArrow = await applyIcon.locator('path').first().getAttribute('d');
+    const shareArrow = await shareIcon.locator('path').first().getAttribute('d');
+    expect(applyArrow).not.toBe(shareArrow); // arrows point opposite ways
+  });
+
+  // Tracker #142 (91530ee8), Part A of new_bits.zip's "clipboard-first
+  // Send/Receive, global search" handoff: Copy to clipboard now leads
+  // (clipboard-first), each row gets an icon, and the two file-save rows
+  // are relabeled "Save full/light project file..." with copy describing
+  // what they actually contain.
+  test('the Send menu lists Copy to clipboard / Save full project file / Save light project file / Save as interactive HTML, in that order, each with sub-copy', async ({ page }) => {
     await page.locator('[data-testid=btn-export]').click();
-    const items = page.locator('[data-testid=btn-export-jsonl], [data-testid=btn-copy-to-clipboard], [data-testid=btn-export-html], [data-testid=btn-export-jsonl-squashed]');
+    const items = page.locator('[data-testid=btn-copy-to-clipboard], [data-testid=btn-export-jsonl], [data-testid=btn-export-jsonl-squashed], [data-testid=btn-export-html]');
     await expect(items).toHaveCount(4);
     const texts = (await items.allTextContents()).map(t => t.replace(/\s+/g, ' ').trim());
-    expect(texts[0]).toBe('Save project file… A .jsonl anyone can apply as an update');
-    expect(texts[1]).toBe('Copy to clipboard Paste straight into an email or chat');
-    expect(texts[2]).toBe('Save as interactive HTML…');
-    expect(texts[3]).toBe('Export as JSONL (squashed)');
+    expect(texts[0]).toBe('Copy to clipboard Paste straight into an email or chat');
+    expect(texts[1]).toBe('Save full project file… Everything, including full change history');
+    expect(texts[2]).toBe('Save light project file… Current state only — smaller, history squashed');
+    expect(texts[3]).toBe('Save as interactive HTML… A single page anyone can open in a browser');
     // CSV is no longer in this menu at all -- moved to the project panel's EXPORT section.
     await expect(page.locator('[data-testid=btn-export-csv]')).toHaveCount(0);
   });
 
-  test('"Copy to clipboard" copies the same source text the View Source panel\'s Copy button does, and closes the menu', async ({ page }) => {
+  test('"Copy to clipboard" copies the same source text the View Source panel\'s Copy button does, and the menu stays open showing an inline success state before auto-closing', async ({ page }) => {
     await page.locator('[data-testid=btn-export]').click();
     await page.locator('[data-testid=btn-copy-to-clipboard]').click();
-    await expect(page.locator('[data-testid=btn-copy-to-clipboard]')).toHaveCount(0); // menu closed
+    // Stays open, in place -- the row itself swaps to a checkmark + "Copied
+    // to clipboard", not a toast and not an immediate close.
+    await expect(page.locator('[data-testid=copy-to-clipboard-label]')).toHaveText('Copied to clipboard');
+    await expect(page.locator('[data-testid=btn-export-jsonl]')).toBeVisible(); // rest of the menu is still there
     const clipboardText = await page.evaluate(() => navigator.clipboard.readText());
     expect(clipboardText).toContain('"type":"fields"');
+
+    // Auto-closes after ~1100ms, and the row resets for next time.
+    await page.waitForTimeout(1300);
+    await expect(page.locator('[data-testid=btn-copy-to-clipboard]')).toHaveCount(0);
+  });
+
+  test('clicking away from the Send menu during the copy-success window resets it, instead of flashing a stale "Copied" on the next open', async ({ page }) => {
+    await page.locator('[data-testid=btn-export]').click();
+    await page.locator('[data-testid=btn-copy-to-clipboard]').click();
+    await expect(page.locator('[data-testid=copy-to-clipboard-label]')).toHaveText('Copied to clipboard');
+
+    // Dismiss before the 1100ms auto-close fires.
+    await page.mouse.click(20, 500);
+    await expect(page.locator('[data-testid=btn-copy-to-clipboard]')).toHaveCount(0);
+
+    // Reopening immediately must show the normal, un-copied state -- not
+    // a leftover "Copied to clipboard" from the timer that never got to
+    // finish resetting it.
+    await page.locator('[data-testid=btn-export]').click();
+    await expect(page.locator('[data-testid=copy-to-clipboard-label]')).toHaveText('Copy to clipboard');
   });
 
   test('"Save as interactive HTML..." still triggers the real HTML export, unchanged, just relabeled and relocated', async ({ page }) => {
@@ -2631,7 +2971,7 @@ test.describe('Share menu restructure', () => {
     await expect(page.getByText('EXPORT', { exact: true })).toBeVisible();
     const csvBtn = page.locator('[data-testid=btn-export-csv]');
     await expect(csvBtn).toHaveText('Export as CSV…');
-    await expect(csvBtn.locator('..')).toContainText("A flat snapshot for spreadsheets. It can't be applied back as an update — use Share for that.");
+    await expect(csvBtn.locator('..')).toContainText("A flat snapshot for spreadsheets. It can't be applied back as an update — use Send for that.");
   });
 
   test('"Export as CSV…" downloads a real CSV: header row of visible column labels, select/multiselect resolved to labels', async ({ page }) => {
@@ -2802,7 +3142,7 @@ test.describe('Project panel button + header hover', () => {
 test.describe('Toolbar row button styling is consistent', () => {
   test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
 
-  test('Project, Apply update…, and Share all share the same resolved text color', async ({ page }) => {
+  test('Project, Receive, and Send all share the same resolved text color', async ({ page }) => {
     const ids = ['btn-notes', 'btn-import-merge', 'btn-export'];
     const colors = await page.evaluate((ids) => ids.map(id => getComputedStyle(document.querySelector('[data-testid="' + id + '"]')).color), ids);
     expect(new Set(colors).size).toBe(1);
@@ -2864,19 +3204,19 @@ test.describe('Post-Phase-1 fixes: Open file removed, Project button is a peer b
     await expect(page.getByText('Open file…', { exact: true })).toHaveCount(0);
   });
 
-  test('the Project button is a real button, styled and positioned as a peer of Apply update.../Share, not a small link under the title', async ({ page }) => {
+  test('the Project button is a real button, styled and positioned as a peer of Send/Receive, not a small link under the title', async ({ page }) => {
     const project = page.locator('[data-testid=btn-notes]');
-    const applyUpdate = page.locator('[data-testid=btn-import-merge]');
     const share = page.locator('[data-testid=btn-export]');
+    const applyUpdate = page.locator('[data-testid=btn-import-merge]');
 
     expect(await project.evaluate(el => el.tagName)).toBe('BUTTON');
-    const [projectBox, applyBox, shareBox] = await Promise.all([
-      project.boundingBox(), applyUpdate.boundingBox(), share.boundingBox(),
+    const [projectBox, shareBox, applyBox] = await Promise.all([
+      project.boundingBox(), share.boundingBox(), applyUpdate.boundingBox(),
     ]);
-    expect(projectBox.y).toBe(applyBox.y); // same row
-    expect(applyBox.y).toBe(shareBox.y);
-    expect(projectBox.x).toBeLessThan(applyBox.x); // Project, then Apply update, then Share, in order
-    expect(applyBox.x).toBeLessThan(shareBox.x);
+    expect(projectBox.y).toBe(shareBox.y); // same row
+    expect(shareBox.y).toBe(applyBox.y);
+    expect(projectBox.x).toBeLessThan(shareBox.x); // Project, then Send, then Receive, in order
+    expect(shareBox.x).toBeLessThan(applyBox.x);
 
     const projectStyle = await project.evaluate(el => getComputedStyle(el).border);
     const applyStyle = await applyUpdate.evaluate(el => getComputedStyle(el).border);
@@ -2886,6 +3226,28 @@ test.describe('Post-Phase-1 fixes: Open file removed, Project button is a peer b
     await project.click();
     await page.waitForTimeout(300);
     await expect(page.locator('[data-testid=notes-panel]')).toBeVisible();
+  });
+
+  test('there is a slightly bigger gap between Project and Send than between Send and Receive, and the Receive modal stays fully on-screen', async ({ page }) => {
+    const project = page.locator('[data-testid=btn-notes]');
+    const send = page.locator('[data-testid=btn-export]');
+    const receive = page.locator('[data-testid=btn-import-merge]');
+    const [projectBox, sendBox, receiveBox] = await Promise.all([
+      project.boundingBox(), send.boundingBox(), receive.boundingBox(),
+    ]);
+    const projectToSendGap = sendBox.x - (projectBox.x + projectBox.width);
+    const sendToReceiveGap = receiveBox.x - (sendBox.x + sendBox.width);
+    expect(projectToSendGap).toBeGreaterThan(sendToReceiveGap);
+
+    // Tracker #143 (dfb378b2): Receive opens the paste modal directly now
+    // (no more submenu) -- it's centered by its own overlay, but still
+    // worth confirming it renders fully within the viewport.
+    await receive.click();
+    await page.waitForTimeout(150);
+    const menuBox = await page.locator('[data-testid=paste-merge-modal]').boundingBox();
+    const viewportWidth = page.viewportSize().width;
+    expect(menuBox.x).toBeGreaterThanOrEqual(0);
+    expect(menuBox.x + menuBox.width).toBeLessThanOrEqual(viewportWidth);
   });
 });
 
@@ -3121,8 +3483,6 @@ test.describe('No flash of full-screen modal overlays on page load', () => {
     // bug: renaming the project (which lives behind the notes-overlay) still
     // works, including a second, later trip through the email gate.
     await page.locator('[data-testid=btn-import-merge]').click();
-    await page.waitForTimeout(150);
-    await page.locator('[data-testid=btn-apply-update-from-paste]').click();
     await page.waitForTimeout(200);
     await checkCentered('paste-merge-overlay', 'paste-merge-modal');
     await page.locator('[data-testid=btn-cancel-paste-merge]').click();
@@ -3202,7 +3562,14 @@ test.describe('Signalling rows below the fold', () => {
     await expect(page.locator('[data-testid=more-below-pill]')).toHaveCount(0); // nothing left to overflow
   });
 
-  test('the table scroll container uses a themed, always-visible (non-overlay) scrollbar', async ({ page }) => {
+  // Was a themed always-visible scrollbar (the file's own comment: "a
+  // standing signal that rows continue"). Live-reported (2026-09-11): that
+  // rule governs both axes, and a horizontal-only Chromium fix
+  // (::-webkit-scrollbar:horizontal{height:0}) doesn't touch Firefox at
+  // all, since Firefox's scrollbar-width has no per-axis form. Simplest
+  // correct fix in every browser: no scrollbar chrome on either axis --
+  // the "N more below" pill (data-testid=more-below-pill) is the signal now.
+  test('the table scroll container has no visible scrollbar chrome on either axis, in any browser', async ({ page }) => {
     await h.gotoTracker(page);
     const rule = await page.evaluate(() => {
       for (const sheet of document.styleSheets) {
@@ -3215,6 +3582,6 @@ test.describe('Signalling rows below the fold', () => {
       return null;
     });
     expect(rule).toBeTruthy();
-    expect(rule).toContain('scrollbar-width: thin');
+    expect(rule).toContain('scrollbar-width: none');
   });
 });

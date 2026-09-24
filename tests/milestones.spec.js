@@ -21,6 +21,24 @@ test.describe('Tracker switcher', () => {
     await expect(page.locator('[data-testid=switcher-project-row]')).toHaveCount(0);
   });
 
+  // Regression test: the pill's border used to only show on actual mouse
+  // :hover, so opening the menu then moving the mouse away left the
+  // translucent background lit with no border around it -- mismatched.
+  test('the switcher pill keeps its border the whole time the menu is open, even after the mouse leaves it', async ({ page }) => {
+    const pill = page.locator('[data-testid=btn-switcher]');
+    await expect(pill).toHaveCSS('border-color', 'rgba(0, 0, 0, 0)');
+
+    await h.openTrackerSwitcher(page);
+    await page.mouse.move(700, 700);
+    await page.waitForTimeout(150);
+    const openBorder = await pill.evaluate(el => getComputedStyle(el).borderColor);
+    expect(openBorder).not.toBe('rgba(0, 0, 0, 0)');
+
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(150);
+    await expect(pill).toHaveCSS('border-color', 'rgba(0, 0, 0, 0)');
+  });
+
   test('creating a blank milestone switches to it with the starter field template and no issues; switching back leaves the original untouched', async ({ page }) => {
     await h.openTrackerSwitcher(page);
     await h.createNamedBlankProject(page, 'Second milestone');
@@ -162,12 +180,16 @@ test.describe('Tracker switcher', () => {
       JSON.stringify({ type: 'issue', id: 'gn1', num: 1, fieldRefs: {}, values: { title: 'New project issue' }, comments: [], history: [] })
     ].join('\n');
 
-    await h.openImportProjectMenu(page);
+    await page.locator('[data-testid=btn-import-merge]').click();
+    await page.waitForTimeout(150);
     const [fc] = await Promise.all([
       page.waitForEvent('filechooser'),
-      page.locator('[data-testid=btn-import-project-from-file]').click(),
+      page.locator('[data-testid=btn-paste-merge-open-file]').click(),
     ]);
     const projectsBefore = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1')).milestones);
+    // No project id match -- handleApplyUpdateParsed asks to confirm
+    // importing as a brand new project.
+    page.once('dialog', d => d.accept());
     await fc.setFiles({ name: 'new-project.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(pastedJsonl) });
     await page.waitForTimeout(400);
     await expect(page.locator('[data-testid=row]')).toHaveCount(1);
@@ -196,7 +218,13 @@ test.describe('Tracker switcher', () => {
   // same-name duplicate under a fresh random id. It now warns first, and
   // on confirm applies it as an update to the existing project instead --
   // no duplicate, nothing silently forked.
-  test('re-importing an already-known project warns, then merges into the existing project rather than forking a duplicate', async ({ page }) => {
+  //
+  // Tracker #143 (dfb378b2): Receive routes a same-project match through
+  // handleApplyUpdateParsed's previewMerge -- tracker #124's real merge
+  // gate CARD, not a plain window.confirm() the way the old, now-removed
+  // "Import project…" entry point did. "Not now" replaces dismiss;
+  // "Merge update" replaces accept.
+  test('re-importing an already-known project shows the merge gate, then merges into the existing project rather than forking a duplicate', async ({ page }) => {
     await page.locator('[data-testid=btn-export]').click();
     const [dl] = await Promise.all([
       page.waitForEvent('download'),
@@ -205,33 +233,47 @@ test.describe('Tracker switcher', () => {
     const fs = require('fs');
     const exportedText = fs.readFileSync(await dl.path(), 'utf8');
 
-    // Cancelling the warning does nothing at all.
-    let dialogMsg = null;
-    page.once('dialog', async d => { dialogMsg = d.message(); await d.dismiss(); });
-    await h.openImportProjectMenu(page);
+    // "Not now" on the gate does nothing at all.
+    await page.locator('[data-testid=btn-import-merge]').click();
+    await page.waitForTimeout(150);
     const [fc1] = await Promise.all([
       page.waitForEvent('filechooser'),
-      page.locator('[data-testid=btn-import-project-from-file]').click(),
+      page.locator('[data-testid=btn-paste-merge-open-file]').click(),
     ]);
     await fc1.setFiles({ name: 'reimport.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(exportedText) });
     await page.waitForTimeout(400);
-    expect(dialogMsg).toContain('already have');
-    await expect(page.locator('[data-testid=row]')).toHaveCount(9); // unchanged, cancelling did nothing
+    await expect(page.locator('[data-testid=btn-merge-primary]')).toBeVisible();
+    await page.locator('[data-testid=btn-merge-secondary]').click();
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=row]')).toHaveCount(9); // unchanged, "Not now" did nothing
     await h.openTrackerSwitcher(page);
     await expect(page.locator('[data-testid=switcher-project-row]')).toHaveCount(1); // still just the one project
     await page.mouse.click(700, 400); // outside click closes the dropdown
     await page.waitForTimeout(150);
 
-    // Confirming merges into the existing project -- still just the one
-    // milestone, no duplicate created.
-    page.once('dialog', d => d.accept());
-    await h.openImportProjectMenu(page);
+    // "Merge update" merges into the existing project -- still just the
+    // one milestone, no duplicate created. A byte-identical re-import is
+    // a genuine no-op (tracker #124, 5c3051e9's own gate disables "Merge
+    // update" for exactly that case), so give this second reimport one
+    // real new entry the first didn't have, to actually exercise the
+    // accept path rather than just re-proving "Not now" above.
+    const lines2 = exportedText.trim().split('\n').map(l => JSON.parse(l));
+    const issue2 = lines2.find(l => l.type === 'issue' && l.id === 'i2');
+    issue2.commentStreams = issue2.commentStreams || {};
+    issue2.commentStreams.comments = issue2.commentStreams.comments || [];
+    issue2.commentStreams.comments.push({ author: 'jordan', time: 'Aug 2', text: 'Reimport note', sortKey: 99999 });
+    const reimportText2 = lines2.map(l => JSON.stringify(l)).join('\n');
+
+    await page.locator('[data-testid=btn-import-merge]').click();
+    await page.waitForTimeout(150);
     const [fc2] = await Promise.all([
       page.waitForEvent('filechooser'),
-      page.locator('[data-testid=btn-import-project-from-file]').click(),
+      page.locator('[data-testid=btn-paste-merge-open-file]').click(),
     ]);
-    await fc2.setFiles({ name: 'reimport2.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(exportedText) });
+    await fc2.setFiles({ name: 'reimport2.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(reimportText2) });
     await page.waitForTimeout(400);
+    await page.locator('[data-testid=btn-merge-primary]').click();
+    await page.waitForTimeout(300);
     await expect(page.locator('[data-testid=row]')).toHaveCount(9); // merged, not duplicated -- still 9
     await h.openTrackerSwitcher(page);
     await expect(page.locator('[data-testid=switcher-project-row]')).toHaveCount(1);

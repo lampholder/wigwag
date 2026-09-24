@@ -243,7 +243,7 @@ test.describe('M2: switcher sheet', () => {
 test.describe('M3: overflow sheet', () => {
   test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
 
-  test('offers Share project / Apply update… / Import project… / Appearance / Settings -- not the old refresh/project-settings items', async ({ page }) => {
+  test('offers Share project / Apply update… / Import project… / Appearance / Settings / Project settings -- not the old refresh item', async ({ page }) => {
     await page.locator('[data-testid=btn-overflow]').click();
     await page.waitForTimeout(150);
     await expect(page.locator('[data-testid=mobile-overflow-share]')).toBeVisible();
@@ -251,8 +251,12 @@ test.describe('M3: overflow sheet', () => {
     await expect(page.locator('[data-testid=mobile-overflow-import-project]')).toBeVisible();
     await expect(page.locator('[data-testid=appearance-wrap]')).toBeVisible();
     await expect(page.locator('[data-testid=mobile-overflow-settings]')).toBeVisible();
+    // Regression: "Project settings" was dropped in an earlier restructure
+    // with no mobile replacement, leaving the GitHub-sync/export/danger-
+    // zone settings totally unreachable on mobile -- re-added, now opening
+    // a real mobile page (see the "Project settings page" describe block).
+    await expect(page.locator('[data-testid=mobile-overflow-project-settings]')).toBeVisible();
     await expect(page.locator('[data-testid=mobile-overflow-refresh]')).toHaveCount(0);
-    await expect(page.locator('[data-testid=mobile-overflow-project-settings]')).toHaveCount(0);
   });
 
   test('Appearance is interactive from the overflow sheet', async ({ page }) => {
@@ -273,6 +277,70 @@ test.describe('M3: overflow sheet', () => {
     await page.locator('[data-testid=mobile-overflow-settings]').click();
     await page.waitForTimeout(300);
     await expect(page.locator('[data-testid=mobile-settings-row]')).toHaveCount(4);
+  });
+});
+
+// "Project settings" (GitHub sync/export config, delete project) had no
+// mobile entry point at all before this -- the desktop "Project" panel's
+// notes-panel isn't gated to desktop, but is styled as an 87.5vw slide-
+// over unsuited to a phone. Notes/Comments (a full comment-thread UI) is
+// deliberately left off this page -- it isn't a "settings" concept the
+// way Sync/Danger are. Reuses the exact same state/handlers the desktop
+// panel already binds to (githubRepo/onGithubRepoChange etc.,
+// note.onDeleteProject) -- no new business logic, just mobile markup.
+test.describe('Project settings page (mobile)', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  test('opening it shows GitHub sync fields and Danger Zone, bound to the same state the desktop panel uses', async ({ page }) => {
+    await page.locator('[data-testid=btn-overflow]').click();
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=mobile-overflow-project-settings]').click();
+    await page.waitForTimeout(300);
+
+    await expect(page.locator('[data-testid=mobile-project-settings-page]')).toBeVisible();
+    await expect(page.locator('[data-testid=mobile-settings-github-repo]')).toBeVisible();
+    await expect(page.locator('[data-testid=mobile-settings-github-repo-path]')).toBeVisible();
+    await expect(page.locator('[data-testid=mobile-settings-github-repo-branch]')).toBeVisible();
+    await expect(page.locator('[data-testid=mobile-settings-github-token-override]')).toBeVisible();
+    await expect(page.locator('[data-testid=mobile-delete-project]')).toBeVisible();
+    await expect(page.locator('[data-testid=mobile-export-csv]')).toBeVisible();
+    await expect(page.locator('[data-testid=mobile-export-xlsx]')).toBeVisible();
+
+    // The desktop notes-panel must never also render at this viewport.
+    await expect(page.locator('[data-testid=notes-panel]')).toHaveCount(0);
+  });
+
+  test('setting a GitHub repo persists to the project doc, same field the desktop panel writes', async ({ page }) => {
+    await page.locator('[data-testid=btn-overflow]').click();
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=mobile-overflow-project-settings]').click();
+    await page.waitForTimeout(300);
+
+    const repoInput = page.locator('[data-testid=mobile-settings-github-repo]');
+    await repoInput.fill('acme/demo-repo');
+    await repoInput.dispatchEvent('change');
+    await page.waitForTimeout(150);
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    expect(doc.githubRepo).toBe('acme/demo-repo');
+  });
+
+  test('the back button closes the page, and reopening still works', async ({ page }) => {
+    await page.locator('[data-testid=btn-overflow]').click();
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=mobile-overflow-project-settings]').click();
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=mobile-project-settings-page]')).toBeVisible();
+
+    await page.locator('[data-testid=mobile-project-settings-back]').click();
+    await page.waitForTimeout(400);
+    await expect(page.locator('[data-testid=mobile-project-settings-page]')).toHaveCount(0);
+
+    await page.locator('[data-testid=btn-overflow]').click();
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=mobile-overflow-project-settings]').click();
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=mobile-project-settings-page]')).toBeVisible();
   });
 });
 

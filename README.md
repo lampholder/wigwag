@@ -65,9 +65,13 @@ GitHub/Jira or repo sync (see below).
   (every history event) or **squashed** (field history collapsed to
   current values; comments always kept in full either way) — or as a
   standalone interactive **HTML** copy.
-- **"Import & merge…"** loads a second file (e.g. one a teammate edited and
-  sent back) and merges it into your working copy, prompting for a winner
-  on any genuine per-field conflict.
+- **"Apply update…"** loads a second file (e.g. one a teammate edited and
+  sent back), computes the merge, and shows a real provenance card —
+  sender, signature state, and a per-field summary — before anything
+  lands: "Merge update" applies the whole result at once, "Not now"
+  discards it, never a per-field pick. Past merges are reviewable (and,
+  as a single whole-transaction action, revertible) from the Merge
+  History project-panel section.
 - **"Import from file…"** (in the milestone switcher) creates a brand new
   milestone from a file instead of touching your current one.
 
@@ -250,7 +254,9 @@ repo the moment it's created.
   classic `repo` scope).
 - Connects automatically once set: pushes an initial commit if the file
   doesn't exist yet, otherwise pulls and merges through the same
-  conflict-aware path as "Import & merge…".
+  union-history merge algorithm as "Apply update…" — applied immediately
+  here, since a repo pull carries no export envelope/signature for a
+  gate to weigh in the first place.
 - Edits auto-push a few seconds after you stop typing (batched). A header
   pill shows sync state and is clickable to resolve/retry a conflict or
   error.

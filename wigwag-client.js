@@ -77,11 +77,10 @@ function startStaticServer(root) {
 async function ensureConnected(page, repoOwner, repoName) {
   await page.locator('[data-testid=btn-switcher]').click();
   await page.waitForTimeout(150);
-  // "Connect remote..." lives inside the same "Import project..." popover
-  // as "From file..." / "Paste from clipboard..." now, not a standalone
-  // row of its own.
-  await page.locator('[data-testid=btn-import-project-appbar]').click();
-  await page.waitForTimeout(150);
+  // "Connect remote..." is a standalone footer row now (tracker #143,
+  // dfb378b2, new_bits.zip's Send/Receive/Search handoff Part B) --
+  // "Import project..." was removed from this popover entirely, no more
+  // intermediate click needed to reach it.
   await page.locator('[data-testid=btn-connect-remote-appbar]').click();
   await page.waitForTimeout(150);
   await page.locator('[data-testid=connect-remote-address-input]').fill(`${repoOwner}/${repoName}`);
@@ -152,8 +151,22 @@ async function findIssue(page, projectId, numOrIdPrefix) {
   throw new Error(`No issue matches "${numOrIdPrefix}" (checked both num and id prefix)`);
 }
 
+// A blind fixed sleep here (previously 5.5s -- the real ~4s debounce plus
+// a margin) was confirmed live to be unreliable: two consecutive edits
+// (tracker #133/0b22b69e and #134, 2026-09-22) reported success but never
+// actually reached GitHub. A first fix (poll for the spinner to clear
+// after a fixed 4.5s wait) was ALSO caught losing an edit live: this
+// tracker's own background polling can reset the debounce timer by
+// touching state again while we're waiting, so "spinner not visible yet"
+// after a fixed wait is ambiguous between "already finished" and "hasn't
+// started yet" -- checking that wrong is exactly how the second loss
+// happened. Waits for the spinner to actually APPEAR first (proving a
+// real sync attempt started), then waits for it to clear -- never
+// inferring "done" from a spinner we simply haven't observed yet.
 async function waitForPush(page) {
-  await page.waitForTimeout(5500); // real ~4s debounce + margin
+  const spinner = page.locator('[data-testid=footer-github-sync-spinner]');
+  try { await spinner.waitFor({ state: 'visible', timeout: 15000 }); } catch (e) { /* may have already finished before we could observe it starting -- fall through */ }
+  try { await spinner.waitFor({ state: 'hidden', timeout: 20000 }); } catch (e) { /* give up waiting; report whatever the footer shows now */ }
   const status = await page.locator('[data-testid=footer-github-sync]').innerText().catch(() => null);
   return status ? status.replace(/\n/g, ' ') : null;
 }
@@ -270,7 +283,7 @@ async function connect(opts = {}) {
     return {
       id: issue.id, num: issue.num, values: deriveValues(issue),
       fieldDefs: doc.fieldDefs,
-      comments: issue.comments || [],
+      comments: (issue.commentStreams && issue.commentStreams.comments) || [],
       history: issue.history || []
     };
   }

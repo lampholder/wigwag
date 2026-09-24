@@ -222,8 +222,7 @@ function latestFieldValue(issue, colId) {
 
 // Idempotent -- the pill itself is a plain toggle (click closes it if
 // already open, same as the old dropdowns it replaced), so a call site
-// that isn't sure whether the switcher is already open (e.g. right after
-// openImportProjectMenu, which opens it as a side effect) doesn't
+// that isn't sure whether the switcher is already open doesn't
 // accidentally close it instead.
 async function openTrackerSwitcher(page) {
   if (await page.locator('[data-testid=switcher-menu]').count()) return;
@@ -233,9 +232,9 @@ async function openTrackerSwitcher(page) {
 
 // "New project" creates a project directly ("Untitled"/"Untitled N") in
 // whichever scope the picker is currently previewing (defaults to the
-// active project's own identity), with no naming step and no import
-// options of its own -- those live in the picker's own "Import
-// project..." footer item instead (see openImportProjectMenu below).
+// active project's own identity), with no naming step -- project
+// import/receive lives in the header's own Receive button instead
+// (tracker #143, dfb378b2), not in this picker at all.
 // Assumes the switcher is already open (openTrackerSwitcher) and, if a
 // specific identity's scope matters, already selected via a
 // switcher-scope-row click -- "New project" is hidden entirely while
@@ -265,24 +264,22 @@ async function createNamedBlankProject(page, name) {
   await renameActiveProject(page, name);
 }
 
-// The one dedicated entry point for file/paste project import -- lives in
-// the unified switcher's own footer now, next to the projects it creates
-// (not a standalone app-bar button). Opens the switcher itself first if
-// it isn't already open.
-async function openImportProjectMenu(page) {
-  if (!(await page.locator('[data-testid=switcher-menu]').count())) {
-    await openTrackerSwitcher(page);
-  }
-  await page.locator('[data-testid=btn-import-project-appbar]').click();
-  await page.waitForTimeout(150);
-}
-
 function milestoneRow(page, name) {
   return page.locator('[data-testid=switcher-project-row]').filter({ hasText: name });
 }
 
+// .last() matters only when column freezing (tracker #97 round 5) is
+// active: frozen columns are then duplicate-rendered into a second,
+// non-scrolling overlay pane that comes after the real table in DOM
+// order, so a bare match would be ambiguous (strict-mode violation) and
+// an unqualified .first() would resolve to the real pane's copy, which
+// can be visually covered by the overlay and fail actionability checks.
+// .last() reliably picks whichever copy is actually on-screen and
+// interactive -- the overlay's when it exists, the only copy otherwise --
+// with no behavior change for the overwhelming majority of tests that
+// never freeze anything (there's only ever one match then).
 function row(page, num) {
-  return page.locator(`[data-testid=row][data-row-num="${num}"]`);
+  return page.locator(`[data-testid=row][data-row-num="${num}"]`).last();
 }
 
 function titleCell(page, num) {
@@ -294,7 +291,7 @@ function fieldCell(page, num, colId) {
 }
 
 function colHeader(page, colId) {
-  return page.locator(`[data-testid=col-header][data-col="${colId}"]`);
+  return page.locator(`[data-testid=col-header][data-col="${colId}"]`).last();
 }
 
 function slideoverField(page, colId) {
@@ -553,6 +550,74 @@ function mockGithubContentsApi(page, repo, path = 'tracker.jsonl') {
   return state;
 }
 
+// Mocks the Matrix Client-Server API endpoints wigwag-matrix-host.html's
+// standalone transport hits (see wigwag-core.js's resolveMatrixRoomAlias/
+// fetchMatrixRoomEntries/sendMatrixEntry/probeMatrixRoomAccess). One
+// mocked room per call, matching mockGithubContentsApi's per-repo shape.
+//
+// `initialEntries` seeds what the FIRST /messages fetch (the startup pull,
+// dir=b) returns; every subsequent /messages call (the periodic poll,
+// dir=f) returns state.pendingEntries and then clears it -- a test drives
+// "a new remote change arrives" by pushing onto state.pendingEntries and
+// waiting for the next poll tick, the same "script future calls" idea
+// mockGithubContentsApi's getResponses queue uses, just append-only here
+// since Matrix's timeline has no equivalent of a single mutable sha.
+// `roomName` seeds the best-effort room-name fetch; omit it to simulate a
+// room with no name set (the host falls back to a placeholder). Set
+// `accessDenied: true` to make every request 403, for testing the
+// no-access path without needing a second mocked room.
+function mockMatrixClientApi(page, { homeserverUrl, roomId, initialEntries = [], roomName, accessDenied = false } = {}) {
+  const state = { sentEntries: [], messagesCallCount: 0, pendingEntries: [] };
+  const base = homeserverUrl.replace(/\/$/, '');
+  const roomPath = base + '/_matrix/client/v3/rooms/' + encodeURIComponent(roomId);
+
+  page.route(roomPath + '/messages*', async (route) => {
+    if (accessDenied) { await route.fulfill({ status: 403, contentType: 'application/json', body: '{}' }); return; }
+    // probeMatrixRoomAccess's own limit=0 check must never advance the
+    // "which fetch is this" counter below -- it's a separate, repeatable
+    // read, not a step in the real pull/poll sequence.
+    const isProbe = new URL(route.request().url()).searchParams.get('limit') === '0';
+    if (isProbe) { await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ chunk: [] }) }); return; }
+    state.messagesCallCount++;
+    const chunk = state.messagesCallCount === 1 ? initialEntries : state.pendingEntries.splice(0, state.pendingEntries.length);
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ chunk, end: 'cursor-' + state.messagesCallCount }) });
+  });
+
+  page.route(roomPath + '/state/m.room.name', async (route) => {
+    if (accessDenied || roomName === undefined) { await route.fulfill({ status: 404, contentType: 'application/json', body: '{}' }); return; }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ name: roomName }) });
+  });
+
+  page.route(roomPath + '/send/dev.wigwag.entry/*', async (route) => {
+    const content = JSON.parse(route.request().postData());
+    state.sentEntries.push(content);
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ event_id: '$evt' + state.sentEntries.length }) });
+  });
+
+  page.route(base + '/_matrix/client/v3/directory/room/*', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ room_id: roomId }) });
+  });
+
+  page.route(base + '/_matrix/client/v3/account/whoami', async (route) => {
+    if (accessDenied) { await route.fulfill({ status: 401, contentType: 'application/json', body: '{}' }); return; }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ user_id: '@test-user:example.org' }) });
+  });
+
+  return state;
+}
+
+// Navigates to tests/fixtures/fake-widget-host.html, a disposable stand-in
+// for a real Matrix client's widget host, which iframes
+// wigwag-matrix-host.html?widgetId=... itself and answers its Widget API
+// postMessage requests (see that fixture file for the protocol handling).
+// Returns nothing to poll for state -- read `window.__state` on the
+// returned page directly (`page.evaluate(() => window.__state)`), and reach
+// the tracker UI itself via page.frameLocator('#widget').frameLocator('#frame').
+async function gotoFakeWidgetHost(page, { roomId, userId, displayName, roomName, initialEntries, rejectReadEventsTimes, dropReadEventsTimes } = {}) {
+  await page.addInitScript((cfg) => { window.__fakeHostConfig = cfg; }, { roomId, userId, displayName, roomName, initialEntries, rejectReadEventsTimes, dropReadEventsTimes });
+  await page.goto('/tests/fixtures/fake-widget-host.html');
+}
+
 // Mocks the GitHub repo-metadata endpoint (GET /repos/{owner}/{repo}) that
 // the Connect Remote sheet's probe (probeGithubRepoAccess) hits once per
 // identity plus once anonymously, all in parallel -- so callers are told
@@ -643,6 +708,15 @@ async function openColumnMenu(page, colId) {
   await colHeader(page, colId).locator('span', { hasText: '⋯' }).click();
   await page.waitForTimeout(150);
   return page.locator('[data-testid=field-editor], .row-menu, div').first(); // caller usually queries by text after this
+}
+
+// Title's own "..." menu (Sort ascending/descending, Freeze up to here,
+// Wrap text) -- tracker #92 consolidated what used to be three
+// always-visible inline icons into this single menu, matching every field
+// column's own convention.
+async function openTitleMenu(page) {
+  await page.locator('[data-testid=title-menu-trigger]').last().click();
+  await page.waitForTimeout(150);
 }
 
 // Opens the column "..." menu and clicks through to the field editor modal
@@ -742,6 +816,7 @@ module.exports = {
   waitForFieldResolved,
   waitForTitleResolved,
   openColumnMenu,
+  openTitleMenu,
   openFieldEditor,
   setBoundSourceAndRule,
   sortByColumn,
@@ -756,11 +831,12 @@ module.exports = {
   addBlankProject,
   renameActiveProject,
   createNamedBlankProject,
-  openImportProjectMenu,
   milestoneRow,
   mockGithubApi,
   mockGithubContentsApi,
   mockGithubRepoAccessApi,
+  mockMatrixClientApi,
+  gotoFakeWidgetHost,
   mockJiraProxy,
   mockSalesforceProxy,
   openSettings,

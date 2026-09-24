@@ -134,6 +134,15 @@ function xlsxDateSerial(isoDateStr) {
   const epoch = Date.UTC(1899, 11, 30);
   return Math.round((d.getTime() - epoch) / 86400000);
 }
+// Same epoch as xlsxDateSerial, but takes a raw ms-epoch number directly
+// and keeps the fractional day component -- for a timestamp field's own
+// value, which already carries real time-of-day precision unlike a plain
+// date field's calendar-only string.
+function xlsxDateTimeSerial(ms) {
+  if (typeof ms !== 'number' || !isFinite(ms)) return null;
+  const epoch = Date.UTC(1899, 11, 30);
+  return (ms - epoch) / 86400000;
+}
 // Hex equivalents of this app's own option-color tokens (converted from
 // the same oklch values as the live :root theme) -- fixed, light values
 // independent of dark mode, since an exported spreadsheet should read
@@ -248,6 +257,11 @@ async function buildXlsxWorkbook({ sheetName, colIds, fieldDefs, issues }) {
         if (serial == null) return '<c r="' + cellRef + '" t="inlineStr" s="' + styles.XF_DEFAULT + '"><is><t xml:space="preserve">' + xlsxEscape(raw) + '</t></is></c>';
         return '<c r="' + cellRef + '" s="' + styles.XF_DATE + '"><v>' + serial + '</v></c>';
       }
+      if (def && def.type === 'timestamp') {
+        const serial = xlsxDateTimeSerial(raw);
+        if (serial == null) return '';
+        return '<c r="' + cellRef + '" s="' + styles.XF_DATE + '"><v>' + serial + '</v></c>';
+      }
       const text = raw == null ? '' : String(raw);
       const href = xlsxFieldHref(ref);
       if (href) {
@@ -329,20 +343,55 @@ function defaultFieldDefs() {
     mitigation: { label: 'Mitigation', type: 'text' }
   };
 }
-function defaultColumnOrder() { return ['type', 'priority', 'linked', 'rag', 'teams', 'mitigation']; }
+// Includes the two sentinel ids (see below) so every "doc" builder that
+// seeds a brand-new project's columnOrder straight from this function
+// (import/paste/remote-fetch flows) gets a table with a working Title
+// column and comment indicator immediately, with no dependency on also
+// running it through reconcileColumnOrder first.
+function defaultColumnOrder() { return [...SENTINEL_COLUMN_IDS, 'type', 'priority', 'linked', 'rag', 'teams', 'mitigation']; }
+// Two fixed positions inside columnOrder that don't correspond to a real
+// field -- they mark where the Title cell and the comment-count
+// indicator render, so a real field can be moved to sit before Title or
+// between Title and the indicator (previously impossible: both were
+// hardcoded ahead of columnOrder's own render loop in the template,
+// regardless of what columnOrder contained). Never draggable themselves,
+// only valid drop targets -- see dropCol()/dragOverCol() call sites.
+const TITLE_COL_ID = '__title__';
+const COMMENTS_COL_ID = '__comments__';
+const SENTINEL_COLUMN_IDS = [TITLE_COL_ID, COMMENTS_COL_ID];
+// Strips the two sentinels back out for every call site that only ever
+// meant "the real fields" (bulk-set-field menu, slide-over field list,
+// mobile row detail, the per-row cell builder) -- none of those need to
+// learn about sentinels individually.
+function realColumnOrder(columnOrder) {
+  return (columnOrder || []).filter(id => !SENTINEL_COLUMN_IDS.includes(id));
+}
+// 'comments' is excluded the same way 'title' is: both have a fixed
+// sentinel position (see SENTINEL_COLUMN_IDS) rather than sitting among
+// the ordinary reorderable fields, even though (tracker #108/a91db807)
+// it's now a real fieldDefs entry like any other -- only its POSITION
+// stays special, not its underlying storage/mechanism.
 function canonicalColumnOrder(fieldDefs, hiddenFieldIds) {
-  const visible = Object.keys(fieldDefs).filter(id => id !== 'title' && !hiddenFieldIds.includes(id));
+  const visible = Object.keys(fieldDefs).filter(id => id !== 'title' && id !== 'comments' && !hiddenFieldIds.includes(id));
   const known = defaultColumnOrder().filter(id => visible.includes(id));
   const rest = visible.filter(id => !known.includes(id));
-  return [...known, ...rest];
+  return [...SENTINEL_COLUMN_IDS, ...known, ...rest];
 }
 function reconcileColumnOrder(override, fieldDefs, hiddenFieldIds) {
-  const visible = Object.keys(fieldDefs).filter(id => id !== 'title' && !hiddenFieldIds.includes(id));
-  const fromOverride = (override || []).filter(id => visible.includes(id));
+  const visible = Object.keys(fieldDefs).filter(id => id !== 'title' && id !== 'comments' && !hiddenFieldIds.includes(id));
+  const fromOverride = (override || []).filter(id => visible.includes(id) || SENTINEL_COLUMN_IDS.includes(id));
   const missing = visible.filter(id => !fromOverride.includes(id));
-  if (!missing.length) return fromOverride;
-  const canonicalRest = canonicalColumnOrder(fieldDefs, hiddenFieldIds).filter(id => missing.includes(id));
-  return [...fromOverride, ...canonicalRest];
+  // A persisted columnOrder from before this feature existed has neither
+  // sentinel -- prepend both at the very front (their historical,
+  // hardcoded position) so an existing layout looks identical after
+  // upgrading, rather than silently relocating Title/Comments.
+  const missingSentinels = SENTINEL_COLUMN_IDS.filter(id => !fromOverride.includes(id));
+  let result = missingSentinels.length ? [...missingSentinels, ...fromOverride] : fromOverride;
+  if (missing.length) {
+    const canonicalRest = canonicalColumnOrder(fieldDefs, hiddenFieldIds).filter(id => missing.includes(id));
+    result = [...result, ...canonicalRest];
+  }
+  return result;
 }
 const FORMAT_VERSION = 1;
 const STORAGE_KEY = 'git_native_tracker_v1';
@@ -376,6 +425,24 @@ const COLUMN_FILTERS_KEY = 'git_native_tracker_col_filters_v1';
 // all, only the matching predicate below does.
 const UNSET_FILTER_VALUE = '__unset__';
 function issueValueMatchesFilter(value, filterDef, selected) {
+  if (filterDef.type === 'date') {
+    // Unlike select/multiselect, a missing value is never a wildcard match
+    // for an active date filter -- it's excluded, same as the handoff spec.
+    if (value == null || value === '') return false;
+    if (selected.from && value < selected.from) return false;
+    if (selected.to && value > selected.to) return false;
+    return true;
+  }
+  if (filterDef.type === 'timestamp') {
+    // Same range-filter UI/semantics as 'date' (presets, from/to), but the
+    // value is a raw ms-epoch number rather than a YYYY-MM-DD string, so
+    // the boundary strings need converting to comparable epoch bounds
+    // first -- a plain string compare here would silently never match.
+    if (value == null || value === '') return false;
+    if (selected.from && value < new Date(selected.from + 'T00:00:00').getTime()) return false;
+    if (selected.to && value > new Date(selected.to + 'T23:59:59.999').getTime()) return false;
+    return true;
+  }
   if (filterDef.type === 'multiselect') {
     const arr = Array.isArray(value) ? value : [];
     if (selected.includes(UNSET_FILTER_VALUE) && arr.length === 0) return true;
@@ -391,12 +458,254 @@ function issueValueMatchesFilter(value, filterDef, selected) {
 // a brand-new issue (however it arrives -- typed, merged, imported) is
 // visible by construction, with nothing to special-case at its own
 // creation site.
+function columnFilterIsActive(filterValue) {
+  if (!filterValue) return false;
+  return Array.isArray(filterValue) ? filterValue.length > 0 : !!(filterValue.from || filterValue.to);
+}
 function computeColumnFilterExcludedIds(columnFilters, issues, fieldDefs) {
-  const activeCols = Object.keys(columnFilters).filter(colId => columnFilters[colId] && columnFilters[colId].length && fieldDefs[colId]);
+  const activeCols = Object.keys(columnFilters).filter(colId => fieldDefs[colId] && columnFilterIsActive(columnFilters[colId]));
   if (!activeCols.length) return [];
   return issues
     .filter(iss => !activeCols.every(colId => issueValueMatchesFilter(iss.values[colId], fieldDefs[colId], columnFilters[colId])))
     .map(iss => iss.id);
+}
+// Presets for the date-column filter (tracker #88) -- takes "now" as a
+// parameter rather than reading Date.now() internally so it stays a pure,
+// testable function. Computed from LOCAL calendar-day components, not
+// toISOString() (which is UTC and can land on the wrong day depending on
+// the viewer's timezone offset from midnight).
+function localISODate(d) {
+  const p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+}
+function dateFilterPresetRanges(now) {
+  const daysAgo = n => { const d = new Date(now); d.setDate(d.getDate() - n); return localISODate(d); };
+  const today = localISODate(now);
+  const monthStart = localISODate(new Date(now.getFullYear(), now.getMonth(), 1));
+  return [
+    { key: 'today', label: 'Today', from: today, to: today },
+    { key: 'last7', label: 'Last 7 days', from: daysAgo(6), to: today },
+    { key: 'last30', label: 'Last 30 days', from: daysAgo(29), to: today },
+    { key: 'thisMonth', label: 'This month', from: monthStart, to: today }
+  ];
+}
+// Tracker #113 (bcee4751): GitHub-Projects-style `field:value` tokens in
+// the same filter-bar text box the plain keyword search already uses --
+// splits on whitespace, treating a "quoted span" (even embedded right
+// after a colon, e.g. status:"In Progress") as one token so a
+// multi-word value survives tokenizing.
+function tokenizeFilterQuery(query) {
+  return String(query || '').match(/(?:[^\s"]+|"[^"]*")+/g) || [];
+}
+// commentStream fields have no single stored string/option value to
+// filter by (their data lives in commentStreams, not issue.values) --
+// excluded from field:value recognition entirely, so a label collision
+// with one just falls back to plain keyword text instead of silently
+// matching nothing.
+function filterableFieldEntries(fieldDefs) {
+  return Object.keys(fieldDefs)
+    .filter(colId => fieldDefs[colId] && fieldDefs[colId].label && fieldDefs[colId].type !== 'commentStream')
+    .map(colId => ({ colId, def: fieldDefs[colId] }));
+}
+// Splits a raw filter-bar string into recognized `field:value` tokens and
+// whatever's left over (kept as the classic keyword-search remainder).
+// A token only counts as a field token when its label actually matches a
+// real, filterable field -- an unrecognized "label" (typo, or genuinely
+// just a keyword containing a colon) falls back to plain keyword text
+// rather than being silently dropped.
+// A label or value that contains whitespace (e.g. the field "Delivery
+// teams", or a value like "In Progress") round-trips through the filter
+// bar quoted -- strip a matching pair of surrounding quotes before using
+// either side of a token for real.
+function stripQuotes(s) {
+  return (s.length >= 2 && s.startsWith('"') && s.endsWith('"')) ? s.slice(1, -1) : s;
+}
+function parseFilterQuery(query, fieldDefs) {
+  const tokens = tokenizeFilterQuery(query);
+  const labelToColId = {};
+  for (const { colId, def } of filterableFieldEntries(fieldDefs)) labelToColId[def.label.toLowerCase()] = colId;
+  const fieldTokens = [];
+  const keywordParts = [];
+  for (const tok of tokens) {
+    // A leading "-" negates the token (-status:done -> exclude Done),
+    // same convention GitHub's own issue search uses. Only recognized
+    // once the rest actually resolves to a real field:value pair below --
+    // a bare "-something" that doesn't parse that way falls through to
+    // plain keyword text UNCHANGED (dash included), same as any other
+    // unrecognized token.
+    const negated = tok.length > 1 && tok.startsWith('-');
+    const body = negated ? tok.slice(1) : tok;
+    const colonIdx = body.indexOf(':');
+    let matched = false;
+    if (colonIdx > 0) {
+      const label = stripQuotes(body.slice(0, colonIdx)).toLowerCase();
+      const rawValue = stripQuotes(body.slice(colonIdx + 1));
+      const colId = labelToColId[label];
+      if (colId && rawValue) { fieldTokens.push({ colId, rawValue, negated }); matched = true; }
+    }
+    if (!matched) keywordParts.push(stripQuotes(tok));
+  }
+  return { fieldTokens, keyword: keywordParts.join(' ') };
+}
+function resolveFieldTokenOptionId(def, rawValue) {
+  const q = rawValue.toLowerCase();
+  const opt = (def.options || []).find(o => o.id.toLowerCase() === q || (o.label || '').toLowerCase() === q);
+  return opt ? opt.id : null;
+}
+// null means "this token doesn't resolve to anything real" -- the caller
+// treats that as ignore-this-token (still typing toward a valid value,
+// e.g. mid-autocomplete) rather than a filter that excludes every issue.
+function issueMatchesFieldToken(issue, colId, def, rawValue) {
+  if (def.type === 'select') {
+    const optId = resolveFieldTokenOptionId(def, rawValue);
+    return optId ? issue.values[colId] === optId : null;
+  }
+  if (def.type === 'multiselect') {
+    const optId = resolveFieldTokenOptionId(def, rawValue);
+    return optId ? (issue.values[colId] || []).includes(optId) : null;
+  }
+  if (def.type === 'date') {
+    const value = issue.values[colId];
+    if (!value) return false;
+    const q = rawValue.toLowerCase();
+    const preset = dateFilterPresetRanges(new Date()).find(p => p.key.toLowerCase() === q || p.label.toLowerCase() === q);
+    if (preset) return value >= preset.from && value <= preset.to;
+    return value === rawValue;
+  }
+  if (def.type === 'timestamp') {
+    // Only presets make sense here -- the value is a ms-epoch number with
+    // no typed representation a user could match verbatim the way a date
+    // field's own YYYY-MM-DD value can.
+    const value = issue.values[colId];
+    if (!value) return false;
+    const q = rawValue.toLowerCase();
+    const preset = dateFilterPresetRanges(new Date()).find(p => p.key.toLowerCase() === q || p.label.toLowerCase() === q);
+    if (!preset) return null;
+    return value >= new Date(preset.from + 'T00:00:00').getTime() && value <= new Date(preset.to + 'T23:59:59.999').getTime();
+  }
+  // text / issue: freeform, no enumerable value set to resolve against --
+  // a plain case-insensitive substring match, same spirit as the classic
+  // keyword search this sits alongside.
+  const value = issue.values[colId];
+  return typeof value === 'string' && value.toLowerCase().includes(rawValue.toLowerCase());
+}
+// Multiple POSITIVE tokens on the SAME field OR together (status:done
+// status:"in progress" matches either); multiple NEGATIVE tokens on the
+// same field AND together as exclusions (-status:done -status:wontfix
+// means matching NEITHER); a field's positive and negative tokens (if
+// both present) combine with AND; different fields always AND together --
+// mirrors the existing checkbox column-filter semantics for the positive
+// case, so the two mechanisms feel consistent even though they're
+// independent layers.
+function issueMatchesFieldTokens(issue, fieldTokens, fieldDefs) {
+  const positiveByCol = {};
+  const negativeByCol = {};
+  for (const t of fieldTokens) {
+    const bucket = t.negated ? negativeByCol : positiveByCol;
+    (bucket[t.colId] = bucket[t.colId] || []).push(t.rawValue);
+  }
+  for (const colId in positiveByCol) {
+    const def = fieldDefs[colId];
+    if (!def) continue;
+    const results = positiveByCol[colId].map(rv => issueMatchesFieldToken(issue, colId, def, rv)).filter(r => r !== null);
+    if (results.length && !results.some(Boolean)) return false;
+  }
+  for (const colId in negativeByCol) {
+    const def = fieldDefs[colId];
+    if (!def) continue;
+    // null (unresolved value -- still mid-autocomplete) is ignored here
+    // too, same "not a real filter yet" treatment as the positive case --
+    // it must never accidentally exclude everything.
+    const results = negativeByCol[colId].map(rv => issueMatchesFieldToken(issue, colId, def, rv)).filter(r => r !== null);
+    if (results.some(Boolean)) return false;
+  }
+  return true;
+}
+// The autocomplete panel's own data: what to suggest for whichever token
+// is currently being typed (assumes the cursor sits at the end of the
+// input, same simplifying assumption the existing #id jump feature
+// already makes). No suggestions once a token is "closed" (query ends in
+// whitespace) or nothing's been typed for it yet.
+function computeFilterSuggestions(query, fieldDefs) {
+  const none = { mode: null, colId: null, items: [] };
+  // An empty box, or a query that just closed its last token with a
+  // trailing space, means the NEXT token hasn't started yet -- treat
+  // that the same as an empty in-progress token (suggests every field)
+  // rather than showing nothing, so clicking into the box (or finishing
+  // one token) always offers the full field list to keep typing from.
+  const emptyToken = !query || /\s$/.test(query);
+  const tokens = tokenizeFilterQuery(query);
+  let current = emptyToken ? '' : tokens[tokens.length - 1];
+  // Strip a leading "-" (negation) before matching -- carried through as
+  // `negated` on every suggested item, so commitFilterSuggestion can put
+  // it back. A lone "-" (nothing typed after it yet) is left alone: it
+  // won't match any field label, so this naturally suggests nothing yet
+  // rather than guessing.
+  const negated = current.length > 1 && current.startsWith('-');
+  if (negated) current = current.slice(1);
+  const entries = filterableFieldEntries(fieldDefs);
+  const colonIdx = current.indexOf(':');
+  if (colonIdx === -1) {
+    const q = current.toLowerCase();
+    const items = entries.filter(({ def }) => def.label.toLowerCase().startsWith(q))
+      .map(({ colId, def }) => ({ kind: 'field', colId, label: def.label, negated }));
+    return items.length ? { mode: 'field', colId: null, items } : none;
+  }
+  const label = stripQuotes(current.slice(0, colonIdx)).toLowerCase();
+  let rawValue = current.slice(colonIdx + 1);
+  // stripQuotes only unwraps a genuinely CLOSED quoted pair (e.g. re-
+  // parsing an already-committed value with no trailing space after it,
+  // now that committing one doesn't force a space -- see
+  // commitFilterSuggestion); a still-open quote (mid-typing, no closing
+  // quote yet) falls back to stripping just the leading one.
+  const strippedValue = stripQuotes(rawValue);
+  if (strippedValue !== rawValue) rawValue = strippedValue;
+  else if (rawValue.startsWith('"')) rawValue = rawValue.slice(1);
+  const match = entries.find(({ def }) => def.label.toLowerCase() === label);
+  if (!match) return none;
+  const { colId, def } = match;
+  const q = rawValue.toLowerCase();
+  let items = [];
+  if (def.type === 'select' || def.type === 'multiselect') {
+    items = (def.options || []).filter(o => (o.label || '').toLowerCase().startsWith(q))
+      .map(o => ({ kind: 'value', colId, value: o.label, color: o.color, negated }));
+  } else if (def.type === 'date') {
+    items = dateFilterPresetRanges(new Date()).filter(p => p.label.toLowerCase().startsWith(q))
+      .map(p => ({ kind: 'value', colId, value: p.label, negated }));
+  }
+  return items.length ? { mode: 'value', colId, items } : none;
+}
+// Replaces the in-progress last token with the chosen suggestion's text --
+// a field suggestion leaves the colon open for the value (e.g. "RAG:", or
+// "\"Delivery teams\":" when the label itself has a space -- quoted the
+// same way a multi-word VALUE already was, so re-parsing this same text
+// later finds the label as one token, not split on its own space), no
+// trailing space so the next keystroke stays part of the same token. A
+// value suggestion closes the token the same way, also with no trailing
+// space -- the user types their own separating space when they're ready
+// to start another criterion (computeFilterSuggestions only offers the
+// full field list again once the query actually ends in whitespace), so
+// clicking never presumes a next token is coming.
+//
+// The query only actually HAS an in-progress last token to replace when
+// it doesn't already end in whitespace -- if it does (a real, deliberate
+// trailing space, or an empty box), every existing token is already
+// complete/committed, so the new one is ADDED, not popped in place of the
+// most recent real one.
+function commitFilterSuggestion(query, suggestion, fieldDefs) {
+  const def = fieldDefs[suggestion.colId];
+  const label = /\s/.test(def.label) ? '"' + def.label + '"' : def.label;
+  const prefix = suggestion.negated ? '-' : '';
+  const emptyToken = !query || /\s$/.test(query);
+  const tokens = tokenizeFilterQuery(query);
+  if (!emptyToken) tokens.pop();
+  if (suggestion.kind === 'field') {
+    tokens.push(prefix + label + ':');
+    return tokens.join(' ');
+  }
+  const needsQuote = /\s/.test(suggestion.value);
+  tokens.push(prefix + label + ':' + (needsQuote ? '"' + suggestion.value + '"' : suggestion.value));
+  return tokens.join(' ');
 }
 const COMMENT_READS_KEY = 'git_native_tracker_comment_reads_v1';
 // Mention notifications (tracker issue #65, 178b0afa): a per-browser
@@ -557,7 +866,7 @@ function pickSalesforceFields(obj) {
 //
 // Editing keeps the append-only shape of everything else this app
 // persists (mirrors how a field's history is a log of every set, never a
-// mutation): an edit appends a NEW entry to issues[].comments sharing the
+// mutation): an edit appends a NEW entry to issues[].commentStreams[fieldId] sharing the
 // ORIGINAL comment's id, with a fresh time/sortKey. Nothing already in the
 // array is ever changed or removed. latestCommentsById() derives what to
 // actually display -- one bubble per id, showing the latest entry's text
@@ -591,6 +900,17 @@ function splitEmbeddedWigwagLinks(text) {
   }
   if (last < s.length || !segments.length) segments.push({ text: s.slice(last), isLink: false });
   return segments;
+}
+// tracker issue #104 (29e69c41): pasting a link over a text selection
+// wraps that selection in a markdown link instead of replacing it. Only
+// triggers when the clipboard content is JUST a bare URL -- pasting a
+// paragraph that happens to contain a link is a normal paste, not this.
+function isPastedTextASingleUrl(text) {
+  return /^https?:\/\/\S+$/.test(String(text == null ? '' : text).trim());
+}
+function wrapSelectionWithMarkdownLink(value, selStart, selEnd, url) {
+  const selected = value.slice(selStart, selEnd);
+  return value.slice(0, selStart) + '[' + selected + '](' + url + ')' + value.slice(selEnd);
 }
 function renderMarkdownInline(line) {
   let out = escapeHtml(line);
@@ -678,7 +998,18 @@ function renderListTree(tree) {
   }).join('') + '</' + tag + '>';
 }
 function renderMarkdown(raw) {
-  const lines = String(raw == null ? '' : raw).replace(/\r\n?/g, '\n').split('\n');
+  const text = String(raw == null ? '' : raw);
+  // Tracker #123 (d100c705)'s own conflict-marker grammar collides with
+  // markdown's: a line starting with ">>>>>>> ..." reads as a blockquote,
+  // and a lone "=======" line reads as a setext-heading underline for
+  // whatever text preceded it. Any text carrying real, unresolved merge
+  // markers is rendered as plain, escaped, whitespace-preserved text
+  // instead -- never run through markdown interpretation -- so the
+  // markers display literally rather than being mangled.
+  if (hasUnresolvedMergeMarkers(text)) {
+    return '<pre class="merge-markers-raw" style="white-space:pre-wrap; word-break:break-word; font-family:inherit; margin:0;">' + escapeHtml(text) + '</pre>';
+  }
+  const lines = text.replace(/\r\n?/g, '\n').split('\n');
   const parts = [];
   let para = [];
   const flush = function () { if (para.length) { parts.push('<p>' + para.map(renderMarkdownInline).join('<br>') + '</p>'); para = []; } };
@@ -747,6 +1078,25 @@ function latestCommentsById(comments) {
   });
 }
 
+// Created/Updated (type: 'timestamp') are never written via history --
+// always derived straight from the issue's own activity, including
+// comment streams (a new comment counts as an update, same as any field
+// edit). Returns a raw ms-epoch number, not a formatted string, so
+// precise relative-age display and numeric sorting both work for free.
+function issueActivitySortKeys(issue) {
+  const keys = (issue.history || []).map(h => h.sortKey).filter(k => typeof k === 'number');
+  for (const stream in (issue.commentStreams || {})) {
+    for (const entry of issue.commentStreams[stream]) {
+      if (typeof entry.sortKey === 'number') keys.push(entry.sortKey);
+    }
+  }
+  return keys;
+}
+function issueTimestampValue(issue, colId) {
+  const keys = issueActivitySortKeys(issue);
+  if (!keys.length) return null;
+  return colId === 'created' ? Math.min(...keys) : Math.max(...keys);
+}
 // Derives an issue's current field values from its own append-only
 // history log -- the same "log is the source of truth, values are a
 // projection" pattern latestCommentsById() already uses for comments,
@@ -763,8 +1113,12 @@ function deriveIssueValues(issue, fieldDefs) {
   }
   const values = {};
   for (const colId in fieldDefs) {
-    if (latestByField[colId]) { values[colId] = latestByField[colId].value; continue; }
     const def = fieldDefs[colId];
+    // Always wins over any stray history entry for these ids (there
+    // should never be one, but the derived value is authoritative either
+    // way -- these fields are computed, not editable).
+    if (def.type === 'timestamp') { values[colId] = issueTimestampValue(issue, colId); continue; }
+    if (latestByField[colId]) { values[colId] = latestByField[colId].value; continue; }
     values[colId] = def.type === 'multiselect' ? [] : (def.type === 'text' || def.type === 'issue' ? '' : null);
   }
   return values;
@@ -854,8 +1208,21 @@ function deriveIssueFieldRefs(issue, fieldDefs) {
 // this session's own live edits (localStorage, an imported/pasted/merged
 // file, a GitHub pull): backfill any pre-history gaps, then (re)populate
 // values/fieldRefs fresh from history, which is now their sole source.
+// One-time, idempotent migration: the old top-level `comments` array
+// becomes `commentStreams.comments` (tracker #108/a91db807) -- comment
+// threads are now a generic per-field mechanism (any commentStream-typed
+// field gets its own array the same shape), not a one-off issue property.
+// No dual-support kept afterward: once migrated, `comments` is gone from
+// the issue object entirely, and every other code path only ever reads/
+// writes `commentStreams`.
+function migrateLegacyComments(issue) {
+  if (!('comments' in issue)) return issue;
+  const { comments, ...rest } = issue;
+  return { ...rest, commentStreams: { ...(issue.commentStreams || {}), comments: issue.commentStreams && issue.commentStreams.comments ? issue.commentStreams.comments : (comments || []) } };
+}
 function hydrateIssue(issue, fieldDefs) {
-  const backfilled = backfillIssueHistoryFromValues(issue, fieldDefs);
+  const migrated = migrateLegacyComments(issue);
+  const backfilled = backfillIssueHistoryFromValues(migrated, fieldDefs);
   return { ...backfilled, values: deriveIssueValues(backfilled, fieldDefs), fieldRefs: deriveIssueFieldRefs(backfilled, fieldDefs) };
 }
 // Project-level counterpart to deriveIssueValues -- but unlike issue
@@ -938,10 +1305,31 @@ function backfillProjectHistory(fieldDefs, projectHistory) {
   if (!backfillEntries.length) return projectHistory || [];
   return [...(projectHistory || []), ...backfillEntries];
 }
+// Every project gets a commentStream field named 'comments' -- old data
+// (from before commentStream fields existed) never had one, so synthesize
+// it here. backfillProjectHistory (below) then generates the matching
+// projectHistory entry automatically, the same way it already does for
+// any other fieldDefs key with no history yet -- no bespoke history-entry
+// code needed just for this.
+function ensureCommentsFieldDef(fieldDefs) {
+  if (Object.values(fieldDefs).some(d => d.type === 'commentStream')) return fieldDefs;
+  return { ...fieldDefs, comments: { label: 'Comments', type: 'commentStream' } };
+}
+// Same pattern as ensureCommentsFieldDef: a project without these two
+// reserved ids yet gets them added in-memory here, then
+// backfillProjectHistory below turns that into a real backfilled
+// project-history entry so it round-trips just like Comments does --
+// including "deleting" one just brings it back on the next hydrate,
+// which is fine, since neither field is meant to be removable.
+function ensureTimestampFieldDefs(fieldDefs) {
+  const withCreated = fieldDefs.created ? fieldDefs : { ...fieldDefs, created: { label: 'Created', type: 'timestamp' } };
+  return withCreated.updated ? withCreated : { ...withCreated, updated: { label: 'Updated', type: 'timestamp' } };
+}
 // Shared load-time preparation for a project's schema coming from anywhere
 // other than this session's own live edits -- mirrors hydrateIssue.
 function hydrateProject(fieldDefs, projectHistory) {
-  const backfilled = backfillProjectHistory(fieldDefs, projectHistory);
+  const ensuredFieldDefs = ensureTimestampFieldDefs(ensureCommentsFieldDef(fieldDefs));
+  const backfilled = backfillProjectHistory(ensuredFieldDefs, projectHistory);
   return { fieldDefs: deriveFieldDefs(backfilled), projectHistory: backfilled };
 }
 
@@ -1133,14 +1521,59 @@ function evalRule(ruleStr, source, values) {
     return fn(source, values, S);
   } catch (e) { return undefined; }
 }
+// Tracker #112 (b564316d): a persisted fieldRef for an externally-linked
+// source (github/jira/salesforce) only ever carries display fields now
+// (owner/repo/num, key/browseUrl, id/name/url) -- never the maximalist
+// picked set (labels/status/etc, or Salesforce's whole field map), so a
+// rule reading source.<system>.foo can't be safely re-evaluated from what
+// disk actually holds. Detected structurally, on the RAW ref (before
+// pickGithubFields/pickJiraFields/pickSalesforceFields default every key
+// in): a trimmed github ref never has 'labels' at all; trimmed jira never
+// has 'status'; trimmed salesforce never has 'fields'. This is also how
+// the fetch/refresh flow's own transient, in-memory-only enriched ref
+// (used to recompute bound fields against a live payload, then discarded
+// before anything is persisted -- see applyGithubLinkToField and its
+// Jira/Salesforce counterparts) is told apart from the real, trimmed one:
+// the enriched ref legitimately has all those keys, so this same
+// function safely takes the live-eval path for it.
+function sourceRefHasFullData(ref) {
+  if (!ref) return true; // no ref at all -- nothing to trim, buildSource's isLinked gate handles this
+  if (ref.system === 'github') return 'labels' in ref;
+  if (ref.system === 'jira') return 'status' in ref;
+  if (ref.system === 'salesforce') return 'fields' in ref;
+  return true; // wigwag (or any other system) was never given the maximalist treatment
+}
+// The history entry (if any) that most recently set colId's value --
+// used to tell a rule-derived value apart from a manual one when the
+// rule itself can no longer be safely re-run (see sourceRefHasFullData).
+function latestEntryForField(issue, colId) {
+  let latest = null;
+  for (const h of issue.history || []) {
+    if (h.field === colId && (!latest || (h.sortKey || 0) > (latest.sortKey || 0))) latest = h;
+  }
+  return latest;
+}
 // { isLinked:false } short-circuits before the rule even runs, for fields
 // with no rule/no bound source AND for bound-but-not-yet-linked rows —
 // callers use isLinked to decide whether to lock the cell / overwrite its
 // materialized value at all.
-function computeBoundValue(issue, def) {
+function computeBoundValue(issue, colId, def) {
   if (!def.rule || !def.linkedSourceId) return { isLinked: false, computed: undefined };
+  const sourceRef = issue.fieldRefs && issue.fieldRefs[def.linkedSourceId];
+  if (!sourceRef) return { isLinked: false, computed: undefined };
+  if (!sourceRefHasFullData(sourceRef)) {
+    // Can't re-run the rule -- trust the last value a live refresh
+    // actually computed, tracked via an explicit origin:'derived' marker
+    // on this field's own most recent entry. Tracker #66's "a null
+    // computation unlocks the field" behavior falls out of this for
+    // free: a null result is never written (see applyLinkedRules below),
+    // so a field that's never been refreshed, or whose last refresh
+    // computed null, simply has no derived entry to find here.
+    const latest = latestEntryForField(issue, colId);
+    const locked = !!latest && latest.origin === 'derived';
+    return { isLinked: true, computed: locked ? issue.values[colId] : undefined };
+  }
   const source = buildSource(issue, def.linkedSourceId);
-  if (!source.isLinked) return { isLinked: false, computed: undefined };
   return { isLinked: true, computed: evalRule(def.rule, source, issue.values) };
 }
 // Whether a field is currently rule-derived (and therefore locked from
@@ -1152,8 +1585,8 @@ function computeBoundValue(issue, def) {
 // the field open for the user to fill in by hand instead of permanently
 // blank. computed:[] (a multiselect rule deliberately choosing "no
 // options") is a real answer, not null, and stays locked.
-function isFieldLocked(issue, def) {
-  const bound = computeBoundValue(issue, def);
+function isFieldLocked(issue, colId, def) {
+  const bound = computeBoundValue(issue, colId, def);
   return bound.isLinked && bound.computed != null;
 }
 // select: computed matched against option id/label -> that option's id (or
@@ -1183,7 +1616,7 @@ function applyLinkedRules(iss, fieldDefs) {
   let values = iss.values;
   for (const colId in fieldDefs) {
     const def = fieldDefs[colId];
-    const bound = computeBoundValue(iss, def);
+    const bound = computeBoundValue(iss, colId, def);
     // A null computed value means "hands off" (see isFieldLocked above) --
     // don't clear or overwrite whatever's currently there, whether that's
     // blank (never touched) or a manual override the user typed in while
@@ -1193,6 +1626,40 @@ function applyLinkedRules(iss, fieldDefs) {
     // tracking needed anywhere.
     if (!bound.isLinked || bound.computed == null) continue;
     values = applyComputedToField(values, colId, def, bound.computed);
+  }
+  return values === iss.values ? iss : { ...iss, values };
+}
+// Tracker #112 (b564316d): applyLinkedRules re-evaluates every bound field
+// from the (now display-only, for an external system) PERSISTED fieldRef
+// -- fine for a plain- or wigwag-sourced field, a no-op for one sourced
+// from github/jira/salesforce (see computeBoundValue/sourceRefHasFullData
+// above). This is the counterpart used at fetch/refresh time, when the
+// caller has the real, live payload for sourceColId in hand -- evaluates
+// only the fields bound to THAT source, against liveData directly, never
+// touching issue.fieldRefs (which stays display-only; fieldRefs is
+// derived purely from history, so there is no "temporarily attach the
+// full payload" shortcut -- see deriveIssueFieldRefs). Same "null means
+// hands off" rule as applyLinkedRules. Known gap: a copy-field-mode bound
+// field's ROW CONDITION (computeBoundFieldRef, tracker #66 Part 2) still
+// evaluates against the persisted (trimmed) ref, not liveData, if that
+// condition itself reads source.<system>.foo -- narrow enough (condition
+// text, not the common case of a plain value rule) to leave as a
+// documented limitation rather than threading liveData through that path
+// too.
+function applyLiveLinkedRules(iss, fieldDefs, sourceColId, system, liveData) {
+  const source = {
+    text: iss.values[sourceColId] || '', isLinked: true,
+    github: system === 'github' ? pickGithubFields(liveData) : null,
+    jira: system === 'jira' ? pickJiraFields(liveData) : null,
+    salesforce: system === 'salesforce' ? pickSalesforceFields(liveData) : null
+  };
+  let values = iss.values;
+  for (const colId in fieldDefs) {
+    const def = fieldDefs[colId];
+    if (def.linkedSourceId !== sourceColId || !def.rule) continue;
+    const computed = evalRule(def.rule, source, iss.values);
+    if (computed == null) continue;
+    values = applyComputedToField(values, colId, def, computed);
   }
   return values === iss.values ? iss : { ...iss, values };
 }
@@ -1261,7 +1728,12 @@ function computeSortSnapshot(sort, issues, fieldDefs) {
   const withValues = issues.map(iss => ({ id: iss.id, values: deriveIssueValues(iss, fieldDefs), createdAt: issueCreatedAt(iss) }));
   withValues.sort((a, b) => {
     const av = sortValue(a, sort.colId, def), bv = sortValue(b, sort.colId, def);
-    const cmp = String(av).localeCompare(String(bv));
+    // numeric:true makes embedded digit runs compare by value ("2" < "10")
+    // instead of character-by-character -- select/multiselect already
+    // return zero-padded index strings, so this is a no-op for them; it
+    // only changes behavior for text/title values that happen to be (or
+    // contain) numbers.
+    const cmp = String(av).localeCompare(String(bv), undefined, { numeric: true });
     if (cmp !== 0) return sort.dir === 'asc' ? cmp : -cmp;
     return a.createdAt - b.createdAt;
   });
@@ -1332,13 +1804,36 @@ function commitSignedEntry(entryBase, payloads, store) {
 // A history/comment entry not selected as the field's latest gets its
 // prose/value stripped down to a redacted stub -- used for the
 // "squashed" export mode, which keeps only the latest entry per field in
-// full plus a redacted trail for everything superseded.
-function squashHistory(history) {
+// full plus a redacted trail for everything superseded. "Latest" is by
+// sortKey, not array position -- history is normally already in that
+// order (appendSignedHistory always pushes at the end with a monotonic
+// sortKey, and unionByKey re-sorts by sortKey after any merge), but
+// picking by position would silently keep the wrong entry unredacted if
+// that ever weren't true, e.g. clock-skewed entries from a multi-device
+// merge landing out of sortKey order in the array.
+//
+// fieldDefs (optional, only meaningful for an ISSUE's history -- pass
+// nothing for projectHistory, whose own entries carry field
+// *definitions*, not customer/third-party data) marks the difference
+// between a field that's merely been superseded (redact everything but
+// its current latest) and one that's been deleted from the project
+// entirely (tombstoned in deriveFieldDefs -- gone from fieldDefs). A
+// deleted field's "latest" entry serves no live purpose -- nothing in the
+// app reads it any more -- so it gets redacted too, not kept around
+// forever just because nothing happened to supersede it under its own
+// (now-abandoned) field id.
+function squashHistory(history, fieldDefs) {
   const latestByField = {};
-  for (const h of history) { if (h.field) latestByField[h.field] = h; }
+  for (const h of history) {
+    if (!h.field) continue;
+    const existing = latestByField[h.field];
+    if (!existing || h.sortKey > existing.sortKey) latestByField[h.field] = h;
+  }
   const keepIds = new Set(Object.values(latestByField).map(h => h.id));
   return history.map(h => {
-    if (!h.field || keepIds.has(h.id)) return h;
+    if (!h.field) return h;
+    const fieldDeleted = fieldDefs && !(h.field in fieldDefs);
+    if (!fieldDeleted && keepIds.has(h.id)) return h;
     return {
       id: h.id, time: h.time, actor: h.actor, email: h.email,
       field: h.field, origin: h.origin, sortKey: h.sortKey,
@@ -1358,26 +1853,245 @@ function displayValueForHistory(def, value) {
   }
   return value == null || value === '' ? '—' : String(value);
 }
+// Dedupes every signed entry's inlined pubKey (a ~180-byte JWK, repeated
+// verbatim on every entry from the same identity) into one per-project
+// registry keyed by a short sequential id ("k0", "k1", ...) assigned in
+// first-seen order -- tracker #132 (68d960f2). Dedup key is the JWK's own
+// (x, y) curve coordinates (the actual key material), not JSON.stringify
+// equality, since incidental JWK metadata (key_ops array order etc.)
+// could otherwise vary without the key itself differing. Deliberately a
+// plain synchronous string concatenation, not the existing async
+// fingerprintPublicKey (crypto.subtle.digest) used for the user-facing
+// TOFU fingerprint -- buildSourceText is called synchronously from many
+// call sites (source-size label, GitHub-push diff check, clipboard/
+// share), so its own key identity can't require an async hop. This
+// registry is purely an internal storage/dedup detail, never shown to a
+// user; the real TOFU fingerprint is untouched by this.
+function keyRegistryEncoder() {
+  const registry = {};
+  const seen = new Map();
+  function ref(pubKey) {
+    if (!pubKey) return null;
+    const idKey = pubKey.x + '|' + pubKey.y;
+    let r = seen.get(idKey);
+    if (!r) { r = 'k' + seen.size; seen.set(idKey, r); registry[r] = pubKey; }
+    return r;
+  }
+  function encode(entry) {
+    if (!entry || !entry.pubKey) return entry;
+    const { pubKey, ...rest } = entry;
+    return { ...rest, keyRef: ref(pubKey) };
+  }
+  return { registry, encode };
+}
 // doc: { projectId, projectName, fieldDefs, projectHistory, projectNotes,
 // projectComments, issues } -- the full exportable project shape.
 function buildSourceText(mode, doc) {
   const { projectId, projectName, fieldDefs, projectHistory: rawProjectHistory, projectNotes, projectComments, issues } = doc;
   const projectHistory = mode === 'squashed' ? squashHistory(rawProjectHistory) : rawProjectHistory;
-  const lines = [JSON.stringify({ type: 'fields', formatVersion: FORMAT_VERSION, generator: 'wigwag', fields: fieldDefs, projectHistory, id: projectId, name: projectName || undefined, projectNotes: projectNotes || undefined, projectComments: (projectComments && projectComments.length) ? projectComments : undefined })];
-  for (const iss of issues) {
-    const history = mode === 'squashed' ? squashHistory(iss.history) : iss.history;
-    lines.push(JSON.stringify({ type: 'issue', id: iss.id, num: iss.num, comments: iss.comments, history }));
-  }
+  const keys = keyRegistryEncoder();
+  const encodedProjectHistory = projectHistory.map(keys.encode);
+  const issueLines = issues.map(iss => {
+    const history = (mode === 'squashed' ? squashHistory(iss.history, fieldDefs) : iss.history).map(keys.encode);
+    const commentStreams = {};
+    for (const colId in (iss.commentStreams || {})) commentStreams[colId] = (iss.commentStreams[colId] || []).map(keys.encode);
+    return { id: iss.id, num: iss.num, commentStreams, history };
+  });
+  const lines = [JSON.stringify({ type: 'fields', formatVersion: FORMAT_VERSION, generator: 'wigwag', fields: fieldDefs, projectHistory: encodedProjectHistory, keys: Object.keys(keys.registry).length ? keys.registry : undefined, id: projectId, name: projectName || undefined, projectNotes: projectNotes || undefined, projectComments: (projectComments && projectComments.length) ? projectComments : undefined })];
+  for (const line of issueLines) lines.push(JSON.stringify({ type: 'issue', ...line }));
   return lines.join('\n');
+}
+
+// --- Merge provenance (tracker #122, a61676e0): signed export envelope
+// and per-sender TOFU trust, per the merge_provenance.zip handoff --------
+//
+// The handoff specifies real SSH ed25519 signatures (ssh-keygen -Y sign/
+// verify, an allowed_signers file). That's infeasible here: wigwag is a
+// pure browser PWA with no filesystem or SSH-agent access. Reuses the
+// EXISTING WebCrypto ECDSA P-256 identity-key signing instead (already
+// used for every history entry -- see importSigningKey/signWithKey/
+// verifyPayload above), applied one level up: to the export as a whole,
+// not each entry within it. This is a second, complementary TOFU axis --
+// "who exported this FILE" (an export transaction, e.g. Dave exporting a
+// file that contains Tony's edits) -- distinct from the existing per-
+// entry "who authored this EDIT" trust already documented in
+// docs/FORMAT.md's "Identity and signing" section.
+//
+// exported_by is deliberately NOT the same thing as any edit's own
+// author -- these differ constantly and conflating them is the mistake
+// the handoff calls out first.
+const WIGWAG_EXPORT_TYPE = 'wigwag.export';
+const WIGWAG_EXPORT_VERSION = 1;
+
+// The exact bytes that get hashed/signed: every record line (everything
+// after the envelope), each terminated by \n, concatenated in file order
+// -- matches buildSourceText's own one-line-per-record output, just
+// pinning down the terminator convention so the hash is a pure function
+// of content, independent of how a caller later joins/serializes lines.
+function canonicalRecordsText(recordsBody) {
+  if (!recordsBody) return '';
+  return recordsBody.split('\n').filter(l => l.length).map(l => l + '\n').join('');
+}
+
+async function computeContentSha256Hex(recordsBody) {
+  const bytes = new TextEncoder().encode(canonicalRecordsText(recordsBody));
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// A short, stable, human-comparable identifier for a public key -- the
+// TOFU comparison key, and what a future "Trust this key"/"Keep the old
+// one" UI (tracker #124) would name. Derived from the JWK's own
+// coordinates only (crv/x/y), not the whole object, so unrelated JWK
+// metadata never perturbs it.
+async function fingerprintPublicKey(pubKeyJwk) {
+  if (!pubKeyJwk) return null;
+  const canonical = JSON.stringify({ crv: pubKeyJwk.crv, x: pubKeyJwk.x, y: pubKeyJwk.y });
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonical));
+  return 'SHA256:' + base64FromBytes(new Uint8Array(digest));
+}
+
+// Builds the envelope line for an export. publicKeyJwk/privateKeyJwk are
+// the EXPORTING identity's own signing keypair -- the same one already
+// used to sign every history entry. Signing is opt-in per identity,
+// mirroring the existing per-entry rule: omit `sig` entirely (never
+// generate a key silently) when the identity has none. The signature
+// covers the ASCII hex of content_sha256, not the raw records -- cheap
+// to verify, and it means the signature survives a re-hash if the
+// envelope itself is ever rewritten (matches the handoff's own §1.3,
+// substituting the signing primitive only).
+async function buildExportEnvelope({ exportedBy, exportedAt, project, tracker, recordsBody, publicKeyJwk, privateKeyJwk }) {
+  const recordLines = (recordsBody || '').split('\n').filter(l => l.length);
+  const contentSha256 = await computeContentSha256Hex(recordsBody);
+  const envelope = {
+    type: WIGWAG_EXPORT_TYPE, v: WIGWAG_EXPORT_VERSION,
+    exported_by: exportedBy || '', exported_at: exportedAt,
+    project: project || undefined, tracker: tracker || undefined,
+    records: recordLines.length, content_sha256: contentSha256
+  };
+  if (privateKeyJwk && publicKeyJwk) {
+    const key = await importSigningKey(privateKeyJwk);
+    const sig = await signWithKey(key, contentSha256);
+    if (sig) envelope.sig = { alg: 'ECDSA-P256', pubKeyJwk: publicKeyJwk, sig };
+  }
+  return envelope;
+}
+
+// Splits a possibly-enveloped export back into { envelope, recordsBody }.
+// A file with no real envelope on line 1 is v0 -- unsigned, unattributed,
+// and every line is still a record; the whole text passes through as the
+// records body unchanged (existing parseJsonl callers need no changes at
+// all: it already ignores any line whose `type` it doesn't recognize,
+// which is exactly how an envelope line reads to it today).
+function parseExportEnvelope(text) {
+  const nlIdx = text.indexOf('\n');
+  const firstLine = nlIdx === -1 ? text : text.slice(0, nlIdx);
+  let candidate = null;
+  try { candidate = JSON.parse(firstLine); } catch (e) { /* not JSON -- v0 */ }
+  if (candidate && typeof candidate === 'object' && candidate.type === WIGWAG_EXPORT_TYPE) {
+    return { envelope: candidate, recordsBody: nlIdx === -1 ? '' : text.slice(nlIdx + 1) };
+  }
+  return { envelope: null, recordsBody: text };
+}
+
+// Verifies an envelope against the records body it claims to describe.
+// hashValid is meaningful even for an unsigned envelope (a bot/CI export
+// can still assert a hash worth checking); sigValid is null (not false)
+// when there's no signature to check at all, so callers can tell "no
+// signature" apart from "signature present but invalid" -- the handoff's
+// own §1.4 distinction.
+async function verifyExportEnvelope(envelope, recordsBody) {
+  if (!envelope) return { hashValid: true, sigValid: null }; // v0 -- nothing asserted, nothing to distrust
+  const actualHash = await computeContentSha256Hex(recordsBody);
+  const hashValid = actualHash === envelope.content_sha256;
+  if (!envelope.sig) return { hashValid, sigValid: null };
+  const sigValid = await verifyPayload(envelope.content_sha256, envelope.sig.sig, envelope.sig.pubKeyJwk);
+  return { hashValid, sigValid };
+}
+
+// --- TOFU trust store (per SENDER IDENTITY, not per project) -----------
+// Pure functions over a plain { [senderEmail]: { fingerprint, pubKeyJwk,
+// firstSeenAt, lastSeenAt } } object -- the actual localStorage key lives
+// in wigwag.html/a CLI's own state, same split as every other *_KEY
+// store this module names a constant for but never reads/writes itself.
+const EXPORT_TRUST_KEY = 'git_native_tracker_export_trust_v1';
+
+function lookupSenderTrust(trustStore, senderEmail) {
+  return (trustStore && trustStore[senderEmail]) || null;
+}
+
+// 'first-seen': no prior record for this sender -- this fingerprint
+// becomes the trusted one from here on (recorded by the caller, not this
+// function -- see rememberSenderTrust). 'match': fingerprint equals what
+// was already on file, quiet. 'changed': fingerprint differs -- the only
+// LOUD state; priorFingerprint is included so a UI can name both, per
+// the handoff's own requirement.
+function classifySenderTrust(trustStore, senderEmail, fingerprint) {
+  const existing = lookupSenderTrust(trustStore, senderEmail);
+  if (!existing) return { state: 'first-seen', priorFingerprint: null };
+  if (existing.fingerprint === fingerprint) return { state: 'match', priorFingerprint: null };
+  return { state: 'changed', priorFingerprint: existing.fingerprint };
+}
+
+// Returns a NEW trust store with this sender's fingerprint recorded.
+// Callers use this for the automatic 'first-seen' -> trusted transition
+// (no gate to pass, per the handoff's "nothing here is a gate" rule) and
+// for an explicit "Trust this key" action on a 'changed' sender (a
+// future UI's job, tracker #124) -- never called automatically for
+// 'changed' itself, since accepting a rotated key is the one real
+// decision in this whole flow.
+function rememberSenderTrust(trustStore, senderEmail, fingerprint, pubKeyJwk, now) {
+  const existing = lookupSenderTrust(trustStore, senderEmail);
+  return {
+    ...(trustStore || {}),
+    [senderEmail]: { fingerprint, pubKeyJwk, firstSeenAt: existing ? existing.firstSeenAt : now, lastSeenAt: now }
+  };
+}
+
+// Combines hash/signature verification with TOFU trust into the single
+// sig_state the handoff's own test ids expose (data-sig-state=
+// "signed|unsigned|changed|damaged"). Per §1.4, a hash mismatch and an
+// outright-invalid signature both get the SAME loud/amber visual
+// treatment as a rotated key, but must be LABELLED distinctly -- `reason`
+// carries that distinction; `sigState` alone stays one of the four enum
+// values a future UI's data-sig-state attribute needs.
+function classifyExportProvenance({ envelope, hashValid, sigValid, senderTrust }) {
+  if (!envelope) return { sigState: 'unsigned', reason: 'no-envelope' };
+  if (!hashValid) return { sigState: 'damaged', reason: 'hash-mismatch' };
+  if (!envelope.sig) return { sigState: 'unsigned', reason: 'no-signature' };
+  if (!sigValid) return { sigState: 'changed', reason: 'signature-invalid' };
+  if (senderTrust && senderTrust.state === 'changed') return { sigState: 'changed', reason: 'key-changed', priorFingerprint: senderTrust.priorFingerprint };
+  return { sigState: 'signed', reason: (senderTrust && senderTrust.state === 'first-seen') ? 'first-seen' : 'known-key' };
+}
+
+// Binary (1024-based) size, auto-scaling the unit so it stays legible
+// whether a project is a few KB (the common case for most of its life)
+// or has grown into MB territory (where GitHub itself starts to care --
+// soft warnings above 50MB, hard rejection above 100MB per file).
+function humanFileSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
 }
 // Tolerant line-by-line parse -- a malformed line is skipped rather than
 // failing the whole import, since a partially-corrupted file (e.g. one
 // truncated by a bad email client) should still recover what it can.
 // fallbackFieldDefs is used only when the file has no 'fields' line of
 // its own (a pure issues-only paste, say).
+// Rehydrates an entry written against the shared key registry (tracker
+// #132, 68d960f2) back to a full inline pubKey, so every downstream
+// consumer (verifyPayload, squashHistory, TOFU trust, etc.) sees exactly
+// the same {sig, sigRedacted, pubKey} shape it always has -- whether the
+// file used the registry or (an older export, still fully valid) inlined
+// pubKey directly on every entry. A no-op when keyRegistry is absent or
+// the entry has no keyRef, so old-format files pass through unchanged.
+function rehydrateKeyRef(entry, keyRegistry) {
+  if (entry && entry.keyRef && !entry.pubKey && keyRegistry) return { ...entry, pubKey: keyRegistry[entry.keyRef] || null };
+  return entry;
+}
 function parseJsonl(text, fallbackFieldDefs) {
   const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-  let fields = null, incomingProjectHistory = null, projectId = null, projectName = null, projectNotes = null, projectComments = null, incomingFormatVersion = null;
+  let fields = null, incomingProjectHistory = null, projectId = null, projectName = null, projectNotes = null, projectComments = null, incomingFormatVersion = null, keyRegistry = null;
   const issues = [];
   for (const line of lines) {
     let obj;
@@ -1386,8 +2100,20 @@ function parseJsonl(text, fallbackFieldDefs) {
     if (obj.type === 'fields') {
       fields = obj.fields || null; incomingProjectHistory = obj.projectHistory || null; projectId = obj.id || null; projectName = obj.name || null;
       projectNotes = obj.projectNotes || null; projectComments = obj.projectComments || null; incomingFormatVersion = typeof obj.formatVersion === 'number' ? obj.formatVersion : null;
+      keyRegistry = obj.keys || null;
     }
     else if (obj.type === 'issue') issues.push(obj);
+  }
+  if (keyRegistry) {
+    if (incomingProjectHistory) incomingProjectHistory = incomingProjectHistory.map(h => rehydrateKeyRef(h, keyRegistry));
+    for (const iss of issues) {
+      if (iss.history) iss.history = iss.history.map(h => rehydrateKeyRef(h, keyRegistry));
+      if (iss.commentStreams) {
+        const cs = {};
+        for (const colId in iss.commentStreams) cs[colId] = (iss.commentStreams[colId] || []).map(h => rehydrateKeyRef(h, keyRegistry));
+        iss.commentStreams = cs;
+      }
+    }
   }
   const effectiveFields = fields || fallbackFieldDefs;
   const hydratedIssues = issues.map(iss => hydrateIssue(iss, effectiveFields));
@@ -1407,6 +2133,19 @@ function unionByKey(localList, incomingList, keyFn) {
   for (const item of incomingList) if (!map.has(keyFn(item))) map.set(keyFn(item), item);
   return [...map.values()].sort((a, b) => (a.sortKey || 0) - (b.sortKey || 0));
 }
+// commentStreams is a map of independent per-field entry arrays (one per
+// commentStream-typed field, 'comments' included) -- union each field's
+// array separately, over the set of field ids present on EITHER side, so
+// a field that only exists on one side (e.g. created locally, not yet
+// seen by the other party) still comes through untouched.
+function mergeCommentStreams(localStreams, incomingStreams) {
+  const ids = new Set([...Object.keys(localStreams || {}), ...Object.keys(incomingStreams || {})]);
+  const merged = {};
+  for (const id of ids) {
+    merged[id] = unionByKey((localStreams && localStreams[id]) || [], (incomingStreams && incomingStreams[id]) || [], c => commentKey(c));
+  }
+  return merged;
+}
 // Unions both sides' history/comments (nothing is ever dropped -- a
 // losing edit is still sitting right there in history) and re-derives
 // values/fieldRefs fresh, the same derivation every other write path
@@ -1419,10 +2158,19 @@ function unionByKey(localList, incomingList, keyFn) {
 // merge result itself.
 function mergeIssuePair(localIssue, incomingIssue, fieldDefs) {
   const history = unionByKey(localIssue.history, incomingIssue.history, h => entryKey(h));
-  const comments = unionByKey(localIssue.comments, incomingIssue.comments, c => commentKey(c));
+  const commentStreams = mergeCommentStreams(localIssue.commentStreams, incomingIssue.commentStreams);
   const fieldIds = new Set();
   for (const h of history) if (h.field) fieldIds.add(h.field);
   const overlappingFields = [];
+  // touchedFields (tracker #124, 5c3051e9): every field the INCOMING file
+  // genuinely brought something new to -- a strict superset of
+  // overlappingFields (which requires BOTH sides to have independently
+  // diverged). The handoff's own Level 2 table shows a row for every
+  // field the merge touched, whether the local side also edited it
+  // (winner: newest-edit-wins) or not (winner: incoming by default,
+  // origin note "one copy only") -- overlappingFields alone silently
+  // dropped the one-copy-only rows entirely.
+  const touchedFields = [];
   for (const colId of fieldIds) {
     const localAuthored = localIssue.history.filter(h => h.field === colId && h.origin !== 'derived');
     const incomingAuthored = incomingIssue.history.filter(h => h.field === colId && h.origin !== 'derived');
@@ -1431,11 +2179,562 @@ function mergeIssuePair(localIssue, incomingIssue, fieldDefs) {
     const localOnly = localAuthored.some(h => !incomingKeys.has(entryKey(h)));
     const incomingOnly = incomingAuthored.some(h => !localKeys.has(entryKey(h)));
     if (localOnly && incomingOnly) overlappingFields.push(colId);
+    if (incomingOnly) touchedFields.push(colId);
   }
-  const merged = { ...localIssue, comments, history };
+  const merged = { ...localIssue, commentStreams, history };
   const mergedIssue = { ...merged, values: deriveIssueValues(merged, fieldDefs), fieldRefs: deriveIssueFieldRefs(merged, fieldDefs) };
-  return { mergedIssue, overlappingFields };
+  return { mergedIssue, overlappingFields, touchedFields };
 }
+
+// --- Diff3 (three-way prose merge) -- tracker #123 (d100c705), Part B of
+// the merge_provenance.zip handoff (README §2.1-§2.2) ------------------
+//
+// Scalar fields (select/multiselect/date/issue) need no new logic here:
+// "last edit wins" is already an emergent property of mergeIssuePair's
+// history-union + deriveIssueValues' latest-sortKey-wins derivation.
+// Prose fields (type:'text') get a real three-way merge instead, since
+// overwriting one side's whole paragraph with the other's is far more
+// destructive for free-form text than for a status dropdown.
+//
+// Implementation note: an earlier attempt aligned two INDEPENDENTLY
+// computed two-way diffs (base->ours, base->theirs) positionally by
+// hunk-start-offset. That breaks whenever the two diffs coalesce a
+// shared region differently sized (verified live: a header edit on one
+// side plus an unrelated same-line edit on the other got silently
+// dropped). This uses the standard "common backbone" three-way-merge
+// algorithm instead: find base lines left untouched by BOTH sides (via
+// two independent LCS-match passes), use those as synchronization
+// anchors, and resolve the segments BETWEEN anchors on their own merits
+// -- the same approach `diff3`/`git merge-file` use.
+
+// For each base line index, the ours/theirs index it's matched to via
+// LCS, or -1 if that base line wasn't preserved on that side. O(n*m) DP
+// -- fine for prose-sized fields, not meant for huge documents.
+function lcsMatchToBase(baseLines, otherLines) {
+  const n = baseLines.length, m = otherLines.length;
+  const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] = baseLines[i] === otherLines[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const match = new Array(n).fill(-1);
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (baseLines[i] === otherLines[j]) { match[i] = j; i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) i++;
+    else j++;
+  }
+  return match;
+}
+function linesArraysEqual(a, b) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+// markers: { openLine, midLine, closeLine } -- the exact three lines to
+// splice around a conflicting region (see conflictMarkerLines below for
+// the real grammar; a caller can pass placeholder strings for testing).
+// segments (returned alongside text/hasConflict) is the per-LINE origin
+// tag diff3Merge itself already knows during the merge but the flattened
+// text alone can't recover afterward: {kind:'context'|'local'|'inbound'|
+// 'marker', text}. Needed so a renderer can tint EVERY changed line by
+// whose edit it came from (not just conflicting ones) -- the handoff's
+// own "the merged body rendered inline as a diff... the actual artefact"
+// requirement (README §3, Level 2). Purely additive: existing callers
+// destructuring only {text, hasConflict} are unaffected.
+function diff3Merge(base, ours, theirs, markers) {
+  const baseLines = base.split('\n');
+  const oursLines = ours.split('\n');
+  const theirsLines = theirs.split('\n');
+  const matchO = lcsMatchToBase(baseLines, oursLines);
+  const matchT = lcsMatchToBase(baseLines, theirsLines);
+  const backbone = [];
+  for (let i = 0; i < baseLines.length; i++) { if (matchO[i] !== -1 && matchT[i] !== -1) backbone.push(i); }
+
+  const out = [];
+  const segments = [];
+  let hasConflict = false;
+  let prevBase = -1, prevOurs = -1, prevTheirs = -1;
+
+  function push(kind, text) { out.push(text); segments.push({ kind, text }); }
+
+  function emitGap(baseFrom, baseTo, oursFrom, oursTo, theirsFrom, theirsTo) {
+    const baseSeg = baseLines.slice(baseFrom, baseTo);
+    const oursSeg = oursLines.slice(oursFrom, oursTo);
+    const theirsSeg = theirsLines.slice(theirsFrom, theirsTo);
+    const oursChanged = !linesArraysEqual(oursSeg, baseSeg);
+    const theirsChanged = !linesArraysEqual(theirsSeg, baseSeg);
+    if (!oursChanged && !theirsChanged) { baseSeg.forEach(t => push('context', t)); return; }
+    if (oursChanged && !theirsChanged) { oursSeg.forEach(t => push('local', t)); return; }
+    if (!oursChanged && theirsChanged) { theirsSeg.forEach(t => push('inbound', t)); return; }
+    if (linesArraysEqual(oursSeg, theirsSeg)) { oursSeg.forEach(t => push('context', t)); return; }
+    hasConflict = true;
+    push('marker', markers.openLine);
+    oursSeg.forEach(t => push('local', t));
+    push('marker', markers.midLine);
+    theirsSeg.forEach(t => push('inbound', t));
+    push('marker', markers.closeLine);
+  }
+
+  for (const b of backbone) {
+    const o = matchO[b], t = matchT[b];
+    emitGap(prevBase + 1, b, prevOurs + 1, o, prevTheirs + 1, t);
+    push('context', baseLines[b]); // the anchor line itself -- identical on all three
+    prevBase = b; prevOurs = o; prevTheirs = t;
+  }
+  emitGap(prevBase + 1, baseLines.length, prevOurs + 1, oursLines.length, prevTheirs + 1, theirsLines.length);
+  return { text: out.join('\n'), hasConflict, segments };
+}
+
+function formatDateLabel(isoOrDate) {
+  const d = isoOrDate instanceof Date ? isoOrDate : new Date(isoOrDate);
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ', ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+}
+// Maps a classifyExportProvenance() result to the marker-grammar suffix
+// text (README §2.2 names three: signed / unsigned / signed, new key).
+// Extended with two real states the spec's own three options don't
+// cover but the format still needs to say something honest about: an
+// outright cryptographically-invalid signature, and a damaged (hash-
+// mismatched) file -- both loud per §1.4, but distinctly labelled.
+function provenanceMarkerSuffix(provenance) {
+  if (!provenance || provenance.sigState === 'unsigned') return 'unsigned';
+  if (provenance.sigState === 'damaged') return 'damaged';
+  if (provenance.sigState === 'changed' && provenance.reason === 'signature-invalid') return 'signature invalid';
+  if (provenance.sigState === 'changed') return 'signed, new key';
+  return 'signed';
+}
+// Builds the three marker lines bracketing a conflict, per the handoff's
+// own grammar (§2.2):
+//   <<<<<<< local copy · <identity>
+//   =======
+//   >>>>>>> <identity> · export <date> · <signed|unsigned|signed, new key>
+// localIdentity names whoever authored the LATEST local edit to this
+// specific field (not necessarily the identity running the merge right
+// now); inboundIdentity/exportedAt/provenance describe the incoming
+// EXPORT TRANSACTION as a whole (see the export-envelope section of
+// docs/FORMAT.md), not a specific edit within it.
+function conflictMarkerLines(localIdentity, inboundIdentity, exportedAt, provenance) {
+  const dateLabel = exportedAt ? formatDateLabel(exportedAt) : 'unknown date';
+  return {
+    openLine: '<<<<<<< local copy · ' + (localIdentity || 'unknown'),
+    midLine: '=======',
+    closeLine: '>>>>>>> ' + (inboundIdentity || 'unknown') + ' · export ' + dateLabel + ' · ' + provenanceMarkerSuffix(provenance)
+  };
+}
+// Open question the handoff flags explicitly (§2.2) rather than
+// deciding: does wigwag re-parse markers on every save (clears "needs a
+// look" only when they're cleanly gone, survives a partial edit) or
+// just detect the literal <<<<<<< prefix as inert text? Decided (see
+// tracker #123/d100c705's own comment thread): the cheaper literal-
+// prefix detection -- a full re-parse-on-save is real extra work for a
+// benefit (surviving a half-deleted marker) that's easy to add later if
+// it turns out to matter, whereas the reverse (removing an over-built
+// mechanism) rarely happens in practice.
+function hasUnresolvedMergeMarkers(text) {
+  return typeof text === 'string' && text.split('\n').some(line => line.startsWith('<<<<<<<'));
+}
+
+// For every prose-typed (type:'text') field where BOTH sides authored
+// entries the other hadn't seen (mergeIssuePair's own "overlapping"
+// condition, recomputed here since this needs the actual base/ours/
+// theirs TEXT, not just the boolean flag), runs a real diff3 merge and
+// returns one entry descriptor per field that genuinely needs a new
+// history entry -- "one new edit authored by the merging identity" per
+// the handoff's own §2.1. Committing each entry (needs identity +
+// signing) stays the caller's job, same split as computeDerivedChangeEntries
+// above. inboundInfo describes the incoming EXPORT TRANSACTION (see
+// classifyIngestProvenance in wigwag.html) -- {exportedBy, exportedAt,
+// provenance} -- and may be null/omitted for a merge with no real
+// envelope (e.g. a GitHub-sync-driven merge), in which case markers fall
+// back to "unknown"/"unsigned" rather than crashing.
+function computeMergeProseEntries(localIssue, incomingIssue, fieldDefs, inboundInfo) {
+  const info = inboundInfo || { exportedBy: '', exportedAt: null, provenance: null };
+  const entries = [];
+  const latestOf = list => list.length ? list.reduce((a, b) => (b.sortKey > a.sortKey ? b : a)) : null;
+  for (const colId in fieldDefs) {
+    const def = fieldDefs[colId];
+    if (!def || def.type !== 'text') continue;
+    const localAuthored = (localIssue.history || []).filter(h => h.field === colId && h.origin !== 'derived');
+    const incomingAuthored = (incomingIssue.history || []).filter(h => h.field === colId && h.origin !== 'derived');
+    if (!localAuthored.length || !incomingAuthored.length) continue;
+    const localKeys = new Set(localAuthored.map(h => entryKey(h)));
+    const incomingKeys = new Set(incomingAuthored.map(h => entryKey(h)));
+    const localOnly = localAuthored.some(h => !incomingKeys.has(entryKey(h)));
+    const incomingOnly = incomingAuthored.some(h => !localKeys.has(entryKey(h)));
+    if (!localOnly || !incomingOnly) continue; // not actually overlapping -- nothing to reconcile
+
+    const sharedEntries = localAuthored.filter(h => incomingKeys.has(entryKey(h)));
+    const baseEntry = latestOf(sharedEntries);
+    const localLatest = latestOf(localAuthored);
+    const incomingLatest = latestOf(incomingAuthored);
+    const baseValue = baseEntry ? (baseEntry.value || '') : '';
+    const oursValue = localLatest ? (localLatest.value || '') : '';
+    const theirsValue = incomingLatest ? (incomingLatest.value || '') : '';
+    if (oursValue === theirsValue) continue; // both sides already converged -- nothing new to record
+
+    const markers = conflictMarkerLines(
+      (localLatest && (localLatest.email || localLatest.actor)) || 'unknown',
+      info.exportedBy, info.exportedAt, info.provenance
+    );
+    const { text: mergedValue, hasConflict } = diff3Merge(baseValue, oursValue, theirsValue, markers);
+    if (mergedValue === oursValue) continue; // idempotent -- re-merging the same file twice is a no-op
+    entries.push({
+      colId, value: mergedValue, hasConflict,
+      text: (def.label || colId) + (hasConflict ? ' updated by merge — merge conflicts require human review.' : ' updated by merge'),
+      // Real entry ids only (never the values themselves) -- lets a
+      // renderer regenerate the exact same diff3 segments later, fresh
+      // against the issue's own live (redaction-respecting) history,
+      // for the inline-diff view (buildMergeFieldDiffLines below).
+      baseEntryId: baseEntry ? baseEntry.id : null,
+      theirsEntryId: incomingLatest ? incomingLatest.id : null
+    });
+  }
+  return entries;
+}
+
+// --- Local-only merge log -- tracker #123 (d100c705), README §2.3/§4 ---
+// One record per merge, describing what the merge DID (not what the
+// issues now contain -- the issues themselves stay the source of truth
+// for that). Deliberately simpler than the handoff's own most-detailed
+// illustrative shape (a full per-edit timeline for every touched field,
+// every contributing edit individually listed) -- that level of detail
+// is Part C's own rendering concern (tracker #124) and can be extended
+// once the UI actually needs it; this captures enough to be genuinely
+// useful today: which issues/fields were touched, whether each field's
+// resolution was a plain scalar last-write-wins or a real diff3 merge
+// (and whether that merge left markers), plus the full ingest
+// provenance for the transaction as a whole.
+//
+// NEVER exported -- see docs/FORMAT.md's "export envelope" section and
+// buildSourceText above, neither of which this type ever passes through.
+// Storage (a per-project localStorage key, not a shared/synced one) is
+// the caller's job, same split as every other *_KEY store this module
+// only names a constant for.
+const MERGE_LOG_TYPE = 'wigwag.merge';
+const MERGE_LOG_VERSION = 1;
+const MERGE_LOG_KEY_PREFIX = 'git_native_tracker_merge_log_v1:';
+function mergeLogStorageKey(projectId) { return MERGE_LOG_KEY_PREFIX + projectId; }
+
+function buildMergeRecord({ id, ingestedAt, ingestedBy, source, issues }) {
+  return { type: MERGE_LOG_TYPE, v: MERGE_LOG_VERSION, id, ingested_at: ingestedAt, ingested_by: ingestedBy, source, issues };
+}
+// Per-issue field breakdown for one merge record: scalar fields flagged
+// as overlapping (mergeIssuePair's own notice condition) get 'newest-
+// edit-wins' + which side's edit is newer; prose fields already handled
+// by computeMergeProseEntries get 'merged'/'merged-with-markers'.
+// Per-field breakdown for one merge record. Beyond outcome/winner, each
+// row also carries enough to (a) reconstruct Level 3's two-lane timeline
+// and (b) know whether "Back out this update" can safely revert this
+// field later -- WITHOUT duplicating any actual value/actor/time content
+// into the merge log itself, which would go stale or leak past a later
+// redaction. Only real history entry ids are stored; a renderer joins
+// them live against the issue's own (redaction-respecting) current
+// history:
+// - localEntryIds/incomingEntryIds: every authored entry id each side
+//   contributed for this field -- the raw material for the timeline.
+// - preMergeLocalEntryId: the LOCAL side's own latest entry for this
+//   field, from immediately before the merge -- what "Back out this
+//   update" restores.
+// - resultEntryId: the entry id that became this field's current value
+//   as a DIRECT RESULT of this merge. Known immediately for a scalar
+//   field (whichever side's own entry won); left null here for a prose
+//   field, since diff3's new entry doesn't exist (and so has no real id)
+//   until the caller actually signs and appends it -- the caller patches
+//   this in afterward once that id is known (see wigwag.html's
+//   startMerge). Comparing this against a field's CURRENT latest entry
+//   id at rollback time is exactly how "has this field been edited again
+//   since the merge, so backing out would clobber real newer work" gets
+//   detected.
+function buildMergeIssueSummary(issueId, localIssue, incomingIssue, touchedFields, proseEntries, fieldDefs) {
+  const fields = [];
+  const proseColIds = new Set((proseEntries || []).map(e => e.colId));
+  const latestOf = list => list.length ? list.reduce((a, b) => (b.sortKey > a.sortKey ? b : a)) : null;
+  for (const colId of (touchedFields || [])) {
+    if (proseColIds.has(colId)) continue; // reported via proseEntries below instead
+    if (!fieldDefs[colId]) continue;
+    const localAuthored = (localIssue.history || []).filter(h => h.field === colId && h.origin !== 'derived');
+    const incomingAuthored = (incomingIssue.history || []).filter(h => h.field === colId && h.origin !== 'derived');
+    const localLatest = latestOf(localAuthored);
+    const incomingLatest = latestOf(incomingAuthored);
+    const winner = (localLatest && incomingLatest)
+      ? (localLatest.sortKey >= incomingLatest.sortKey ? 'local' : 'incoming')
+      : (localLatest ? 'local' : 'incoming');
+    // "newest-edit-wins" only when local ITSELF diverged (has an entry
+    // incoming doesn't already know about) -- checking merely "localLatest
+    // exists" is wrong: local's only entry might just be the same shared
+    // ancestor entry incoming also carries (e.g. incoming is a clone of
+    // local plus one new edit), which is genuinely "one copy only" even
+    // though localLatest is truthy. Mirrors mergeIssuePair's own
+    // localOnly/incomingOnly entryKey-based check exactly.
+    const incomingKeys = new Set(incomingAuthored.map(h => entryKey(h)));
+    const localKeys = new Set(localAuthored.map(h => entryKey(h)));
+    const localGenuinelyDiverged = localAuthored.some(h => !incomingKeys.has(entryKey(h)));
+    const outcome = localGenuinelyDiverged ? 'newest-edit-wins' : 'one-copy-only';
+    fields.push({
+      field: colId, outcome, winner,
+      // Entries present (by entryKey) on BOTH sides are shared ancestor
+      // history, not this merge's own contribution -- excluded from both
+      // lists so the Level 3 timeline never shows the same real entry
+      // twice, tagged as if each side had authored it independently (a
+      // live bug found via tracker #132's own Merge History: a field
+      // whose only local entry was the shared default/creation entry
+      // showed that entry duplicated on both sides of the divider).
+      localEntryIds: localAuthored.filter(h => !incomingKeys.has(entryKey(h))).map(h => h.id).filter(Boolean),
+      incomingEntryIds: incomingAuthored.filter(h => !localKeys.has(entryKey(h))).map(h => h.id).filter(Boolean),
+      preMergeLocalEntryId: localLatest ? (localLatest.id || null) : null,
+      resultEntryId: (winner === 'local' ? localLatest : incomingLatest).id || null
+    });
+  }
+  for (const entry of (proseEntries || [])) {
+    const localAuthored = (localIssue.history || []).filter(h => h.field === entry.colId && h.origin !== 'derived');
+    const incomingAuthored = (incomingIssue.history || []).filter(h => h.field === entry.colId && h.origin !== 'derived');
+    const incomingKeys = new Set(incomingAuthored.map(h => entryKey(h)));
+    const localKeys = new Set(localAuthored.map(h => entryKey(h)));
+    const localLatest = latestOf(localAuthored);
+    fields.push({
+      field: entry.colId, outcome: entry.hasConflict ? 'merged-with-markers' : 'merged', markers: entry.hasConflict ? 1 : 0,
+      localEntryIds: localAuthored.filter(h => !incomingKeys.has(entryKey(h))).map(h => h.id).filter(Boolean),
+      incomingEntryIds: incomingAuthored.filter(h => !localKeys.has(entryKey(h))).map(h => h.id).filter(Boolean),
+      preMergeLocalEntryId: localLatest ? (localLatest.id || null) : null,
+      resultEntryId: null, // patched in by the caller once the new diff3 entry is actually signed/appended
+      baseEntryId: entry.baseEntryId || null, theirsEntryId: entry.theirsEntryId || null
+    });
+  }
+  return { id: issueId, fields };
+}
+
+// After a merge actually applies and any prose entries are signed/
+// appended for real (so their true ids exist), the caller patches
+// resultEntryId into the matching prose field row -- pure, so it's easy
+// to test the patching logic in isolation from the async signing itself.
+function patchMergeSummaryResultEntryId(mergeIssueSummaries, issueId, colId, resultEntryId) {
+  return mergeIssueSummaries.map(summary => {
+    if (summary.id !== issueId) return summary;
+    return {
+      ...summary,
+      fields: summary.fields.map(f => (f.field === colId ? { ...f, resultEntryId } : f))
+    };
+  });
+}
+
+// Whether "Back out this update" can safely revert ONE field row: only
+// when the field's CURRENT latest entry (by sortKey, among authored
+// entries) is still the exact entry this merge produced. If something
+// else has edited the field since, reverting would silently clobber that
+// newer work -- refused here rather than done, matching wigwag's
+// standing rule that nothing real is ever silently discarded.
+function fieldStillSafeToRevert(currentIssue, fieldRow) {
+  if (!fieldRow.resultEntryId || !fieldRow.preMergeLocalEntryId) return false;
+  const authored = (currentIssue.history || []).filter(h => h.field === fieldRow.field && h.origin !== 'derived');
+  if (!authored.length) return false;
+  const currentLatest = authored.reduce((a, b) => (b.sortKey > a.sortKey ? b : a));
+  return currentLatest.id === fieldRow.resultEntryId;
+}
+
+// Computes the revert entries for "Back out this update" -- one new
+// signed entry per field that's still safe to revert (see
+// fieldStillSafeToRevert), restoring the LOCAL value from immediately
+// before the merge. Fields that have since been redacted (the pre-merge
+// entry no longer carries a value) or edited again are skipped, each
+// with a reason a UI can surface -- never silently guessed at.
+function computeMergeRollbackEntries(mergeRecord, issuesById, fieldDefs) {
+  const results = [];
+  for (const issueSummary of (mergeRecord.issues || [])) {
+    const currentIssue = issuesById[issueSummary.id];
+    if (!currentIssue) { results.push({ issueId: issueSummary.id, field: null, skipped: 'issue-not-found' }); continue; }
+    for (const fieldRow of issueSummary.fields) {
+      const def = fieldDefs[fieldRow.field];
+      if (!def) { results.push({ issueId: issueSummary.id, field: fieldRow.field, skipped: 'field-deleted' }); continue; }
+      if (!fieldStillSafeToRevert(currentIssue, fieldRow)) {
+        results.push({ issueId: issueSummary.id, field: fieldRow.field, skipped: 'changed-since-merge' });
+        continue;
+      }
+      const preEntry = (currentIssue.history || []).find(h => h.id === fieldRow.preMergeLocalEntryId);
+      if (!preEntry || preEntry.redacted || preEntry.value === undefined) {
+        results.push({ issueId: issueSummary.id, field: fieldRow.field, skipped: 'pre-merge-value-unavailable' });
+        continue;
+      }
+      results.push({
+        issueId: issueSummary.id, field: fieldRow.field, skipped: null,
+        value: preEntry.value,
+        text: (def.label || fieldRow.field) + ' reverted — merge backed out'
+      });
+    }
+  }
+  return results;
+}
+
+// Level 1+2 view model for the Apply Update gate (tracker #124, 5c3051e9,
+// merge_provenance.zip): turns previewMerge's raw computed result
+// (mergeIssueSummaries) plus the ingest provenance classification
+// (classifyIngestProvenance's own {envelope, provenance, fingerprint})
+// into a flat, render-ready shape -- pure, so it's unit-testable without
+// a DOM. Level 3 (the full two-lane timeline) is built separately, on
+// demand, by buildMergeFieldTimeline below, since it needs to walk one
+// specific field's real history entries.
+// Renders one field's SETTLED value for the Level 2 table -- a real
+// color-coded pill for a select field's resolved option (matching how
+// pills render everywhere else in the product), plain readable text for
+// everything else. issue is the (already-merged, values-derived) issue;
+// returns null if there's genuinely no value to show (prose fields
+// render their diff instead, handled separately by the caller).
+// The actual resolution logic shared by mergeSettledValueView (the
+// CURRENT settled value) and the Level 3 timeline (every HISTORICAL
+// value along the way) -- a select/multiselect field's real stored
+// value is an opaque option id (e.g. "opt_1787164390598"), never
+// meaningful to show directly. Resolves it to the option's real label +
+// color, same as every other pill in the product.
+function resolveFieldValueView(def, val) {
+  if (!def) return { text: (val === undefined || val === null || val === '') ? '—' : String(val), isPill: false };
+  if (def.type === 'select') {
+    const opt = (def.options || []).find(o => o.id === val);
+    if (opt) { const c = col(opt.color); return { text: opt.label, isPill: true, bg: c.bg, fg: c.fg }; }
+    return { text: (val === undefined || val === null || val === '') ? '—' : String(val), isPill: false };
+  }
+  if (def.type === 'multiselect') {
+    const labels = (Array.isArray(val) ? val : []).map(id => { const o = (def.options || []).find(x => x.id === id); return o ? o.label : id; });
+    return { text: labels.length ? labels.join(', ') : '—', isPill: false };
+  }
+  return { text: (val === undefined || val === null || val === '') ? '—' : String(val), isPill: false };
+}
+function mergeSettledValueView(issue, colId, def) {
+  if (!issue || !issue.values) return { text: '—', isPill: false };
+  return resolveFieldValueView(def, issue.values[colId]);
+}
+
+function buildMergePreviewViewModel(computed, ingestProvenance, fieldDefs) {
+  const prov = ingestProvenance || {};
+  const envelope = prov.envelope || null;
+  const classification = prov.provenance || { sigState: 'unsigned', reason: null };
+  const sourceInfo = { exportedBy: envelope ? envelope.exported_by : '', exportedAt: envelope ? envelope.exported_at : null, sigState: classification.sigState };
+  const issues = (computed.mergeIssueSummaries || []).map(summary => {
+    const mergedIssue = (computed.mergedIssues || []).find(mi => mi.id === summary.id);
+    const title = (mergedIssue && mergedIssue.values && mergedIssue.values.title) || '(untitled)';
+    const fields = summary.fields.map(f => {
+      const def = fieldDefs[f.field] || {};
+      const editCount = (f.localEntryIds || []).length + (f.incomingEntryIds || []).length;
+      const isProse = f.outcome === 'merged' || f.outcome === 'merged-with-markers';
+      const diff = (isProse && mergedIssue) ? buildMergeFieldDiffLines(mergedIssue, f, sourceInfo) : null;
+      const settled = isProse ? null : mergeSettledValueView(mergedIssue, f.field, def);
+      return {
+        field: f.field, label: def.label || f.field, outcome: f.outcome, winner: f.winner || null,
+        markers: f.markers || 0, editCount,
+        origin: isProse ? '' : (f.outcome === 'newest-edit-wins' ? 'newest edit wins' : 'one copy only'),
+        isProse,
+        settledText: settled ? settled.text : '', settledIsPill: settled ? settled.isPill : false,
+        settledPillBg: settled ? settled.bg : null, settledPillFg: settled ? settled.fg : null,
+        diffLines: diff ? diff.lines : []
+      };
+    });
+    return { issueId: summary.id, title, fields };
+  });
+  return {
+    sigState: classification.sigState || 'unsigned',
+    reason: classification.reason || null,
+    priorFingerprint: classification.priorFingerprint || null,
+    exportedBy: envelope ? envelope.exported_by : '',
+    exportedAt: envelope ? envelope.exported_at : null,
+    recordsCount: envelope ? envelope.records : null,
+    contentSha256: envelope ? envelope.content_sha256 : null,
+    fingerprint: prov.fingerprint || null,
+    issueCount: issues.length,
+    issues
+  };
+}
+
+// Level 3: a two-lane (local vs incoming) timeline for ONE field of ONE
+// merge -- joined live against the issue's OWN current history, so a
+// later redaction is reflected automatically instead of ever duplicating
+// content into the merge log itself. An entry id no longer found in
+// history (e.g. redacted since) is simply omitted, not synthesized.
+function buildMergeFieldTimeline(issue, fieldRow) {
+  const byId = new Map((issue.history || []).map(h => [h.id, h]));
+  const toEvent = side => id => {
+    const h = byId.get(id);
+    if (!h) return null;
+    return { side, id: h.id, time: h.time, actor: h.actor, email: h.email, value: h.value, sortKey: h.sortKey };
+  };
+  return []
+    .concat((fieldRow.localEntryIds || []).map(toEvent('local')))
+    .concat((fieldRow.incomingEntryIds || []).map(toEvent('incoming')))
+    .filter(Boolean)
+    .sort((a, b) => (a.sortKey > b.sortKey ? 1 : -1));
+}
+
+// Level 3 is per-ISSUE, not per-field (README §3: "Show the timeline —
+// N edits across both copies" appears once per issue, combining every
+// field the merge touched into one down-is-time, across-is-the-copy
+// view). Composes buildMergeFieldTimeline across all of an issue's
+// touched fields, tagging each event with its field, then adds
+// prevValue: "what that lane's own author was looking at on their own
+// copy" -- tracked independently per (side, field) pair, NOT the other
+// side's value, matching the handoff's own example (Tom moving Priority
+// Medium->Urgent without ever seeing Tony's own move to High).
+function buildMergeIssueTimeline(issue, fields) {
+  const raw = [];
+  for (const f of (fields || [])) {
+    for (const e of buildMergeFieldTimeline(issue, f)) raw.push({ ...e, field: f.field });
+  }
+  raw.sort((a, b) => (a.sortKey > b.sortKey ? 1 : -1));
+  const prevByLaneField = {};
+  return raw.map(e => {
+    const key = e.side + '|' + e.field;
+    const prevValue = Object.prototype.hasOwnProperty.call(prevByLaneField, key) ? prevByLaneField[key] : null;
+    prevByLaneField[key] = e.value;
+    return { ...e, prevValue };
+  });
+}
+
+// The real inline diff for ONE prose field row -- README §3, Level 2's
+// own emphatic requirement: "the merged body rendered inline as a
+// diff... not a summary, not the word 'merged': the actual artefact,
+// because the artefact is the thing that needs looking at." Regenerated
+// FRESH each time from the field row's own base/local/theirs entry ids
+// (never duplicated into the merge log itself) joined live against the
+// issue's own real, redaction-respecting history -- exactly the same
+// "join ids live" principle buildMergeFieldTimeline already uses.
+// sourceInfo is the merge record's own envelope summary
+// ({exported_by/exportedBy, exported_at/exportedAt, sig_state/sigState})
+// -- enough to regenerate the exact conflict-marker suffix the real
+// merge produced. Returns null when any of the three sides has since
+// been redacted -- nothing safe to reconstruct, never synthesized.
+function buildMergeFieldDiffLines(issue, fieldRow, sourceInfo) {
+  if (!fieldRow.baseEntryId || !fieldRow.theirsEntryId || !fieldRow.preMergeLocalEntryId) return null;
+  const byId = new Map((issue.history || []).map(h => [h.id, h]));
+  const baseEntry = byId.get(fieldRow.baseEntryId);
+  const localEntry = byId.get(fieldRow.preMergeLocalEntryId);
+  const theirsEntry = byId.get(fieldRow.theirsEntryId);
+  if (!baseEntry || !localEntry || !theirsEntry) return null;
+  const info = sourceInfo || {};
+  const markers = conflictMarkerLines(
+    localEntry.email || localEntry.actor || 'unknown',
+    info.exported_by || info.exportedBy || 'unknown',
+    info.exported_at || info.exportedAt || null,
+    { sigState: info.sig_state || info.sigState || 'unsigned' }
+  );
+  const { segments, hasConflict } = diff3Merge(baseEntry.value || '', localEntry.value || '', theirsEntry.value || '', markers);
+  return { hasConflict, lines: segments };
+}
+
+// Whether a past merge log record still needs a human's attention -- the
+// Merge History section's own badge condition (tracker #124, 5c3051e9).
+// Deliberately narrow: a badge appears only for something genuinely
+// unresolved, never just because a merge happened at all -- a signature
+// that never got a trust decision (still 'changed'/'damaged'), or a
+// prose field that still literally carries unresolved conflict markers
+// in its CURRENT value (checked live against issuesById, not the merge
+// log's own frozen field list -- a field the person already resolved by
+// hand stops flagging automatically).
+function mergeRecordNeedsAttention(record, issuesById) {
+  if (record.source && (record.source.sig_state === 'changed' || record.source.sig_state === 'damaged')) return true;
+  return (record.issues || []).some(issueSummary => {
+    const issue = issuesById[issueSummary.id];
+    if (!issue || !issue.values) return false;
+    return issueSummary.fields.some(f => f.markers && typeof issue.values[f.field] === 'string' && hasUnresolvedMergeMarkers(issue.values[f.field]));
+  });
+}
+
 // The full pure half of a merge: pairs up local issues with their
 // incoming counterpart (via mergeIssuePair) and folds in whichever
 // incoming issues are genuinely new (not present locally at all),
@@ -1444,26 +2743,64 @@ function mergeIssuePair(localIssue, incomingIssue, fieldDefs) {
 // provenance is already fully explained by its own history; adding a
 // local note on top of every one of them (there can be hundreds, on a
 // first connect to an existing project) is noise, not signal.
-function computeIssueMerge(localIssues, parsedIssues, fieldDefs) {
+// inboundInfo (tracker #123, d100c705): {exportedBy, exportedAt,
+// provenance} describing the incoming export transaction, threaded down
+// into computeMergeProseEntries so a conflict marker can name the real
+// sender. Optional -- every existing caller passing only 3 args keeps
+// working unchanged (falls back to "unknown"/"unsigned" markers), which
+// matters for merge call sites with no real envelope (e.g. a GitHub-
+// sync-driven merge, which was never part of this feature's scope).
+function computeIssueMerge(localIssues, parsedIssues, fieldDefs, inboundInfo) {
   const localById = new Map(localIssues.map(i => [i.id, i]));
   const mergedIssues = [];
   const notices = {};
+  const proseMergeEntries = {};
+  const mergeIssueSummaries = [];
   for (const localIssue of localIssues) {
     const incomingIssue = parsedIssues.find(i => i.id === localIssue.id);
     if (!incomingIssue) { mergedIssues.push(localIssue); continue; }
-    const { mergedIssue, overlappingFields } = mergeIssuePair(localIssue, incomingIssue, fieldDefs);
+    const { mergedIssue, overlappingFields, touchedFields } = mergeIssuePair(localIssue, incomingIssue, fieldDefs);
     mergedIssues.push(mergedIssue);
     if (overlappingFields.length) notices[localIssue.id] = overlappingFields;
+    const entries = computeMergeProseEntries(localIssue, incomingIssue, fieldDefs, inboundInfo);
+    if (entries.length) proseMergeEntries[localIssue.id] = entries;
+    if (touchedFields.length || entries.length) {
+      mergeIssueSummaries.push(buildMergeIssueSummary(localIssue.id, localIssue, incomingIssue, touchedFields, entries, fieldDefs));
+    }
   }
   let nextNum = localIssues.reduce((m, i) => Math.max(m, i.num || 0), 0) + 1;
   for (const incomingIssue of parsedIssues) {
     if (localById.has(incomingIssue.id)) continue;
     mergedIssues.push({
       id: incomingIssue.id, num: nextNum++, fieldRefs: incomingIssue.fieldRefs || {}, fieldLoading: {},
-      values: incomingIssue.values || {}, comments: incomingIssue.comments || [], history: incomingIssue.history || []
+      values: incomingIssue.values || {}, commentStreams: incomingIssue.commentStreams || {}, history: incomingIssue.history || []
     });
   }
-  return { mergedIssues, notices };
+  return { mergedIssues, notices, proseMergeEntries, mergeIssueSummaries };
+}
+// True if applying this computed merge would land anything at all --
+// tracker #124 (5c3051e9)'s own gate needs this to know when to disable
+// "Merge update" and say so, rather than mergeIssueSummaries.length
+// alone, which misses two real cases: a genuinely NEW issue that didn't
+// exist locally before (computeIssueMerge's own second loop pushes it
+// straight into mergedIssues, no summary entry -- there was never a
+// local counterpart to diff touchedFields against), and a comment-only
+// change (comments union via the completely separate mergeCommentStreams
+// mechanism, which never populates mergeIssueSummaries at all -- see
+// FORMAT.md's own "comment-stream entries are never contested on merge,
+// only ever unioned").
+function mergeHasRealChanges(localIssues, computed) {
+  if ((computed.mergeIssueSummaries || []).length) return true;
+  const localById = new Map((localIssues || []).map(i => [i.id, i]));
+  for (const mi of (computed.mergedIssues || [])) {
+    const local = localById.get(mi.id);
+    if (!local) return true; // a genuinely new issue
+    const ids = new Set([...Object.keys(mi.commentStreams || {}), ...Object.keys(local.commentStreams || {})]);
+    for (const id of ids) {
+      if (((mi.commentStreams || {})[id] || []).length !== ((local.commentStreams || {})[id] || []).length) return true;
+    }
+  }
+  return false;
 }
 // The fieldDefs/projectHistory half of a merge -- independent of issues,
 // only runs when the incoming file actually carries a 'fields' line (a
@@ -1488,12 +2825,9 @@ function computeDerivedChangeEntries(issue, beforeValues, fieldDefs) {
     if (!def.linkedSourceId) continue;
     const before = beforeValues[colId];
     const after = issue.values[colId];
-    if (JSON.stringify(before === undefined ? null : before) === JSON.stringify(after === undefined ? null : after)) continue;
+    const valueChanged = JSON.stringify(before === undefined ? null : before) !== JSON.stringify(after === undefined ? null : after);
     const srcDef = fieldDefs[def.linkedSourceId];
     const srcLabel = srcDef ? srcDef.label : def.linkedSourceId;
-    const displayVal = displayValueForHistory(def, after);
-    const source = buildSource(issue, def.linkedSourceId);
-    const derivedFrom = source.text ? ('state of ' + source.text + ' in column ' + srcLabel) : srcLabel;
     // Tracker issue #66 (bfdbe595), Part 2: a "copy field X" bound row
     // carries X's own real fieldRef along with its value -- copied here
     // via commitSignedEntry's normal fieldRef param, so it lands in real
@@ -1503,6 +2837,18 @@ function computeDerivedChangeEntries(issue, beforeValues, fieldDefs) {
     // source.github/source.jira/etc. from it for real, not just matching
     // text. null for every other bound field type/mode, unaffected.
     const fieldRef = computeBoundFieldRef(issue, def);
+    // A copy-field's own fieldRef can go stale even when its copied VALUE
+    // doesn't change (e.g. refreshing the source Jira/GitHub issue changes
+    // its metadata shape -- tracker #112's trimming -- but not its title).
+    // Re-persist whenever the copied ref itself moved too, not just the
+    // value, so a source refresh always propagates through the copy.
+    const beforeFieldRef = (issue.fieldRefs && issue.fieldRefs[colId]) || null;
+    const hasFieldRefRelationship = fieldRef !== null || beforeFieldRef !== null;
+    const fieldRefChanged = hasFieldRefRelationship && JSON.stringify(fieldRef) !== JSON.stringify(beforeFieldRef);
+    if (!valueChanged && !fieldRefChanged) continue;
+    const displayVal = displayValueForHistory(def, after);
+    const source = buildSource(issue, def.linkedSourceId);
+    const derivedFrom = source.text ? ('state of ' + source.text + ' in column ' + srcLabel) : srcLabel;
     entries.push({ colId, text: (def.label || colId) + ' set to ' + displayVal + ' (derived from ' + derivedFrom + ')', value: after, fieldRef });
   }
   return entries;
@@ -1591,9 +2937,292 @@ async function probeGithubRepoAccess(owner, repo, token, fetchImpl) {
   }
 }
 
-module.exports = {
-  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, COMMENT_READS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, formatNow, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, hydrateIssue, deriveFieldDefs, backfillProjectHistory, hydrateProject, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, evalRule, computeBoundValue, isFieldLocked, applyComputedToField, applyLinkedRules, computeBoundFieldRef, sortValue, computeSortSnapshot, issueCreatedAt,
+// Deterministic, dependency-free low-poly triangulated-mesh background for
+// the project header (tracker #83), seeded by the project's own id: the
+// same project always regenerates the same mesh, different projects get
+// different ones, with nothing stored. A jittered point grid is
+// triangulated by splitting each grid cell into two triangles, each
+// flat-shaded with the average of its own 3 vertex colors -- vertex colors
+// come from interpolating across a per-seed two-color palette, plus a small
+// per-point lightness jitter for texture. This is the same well-known
+// low-poly-gradient technique the design handoff's own Trianglify
+// reference is built on, reimplemented locally (no CDN dependency) since
+// wigwag is a single-file, no-build-step, offline-capable app.
+function headerMeshHash(seed) {
+  let h = 2166136261 >>> 0;
+  const s = String(seed);
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h >>> 0;
+}
+function headerMeshRng(seed) {
+  let a = seed >>> 0;
+  return function() {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function headerMeshHexToRgb(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+function headerMeshRgbToHex(r, g, b) {
+  const c = v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0');
+  return '#' + c(r) + c(g) + c(b);
+}
+const HEADER_MESH_WIDTH = 1600;
+const HEADER_MESH_HEIGHT = 160;
+const HEADER_MESH_CELL_SIZE = 110;
+const HEADER_MESH_VARIANCE = 0.85;
+const HEADER_MESH_PALETTES = [
+  ['#f6d9c4', '#5b2a86'], ['#bfe6fb', '#124b8f'], ['#cdebc9', '#1c5e2c'],
+  ['#ffe2b0', '#c34a00'], ['#e7c3ee', '#5e1a80'], ['#fff2b0', '#a35a00'],
+  ['#bfe9e2', '#0d5c52'], ['#f8c6da', '#94134f']
+];
+function computeHeaderMeshTriangles(seed) {
+  const width = HEADER_MESH_WIDTH, height = HEADER_MESH_HEIGHT;
+  const cellSize = HEADER_MESH_CELL_SIZE, variance = HEADER_MESH_VARIANCE;
+  const rand = headerMeshRng(headerMeshHash(seed));
+  const palette = HEADER_MESH_PALETTES[Math.floor(rand() * HEADER_MESH_PALETTES.length)];
+  const [ar, ag, ab] = headerMeshHexToRgb(palette[0]);
+  const [br, bg, bb] = headerMeshHexToRgb(palette[1]);
+  const cols = Math.ceil(width / cellSize) + 1;
+  const rows = Math.ceil(height / cellSize) + 1;
+  const jitter = cellSize * variance * 0.5;
+  const points = [];
+  for (let j = 0; j < rows; j++) {
+    const row = [];
+    for (let i = 0; i < cols; i++) {
+      const x = i * cellSize + (i > 0 && i < cols - 1 ? (rand() * 2 - 1) * jitter : 0);
+      const y = j * cellSize + (j > 0 && j < rows - 1 ? (rand() * 2 - 1) * jitter : 0);
+      const u = cols > 1 ? i / (cols - 1) : 0;
+      const shade = 1 + (rand() * 2 - 1) * 0.12;
+      row.push({ x, y, r: (ar + (br - ar) * u) * shade, g: (ag + (bg - ag) * u) * shade, b: (ab + (bb - ab) * u) * shade });
+    }
+    points.push(row);
+  }
+  const avgColor = (a, b, c) => headerMeshRgbToHex((a.r + b.r + c.r) / 3, (a.g + b.g + c.g) / 3, (a.b + b.b + c.b) / 3);
+  const triangles = [];
+  for (let j = 0; j < rows - 1; j++) {
+    for (let i = 0; i < cols - 1; i++) {
+      const p00 = points[j][i], p10 = points[j][i + 1], p01 = points[j + 1][i], p11 = points[j + 1][i + 1];
+      triangles.push({ points: [[p00.x, p00.y], [p10.x, p10.y], [p01.x, p01.y]], fill: avgColor(p00, p10, p01) });
+      triangles.push({ points: [[p10.x, p10.y], [p11.x, p11.y], [p01.x, p01.y]], fill: avgColor(p10, p11, p01) });
+    }
+  }
+  return { width, height, triangles };
+}
+
+// --- Matrix backend adapter -------------------------------------------
+// Consumed by wigwag-matrix-host.html (a separate, non-bundled file --
+// see the "wigwag as a Matrix widget" plan), never by wigwag.html itself.
+// wigwag's own append-only signed-history model maps directly onto
+// Matrix's TIMELINE (regular room events), not state events: each
+// history/comment entry becomes one room event, so there is no chunking/
+// blob-splitting scheme to design -- a Matrix timeline already handles
+// arbitrarily long, paginated, append-only event streams as a first-
+// class concept, the same thing an issue's history array already is.
+// There is deliberately no separate "current state" event either --
+// deriveIssueValues/deriveFieldDefs already recompute everything fresh
+// from a flat list of entries, the same way parseJsonl's callers already
+// rely on for a .jsonl file.
+const WIGWAG_MATRIX_ENTRY_TYPE = 'dev.wigwag.entry';
+const WIGWAG_MATRIX_EVENT_VERSION = 1;
+
+// Encodes one signed history/comment entry as a Matrix room event's
+// content. Deliberately never carries keyRef -- that dedup (tracker
+// #132) exists to shrink a repeated ~180-byte pubKey JWK across many
+// lines of ONE JSONL FILE; on Matrix every entry is already its own
+// independently-sized event, so inline pubKey is simplest and correct
+// here, not a gap to close later.
+function matrixEventContentFromEntry({ scope, issueId, stream, entry }) {
+  const content = { v: WIGWAG_MATRIX_EVENT_VERSION, scope, stream: stream || null, entry };
+  if (scope === 'issue') content.issueId = issueId;
+  return content;
+}
+// Inverse of matrixEventContentFromEntry. Tolerant of malformed or
+// foreign event content -- returns null rather than throwing, same
+// discipline as parseJsonl's own per-line try/catch, since a real room's
+// timeline may carry ordinary chat or other widgets' events alongside
+// wigwag's own.
+function entryFromMatrixEvent(rawEvent) {
+  try {
+    const content = rawEvent && rawEvent.content;
+    if (!content || content.v !== WIGWAG_MATRIX_EVENT_VERSION) return null;
+    if (content.scope !== 'issue' && content.scope !== 'project') return null;
+    if (!content.entry || typeof content.entry !== 'object') return null;
+    if (content.scope === 'issue' && !content.issueId) return null;
+    return { scope: content.scope, issueId: content.issueId || null, stream: content.stream || null, entry: content.entry };
+  } catch (e) { return null; }
+}
+// The Matrix analog of parseJsonl: takes a flat list of raw Matrix room
+// events (any order -- callers are not required to pre-sort, and a
+// mixed-in foreign/malformed event is simply skipped), already filtered
+// to WIGWAG_MATRIX_ENTRY_TYPE, and reconstructs the same
+// {fields, projectHistory, issues, ...} shape parseJsonl produces for a
+// real .jsonl file, so every existing derivation/merge/render function
+// downstream (hydrateProject/hydrateIssue/deriveFieldDefs/
+// deriveIssueValues) is reused completely unchanged.
+//
+// num is DERIVED here (sorted by each issue's own earliest entry
+// sortKey, id as tiebreak) rather than stored, since Matrix's timeline
+// has no serialization point equivalent to GitHub's sha-conditional PUT
+// -- two clients creating an issue "simultaneously" from two different
+// rooms/sessions is a real possibility, and deriving num (like every
+// other materialized value in this format) means it self-corrects on
+// the next load rather than two issues ever colliding on one number.
+//
+// projectId/projectName/projectNotes/projectComments are not represented
+// in the Matrix event shape at all yet -- a deliberate v1 gap, not an
+// oversight (see the "wigwag as a Matrix widget" plan): the caller
+// (wigwag-matrix-host.html) already knows which Matrix room maps to
+// which local project id from its own bootstrap, independent of
+// anything in the timeline, so projectId/projectName are accepted as
+// caller-supplied overrides here rather than derived.
+function hydrateProjectFromMatrixTimeline(rawEvents, opts) {
+  const { fieldDefs: fallbackFieldDefs, projectId, projectName } = opts || {};
+  const projectHistory = [];
+  const issueHistoryById = new Map();
+  const commentStreamsById = new Map();
+  for (const rawEvent of (rawEvents || [])) {
+    const decoded = entryFromMatrixEvent(rawEvent);
+    if (!decoded) continue;
+    if (decoded.scope === 'project') { projectHistory.push(decoded.entry); continue; }
+    const issueId = decoded.issueId;
+    if (decoded.stream) {
+      if (!commentStreamsById.has(issueId)) commentStreamsById.set(issueId, {});
+      const streams = commentStreamsById.get(issueId);
+      if (!streams[decoded.stream]) streams[decoded.stream] = [];
+      streams[decoded.stream].push(decoded.entry);
+    } else {
+      if (!issueHistoryById.has(issueId)) issueHistoryById.set(issueId, []);
+      issueHistoryById.get(issueId).push(decoded.entry);
+    }
+  }
+  const issueIds = new Set([...issueHistoryById.keys(), ...commentStreamsById.keys()]);
+  const rawIssues = [...issueIds].map(id => ({
+    id, history: issueHistoryById.get(id) || [], commentStreams: commentStreamsById.get(id) || {}
+  }));
+  const earliestSortKey = issue => issue.history.reduce((m, h) => (typeof h.sortKey === 'number' && h.sortKey < m) ? h.sortKey : m, Infinity);
+  rawIssues.sort((a, b) => (earliestSortKey(a) - earliestSortKey(b)) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  rawIssues.forEach((issue, i) => { issue.num = i + 1; });
+
+  const ensuredFieldDefs = ensureCommentsFieldDef(fallbackFieldDefs || {});
+  const backfilledProjectHistory = backfillProjectHistory(ensuredFieldDefs, projectHistory);
+  const fieldDefs = deriveFieldDefs(backfilledProjectHistory);
+  const hydratedIssues = rawIssues.map(iss => hydrateIssue(iss, fieldDefs));
+  return {
+    fields: fieldDefs, projectHistory: backfilledProjectHistory, issues: hydratedIssues,
+    projectId: projectId || null, projectName: projectName || null, projectNotes: null, projectComments: null,
+    formatVersion: WIGWAG_MATRIX_EVENT_VERSION
+  };
+}
+
+// Direct Matrix Client-Server API helpers -- wigwag-matrix-host.html's
+// own standalone-mode transport (a personal access token, same shape as
+// GitHub sync's own personal-token model, not a widget concept at all).
+// Same discipline as pullGithubFile/pushGithubFile/probeGithubRepoAccess:
+// injected fetchImpl, discriminated-union {status, ...} returns, never
+// throw on network/HTTP failure -- the caller decides how to surface it.
+async function resolveMatrixRoomAlias({ fetchImpl, homeserverUrl, accessToken, alias }) {
+  try {
+    const url = homeserverUrl.replace(/\/$/, '') + '/_matrix/client/v3/directory/room/' + encodeURIComponent(alias);
+    const res = await fetchImpl(url, { headers: { Authorization: 'Bearer ' + accessToken } });
+    if (res.status === 404) return { status: 'not-found' };
+    if (!res.ok) return { status: 'error', message: 'Matrix returned ' + res.status };
+    const data = await res.json();
+    return { status: 'ok', roomId: data.room_id };
+  } catch (e) {
+    return { status: 'error', message: e.message };
+  }
+}
+// dir: 'b' (backwards, newest-first -- the default, matching a normal
+// scrollback fetch) or 'f' (forwards, for resuming from a stored cursor).
+// from, if given, is a previous response's own `end` pagination token.
+async function fetchMatrixRoomEntries({ fetchImpl, homeserverUrl, accessToken, roomId, from, dir }) {
+  try {
+    const filter = encodeURIComponent(JSON.stringify({ types: [WIGWAG_MATRIX_ENTRY_TYPE] }));
+    let url = homeserverUrl.replace(/\/$/, '') + '/_matrix/client/v3/rooms/' + encodeURIComponent(roomId) + '/messages?dir=' + (dir || 'b') + '&filter=' + filter;
+    if (from) url += '&from=' + encodeURIComponent(from);
+    const res = await fetchImpl(url, { headers: { Authorization: 'Bearer ' + accessToken } });
+    if (res.status === 403) return { status: 'forbidden' };
+    if (res.status === 404) return { status: 'not-found' };
+    if (!res.ok) return { status: 'error', message: 'Matrix returned ' + res.status };
+    const data = await res.json();
+    return { status: 'ok', events: data.chunk || [], end: data.end || null };
+  } catch (e) {
+    return { status: 'error', message: e.message };
+  }
+}
+// txnId must be unique per request (the client, not the server, owns
+// idempotency here) -- a random-enough string the caller generates once
+// per attempt, retried with the SAME txnId on a network retry so a
+// flaky connection can never double-send the same entry.
+async function sendMatrixEntry({ fetchImpl, homeserverUrl, accessToken, roomId, content, txnId }) {
+  try {
+    const url = homeserverUrl.replace(/\/$/, '') + '/_matrix/client/v3/rooms/' + encodeURIComponent(roomId) + '/send/' + WIGWAG_MATRIX_ENTRY_TYPE + '/' + encodeURIComponent(txnId);
+    const res = await fetchImpl(url, { method: 'PUT', headers: { Authorization: 'Bearer ' + accessToken, 'Content-Type': 'application/json' }, body: JSON.stringify(content) });
+    if (res.status === 403) return { status: 'forbidden' };
+    if (!res.ok) return { status: 'error', message: 'Matrix returned ' + res.status };
+    const data = await res.json();
+    return { status: 'ok', eventId: data.event_id };
+  } catch (e) {
+    return { status: 'error', message: e.message };
+  }
+}
+// Matrix generally has no equivalent of GitHub's "public, unauthenticated
+// read" tier (a room needs history_visibility: world_readable for that,
+// which is unusual) -- so the realistic outcome space here is smaller
+// than probeGithubRepoAccess's: either the token's own account is
+// already joined (read+write, ordinary room events need no elevated
+// power level) or it isn't (no-access). world-readable is detected but
+// not designed around.
+async function probeMatrixRoomAccess({ fetchImpl, homeserverUrl, accessToken, roomId }) {
+  try {
+    // Fetching a single message with limit=0 is cheaper and more direct
+    // than a separate membership lookup: 200 means readable, 403 means
+    // not joined and not world-readable, 404 means the room id is wrong.
+    const url = homeserverUrl.replace(/\/$/, '') + '/_matrix/client/v3/rooms/' + encodeURIComponent(roomId) + '/messages?dir=b&limit=0';
+    const res = await fetchImpl(url, { headers: { Authorization: 'Bearer ' + accessToken } });
+    if (res.status === 403) return { status: 'no-access' };
+    if (res.status === 404) return { status: 'no-access' };
+    if (!res.ok) return { status: 'error', message: 'Matrix returned ' + res.status };
+    return { status: 'can-read-write' };
+  } catch (e) {
+    return { status: 'error', message: e.message };
+  }
+}
+
+const WigwagCoreExports = {
+  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, xlsxDateTimeSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, tokenizeFilterQuery, parseFilterQuery, issueMatchesFieldToken, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, COMMENT_READS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, formatNow, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, hydrateIssue, migrateLegacyComments, deriveFieldDefs, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, issueTimestampValue, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, evalRule, computeBoundValue, isFieldLocked, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, sortValue, computeSortSnapshot, issueCreatedAt,
   importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry,
-  squashHistory, displayValueForHistory, buildSourceText, parseJsonl, entryKey, commentKey, unionByKey, mergeIssuePair, computeIssueMerge, computeFieldDefsMerge, computeDerivedChangeEntries,
-  buildGithubContentsUrl, buildGithubContentsHeaders, buildGithubCommitMessage, pullGithubFile, pushGithubFile, probeGithubRepoAccess
+  squashHistory, displayValueForHistory, buildSourceText, keyRegistryEncoder, rehydrateKeyRef, humanFileSize, parseJsonl, entryKey, commentKey, unionByKey, mergeCommentStreams, mergeIssuePair, computeIssueMerge, mergeHasRealChanges, computeFieldDefsMerge, computeDerivedChangeEntries,
+  isPastedTextASingleUrl, wrapSelectionWithMarkdownLink,
+  buildGithubContentsUrl, buildGithubContentsHeaders, buildGithubCommitMessage, pullGithubFile, pushGithubFile, probeGithubRepoAccess, computeHeaderMeshTriangles, columnFilterIsActive, localISODate, dateFilterPresetRanges,
+  WIGWAG_EXPORT_TYPE, WIGWAG_EXPORT_VERSION, canonicalRecordsText, computeContentSha256Hex, fingerprintPublicKey, buildExportEnvelope, parseExportEnvelope, verifyExportEnvelope,
+  EXPORT_TRUST_KEY, lookupSenderTrust, classifySenderTrust, rememberSenderTrust, classifyExportProvenance,
+  diff3Merge, formatDateLabel, provenanceMarkerSuffix, conflictMarkerLines, hasUnresolvedMergeMarkers, computeMergeProseEntries,
+  MERGE_LOG_TYPE, MERGE_LOG_VERSION, mergeLogStorageKey, buildMergeRecord, buildMergeIssueSummary,
+  patchMergeSummaryResultEntryId, fieldStillSafeToRevert, computeMergeRollbackEntries,
+  buildMergePreviewViewModel, buildMergeFieldTimeline, mergeRecordNeedsAttention, buildMergeFieldDiffLines, mergeSettledValueView, buildMergeIssueTimeline, resolveFieldValueView,
+  WIGWAG_MATRIX_ENTRY_TYPE, WIGWAG_MATRIX_EVENT_VERSION, matrixEventContentFromEntry, entryFromMatrixEvent, hydrateProjectFromMatrixTimeline,
+  resolveMatrixRoomAlias, fetchMatrixRoomEntries, sendMatrixEntry, probeMatrixRoomAccess
 };
+
+// wigwag.html carries its own separately-maintained inline copy of this
+// module (window.WigwagCore) instead of a <script src> to it, since
+// wigwag.html's whole point is being one self-contained, offline-capable
+// file -- an external file reference was never an option there, and that
+// tradeoff is unrelated to this branch. This one IS meant for a plain
+// <script> tag: wigwag-matrix-host.html (see the "wigwag as a Matrix
+// widget" plan) is a separate, non-portable, always-online file with no
+// such constraint, so it can include this file directly rather than
+// needing a THIRD hand-copied mirror. Existing require() consumers
+// (wigwag-cli.js, wigwag-client.js, wigwag-agent.js, wigwag-core.test.js)
+// are unaffected -- module.exports is still set exactly as before.
+if (typeof module !== 'undefined' && module.exports) module.exports = WigwagCoreExports;
+if (typeof window !== 'undefined') window.WigwagCore = WigwagCoreExports;

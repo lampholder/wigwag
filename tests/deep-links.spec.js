@@ -107,6 +107,42 @@ test.describe('Deep links', () => {
     });
   });
 
+  test.describe('Copy JSON', () => {
+    test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+    test('the slide-over\'s Copy JSON button copies the same { type: "issue", ... } shape a JSONL export line uses, and flips its own label', async ({ page }) => {
+      await h.openSlideover(page, 1);
+      const btn = page.locator('[data-testid=slideover-copy-json-btn]');
+      await expect(btn).toHaveText('Copy JSON');
+      await btn.click();
+      await expect(btn).toHaveText('Copied!');
+      const clip = await page.evaluate(() => navigator.clipboard.readText());
+      const parsed = JSON.parse(clip);
+      expect(parsed.type).toBe('issue');
+      expect(parsed.id).toBe('i1');
+      expect(parsed.num).toBe(1);
+      expect(Array.isArray(parsed.history)).toBe(true);
+      expect(parsed.history.length).toBeGreaterThan(0);
+      // Pretty-printed, not a compact JSONL line -- this is for pasting into
+      // a chat/ticket to inspect, not for re-applying as an update.
+      expect(clip).toContain('\n  "id": "i1"');
+    });
+
+    test('switching to a different issue and copying again reflects that issue, not a stale one', async ({ page }) => {
+      await h.openSlideover(page, 1);
+      await page.locator('[data-testid=slideover-copy-json-btn]').click();
+      await expect(page.locator('[data-testid=slideover-copy-json-btn]')).toHaveText('Copied!');
+      await h.closeSlideover(page);
+      await expect(page.locator('[data-testid=slideover]')).toHaveCount(0, { timeout: 10000 });
+      await h.openSlideover(page, 2);
+      const btn = page.locator('[data-testid=slideover-copy-json-btn]');
+      await expect(btn).toHaveText('Copy JSON', { timeout: 10000 });
+      await btn.click();
+      const clip = await page.evaluate(() => navigator.clipboard.readText());
+      expect(JSON.parse(clip).id).toBe('i2');
+    });
+  });
+
   test.describe('Browser back/forward', () => {
     test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
 

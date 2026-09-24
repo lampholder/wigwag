@@ -190,7 +190,7 @@ async function cmdShow(doc, numOrId) {
     console.log(`  ${(def.label || colId).padEnd(16)} ${value === undefined || value === null || value === '' ? '—' : value}`);
   }
   const activity = [
-    ...issue.comments.map(c => ({ time: c.time, sortKey: c.sortKey, text: c.redacted ? '(redacted)' : `${c.author}: ${c.text}` })),
+    ...(issue.commentStreams.comments || []).map(c => ({ time: c.time, sortKey: c.sortKey, text: c.redacted ? '(redacted)' : `${c.author}: ${c.text}` })),
     ...issue.history.filter(h => h.origin !== 'legacy-backfill').map(h => ({ time: h.time, sortKey: h.sortKey, text: h.redacted ? '(redacted)' : h.text }))
   ].sort((a, b) => (a.sortKey || 0) - (b.sortKey || 0));
   if (activity.length) {
@@ -208,7 +208,7 @@ async function cmdAddIssue(ctx, doc, title) {
   if (!doc.fieldDefs.title) throw new Error('This project has no fields defined yet -- run "pull" first to adopt a remote project\'s fields.');
   const id = require('crypto').randomUUID();
   const num = doc.issues.reduce((m, i) => Math.max(m, i.num || 0), 0) + 1;
-  doc.issues.push({ id, num, fieldRefs: {}, fieldLoading: {}, values: {}, comments: [], history: [] });
+  doc.issues.push({ id, num, fieldRefs: {}, fieldLoading: {}, values: {}, commentStreams: {}, history: [] });
   await commitHistoryEntry(ctx, doc, id, { text: 'Created' });
   await commitHistoryEntry(ctx, doc, id, { text: 'Title set to "' + core.truncate(title, 60) + '"', field: 'title', value: title });
   await applyRulesAndLogDerived(ctx, doc, id);
@@ -227,9 +227,12 @@ async function cmdComment(ctx, doc, numOrId, text) {
     redacted: core.redactedCommentPayload(issue.id, entryBase)
   }, {
     sign: ctx.sign,
-    insertUnsigned: (entry) => { issue.comments.push(entry); },
+    insertUnsigned: (entry) => {
+      if (!issue.commentStreams.comments) issue.commentStreams.comments = [];
+      issue.commentStreams.comments.push(entry);
+    },
     patchSignature: (id, sortKey, sig, sigRedacted, pubKey) => {
-      const c = issue.comments.find(x => x.id === id && x.sortKey === sortKey);
+      const c = (issue.commentStreams.comments || []).find(x => x.id === id && x.sortKey === sortKey);
       if (c) Object.assign(c, { sig, sigRedacted, pubKey });
     },
     currentPubKey: () => ctx.identity.signingPublicKeyJwk
@@ -243,7 +246,7 @@ async function cmdSetField(ctx, doc, numOrId, fieldLabel, value) {
   const colId = fieldLabelToColId(doc.fieldDefs, fieldLabel);
   if (!colId) throw new Error(`No field labeled "${fieldLabel}". Fields: ` + Object.values(doc.fieldDefs).map(f => f.label).join(', '));
   const def = doc.fieldDefs[colId];
-  if (core.isFieldLocked(issue, def)) throw new Error(`"${def.label}" is rule-bound and can't be set manually.`);
+  if (core.isFieldLocked(issue, colId, def)) throw new Error(`"${def.label}" is rule-bound and can't be set manually.`);
 
   let text, storedValue;
   if (def.type === 'select') {

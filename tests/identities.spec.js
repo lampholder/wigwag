@@ -726,7 +726,7 @@ test.describe('Editable identity label', () => {
 
     const doc = await h.readActiveMilestoneDoc(page);
     const issue = doc.issues.find(i => i.num === 1);
-    const newComment = issue.comments.find(c => c.text === 'A fresh comment');
+    const newComment = issue.commentStreams.comments.find(c => c.text === 'A fresh comment');
     expect(newComment).toBeTruthy();
     expect(newComment.author).not.toBe('Acme Corp');
     expect(newComment.email).toBe('tom@example.com');

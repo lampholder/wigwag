@@ -41,20 +41,27 @@ test.describe('JSONL export/import', () => {
       const { formatVersion, generator, ...rest } = l;
       return rest;
     });
-    await h.openImportProjectMenu(page);
+    // Same project id as the currently open one -- Receive routes this
+    // through handleApplyUpdateParsed's previewMerge (tracker #124's real
+    // gate), not an instant apply, so it needs a "Merge update" click
+    // even though there's nothing actually different to merge.
+    await page.locator('[data-testid=btn-import-merge]').click();
+    await page.waitForTimeout(150);
     const [fc] = await Promise.all([
       page.waitForEvent('filechooser'),
-      page.locator('[data-testid=btn-import-project-from-file]').click(),
+      page.locator('[data-testid=btn-paste-merge-open-file]').click(),
     ]);
     await fc.setFiles({ name: 'no-version.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(withoutVersion.map(l => JSON.stringify(l)).join('\n')) });
     await page.waitForTimeout(400);
+    await page.locator('[data-testid=btn-merge-primary]').click();
+    await page.waitForTimeout(300);
     await expect(page.locator('[data-testid=row]')).toHaveCount(9);
   });
 
   test('the export filename\'s timestamp is the last actual change, not the moment Export was clicked', async ({ page }) => {
     const doc = await h.readActiveMilestoneDoc(page);
     const knownTs = new Date('2024-03-15T09:41:00.000Z').getTime();
-    doc.issues[0].comments.push({ id: 'c-fixed', author: 'Test', email: '', time: 'a while ago', text: 'fixed-time comment', sortKey: knownTs });
+    doc.issues[0].commentStreams.comments.push({ id: 'c-fixed', author: 'Test', email: '', time: 'a while ago', text: 'fixed-time comment', sortKey: knownTs });
     await h.writeActiveMilestoneDoc(page, doc);
     await page.reload();
     await page.waitForTimeout(300);
@@ -106,6 +113,36 @@ test.describe('JSONL export/import', () => {
     expect(issue1.history.some(hh => !hh.field)).toBe(true); // e.g. "Created" is kept
   });
 
+  // Regression: a squashed export used to only redact a field's SUPERSEDED
+  // entries -- a field's one-and-only entry was always kept in full, even
+  // after the field itself was deleted from the project. That left a
+  // deleted field's old data (e.g. a Jira link's full metadata payload)
+  // sitting in every squashed export forever, since deleting a field never
+  // supersedes its own history entries, it just tombstones the field
+  // definition. squashHistory now also redacts any entry whose field id
+  // isn't in the project's current fieldDefs at all.
+  test('a squashed export also redacts a DELETED field\'s entries entirely, not just its superseded ones', async ({ page }) => {
+    page.on('dialog', dialog => dialog.accept());
+    await h.openColumnMenu(page, 'rag');
+    await page.getByText('Delete field', { exact: true }).click();
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=col-header][data-col="rag"]')).toHaveCount(0);
+
+    await page.locator('[data-testid=btn-export]').click();
+    const downloadPromise = page.waitForEvent('download');
+    await page.locator('[data-testid=btn-export-jsonl-squashed]').click();
+    const download = await downloadPromise;
+    const fs = require('fs');
+    const lines = fs.readFileSync(await download.path(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+    const issue1 = lines.find(l => l.type === 'issue' && l.id === 'i1');
+    const ragEntries = issue1.history.filter(hh => hh.field === 'rag');
+    expect(ragEntries.length).toBeGreaterThan(0);
+    // Every entry for the now-deleted field is redacted -- including what
+    // would otherwise be its "latest" (only) entry.
+    expect(ragEntries.every(hh => hh.redacted)).toBe(true);
+    expect(ragEntries.every(hh => hh.value === undefined && hh.fieldRef === undefined)).toBe(true);
+  });
+
   test('"Import & merge…" (now "Apply update...") imports a project-id-less file as a new project, never merging into the current one', async ({ page }) => {
     const fixture = Buffer.from(
       JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, columnOrder: [] }) + '\n' +
@@ -128,16 +165,19 @@ test.describe('JSONL export/import', () => {
       JSON.stringify({ type: 'issue', id: 'p1', num: 1, fieldRefs: {}, values: { title: 'Pasted issue' }, comments: [], history: [] })
     ].join('\n');
 
-    await h.openImportProjectMenu(page);
-    await page.locator('[data-testid=btn-import-project-from-paste]').click();
+    await page.locator('[data-testid=btn-import-merge]').click();
     await page.waitForTimeout(150);
-    await expect(page.locator('[data-testid=paste-import-modal]')).toBeVisible();
+    await expect(page.locator('[data-testid=paste-merge-modal]')).toBeVisible();
 
-    await page.locator('[data-testid=paste-import-textarea]').fill(pastedJsonl);
-    await page.locator('[data-testid=btn-submit-paste-import]').click();
+    // No project id match -- handleApplyUpdateParsed asks to confirm
+    // importing as a brand new project (unlike a same/known-project
+    // match, this path never gates through a merge-preview card).
+    page.once('dialog', d => d.accept());
+    await page.locator('[data-testid=paste-merge-textarea]').fill(pastedJsonl);
+    await page.locator('[data-testid=btn-submit-paste-merge]').click();
     await page.waitForTimeout(400);
 
-    await expect(page.locator('[data-testid=paste-import-modal]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=paste-merge-modal]')).toHaveCount(0);
     await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Pasted Project');
     await expect(page.locator('[data-testid=row]')).toHaveCount(1);
     await expect(page.locator('[data-testid=row]').first()).toContainText('Pasted issue');
@@ -151,44 +191,64 @@ test.describe('JSONL export/import', () => {
     await expect(h.milestoneRow(page, 'Delivery tracker')).toBeVisible(); // the original demo project is still there, untouched
   });
 
-  test('Cancel on the paste-import modal creates nothing, and typing into the textarea does not close it', async ({ page }) => {
-    await h.openImportProjectMenu(page);
-    await page.locator('[data-testid=btn-import-project-from-paste]').click();
+  test('Cancel on the Receive modal creates nothing, and typing into the textarea does not close it', async ({ page }) => {
+    await page.locator('[data-testid=btn-import-merge]').click();
     await page.waitForTimeout(150);
 
-    await page.locator('[data-testid=paste-import-textarea]').fill('typed but not submitted');
-    await expect(page.locator('[data-testid=paste-import-modal]')).toBeVisible(); // clicking inside the modal must not bubble to an overlay-close
+    await page.locator('[data-testid=paste-merge-textarea]').fill('typed but not submitted');
+    await expect(page.locator('[data-testid=paste-merge-modal]')).toBeVisible(); // clicking inside the modal must not bubble to an overlay-close
 
-    await page.locator('[data-testid=btn-cancel-paste-import]').click();
+    await page.locator('[data-testid=btn-cancel-paste-merge]').click();
     await page.waitForTimeout(150);
-    await expect(page.locator('[data-testid=paste-import-modal]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=paste-merge-modal]')).toHaveCount(0);
 
     await h.openTrackerSwitcher(page);
     await expect(page.locator('[data-testid=switcher-project-row]')).toHaveCount(1);
   });
 
-  test('"Apply update..." opens a From file.../Paste from clipboard... choice, not a direct file picker', async ({ page }) => {
-    await expect(page.locator('[data-testid=btn-apply-update-from-file]')).toHaveCount(0);
+  test('a mousedown on the Receive modal\'s backdrop discards the draft and closes it, but a mousedown starting inside the modal does not', async ({ page }) => {
     await page.locator('[data-testid=btn-import-merge]').click();
     await page.waitForTimeout(150);
-    await expect(page.locator('[data-testid=btn-apply-update-from-file]')).toBeVisible();
-    await expect(page.locator('[data-testid=btn-apply-update-from-paste]')).toBeVisible();
+    await page.locator('[data-testid=paste-merge-textarea]').fill('typed but not submitted');
 
-    // Outside click closes it without picking either.
-    await page.mouse.click(700, 400);
+    // A mousedown that starts inside the modal (e.g. a drag-select) must not close it.
+    await page.locator('[data-testid=paste-merge-modal]').click();
+    await expect(page.locator('[data-testid=paste-merge-modal]')).toBeVisible();
+
+    // A mousedown on the backdrop itself discards the draft.
+    await page.mouse.click(20, 20);
     await page.waitForTimeout(150);
-    await expect(page.locator('[data-testid=btn-apply-update-from-file]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=paste-merge-modal]')).toHaveCount(0);
+
+    await page.locator('[data-testid=btn-import-merge]').click();
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=paste-merge-textarea]')).toHaveValue('');
   });
 
-  test('"Apply update..." → "Paste from clipboard..." with no project id in the paste imports it as a new project, never merging into the current one', async ({ page }) => {
+  // Tracker #143 (dfb378b2), Part B of new_bits.zip's Send/Receive/Search
+  // handoff: Receive now opens the paste modal directly -- the From
+  // file/Paste from clipboard choice is gone, "Open a file instead..."
+  // lives inside the modal instead.
+  test('Receive opens the paste modal directly, not a From file.../Paste from clipboard... choice', async ({ page }) => {
+    await expect(page.locator('[data-testid=paste-merge-modal]')).toHaveCount(0);
+    await page.locator('[data-testid=btn-import-merge]').click();
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=paste-merge-modal]')).toBeVisible();
+    await expect(page.locator('[data-testid=btn-paste-merge-open-file]')).toBeVisible();
+
+    // A mousedown on the backdrop closes it without submitting.
+    await page.mouse.click(700, 700);
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=paste-merge-modal]')).toHaveCount(0);
+  });
+
+  test('"Receive" with no project id in the paste imports it as a new project, never merging into the current one', async ({ page }) => {
     const pastedJsonl = [
       JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, columnOrder: [] }),
       JSON.stringify({ type: 'issue', id: 'pasted-merge-1', num: 200, fieldRefs: {}, values: { title: 'Pasted-in via merge' }, comments: [], history: [] })
     ].join('\n');
 
     await page.locator('[data-testid=btn-import-merge]').click();
-    await page.waitForTimeout(150);
-    await page.locator('[data-testid=btn-apply-update-from-paste]').click();
     await page.waitForTimeout(150);
     await expect(page.locator('[data-testid=paste-merge-modal]')).toBeVisible();
 
@@ -232,9 +292,13 @@ test.describe('Redaction (two-signature squashing)', () => {
 
   // Shared low-level verify, mirroring the app's own signablePayload/
   // redactedPayload shapes exactly -- if either drifts out of sync with
-  // this, that's a real bug this test should catch.
-  async function verifyBoth(page, entry, issueId) {
-    return page.evaluate(async ({ entry, issueId }) => {
+  // this, that's a real bug this test should catch. `keys` is the
+  // exported file's own registry (tracker #132, 68d960f2) -- pass it when
+  // verifying an entry read directly off a raw exported/squashed file, so
+  // a keyRef-only entry (no inline pubKey) still resolves; entries read
+  // from live app state (already rehydrated) never need it.
+  async function verifyBoth(page, entry, issueId, keys) {
+    return page.evaluate(async ({ entry, issueId, keys }) => {
       const SIGN_ALG = { name: 'ECDSA', namedCurve: 'P-256' };
       function bytesFromBase64(b64) {
         const bin = atob(b64);
@@ -247,13 +311,14 @@ test.describe('Redaction (two-signature squashing)', () => {
         const key = await crypto.subtle.importKey('jwk', pubKeyJwk, SIGN_ALG, false, ['verify']);
         return await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, bytesFromBase64(sigBase64), new TextEncoder().encode(payloadStr));
       }
+      const pubKey = entry.pubKey || (entry.keyRef && keys ? keys[entry.keyRef] : null);
       const fullPayload = JSON.stringify({ issueId, id: entry.id, field: entry.field || null, value: entry.value === undefined ? null : entry.value, text: entry.text, time: entry.time, sortKey: entry.sortKey, actor: entry.actor, email: entry.email || '' });
       const redactedPayload = JSON.stringify({ issueId, id: entry.id, field: entry.field || null, time: entry.time, sortKey: entry.sortKey, actor: entry.actor, email: entry.email || '', origin: entry.origin || 'authored' });
       return {
-        fullOk: entry.sig ? await verify(fullPayload, entry.sig, entry.pubKey) : null,
-        redactedOk: await verify(redactedPayload, entry.sigRedacted, entry.pubKey)
+        fullOk: entry.sig ? await verify(fullPayload, entry.sig, pubKey) : null,
+        redactedOk: await verify(redactedPayload, entry.sigRedacted, pubKey)
       };
-    }, { entry, issueId });
+    }, { entry, issueId, keys: keys || null });
   }
 
   test('a freshly-authored entry carries both signatures, and both independently verify', async ({ page }) => {
@@ -287,6 +352,7 @@ test.describe('Redaction (two-signature squashing)', () => {
     ]);
     const fs = require('fs');
     const lines = fs.readFileSync(await dl.path(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+    const fieldsLine = lines.find(l => l.type === 'fields');
     const issueLine = lines.find(l => l.type === 'issue' && l.id === 'i1');
     const mitigationEntries = issueLine.history.filter(hh => hh.field === 'mitigation');
     expect(mitigationEntries.length).toBe(2); // tombstone + live, not just 1 survivor
@@ -302,10 +368,15 @@ test.describe('Redaction (two-signature squashing)', () => {
     expect(tombstone.fieldRef).toBeUndefined();
     expect(tombstone.sig).toBeUndefined(); // the full-content signature has nothing left to check itself against
     expect(tombstone.sigRedacted).toBeTruthy();
+    // On disk this identity's pubKey is deduped into the fields line's own
+    // `keys` registry (tracker #132, 68d960f2) -- the tombstone itself
+    // carries only a keyRef, not a full inline pubKey.
+    expect(tombstone.pubKey).toBeUndefined();
+    expect(tombstone.keyRef).toBeTruthy();
 
     // The whole point: re-verify sigRedacted from scratch, cold, using only
     // what's in this squashed file -- no reference to the pre-squash entry.
-    const { redactedOk } = await verifyBoth(page, tombstone, 'i1');
+    const { redactedOk } = await verifyBoth(page, tombstone, 'i1', fieldsLine.keys);
     expect(redactedOk).toBe(true);
   });
 
@@ -390,7 +461,7 @@ test.describe('Comment signing & redaction', () => {
 
     const doc = await h.readActiveMilestoneDoc(page);
     const issue = doc.issues[0];
-    const entry = issue.comments[issue.comments.length - 1];
+    const entry = issue.commentStreams.comments[issue.commentStreams.comments.length - 1];
     expect(entry.sig).toBeTruthy();
     expect(entry.sigRedacted).toBeTruthy();
     expect(entry.sig).not.toBe(entry.sigRedacted);
@@ -413,8 +484,8 @@ test.describe('Comment signing & redaction', () => {
 
     const doc = await h.readActiveMilestoneDoc(page);
     const issue = doc.issues[0];
-    const commentId = issue.comments[issue.comments.length - 1].id;
-    const revisions = issue.comments.filter(c => c.id === commentId);
+    const commentId = issue.commentStreams.comments[issue.commentStreams.comments.length - 1].id;
+    const revisions = issue.commentStreams.comments.filter(c => c.id === commentId);
     expect(revisions.length).toBe(2);
 
     const tombstone = revisions.find(c => c.redacted);
@@ -446,7 +517,7 @@ test.describe('Comment signing & redaction', () => {
 
     const doc = await h.readActiveMilestoneDoc(page);
     const issue = doc.issues[0];
-    const entry = issue.comments[issue.comments.length - 1];
+    const entry = issue.commentStreams.comments[issue.commentStreams.comments.length - 1];
     expect(entry.redacted).toBe(true);
     expect(entry.text).toBeUndefined();
 
@@ -504,7 +575,12 @@ test.describe('Comment signing & redaction', () => {
     await page.locator('[data-testid=activity-tab-history]').click();
     await page.waitForTimeout(150);
 
-    await expect(page.getByText('Created', { exact: true })).toBeVisible();
+    // Scoped to the history entries themselves (not just page-wide text) --
+    // tracker #148's own "Created" timestamp field always appears in the
+    // slideover's field list regardless of hidden state (same as any
+    // other hidden field does), which would otherwise collide with this
+    // unrelated "Created" history-entry label.
+    await expect(page.locator('[data-testid=activity-entry]').getByText('Created', { exact: true })).toBeVisible();
     // one redact button for the real Title-set entry; none for Created
     await expect(page.locator('[data-testid=activity-redact-btn]')).toHaveCount(1);
   });
@@ -588,17 +664,14 @@ test.describe('Comment signing & redaction', () => {
 test.describe('Import / Apply-update: shared project-identity warnings', () => {
   test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
 
-  // "Import project…" lives in the unified switcher's own footer now, not
-  // a standalone app-bar button -- reached by opening the switcher first.
-  test('"Import project…" (in the switcher) opens a From file/Paste menu, and "From file…" opens a real file picker', async ({ page }) => {
+  // Tracker #143 (dfb378b2): "Import project…" is gone from the switcher
+  // entirely -- Receive covers that job too now, routing through the
+  // exact same handleApplyUpdateParsed path (see the tests below).
+  test('"Import project…" no longer appears anywhere in the switcher', async ({ page }) => {
     await h.openTrackerSwitcher(page);
-    await page.locator('[data-testid=btn-import-project-appbar]').click();
-    await page.waitForTimeout(150);
-    const [chooser] = await Promise.all([
-      page.waitForEvent('filechooser'),
-      page.locator('[data-testid=btn-import-project-from-file]').click(),
-    ]);
-    expect(chooser).toBeTruthy();
+    await expect(page.locator('[data-testid=btn-import-project-appbar]')).toHaveCount(0);
+    await expect(page.getByText('Import project…', { exact: true })).toHaveCount(0);
+    await expect(page.locator('[data-testid=btn-connect-remote-appbar]')).toBeVisible();
   });
 
   // Regression: this used to offer "merge it into the CURRENT project
@@ -619,7 +692,7 @@ test.describe('Import / Apply-update: shared project-identity warnings', () => {
     await page.waitForTimeout(150);
     const [chooser1] = await Promise.all([
       page.waitForEvent('filechooser'),
-      page.locator('[data-testid=btn-apply-update-from-file]').click(),
+      page.locator('[data-testid=btn-paste-merge-open-file]').click(),
     ]);
     await chooser1.setFiles({ name: 'foreign.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(foreignJsonl) });
     await page.waitForTimeout(400);
@@ -632,7 +705,7 @@ test.describe('Import / Apply-update: shared project-identity warnings', () => {
     await page.waitForTimeout(150);
     const [chooser2] = await Promise.all([
       page.waitForEvent('filechooser'),
-      page.locator('[data-testid=btn-apply-update-from-file]').click(),
+      page.locator('[data-testid=btn-paste-merge-open-file]').click(),
     ]);
     await chooser2.setFiles({ name: 'foreign2.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(foreignJsonl) });
     await page.waitForTimeout(400);
@@ -666,7 +739,7 @@ test.describe('Import / Apply-update: shared project-identity warnings', () => {
     await page.waitForTimeout(150);
     const [chooser1] = await Promise.all([
       page.waitForEvent('filechooser'),
-      page.locator('[data-testid=btn-apply-update-from-file]').click(),
+      page.locator('[data-testid=btn-paste-merge-open-file]').click(),
     ]);
     await chooser1.setFiles({ name: 'other-update.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(updateForOther) });
     await page.waitForTimeout(400);
@@ -678,51 +751,28 @@ test.describe('Import / Apply-update: shared project-identity warnings', () => {
     await page.waitForTimeout(150);
     const [chooser2] = await Promise.all([
       page.waitForEvent('filechooser'),
-      page.locator('[data-testid=btn-apply-update-from-file]').click(),
+      page.locator('[data-testid=btn-paste-merge-open-file]').click(),
     ]);
     await chooser2.setFiles({ name: 'other-update2.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(updateForOther) });
     await page.waitForTimeout(500);
     await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Other Project'); // switched to it
+    // tracker #124: switching lands the gate, not an instant apply -- confirm it.
+    await page.locator('[data-testid=btn-merge-primary]').click();
+    await page.waitForTimeout(400);
     await expect(page.locator('[data-testid=row]')).toContainText('Landed on the other project');
 
     await h.openTrackerSwitcher(page);
     await expect(page.locator('[data-testid=switcher-project-row]')).toHaveCount(2); // no duplicate created
   });
 
-  test('"Import project from file..." for a file matching a DIFFERENT existing (non-active) project warns, then switches to and merges into that project', async ({ page }) => {
-    await h.openTrackerSwitcher(page);
-    await h.createNamedBlankProject(page, 'Other Project');
-    await page.waitForTimeout(300);
-    const otherProjectId = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1')).activeMilestoneId);
-
-    await h.openTrackerSwitcher(page);
-    await h.milestoneRow(page, 'Delivery tracker').click();
-    await page.waitForTimeout(300);
-
-    const updateForOther = [
-      JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, projectHistory: [], id: otherProjectId, name: 'Other Project' }),
-      JSON.stringify({ type: 'issue', id: 'op1', num: 1, comments: [], history: [{ id: 'oph1', time: new Date().toISOString(), actor: 'Tester', email: 't@example.com', text: 'title set', field: 'title', value: 'Landed on the other project', origin: 'authored', sortKey: Date.now(), sig: null, pubKey: null }] })
-    ].join('\n');
-
-    let dialogMsg = null;
-    page.once('dialog', async d => { dialogMsg = d.message(); await d.accept(); });
-    await h.openTrackerSwitcher(page);
-    await page.locator('[data-testid=btn-import-project-appbar]').click();
-    await page.waitForTimeout(150);
-    const [chooser] = await Promise.all([
-      page.waitForEvent('filechooser'),
-      page.locator('[data-testid=btn-import-project-from-file]').click(),
-    ]);
-    await chooser.setFiles({ name: 'other-update.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(updateForOther) });
-    await page.waitForTimeout(500);
-
-    expect(dialogMsg).toContain('already have');
-    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Other Project'); // switched to it
-    await expect(page.locator('[data-testid=row]')).toContainText('Landed on the other project');
-
-    await h.openTrackerSwitcher(page);
-    await expect(page.locator('[data-testid=switcher-project-row]')).toHaveCount(2); // no duplicate created
-  });
+  // "Import project from file..." used to be a SEPARATE entry point with
+  // its own handleImportParsed code path (immediate merge, no gate).
+  // Tracker #143 (dfb378b2) removed that entry point entirely -- Receive
+  // now covers this exact scenario via handleApplyUpdateParsed instead,
+  // already fully covered above ("Apply update..." for a file matching a
+  // DIFFERENT existing project offers to switch there and apply it") --
+  // it's the identical code path now, so this test would be a pure
+  // duplicate.
 });
 
 test.describe('Merge: union history, auto-resolve, lightweight notice', () => {
@@ -750,6 +800,8 @@ test.describe('Merge: union history, auto-resolve, lightweight notice', () => {
 
     await page.locator('[data-testid=merge-file-input]').setInputFiles({ name: 'incoming.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(incomingText) });
     await page.waitForTimeout(400);
+    await page.locator('[data-testid=btn-merge-primary]').click(); // tracker #124: Apply Update now gates on a real confirm
+    await page.waitForTimeout(300);
 
     await expect(page.locator('[data-testid=merge-conflict-modal]')).toHaveCount(0);
     await expect(h.fieldCell(page, 8, 'mitigation')).toContainText('Root cause identified');
@@ -761,7 +813,12 @@ test.describe('Merge: union history, auto-resolve, lightweight notice', () => {
   // has the higher sortKey naturally wins the derived display value. A
   // lightweight, dismissible per-row notice flags that this happened,
   // instead of stopping to ask.
-  test('both sides changed the same field: merges immediately (latest wins), flags a dismissible notice, and keeps both entries in history', async ({ page }) => {
+  test('both sides changed the same field: merges immediately (latest wins), no blocking prompt, and keeps both entries in history', async ({ page }) => {
+    // Regression note: this used to also assert a small red "merge
+    // notice" dot badge appeared on the affected row -- removed per Tom's
+    // direct call (unwanted UI, no replacement needed). The underlying
+    // detection this badge used to surface is still real and now feeds
+    // the local-only merge log instead (see tests/merge-provenance.spec.js).
     const baseline = await exportBaseline(page);
 
     // Local side changes RAG on row 7.
@@ -777,43 +834,35 @@ test.describe('Merge: union history, auto-resolve, lightweight notice', () => {
 
     await page.locator('[data-testid=merge-file-input]').setInputFiles({ name: 'incoming.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(incomingText) });
     await page.waitForTimeout(400);
+    await page.locator('[data-testid=btn-merge-primary]').click(); // tracker #124: Apply Update now gates on a real confirm
+    await page.waitForTimeout(300);
 
     await expect(page.locator('[data-testid=merge-conflict-modal]')).toHaveCount(0);
     await expect(h.fieldCell(page, 7, 'rag')).toContainText('At risk'); // higher sortKey wins, no prompt needed
-
-    await expect(h.row(page, 7).locator('[data-testid=merge-notice-badge]')).toHaveCount(1);
-    await expect(h.row(page, 1).locator('[data-testid=merge-notice-badge]')).toHaveCount(0); // unaffected rows get none
 
     const doc = await h.readActiveMilestoneDoc(page);
     const i7After = doc.issues.find(i => i.id === 'i7');
     const ragValues = i7After.history.filter(hh => hh.field === 'rag').map(hh => hh.value);
     expect(ragValues).toContain('green'); // local edit ("On track") -- still recoverable
     expect(ragValues).toContain('amber'); // incoming edit ("At risk") -- still recoverable, and the one currently shown
-
-    // Clicking the badge opens the issue (where the full history -- both
-    // entries -- is one click away) and dismisses the notice.
-    await h.row(page, 7).locator('[data-testid=merge-notice-badge]').click();
-    await page.waitForTimeout(300);
-    await expect(page.locator('[data-testid=slideover]')).toBeVisible();
-    await page.keyboard.press('Escape');
-    await page.waitForTimeout(400);
-    await expect(h.row(page, 7).locator('[data-testid=merge-notice-badge]')).toHaveCount(0);
   });
 
   test('comments union by content without duplication or loss', async ({ page }) => {
     const baseline = await exportBaseline(page);
     const i2 = baseline.find(l => l.type === 'issue' && l.id === 'i2');
-    const localCommentCountBefore = i2.comments.length;
-    i2.comments.push({ author: 'jordan', time: 'Aug 2', text: 'External note from incoming file', sortKey: 99999 });
+    const localCommentCountBefore = i2.commentStreams.comments.length;
+    i2.commentStreams.comments.push({ author: 'jordan', time: 'Aug 2', text: 'External note from incoming file', sortKey: 99999 });
     const incomingText = baseline.map(l => JSON.stringify(l)).join('\n');
 
     await page.locator('[data-testid=merge-file-input]').setInputFiles({ name: 'incoming.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(incomingText) });
     await page.waitForTimeout(400);
+    await page.locator('[data-testid=btn-merge-primary]').click(); // tracker #124: Apply Update now gates on a real confirm
+    await page.waitForTimeout(300);
 
     const state = await h.readActiveMilestoneDoc(page);
     const i2After = state.issues.find(i => i.id === 'i2');
-    expect(i2After.comments.length).toBe(localCommentCountBefore + 1);
-    expect(i2After.comments.some(c => c.text === 'External note from incoming file')).toBe(true);
+    expect(i2After.commentStreams.comments.length).toBe(localCommentCountBefore + 1);
+    expect(i2After.commentStreams.comments.some(c => c.text === 'External note from incoming file')).toBe(true);
   });
 
   test('a bound/derived field never surfaces as a conflict and recomputes fresh after merge', async ({ page }) => {
@@ -828,6 +877,8 @@ test.describe('Merge: union history, auto-resolve, lightweight notice', () => {
 
     await page.locator('[data-testid=merge-file-input]').setInputFiles({ name: 'incoming.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(incomingText) });
     await page.waitForTimeout(400);
+    await page.locator('[data-testid=btn-merge-primary]').click(); // tracker #124: Apply Update now gates on a real confirm
+    await page.waitForTimeout(300);
 
     await expect(page.locator('[data-testid=merge-conflict-modal]')).toHaveCount(0);
     // applyLinkedRules recomputed fresh from row 1's own (unchanged) linked GitHub data, not the incoming's stale guess.
@@ -849,6 +900,8 @@ test.describe('Merge: union history, auto-resolve, lightweight notice', () => {
 
     await page.locator('[data-testid=merge-file-input]').setInputFiles({ name: 'incoming.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(incomingText) });
     await page.waitForTimeout(400);
+    await page.locator('[data-testid=btn-merge-primary]').click(); // tracker #124: Apply Update now gates on a real confirm
+    await page.waitForTimeout(300);
 
     await expect(page.locator('[data-testid=merge-conflict-modal]')).toHaveCount(0);
     await expect(page.locator('[data-testid=col-header][data-col=severity]')).toBeVisible();
@@ -874,11 +927,12 @@ test.describe('Merge: union history, auto-resolve, lightweight notice', () => {
 
     await page.locator('[data-testid=merge-file-input]').setInputFiles({ name: 'incoming.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(incomingText) });
     await page.waitForTimeout(400);
+    await page.locator('[data-testid=btn-merge-primary]').click(); // tracker #124: Apply Update now gates on a real confirm
+    await page.waitForTimeout(300);
 
     await expect(page.locator('[data-testid=merge-conflict-modal]')).toHaveCount(0);
     await expect(page.locator('[data-testid=col-header][data-col=severity]')).toBeVisible();
     await expect(h.fieldCell(page, 7, 'rag')).toContainText('At risk');
-    await expect(h.row(page, 7).locator('[data-testid=merge-notice-badge]')).toHaveCount(1);
     const doc = await h.readActiveMilestoneDoc(page);
     expect(doc.fieldDefs.severity).toBeTruthy();
   });
@@ -901,6 +955,82 @@ test.describe('Full history log vs. latest-state export', () => {
     await page.waitForTimeout(200);
     await expect(page.locator('[data-testid=source-view-caption]')).toContainText('Append-only log');
     await expect(page.locator('[data-testid=source-view-caption]')).toContainText('history');
+  });
+
+  test('the View Source caption shows a human-readable size of the exported jsonl, auto-scaled (not fixed MB)', async ({ page }) => {
+    await h.gotoTracker(page);
+    const sourceText = await h.readSourceViewText(page); // opens, copies, closes
+    const expectedBytes = Buffer.byteLength(sourceText, 'utf8');
+    expect(expectedBytes).toBeLessThan(1024 * 1024); // a fresh demo project is well under 1MB
+    const expectedLabel = (expectedBytes / 1024).toFixed(1) + ' KB';
+
+    await page.getByText('{ } View source', { exact: true }).click();
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=source-view-size]')).toHaveText(expectedLabel);
+  });
+
+  test('the View Source size label updates after an edit changes the export size', async ({ page }) => {
+    await h.gotoTracker(page);
+    await page.getByText('{ } View source', { exact: true }).click();
+    await page.waitForTimeout(200);
+    const before = await page.locator('[data-testid=source-view-size]').textContent();
+
+    await page.getByText('✕', { exact: true }).click(); // close the source view
+    await page.waitForTimeout(150);
+    await h.clickTitleToEdit(page, 1);
+    await h.typeAndCommit(page, 'A much longer title, extended with a lot of extra text to grow the export size noticeably');
+    await page.waitForTimeout(150);
+
+    await page.getByText('{ } View source', { exact: true }).click();
+    await page.waitForTimeout(200);
+    const after = await page.locator('[data-testid=source-view-size]').textContent();
+    expect(after).not.toBe(before);
+  });
+
+  // Regression: per-token regex syntax highlighting in the View Source
+  // panel emits one DOM node PER JSON TOKEN (every string/number/
+  // boolean) -- fine for a normal project, but for a large one (tracker
+  // #106/ba01ddc6: one customer's file is already 1.4MB) that's tens of
+  // thousands of extra nodes, dominating the open cost regardless of any
+  // caching. Above ~200KB of compact JSONL, highlighting is skipped
+  // entirely (plain text, one node per line) -- verified live this cuts
+  // a synthetic large-project open from ~2.6-3s to ~650-950ms.
+  test('View Source skips per-token syntax highlighting for a large project (plain text instead), but keeps it for a normal-sized one', async ({ page }) => {
+    await h.gotoTracker(page);
+    await page.getByText('{ } View source', { exact: true }).click();
+    await page.waitForTimeout(200);
+    const smallTotalSpans = await page.locator('[data-testid=source-view-pre] span').count();
+    const smallLineCount = await page.locator('[data-testid=source-view-pre] > div').count();
+    expect(smallTotalSpans).toBeGreaterThan(smallLineCount); // real per-token highlighting present
+    await page.getByText('✕', { exact: true }).click();
+    await page.waitForTimeout(150);
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    const bigIssues = [];
+    for (let i = 0; i < 300; i++) {
+      const history = [{ id: 'h0-' + i, time: 'Jan 1', actor: 'me', email: 'me@x', text: 'Created', field: null, origin: 'authored', sortKey: i * 100 }];
+      for (let j = 0; j < 15; j++) {
+        history.push({
+          id: 'h' + j + '-' + i, time: 'Jan 1', actor: 'me', email: 'me@x',
+          text: 'Mitigation set to a fairly long piece of descriptive text number ' + j,
+          field: 'mitigation', value: 'A fairly long piece of descriptive text number ' + j + ' '.repeat(20) + 'padding padding padding',
+          origin: 'authored', sortKey: i * 100 + j
+        });
+      }
+      bigIssues.push({ id: 'big-' + i, num: 1000 + i, fieldRefs: {}, fieldLoading: {}, values: { title: 'Big issue ' + i }, comments: [], history });
+    }
+    doc.issues = doc.issues.concat(bigIssues);
+    await h.writeActiveMilestoneDoc(page, doc);
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    await page.getByText('{ } View source', { exact: true }).click();
+    await page.waitForTimeout(200);
+    const bigTotalSpans = await page.locator('[data-testid=source-view-pre] span').count();
+    const bigLineCount = await page.locator('[data-testid=source-view-pre] > div').count();
+    expect(bigTotalSpans).toBe(bigLineCount); // only the newline-indicator spans, no per-token highlighting
+    const text = await page.locator('[data-testid=source-view-pre]').innerText();
+    expect(text).toContain('Big issue 0'); // content is still correct, just unhighlighted
   });
 
   test('a "full history" export ("Save project file..." in the Share menu) additionally carries the append-only event log', async ({ page }) => {
@@ -1230,13 +1360,18 @@ test.describe('Project-level schema history (Batch 3)', () => {
     const readDoc = () => page.evaluate((id) => JSON.parse(localStorage.getItem('git_native_tracker_v1:' + id)), id);
     let doc = await readDoc();
     expect(Array.isArray(doc.projectHistory)).toBe(true);
-    expect(doc.projectHistory.filter(h => h.origin === 'legacy-backfill').map(h => h.field).sort()).toEqual(['priority', 'title']);
+    // 'comments' is also backfilled -- every project gets a synthesized
+    // commentStream field named 'comments' if it doesn't already have one
+    // (tracker #108/a91db807), and this fieldDefs has neither a
+    // commentStream field nor any history for one yet either. Same story
+    // for 'created'/'updated' (tracker #148/0c46404d).
+    expect(doc.projectHistory.filter(h => h.origin === 'legacy-backfill').map(h => h.field).sort()).toEqual(['comments', 'created', 'priority', 'title', 'updated']);
     expect(doc.fieldDefs.priority.label).toBe('Priority'); // display unaffected
 
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
     doc = await readDoc();
-    expect(doc.projectHistory.filter(h => h.origin === 'legacy-backfill')).toHaveLength(2); // stable, not re-added
+    expect(doc.projectHistory.filter(h => h.origin === 'legacy-backfill')).toHaveLength(5); // stable, not re-added
   });
 
   test('renaming a field via the field editor persists through projectHistory, not a direct fieldDefs overwrite, and survives reload', async ({ page }) => {

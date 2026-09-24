@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>wigwag — Matrix</title>
+<!--
+  wigwag-matrix-host.html -- a separate, non-bundled container that lets
+  wigwag.html read/write its data through a Matrix room instead of (or
+  alongside) localStorage+GitHub, without wigwag.html itself knowing
+  Matrix exists. See /home/dev/.claude/plans/encapsulated-waddling-gizmo.md
+  ("wigwag as a Matrix widget") for the full design; short version:
+
+  - wigwag.html already reacts live to another same-origin browsing
+    context writing a new value to localStorage[docKey(projectId)] (its
+    own cross-tab sync, `_onStorageEvent`) -- and the native `storage`
+    event fires across a same-origin parent/iframe pair just as it does
+    across tabs. So THIS file bridges Matrix <-> that one localStorage
+    key directly: no new protocol on wigwag.html's side, no changes to
+    wigwag.html at all.
+  - This file is NOT part of the bundled-artifact workflow docs/EDITING.md
+    describes, and is NOT required to be offline-capable (it inherently
+    needs network access to reach Matrix) -- so unlike wigwag.html it's
+    free to load wigwag-core.js with a plain <script src>.
+
+  Two transports, one shared bridge (createMatrixBridge below), NeoBoard-
+  style: STANDALONE (Phase 2) talks to a homeserver directly with a
+  personal access token, pasted into the form below. WIDGET (Phase 3)
+  talks through the real Matrix Widget API postMessage protocol when
+  embedded in a client like Element (`widgetId` present in
+  location.search) -- no form at all in that mode: the room, the viewing
+  user, and access are all already implied by being embedded, the same
+  way Element auto-substitutes $matrix_room_id/$matrix_user_id/etc. into
+  a widget's own URL before ever loading it.
+
+  The widget-side protocol here is HAND-ROLLED, not the real
+  @matrix-widget-toolkit/api package -- a deliberate choice (see the plan
+  doc's own "open decision" on this): this environment can't verify a
+  CDN-loaded library actually works without a real Element session to
+  test against, whereas a small, self-contained implementation can be
+  fully exercised by a fake-widget-host test page I control on both
+  ends. It targets the documented MSC2762 message shapes as closely as
+  I can without live verification -- flagged honestly in the plan as
+  needing a real Element smoke test before being trusted, not something
+  this file's own test suite can certify by itself.
+
+  Hosting requirement: this file and wigwag.html must be served from the
+  SAME ORIGIN (same scheme+host+port, any path) -- that's what makes the
+  localStorage bridge below work at all; it's not optional.
+-->
+<script src="wigwag-core.js"></script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; margin: 0; height: 100vh; overflow: hidden; }
+  #setup { max-width: 480px; margin: 60px auto; padding: 0 20px; }
+  #setup h1 { font-size: 18px; margin-bottom: 4px; }
+  #setup .sub { font-size: 13px; color: #6b7280; margin-bottom: 20px; line-height: 1.5; }
+  #setup label { display: block; font-size: 12.5px; font-weight: 600; margin: 14px 0 4px; }
+  #setup input { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; font-family: inherit; }
+  #setup button { margin-top: 18px; padding: 9px 16px; border: none; border-radius: 6px; background: #EF4755; color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; }
+  #setup button:disabled { opacity: 0.5; cursor: default; }
+  /* Widget mode has nothing to prompt for (room/user/access are already
+     implied by being embedded) but must still show #status -- it's a
+     child of #setup, so hiding the whole div would silently swallow every
+     connecting/error message a widget-mode user could otherwise see. */
+  body.widget-mode #setup label, body.widget-mode #setup input, body.widget-mode #setup button { display: none; }
+  #status { margin-top: 14px; font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; }
+  #status.error { color: #b91c1c; }
+  #status.ok { color: #15803d; }
+  #frame { display: none; width: 100%; height: 100vh; border: none; }
+</style>
+</head>
+<body>
+  <div id="setup">
+    <h1>wigwag — connect to a Matrix room</h1>
+    <div class="sub">This project's data lives in the room's own timeline, not this browser's storage alone. Anyone with access to the room and their own token can open this same page and see the same tracker.</div>
+    <label for="homeserverUrl">Homeserver URL</label>
+    <input id="homeserverUrl" placeholder="https://matrix.example.org" autocomplete="off">
+    <label for="accessToken">Access token</label>
+    <input id="accessToken" type="password" placeholder="syt_..." autocomplete="off">
+    <label for="roomId">Room ID or alias</label>
+    <input id="roomId" placeholder="!abc123:example.org or #my-room:example.org" autocomplete="off">
+    <button id="connectBtn">Connect</button>
+    <div id="status"></div>
+  </div>
+  <iframe id="frame" src="about:blank"></iframe>
+
+<script>
+(function () {
+  const core = window.WigwagCore;
+  const $ = id => document.getElementById(id);
+  const statusEl = $('status');
+  const connectBtn = $('connectBtn');
+
+  function setStatus(text, kind) {
+    statusEl.textContent = text || '';
+    statusEl.className = kind || '';
+  }
+
+  // A room id has no inherent relationship to a wigwag project id (the
+  // Matrix event shape doesn't carry one yet -- a deliberate v1 gap, see
+  // the plan doc). Deriving it deterministically from the room id means
+  // reconnecting to the same room always resolves to the same local
+  // project, with no separate persisted room->project mapping needed.
+  function deriveProjectId(roomId) {
+    const hash = Array.from(roomId).reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 0);
+    return 'matrix-' + hash.toString(16).padStart(8, '0');
+  }
+
+  function docKey(projectId) { return core.STORAGE_KEY + ':' + projectId; }
+
+  async function generateIdentity(label, email) {
+    const keyPair = await crypto.subtle.generateKey(core.SIGN_ALG, true, ['sign', 'verify']);
+    const signingPublicKeyJwk = await crypto.subtle.exportKey('jwk', keyPair.publicKey);
+    const signingPrivateKeyJwk = await crypto.subtle.exportKey('jwk', keyPair.privateKey);
+    return {
+      id: crypto.randomUUID(), label, email,
+      githubToken: '', jiraProxyUrl: '', salesforceProxyUrl: '',
+      signingPublicKeyJwk, signingPrivateKeyJwk
+    };
+  }
+
+  // ----- Transports -----------------------------------------------------
+  // Both expose the same small interface: probeAccess/pullInitial/pullMore
+  // /send/getRoomName/whoAmI. The bridge below (createMatrixBridge) is
+  // written entirely against this interface and has no idea which
+  // transport is actually running underneath -- the NeoBoard pattern Tom
+  // pointed at directly.
+
+  // Standalone (Phase 2): a personal access token, direct Client-Server
+  // API calls via the wigwag-core.js helpers built in Phase 1.
+  function createDirectTransport({ homeserverUrl, accessToken, roomId }) {
+    let syncCursor = null;
+    return {
+      async probeAccess() {
+        return core.probeMatrixRoomAccess({ fetchImpl: fetch, homeserverUrl, accessToken, roomId });
+      },
+      async pullInitial() {
+        const result = await core.fetchMatrixRoomEntries({ fetchImpl: fetch, homeserverUrl, accessToken, roomId, dir: 'b' });
+        if (result.status === 'ok') syncCursor = result.end;
+        return result;
+      },
+      async pullMore() {
+        const result = await core.fetchMatrixRoomEntries({ fetchImpl: fetch, homeserverUrl, accessToken, roomId, from: syncCursor || undefined, dir: 'f' });
+        if (result.status === 'ok') syncCursor = result.end;
+        return result;
+      },
+      async send(content) {
+        const txnId = 'wigwag-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+        return core.sendMatrixEntry({ fetchImpl: fetch, homeserverUrl, accessToken, roomId, content, txnId });
+      },
+      async getRoomName() {
+        try {
+          const res = await fetch(homeserverUrl.replace(/\/$/, '') + '/_matrix/client/v3/rooms/' + encodeURIComponent(roomId) + '/state/m.room.name', { headers: { Authorization: 'Bearer ' + accessToken } });
+          if (!res.ok) return null;
+          const data = await res.json();
+          return data.name || null;
+        } catch (e) { return null; }
+      },
+      // A signed wigwag entry needs a non-empty identityEmail before
+      // wigwag.html will commit it at all (requireIdentityEmail gates
+      // every write behind an "enter your email" modal otherwise --
+      // correct behavior, not something to bypass). There's no real
+      // email to offer here, so the Matrix account's own user id (from
+      // /account/whoami) stands in for it -- not a literal email
+      // address, but a real, stable, human-meaningful "who made this
+      // edit" value, which is all identityEmail is actually used for.
+      async whoAmI() {
+        try {
+          const res = await fetch(homeserverUrl.replace(/\/$/, '') + '/_matrix/client/v3/account/whoami', { headers: { Authorization: 'Bearer ' + accessToken } });
+          if (!res.ok) return null;
+          const data = await res.json();
+          return data.user_id || null;
+        } catch (e) { return null; }
+      }
+    };
+  }
+
+  // Widget-embedded (Phase 3): the real Matrix Widget API, hand-rolled --
+  // see the module comment above for why. A small postMessage
+  // request/response protocol (MSC2762): the widget sends {api:
+  // 'fromWidget', requestId, action, data} to window.parent, the host
+  // replies with the SAME message plus a `response` field; the host can
+  // also unprompted-send {api: 'toWidget', ...} messages the widget must
+  // always ack (even ones it doesn't understand -- an unacknowledged
+  // toWidget request can hang the host waiting for a response it'll
+  // never get).
+  //
+  // Capabilities are requested once, upfront, when the host asks for
+  // them -- they cannot be added after that handshake, so every
+  // capability this file will ever need has to be declared here, not
+  // discovered lazily.
+  const WIDGET_EVENT_TYPE = core.WIGWAG_MATRIX_ENTRY_TYPE;
+  // The bare "read_events" action name doesn't exist in any shipped Widget
+  // API driver -- confirmed live against real Element ("Unknown or
+  // unsupported from-widget action: read_events"). Reading past timeline
+  // events is MSC2876, unstabilized, and namespaced accordingly.
+  const READ_EVENTS_ACTION = 'org.matrix.msc2876.read_events';
+  // The exact set the real matrix-widget-api library itself declares
+  // (interfaces/ApiVersion.ts's CurrentApiVersions) -- matching it exactly
+  // rather than trimming to only what this file actually uses, since
+  // Element's own host code was written and tested against widgets
+  // returning this specific list and an untested subset risks tripping
+  // some other unverifiable assumption the same way answering this
+  // request with {} did.
+  const SUPPORTED_API_VERSIONS = [
+    '0.0.1', '0.0.2',
+    'org.matrix.msc2762', 'org.matrix.msc2762_update_state', 'org.matrix.msc2871', 'org.matrix.msc2873',
+    'org.matrix.msc2931', 'org.matrix.msc2974', 'org.matrix.msc2876', 'org.matrix.msc3819',
+    'town.robin.msc3846', 'org.matrix.msc3869', 'org.matrix.msc3973', 'org.matrix.msc4039',
+    'org.matrix.msc4515', 'org.matrix.msc4533'
+  ];
+
+  function getWidgetContext() {
+    const params = new URLSearchParams(location.search);
+    const widgetId = params.get('widgetId');
+    if (!widgetId || window.parent === window) return null;
+    // Element (and any Widget-API-spec-following client) substitutes
+    // these template variables into the widget's own registered URL
+    // before ever loading it -- no round-trip needed to learn who's
+    // viewing or which room this is, unlike the standalone form.
+    return {
+      widgetId,
+      roomId: params.get('matrix_room_id') || params.get('roomId'),
+      userId: params.get('matrix_user_id') || params.get('userId'),
+      displayName: params.get('matrix_display_name') || params.get('displayName')
+    };
+  }
+
+  function createWidgetTransport({ widgetId, roomId }) {
+    let seq = 0;
+    const pending = new Map(); // requestId -> {resolve, reject}
+    // A THIRD, separate capability gates read_events entirely, on top of
+    // the per-event-type receive/send ones above -- confirmed live:
+    // requesting only receive/send.event still got "Unable to access room
+    // timeline" from canUseRoomTimeline(), which checks this specific
+    // capability instead. Scoped to this one room (not the AnyRoom
+    // wildcard) since a widget instance only ever has one.
+    const WIDGET_CAPABILITIES = [
+      'org.matrix.msc2762.receive.event:' + WIDGET_EVENT_TYPE,
+      'org.matrix.msc2762.send.event:' + WIDGET_EVENT_TYPE,
+      'org.matrix.msc2762.timeline:' + roomId
+    ];
+
+    function nextRequestId() { return 'wigwag-' + Date.now() + '-' + (seq++); }
+    // A request that never gets ANY reply (success or error) must not hang
+    // this file forever -- confirmed live: a real connection attempt sat
+    // on "Connecting..." for 20+ seconds with no resolution either way.
+    // 8s is generous for a same-postMessage-bus round trip; past that,
+    // fail loudly with a diagnosable message instead of hanging silently.
+    const REPLY_TIMEOUT_MS = 8000;
+    function postToHost(action, data) {
+      return new Promise((resolve, reject) => {
+        const requestId = nextRequestId();
+        const timer = setTimeout(() => {
+          if (!pending.has(requestId)) return;
+          pending.delete(requestId);
+          reject(new Error('no reply from host within ' + REPLY_TIMEOUT_MS + 'ms for action "' + action + '"'));
+        }, REPLY_TIMEOUT_MS);
+        pending.set(requestId, {
+          resolve: (v) => { clearTimeout(timer); resolve(v); },
+          reject: (e) => { clearTimeout(timer); reject(e); }
+        });
+        console.log('[wigwag-widget] -> fromWidget', action, requestId, data);
+        window.parent.postMessage({ api: 'fromWidget', widgetId, requestId, action, data: data || {} }, '*');
+      });
+    }
+
+    window.addEventListener('message', (event) => {
+      const msg = event.data;
+      if (!msg || typeof msg !== 'object') return;
+      if (msg.widgetId !== widgetId) {
+        if (msg.api === 'fromWidget' || msg.api === 'toWidget') console.log('[wigwag-widget] <- ignored (widgetId mismatch)', msg.widgetId, 'expected', widgetId, msg);
+        return;
+      }
+      console.log('[wigwag-widget] <-', msg.api, msg.action, msg.requestId, msg);
+      if (msg.api === 'fromWidget' && 'response' in msg && pending.has(msg.requestId)) {
+        const { resolve, reject } = pending.get(msg.requestId);
+        pending.delete(msg.requestId);
+        if (msg.response && msg.response.error) reject(new Error(msg.response.error.message || 'widget API error'));
+        else resolve(msg.response);
+        return;
+      }
+      // Any toWidget request must be acked, even ones with no meaningful
+      // work to do here -- an unanswered one can hang the host. 'capabilities'
+      // and 'supported_api_versions' are the two we actually answer for
+      // real; everything else (e.g. a live-pushed event notification we
+      // don't otherwise act on, since polling via read_events is this
+      // file's only sync path for both transports) just gets acked empty.
+      //
+      // supported_api_versions matters more than it looks: confirmed live
+      // that answering it with an empty {} (as if it were just another
+      // ignorable notification) makes Element's OWN handling of that
+      // reply throw ("Cannot read properties of undefined (reading
+      // 'includes')" in ClientWidgetApi.ts) -- it reads
+      // response.supported_versions.includes(...) unconditionally, with
+      // no guard for a widget that didn't declare any. That throw happens
+      // to land in the same message-dispatch path that would otherwise
+      // deliver replies to THIS widget's own pending requests, so every
+      // read_events call after the first quietly stopped getting any
+      // reply at all -- not a read_events bug specifically, a version-
+      // negotiation one with knock-on effects on everything else.
+      if (msg.api === 'toWidget') {
+        let response = {};
+        if (msg.action === 'capabilities') response = { capabilities: WIDGET_CAPABILITIES };
+        else if (msg.action === 'supported_api_versions') response = { supported_versions: SUPPORTED_API_VERSIONS };
+        window.parent.postMessage(Object.assign({}, msg, { response }), '*');
+      }
+    });
+
+    let readCursor = undefined; // passed as a hint if the host supports pagination; harmless if it doesn't
+    // MSC2876 has no confirmed continuation-token guarantee across real
+    // hosts -- rather than trust `since`/`nextToken` round-tripping
+    // correctly, dedupe on the entry's own id so a host that just replays
+    // the full matching set on every call still only ever yields genuinely
+    // new events here, exactly as if pagination worked.
+    const seenRawEventIds = new Set();
+    function dedupeNew(events) {
+      const fresh = [];
+      for (const ev of events) {
+        const entryId = ev && ev.content && ev.content.entry && ev.content.entry.id;
+        const key = entryId || JSON.stringify(ev);
+        if (seenRawEventIds.has(key)) continue;
+        seenRawEventIds.add(key);
+        fresh.push(ev);
+      }
+      return fresh;
+    }
+    return {
+      async probeAccess() {
+        // Being embedded in the room at all implies read access already
+        // -- there is no separate "is this token valid for this room"
+        // question the way a pasted personal token has for the direct
+        // transport.
+        return { status: 'can-read-write' };
+      },
+      async pullInitial() {
+        // No explicit content_loaded here: a widget registered without
+        // `waitForIframeLoad: false` in its data (the default) has the
+        // host treat the iframe's own native `load` event as the ready
+        // signal already, and will reject a widget that ALSO sends
+        // content_loaded itself ("Improper sequence: not expecting
+        // ContentLoaded event if waitForIframeLoad is true") -- confirmed
+        // live against real Element. Simplest fix: don't send it: nothing
+        // here needs finer control over the ready-timing than "iframe
+        // loaded" already gives for free.
+        //
+        // But that same iframe `load` event is also what the host uses to
+        // KICK OFF capability negotiation -- which then waits on a real
+        // user-facing approval dialog before the requested capabilities
+        // actually take effect. This code runs on that same load, with no
+        // signal telling it approval has actually landed yet, so the very
+        // first read can legitimately race a human clicking through that
+        // dialog -- confirmed live: a real approval was granted and the
+        // first attempt still failed with "Cannot read room events of
+        // this type", and separately, a request has also been observed to
+        // get NO reply at all for 20+ seconds (now bounded by postToHost's
+        // own per-request timeout above, surfacing as a "no reply..."
+        // error instead of hanging forever). Retry on ANY error here, not
+        // just the one specific message seen so far -- this early in a
+        // widget's life, an error is more likely transient
+        // negotiation-related noise than a permanent condition, and the
+        // later 5s poll would silently recover from a real transient issue
+        // anyway; this just avoids a false "could not connect" report on
+        // the very first attempt.
+        const RETRY_DELAYS_MS = [500, 1000, 1500, 2000, 2000, 2000, 2000];
+        for (let attempt = 0; ; attempt++) {
+          const result = await this.pullMore();
+          if (result.status === 'ok' || attempt >= RETRY_DELAYS_MS.length) return result;
+          await new Promise(resolve => setTimeout(resolve, RETRY_DELAYS_MS[attempt]));
+        }
+      },
+      async pullMore() {
+        try {
+          // room_ids is REQUIRED, not optional, despite the spec/library
+          // marking it that way -- confirmed live: omitting it (so
+          // Element falls back to its own "deprecated behaviour, no
+          // viewedRoomId set" code path, which the driver itself
+          // console.warns about) throws inside Element's OWN
+          // ClientWidgetApi before it ever replies, silently killing every
+          // read_events request rather than answering with an error.
+          // Naming this room explicitly steers Element to its other,
+          // apparently-working code path instead.
+          const result = await postToHost(READ_EVENTS_ACTION, { type: WIDGET_EVENT_TYPE, room_ids: [roomId], limit: 200, since: readCursor });
+          const events = (result && result.events) || [];
+          if (result && result.nextToken) readCursor = result.nextToken;
+          return { status: 'ok', events: dedupeNew(events) };
+        } catch (e) {
+          return { status: 'error', message: e.message };
+        }
+      },
+      async send(content) {
+        try {
+          await postToHost('send_event', { type: WIDGET_EVENT_TYPE, content });
+          return { status: 'ok' };
+        } catch (e) {
+          return { status: 'error', message: e.message };
+        }
+      },
+      async getRoomName() {
+        try {
+          const result = await postToHost(READ_EVENTS_ACTION, { type: 'm.room.name', room_ids: [roomId], state_key: '', limit: 1 });
+          const events = (result && result.events) || [];
+          const last = events[events.length - 1];
+          return (last && last.content && last.content.name) || null;
+        } catch (e) { return null; } // best-effort -- falls back to the placeholder name, same as the direct transport
+      },
+      async whoAmI(fallbackUserId) { return fallbackUserId || null; } // already known from the widget URL, no round-trip needed
+    };
+  }
+
+  // ----- Shared bridge (transport-agnostic) ------------------------------
+
+  function docStorable(hydrated, hiddenFieldIds) {
+    // Strips values/fieldRefs before persisting -- these are never
+    // stored, only ever derived fresh (docs/FORMAT.md's "History is the
+    // sole source of truth"), matching wigwag.html's own persist().
+    return {
+      fieldDefs: hydrated.fieldDefs,
+      projectHistory: hydrated.projectHistory,
+      issues: hydrated.issues.map(({ values, fieldRefs, ...rest }) => rest),
+      hiddenFieldIds: hiddenFieldIds || []
+    };
+  }
+
+  function readCurrentLocalDoc(projectId) {
+    const raw = localStorage.getItem(docKey(projectId));
+    const doc = raw ? JSON.parse(raw) : { fieldDefs: core.defaultFieldDefs(), projectHistory: [], issues: [], hiddenFieldIds: [] };
+    const hydratedProject = core.hydrateProject(doc.fieldDefs, doc.projectHistory || []);
+    const hydratedIssues = (doc.issues || []).map(iss => core.hydrateIssue(iss, hydratedProject.fieldDefs));
+    return { hiddenFieldIds: doc.hiddenFieldIds || [], fieldDefs: hydratedProject.fieldDefs, projectHistory: hydratedProject.projectHistory, issues: hydratedIssues };
+  }
+
+  // Flattens a hydrated doc's history/comment-stream entries back into
+  // the same {scope, issueId, stream, entry} shape entryFromMatrixEvent
+  // produces, so a single "have we sent/seen this entry id" Set can track
+  // both directions uniformly.
+  function flattenEntries(hydrated) {
+    const out = hydrated.projectHistory.map(entry => ({ scope: 'project', issueId: null, stream: null, entry }));
+    for (const iss of hydrated.issues) {
+      for (const entry of (iss.history || [])) out.push({ scope: 'issue', issueId: iss.id, stream: null, entry });
+      for (const stream in (iss.commentStreams || {})) {
+        for (const entry of iss.commentStreams[stream]) out.push({ scope: 'issue', issueId: iss.id, stream, entry });
+      }
+    }
+    return out;
+  }
+
+  // Seeds the exact localStorage shapes wigwag.html itself would create
+  // for a brand-new local project (tests/helpers.js's own gotoTracker
+  // seeds structurally the same shapes, for the same reason: hand a
+  // fresh wigwag instance a specific starting doc rather than its own
+  // default blank-project flow). Only runs the parts that are missing --
+  // reconnecting to an already-set-up room must never clobber an
+  // existing local identity or project list.
+  async function bootstrapLocalStorage(projectId, projectName, initialDoc, transport, fallbackUserId) {
+    let identities = JSON.parse(localStorage.getItem(core.IDENTITIES_KEY) || 'null');
+    if (!identities || !Array.isArray(identities.identities) || !identities.identities.length) {
+      const userId = await transport.whoAmI(fallbackUserId);
+      const identity = await generateIdentity('Matrix', userId || 'unknown-matrix-user');
+      identities = { activeIdentityId: identity.id, identities: [identity], lastActiveProjectByIdentity: {} };
+      localStorage.setItem(core.IDENTITIES_KEY, JSON.stringify(identities));
+    }
+    const activeIdentityId = identities.activeIdentityId;
+
+    let projects = JSON.parse(localStorage.getItem(core.PROJECTS_KEY) || 'null');
+    if (!projects || !Array.isArray(projects.milestones)) projects = { activeMilestoneId: null, milestones: [] };
+    if (!projects.milestones.some(m => m.id === projectId)) {
+      projects.milestones.push({ id: projectId, name: projectName, identityId: activeIdentityId });
+    }
+    projects.activeMilestoneId = projectId;
+    localStorage.setItem(core.PROJECTS_KEY, JSON.stringify(projects));
+
+    if (!localStorage.getItem(docKey(projectId))) {
+      localStorage.setItem(docKey(projectId), JSON.stringify(initialDoc));
+    }
+  }
+
+  function createMatrixBridge(transport, roomId, fallbackUserId) {
+    let remoteRawEvents = [];
+    const knownEntryIds = new Set(); // entries already sent to, or received from, Matrix -- never re-sent either way
+    let projectId, projectName;
+    let bridgeTimer = null;
+
+    function reconcileIntoLocal() {
+      const remoteDoc = core.hydrateProjectFromMatrixTimeline(remoteRawEvents, { fieldDefs: core.defaultFieldDefs(), projectId, projectName });
+      for (const item of flattenEntries(remoteDoc)) knownEntryIds.add(item.entry.id);
+
+      const current = readCurrentLocalDoc(projectId);
+      const fieldMerge = core.computeFieldDefsMerge(current.projectHistory, remoteDoc.fields, remoteDoc.projectHistory)
+        || { mergedProjectHistory: current.projectHistory, mergedFieldDefs: current.fieldDefs };
+      const issueMerge = core.computeIssueMerge(current.issues, remoteDoc.issues, fieldMerge.mergedFieldDefs, {});
+      const mergedHydrated = {
+        fieldDefs: fieldMerge.mergedFieldDefs, projectHistory: fieldMerge.mergedProjectHistory,
+        issues: issueMerge.mergedIssues
+      };
+      localStorage.setItem(docKey(projectId), JSON.stringify(docStorable(mergedHydrated, current.hiddenFieldIds)));
+    }
+
+    // Creating one issue writes to localStorage more than once in quick
+    // succession (a "Created" entry, then a "Title set" entry, ...) --
+    // each write fires its own storage event. Without this guard, two
+    // overlapping calls could each compute their own toSend list from the
+    // same stale knownEntryIds snapshot before either finishes adding to
+    // it, and both send the same entry. Only one pass ever runs at a
+    // time; a call that arrives mid-pass just asks for one more pass
+    // (re-reading local state fresh) once the current one finishes,
+    // rather than starting a second overlapping one.
+    let pushInFlight = false;
+    let pushAgainRequested = false;
+    async function pushNewLocalEntries() {
+      if (pushInFlight) { pushAgainRequested = true; return; }
+      pushInFlight = true;
+      try {
+        do {
+          pushAgainRequested = false;
+          const current = readCurrentLocalDoc(projectId);
+          const toSend = flattenEntries(current).filter(item => !knownEntryIds.has(item.entry.id));
+          for (const item of toSend) {
+            knownEntryIds.add(item.entry.id); // mark before sending -- a resend on failure is a harmless duplicate (deduped by entry id on read), a missed send from a race is not
+            const content = core.matrixEventContentFromEntry(item);
+            const result = await transport.send(content);
+            if (result.status !== 'ok') { console.warn('[wigwag-matrix-host] failed to send entry', item.entry.id, result); knownEntryIds.delete(item.entry.id); }
+          }
+        } while (pushAgainRequested);
+      } finally {
+        pushInFlight = false;
+      }
+    }
+
+    function onStorageChange(e) {
+      if (e.key !== docKey(projectId)) return;
+      pushNewLocalEntries();
+    }
+
+    return {
+      async start() {
+        const probe = await transport.probeAccess();
+        if (probe.status !== 'can-read-write') return probe;
+
+        const initialPull = await transport.pullInitial();
+        if (initialPull.status !== 'ok') return initialPull;
+        remoteRawEvents = initialPull.events;
+
+        projectId = deriveProjectId(roomId);
+        projectName = (await transport.getRoomName()) || ('Matrix room ' + roomId);
+
+        const remoteDoc = core.hydrateProjectFromMatrixTimeline(remoteRawEvents, { fieldDefs: core.defaultFieldDefs(), projectId, projectName });
+        for (const item of flattenEntries(remoteDoc)) knownEntryIds.add(item.entry.id);
+        await bootstrapLocalStorage(projectId, projectName, docStorable({ fieldDefs: remoteDoc.fields, projectHistory: remoteDoc.projectHistory, issues: remoteDoc.issues }, []), transport, fallbackUserId);
+        // A pre-existing local project at this same derived id may already
+        // have entries the initial remote pull doesn't yet know about
+        // (e.g. an earlier session's local edits that never made it out) --
+        // reconcile once, immediately, before wiring up the live bridge.
+        reconcileIntoLocal();
+
+        window.addEventListener('storage', onStorageChange);
+        bridgeTimer = setInterval(async () => {
+          const result = await transport.pullMore();
+          if (result.status === 'ok' && result.events.length) {
+            remoteRawEvents = remoteRawEvents.concat(result.events);
+            reconcileIntoLocal();
+          }
+        }, 5000);
+
+        return { status: 'ok', projectId };
+      },
+      stop() {
+        window.removeEventListener('storage', onStorageChange);
+        if (bridgeTimer) clearInterval(bridgeTimer);
+      }
+    };
+  }
+
+  function showFrame() {
+    $('setup').style.display = 'none';
+    const frame = $('frame');
+    frame.style.display = 'block';
+    frame.src = 'wigwag.html';
+  }
+
+  // ----- Entry point ------------------------------------------------------
+
+  const widgetContext = getWidgetContext();
+  if (widgetContext) {
+    // No form, no user input at all: the room, the viewer, and access are
+    // all already implied by being embedded. Per Tom's own call, a
+    // widget-embedded instance is locked to this one room -- there's
+    // nothing to pick, so no Connect Remote / switcher entry points are
+    // shown either (there's simply no UI for them here to begin with).
+    document.body.classList.add('widget-mode');
+    setStatus('Connecting…');
+    if (!widgetContext.roomId) {
+      setStatus('This widget was not registered with a $matrix_room_id in its URL -- cannot tell which room to use.', 'error');
+    } else {
+      const transport = createWidgetTransport(widgetContext);
+      const bridge = createMatrixBridge(transport, widgetContext.roomId, widgetContext.userId);
+      bridge.start().then((result) => {
+        if (result.status === 'ok') { showFrame(); return; }
+        // Every widget-mode failure this early is plausibly the same root
+        // cause: Element gates each requested capability (read/send
+        // dev.wigwag.entry) behind its own user-facing approval prompt,
+        // shown once when the widget first loads -- a dismissed or
+        // never-shown prompt looks like an ordinary protocol error
+        // ("Cannot read room events of this type") with nothing in this
+        // file able to distinguish it from a real one. Surfacing the hint
+        // unconditionally is cheap and, worst case, irrelevant noise.
+        setStatus('Could not connect (' + result.status + (result.message ? ': ' + result.message : '') + ').\n\nIf this is the first time this widget has loaded in this room, check that Element\'s widget-permissions prompt was approved -- try removing and re-adding the widget if you\'re not sure one appeared.', 'error');
+      }).catch((e) => setStatus('Unexpected error: ' + e.message, 'error'));
+    }
+  } else {
+    connectBtn.addEventListener('click', async () => {
+      const homeserverUrl = $('homeserverUrl').value.trim();
+      let accessToken = $('accessToken').value.trim();
+      let roomId = $('roomId').value.trim();
+      if (!homeserverUrl || !accessToken || !roomId) { setStatus('All three fields are required.', 'error'); return; }
+
+      connectBtn.disabled = true;
+      setStatus('Connecting…');
+      try {
+        if (roomId.startsWith('#')) {
+          const resolved = await core.resolveMatrixRoomAlias({ fetchImpl: fetch, homeserverUrl, accessToken, alias: roomId });
+          if (resolved.status !== 'ok') { setStatus('Could not resolve room alias "' + roomId + '" (' + resolved.status + (resolved.message ? ': ' + resolved.message : '') + ').', 'error'); connectBtn.disabled = false; return; }
+          roomId = resolved.roomId;
+        }
+        const transport = createDirectTransport({ homeserverUrl, accessToken, roomId });
+        const bridge = createMatrixBridge(transport, roomId, null);
+        const result = await bridge.start();
+        if (result.status !== 'ok') {
+          const messages = {
+            'no-access': 'This token\'s account is not joined to that room (or the room id is wrong).',
+            error: 'Matrix error: ' + (result.message || 'unknown')
+          };
+          setStatus(messages[result.status] || ('Could not connect (' + result.status + ').'), 'error');
+          connectBtn.disabled = false;
+          return;
+        }
+        setStatus('Connected.', 'ok');
+        showFrame();
+      } catch (e) {
+        setStatus('Unexpected error: ' + e.message, 'error');
+        connectBtn.disabled = false;
+      }
+    });
+  }
+})();
+</script>
+</body>
+</html>

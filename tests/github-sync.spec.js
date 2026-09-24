@@ -24,6 +24,68 @@ test.describe('GitHub repo sync', () => {
     expect(pushed).toContain('"type":"fields"');
   });
 
+  // Tracker #133 (0b22b69e): a push now carries a real signed export
+  // envelope (the same one "Save project file..."/"Copy to clipboard"
+  // already build) instead of the bare records body -- previously
+  // GitHub-sync-sourced merges had no exported_by at all, so Merge
+  // History fell back to the generic "this browser" label for every one
+  // of them, even a merge that genuinely came from a named collaborator's
+  // own push.
+  test('a push carries a real signed export envelope, not a bare records body -- tracker #133 (0b22b69e)', async ({ page }) => {
+    const gh = h.mockGithubContentsApi(page, REPO);
+    gh.getResponses = [{ status: 404 }];
+
+    await h.gotoTracker(page);
+    await h.setGithubRepoSync(page, { repo: REPO, token: 'ghp_faketoken' });
+    await page.reload({ waitUntil: 'networkidle' });
+
+    await h.waitUntil(() => Promise.resolve(gh.pushCount >= 1));
+    const pushed = Buffer.from(gh.pushes[0].content, 'base64').toString('utf8');
+    const lines = pushed.trim().split('\n');
+    const envelope = JSON.parse(lines[0]);
+    expect(envelope.type).toBe('wigwag.export');
+    expect(envelope.exported_by).toBe('tom@example.com');
+    expect(envelope.content_sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.parse(lines[1]).type).toBe('fields');
+  });
+
+  // Tracker #133 (0b22b69e): the flip side of the push test above -- an
+  // incoming remote file that DOES carry a real envelope now attributes
+  // the resulting Merge History record to that real sender, not "this
+  // browser". Mirrors "reconnecting adopts a non-conflicting remote
+  // change"'s own fixture shape, with an envelope prepended.
+  test('reconnecting attributes the Merge History record to the remote file\'s real signer, not "this browser" -- tracker #133 (0b22b69e)', async ({ page }) => {
+    const gh = h.mockGithubContentsApi(page, REPO);
+
+    await h.gotoTracker(page);
+    await page.locator('[data-testid=btn-export]').click();
+    const [dl] = await Promise.all([
+      page.waitForEvent('download'),
+      page.locator('[data-testid=btn-export-jsonl]').click(),
+    ]);
+    const fs = require('fs');
+    const lines = fs.readFileSync(await dl.path(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+    const i8 = lines.find(l => l.type === 'issue' && l.id === 'i8');
+    i8.history.push({ id: 'ext_h1', time: 'Aug 2', actor: 'jordan', email: 'jordan@example.com', text: 'Mitigation set', field: 'mitigation', value: 'Root cause identified, fix in review', origin: 'authored', sortKey: Date.now() + 1000, sig: null, pubKey: null });
+    const recordsBody = lines.map(l => JSON.stringify(l)).join('\n');
+    const envelope = await page.evaluate((recordsBody) => window.WigwagCore.buildExportEnvelope({
+      exportedBy: 'dave@example.com', exportedAt: new Date().toISOString(),
+      project: 'Test', tracker: 'Issues', recordsBody, publicKeyJwk: null, privateKeyJwk: null
+    }), recordsBody);
+    gh.getResponses = [{ status: 200, sha: 'sha1', text: JSON.stringify(envelope) + '\n' + recordsBody }];
+
+    await h.setGithubRepoSync(page, { repo: REPO, token: 'ghp_faketoken' });
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(500);
+
+    await expect(h.fieldCell(page, 8, 'mitigation')).toContainText('Root cause identified');
+
+    const idx = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1')).activeMilestoneId);
+    const log = await page.evaluate((key) => JSON.parse(localStorage.getItem(key) || '[]'), 'git_native_tracker_merge_log_v1:' + idx);
+    expect(log.length).toBeGreaterThan(0);
+    expect(log[log.length - 1].source.exported_by).toBe('dave@example.com');
+  });
+
   // The token is layered: a project's own token (set in its own panel --
   // e.g. a fine-grained PAT scoped to just that repo) wins if set,
   // otherwise pushes/pulls fall back to the identity's default token.
@@ -306,7 +368,6 @@ test.describe('GitHub repo sync', () => {
 
     await expect(page.locator('[data-testid=merge-conflict-modal]')).toHaveCount(0);
     await expect(h.fieldCell(page, 7, 'rag')).toContainText('At risk'); // higher sortKey wins immediately
-    await expect(h.row(page, 7).locator('[data-testid=merge-notice-badge]')).toHaveCount(1);
     await expect(page.locator('[data-testid=footer-github-sync]')).toContainText('just now'); // still syncing fine, not paused
 
     // Auto-push is not paused by any of this -- the next edit pushes normally.

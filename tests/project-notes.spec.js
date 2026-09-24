@@ -276,7 +276,7 @@ test.describe('Project panel sections', () => {
     await page.waitForTimeout(300);
 
     const navLabels = (await page.locator('[data-testid=project-panel-nav-item]').allTextContents()).map(t => t.trim());
-    expect(navLabels).toEqual(['Notes', 'Sync & Export', 'Danger Zone']);
+    expect(navLabels).toEqual(['Notes', 'Sync & Export', 'Merge history', 'Danger Zone']); // tracker #124 (5c3051e9)
     await expect(page.locator('[data-testid=notes-body-wrap]')).toBeVisible();
     await expect(page.locator('[data-testid=settings-github-repo]')).toHaveCount(0);
     await expect(page.locator('[data-testid=btn-delete-project]')).toHaveCount(0);

@@ -236,6 +236,20 @@ test.describe('Text fields', () => {
     expect(await page.locator('[data-testid=option-row]').count()).toBe(0);
   });
 
+  test('sorting a text field holding only numbers is numeric ("2" before "10"), not alphabetical', async ({ page }) => {
+    for (const [num, value] of [[1, '10'], [2, '2'], [3, '1']]) {
+      await h.clickFieldToEdit(page, num, 'mitigation');
+      await page.waitForTimeout(100);
+      await h.typeAndCommit(page, value);
+      await page.waitForTimeout(150);
+    }
+    await h.sortByColumn(page, 'mitigation');
+    await page.waitForTimeout(200);
+    const values = await page.locator('[data-testid=field-cell][data-col=mitigation]').allTextContents();
+    const cleaned = values.map(v => v.trim()).filter(v => ['1', '2', '10'].includes(v));
+    expect(cleaned).toEqual(['1', '2', '10']); // not the alphabetical ['1', '10', '2']
+  });
+
   test('a clamped value shows the full text as a native hover tooltip', async ({ page }) => {
     // seed row 7's mitigation text is long enough to clamp in the column --
     // markdown rendering replaced the old plain-text span, but the same
@@ -322,6 +336,27 @@ test.describe('Text fields: multiline markdown', () => {
     const slideover = await h.openSlideover(page, 1);
     const sfMd = slideover.locator('[data-testid=slideover-field][data-col=mitigation] [data-testid=text-field-md]');
     await expect(sfMd.locator('h1')).toHaveText('Plan');
+  });
+
+  // Regression (found live, tracker #123/d100c705): a merge-conflict
+  // marker's own grammar collides with markdown's -- a line starting
+  // ">>>>>>> ..." reads as a blockquote, and a lone "=======" line reads
+  // as a setext-heading underline for whatever text preceded it. Text
+  // carrying real, unresolved merge markers must render as plain,
+  // escaped text instead of being run through markdown at all.
+  test('text containing unresolved merge conflict markers renders literally, not as a blockquote/heading', async ({ page }) => {
+    const markerText = '<<<<<<< local copy · tom@wigwag.dev\nA profiler trace points at layout thrash.\n=======\nMeasured the sticky-header offset at 2.4px.\n>>>>>>> dave@wigwag.dev · export Sep 9, 4:12 PM · signed';
+    await h.clickFieldToEdit(page, 1, 'mitigation');
+    await h.fieldCell(page, 1, 'mitigation').locator('[data-testid=text-field-edit-textarea]').fill(markerText);
+    await page.keyboard.press('Control+Enter');
+    await page.waitForTimeout(200);
+
+    const cellMd = h.fieldCell(page, 1, 'mitigation').locator('[data-testid=text-field-md]');
+    await expect(cellMd.locator('blockquote')).toHaveCount(0);
+    await expect(cellMd.locator('h1, h2')).toHaveCount(0);
+    await expect(cellMd).toContainText('>>>>>>> dave@wigwag.dev · export Sep 9, 4:12 PM · signed');
+    await expect(cellMd).toContainText('=======');
+    await expect(cellMd.locator('pre.merge-markers-raw')).toHaveCount(1);
   });
 
   // Tracker issue #61 (417cbbda): the old list regexes required zero
@@ -432,6 +467,13 @@ test.describe('Text fields: multiline markdown', () => {
   // link-like it looks; it always just commits as (markdown) text.
   test('a GitHub-shaped URL pasted into a text field never resolves -- it renders as ordinary markdown-autolinked text', async ({ page }) => {
     await h.clickFieldToEdit(page, 2, 'mitigation');
+    // Clear the field's existing seed content first (tracker #104: pasting
+    // over a real selection now wraps it in a markdown link, so a plain
+    // select-all-then-paste here would produce "[old text](url)" instead
+    // of just the url -- clear to an empty, collapsed cursor first so this
+    // paste is testing the same thing it always was).
+    await page.keyboard.press('Control+A');
+    await page.keyboard.press('Delete');
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/3');
     await page.keyboard.press('Tab');
     await page.waitForTimeout(300);
@@ -550,10 +592,106 @@ test.describe('Date fields', () => {
     await expect(page.getByText('Edit field…', { exact: true })).toHaveCount(0);
   });
 
-  test('has no "Wrap text" menu item and no value-filter section -- fixed-format, not free-form or option-based', async ({ page }) => {
+  test('has no "Wrap text" menu item and no checkbox-list filter options -- fixed-format, not free-form or option-based', async ({ page }) => {
     const colId = await addDateField(page, 'Due date');
     await h.openColumnMenu(page, colId);
     await expect(page.locator('[data-testid=col-wrap-toggle]')).toHaveCount(0);
-    await expect(page.getByText('FILTER', { exact: true })).toHaveCount(0);
+    await expect(page.locator('[data-testid=col-filter-option]')).toHaveCount(0);
+  });
+
+  test.describe('date filtering', () => {
+    test('shows FILTER presets and a from/to range, filters rows by inclusive date range', async ({ page }) => {
+      const colId = await addDateField(page, 'Due date');
+      await setDate(page, colId, 1, '2020-01-05');
+      await setDate(page, colId, 2, '2026-01-15');
+      await setDate(page, colId, 3, '2026-06-01');
+
+      await h.openColumnMenu(page, colId);
+      await expect(page.getByText('FILTER', { exact: true })).toBeVisible();
+      await expect(page.getByText('Today', { exact: true })).toBeVisible();
+      await expect(page.getByText('Last 7 days', { exact: true })).toBeVisible();
+      await expect(page.getByText('Last 30 days', { exact: true })).toBeVisible();
+      await expect(page.getByText('This month', { exact: true })).toBeVisible();
+
+      await page.locator('[data-testid=date-filter-from]').fill('2026-01-01');
+      await page.locator('[data-testid=date-filter-to]').fill('2026-01-31');
+      await page.waitForTimeout(200);
+      await expect(page.locator('[data-testid=row]')).toHaveCount(1);
+    });
+
+    test('Clear link removes the filter and restores all rows', async ({ page }) => {
+      const colId = await addDateField(page, 'Due date');
+      await setDate(page, colId, 1, '2020-01-05');
+      await setDate(page, colId, 2, '2026-01-15');
+      const totalBefore = await page.locator('[data-testid=row]').count();
+
+      await h.openColumnMenu(page, colId);
+      await page.locator('[data-testid=date-filter-from]').fill('2026-01-01');
+      await page.locator('[data-testid=date-filter-to]').fill('2026-01-31');
+      await page.waitForTimeout(200);
+      await expect(page.locator('[data-testid=row]')).toHaveCount(1);
+
+      await page.locator('[data-testid=col-filter-clear]').click();
+      await page.waitForTimeout(200);
+      await expect(page.locator('[data-testid=row]')).toHaveCount(totalBefore);
+    });
+
+    test('a row with no value for the date field never matches an active range filter', async ({ page }) => {
+      const colId = await addDateField(page, 'Due date');
+      await setDate(page, colId, 1, '2026-01-15');
+      // Row 2 is left unset.
+
+      await h.openColumnMenu(page, colId);
+      await page.locator('[data-testid=date-filter-from]').fill('2020-01-01');
+      await page.locator('[data-testid=date-filter-to]').fill('2030-01-01');
+      await page.waitForTimeout(200);
+
+      const visibleRowNums = await page.locator('[data-testid=row]').evaluateAll(
+        els => els.map(el => el.getAttribute('data-row-num'))
+      );
+      expect(visibleRowNums).toContain('1');
+      expect(visibleRowNums).not.toContain('2');
+    });
+
+    test('the column header shows the filtered-funnel icon while a date filter is active', async ({ page }) => {
+      const colId = await addDateField(page, 'Due date');
+      await setDate(page, colId, 1, '2026-01-15');
+      const header = page.locator(`[data-testid=col-header][data-col="${colId}"]`);
+
+      await h.openColumnMenu(page, colId);
+      await expect(header.locator('[title="Filtered"]')).toHaveCount(0);
+
+      await page.locator('[data-testid=date-filter-from]').fill('2026-01-01');
+      await page.waitForTimeout(200);
+      await expect(header.locator('[title="Filtered"]')).toHaveCount(1);
+    });
+
+    test('clicking a preset applies its range and highlights it as active', async ({ page }) => {
+      const colId = await addDateField(page, 'Due date');
+      const today = new Date().toISOString().slice(0, 10);
+      await setDate(page, colId, 1, today);
+      await setDate(page, colId, 2, '2020-01-01');
+
+      await h.openColumnMenu(page, colId);
+      await page.getByText('Today', { exact: true }).click();
+      await page.waitForTimeout(200);
+
+      await expect(page.locator('[data-testid=row]')).toHaveCount(1);
+      await expect(page.locator('[data-testid=date-filter-from]')).toHaveValue(today);
+      await expect(page.locator('[data-testid=date-filter-to]')).toHaveValue(today);
+      const todayPreset = page.locator('[data-testid=date-filter-preset]', { hasText: 'Today' });
+      await expect(todayPreset).toHaveCSS('font-weight', '700');
+    });
+
+    test('the date filter menu stays within the viewport even for the rightmost column', async ({ page }) => {
+      const colId = await addDateField(page, 'Due date');
+      await h.openColumnMenu(page, colId);
+      await page.locator('[data-testid=date-filter-from]').fill('2026-01-01');
+      await page.waitForTimeout(150);
+
+      const viewport = page.viewportSize();
+      const box = await page.locator('[data-testid=col-filter-clear]').boundingBox();
+      expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
+    });
   });
 });

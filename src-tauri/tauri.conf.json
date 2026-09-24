@@ -9,6 +9,7 @@
     "beforeDevCommand": "node src-tauri/copy-dist.js"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "title": "Wigwag",

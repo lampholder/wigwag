@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>fake widget host</title></head>
+<body style="margin:0">
+<!--
+  A disposable stand-in for a real Matrix client's widget host (Element,
+  etc.), implementing just enough of the Widget API (MSC2762) postMessage
+  protocol to drive wigwag-matrix-host.html's widget-transport code path
+  end to end. This proves the PROTOCOL HANDLING in wigwag-matrix-host.html
+  is self-consistent -- it does NOT prove real Element compatibility,
+  which the plan (encapsulated-waddling-gizmo.md) is explicit needs a
+  manual smoke test against a real client instead. See tests/matrix-host.spec.js
+  ("widget-embedded transport") for how this is driven.
+-->
+<iframe id="widget" style="width:100vw;height:100vh;border:none"></iframe>
+<script>
+(function () {
+  const cfg = Object.assign({
+    widgetId: 'test-widget-1', roomId: '!fakeroom:example.org', userId: '@fake-user:example.org',
+    displayName: 'Fake User', roomName: '', initialEntries: [], rejectReadEventsTimes: 0, dropReadEventsTimes: 0
+  }, window.__fakeHostConfig || {});
+  let rejectReadEventsRemaining = cfg.rejectReadEventsTimes;
+  let dropReadEventsRemaining = cfg.dropReadEventsTimes;
+
+  window.__state = { sentEntries: [], pendingEntries: cfg.initialEntries.slice(), requestedCapabilities: null, supportedApiVersionsReply: null };
+
+  const iframe = document.getElementById('widget');
+  const url = new URL('../../wigwag-matrix-host.html', location.href);
+  url.searchParams.set('widgetId', cfg.widgetId);
+  url.searchParams.set('matrix_room_id', cfg.roomId);
+  url.searchParams.set('matrix_user_id', cfg.userId);
+  url.searchParams.set('matrix_display_name', cfg.displayName);
+  iframe.src = url.toString();
+
+  function reply(msg, response) {
+    iframe.contentWindow.postMessage(Object.assign({}, msg, { response }), '*');
+  }
+
+  // Mirrors two real toWidget requests Element sends once the iframe
+  // finishes loading -- capabilities (which capability approval is
+  // negotiated from) and supported_api_versions (a separate version
+  // handshake) -- just enough to capture what the widget replies with.
+  // This fixture doesn't otherwise gate anything on either, so this
+  // exists purely so a test can assert what actually gets sent back.
+  // Real regression coverage this protects: a required capability can go
+  // missing from the requested list ("Unable to access room timeline"),
+  // and answering supported_api_versions with {} instead of a real
+  // supported_versions array makes Element's OWN handling of that reply
+  // throw ("Cannot read properties of undefined (reading 'includes')")
+  // -- both found live, neither would be caught without capturing these.
+  function askWidget(action) {
+    return new Promise((resolve) => {
+      const requestId = 'widgetapi-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+      const onReply = (event) => {
+        const msg = event.data;
+        if (!msg || msg.widgetId !== cfg.widgetId || msg.requestId !== requestId || !('response' in msg)) return;
+        window.removeEventListener('message', onReply);
+        resolve(msg.response || {});
+      };
+      window.addEventListener('message', onReply);
+      iframe.contentWindow.postMessage({ api: 'toWidget', widgetId: cfg.widgetId, requestId, action, data: {} }, '*');
+    });
+  }
+  iframe.addEventListener('load', () => {
+    askWidget('capabilities').then((response) => { window.__state.requestedCapabilities = response.capabilities || []; });
+    askWidget('supported_api_versions').then((response) => { window.__state.supportedApiVersionsReply = response; });
+  });
+
+  // The bare "read_events" action doesn't exist in any real Widget API
+  // driver -- confirmed live against real Element. Reading past timeline
+  // events is MSC2876, unstabilized, namespaced accordingly; matches the
+  // constant of the same name in wigwag-matrix-host.html itself.
+  const READ_EVENTS_ACTION = 'org.matrix.msc2876.read_events';
+
+  window.addEventListener('message', (event) => {
+    const msg = event.data;
+    if (!msg || typeof msg !== 'object' || msg.widgetId !== cfg.widgetId || msg.api !== 'fromWidget') return;
+    const data = msg.data || {};
+    if (msg.action === READ_EVENTS_ACTION && !(Array.isArray(data.room_ids) && data.room_ids[0] === cfg.roomId)) {
+      // Confirmed live against real Element: omitting room_ids sends the
+      // request down a "deprecated behaviour, no viewedRoomId" fallback
+      // that throws inside Element's OWN ClientWidgetApi before ever
+      // replying -- not a clean error, no reply at all. Simulating that
+      // exact silent-drop here (rather than a tidy error response) is
+      // what makes a regression here show up as the same timeout a real
+      // user would hit, not a misleadingly clean rejection.
+      return;
+    }
+    if (msg.action === 'content_loaded') {
+      reply(msg, {});
+    } else if (msg.action === READ_EVENTS_ACTION && data.type === 'm.room.name') {
+      reply(msg, { events: cfg.roomName ? [{ type: 'm.room.name', content: { name: cfg.roomName } }] : [] });
+    } else if (msg.action === READ_EVENTS_ACTION && data.type !== 'm.room.name' && dropReadEventsRemaining > 0) {
+      // Simulates a request that gets NO reply at all (success or error) --
+      // confirmed live: an earlier real connection attempt sat on
+      // "Connecting..." for 20+ seconds with no resolution either way,
+      // which postToHost's own per-request timeout now bounds.
+      dropReadEventsRemaining--;
+    } else if (msg.action === READ_EVENTS_ACTION && rejectReadEventsRemaining > 0) {
+      // Simulates the real Element race this file's own retry logic exists
+      // for: the widget's first read(s) can arrive before a just-approved
+      // capability has actually taken effect on the host side.
+      rejectReadEventsRemaining--;
+      reply(msg, { error: { message: 'Cannot read room events of this type' } });
+    } else if (msg.action === READ_EVENTS_ACTION) {
+      // Deliberately returns the FULL current set every time rather than
+      // draining a queue -- MSC2876 has no confirmed continuation-token
+      // guarantee, so the real client dedupes by entry id itself instead
+      // of trusting `since`/`nextToken`. Returning everything every call
+      // is the worst case that dedupe has to handle; exercising it here
+      // is the point, not an oversight.
+      reply(msg, { events: window.__state.pendingEntries.slice(), nextToken: 'cursor-' + Date.now() });
+    } else if (msg.action === 'send_event') {
+      window.__state.sentEntries.push(data.content);
+      reply(msg, { event_id: '$' + Math.random().toString(36).slice(2) });
+    } else {
+      reply(msg, {}); // every toWidget-style request must be acked even when there's nothing to do
+    }
+  });
+})();
+</script>
+</body>
+</html>

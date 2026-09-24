@@ -17,13 +17,13 @@
 const { test, expect } = require('@playwright/test');
 const h = require('./helpers');
 
-// "Connect remote..." lives inside the same "Import project..." popover
-// as "From file..." / "Paste from clipboard..." now (one entry point,
-// three choices), not a standalone row of its own.
+// "Connect remote..." is a standalone footer row in the switcher popover
+// (tracker #143, dfb378b2, new_bits.zip's Send/Receive/Search handoff
+// Part B) -- "Import project..." was removed from this popover entirely
+// (Receive now covers that job), so there's no more intermediate menu to
+// open first.
 async function openConnectRemote(page) {
   await h.openTrackerSwitcher(page);
-  await page.locator('[data-testid=btn-import-project-appbar]').click();
-  await page.waitForTimeout(150);
   await page.locator('[data-testid=btn-connect-remote-appbar]').click();
   await page.waitForTimeout(150);
 }

@@ -107,12 +107,34 @@
 
   function docKey(projectId) { return core.STORAGE_KEY + ':' + projectId; }
 
-  async function generateIdentity(label, email) {
+  // A Matrix-originated identity. Two things worth being explicit about:
+  //  - label is the room display name (matrix_display_name, a standard
+  //    widget URL template var Element substitutes in) -- cosmetic, local,
+  //    unsigned, switcher/Settings display only. Deliberately NOT used for
+  //    attribution: a Matrix display name is user-settable and
+  //    room-overridable, so putting it on a signed entry's `actor` would
+  //    make impersonation trivial. The Matrix user id is what's actually
+  //    attributed (see email below).
+  //  - email carries the Matrix user id. wigwag's signed-entry payload has
+  //    a fixed field set (docs/FORMAT.md) with no room for a new signed
+  //    attribution field, and an UNSIGNED one would be worse than none at
+  //    all on a tamper-evident log -- forgeable in exactly the way
+  //    everything around it isn't. `email` is the one signed, human-
+  //    readable "who did this" slot that exists, so the Matrix user id
+  //    goes there: it IS this user's principal, just not an email
+  //    address. matrixUserId (below) is the local marker that this
+  //    identity's email is an MXID mirror, not a real address -- used for
+  //    MXID-keyed lookup on reconnect and correct future display (never
+  //    written to a file, localStorage only).
+  async function generateMatrixIdentity(matrixUserId, matrixDisplayName) {
     const keyPair = await crypto.subtle.generateKey(core.SIGN_ALG, true, ['sign', 'verify']);
     const signingPublicKeyJwk = await crypto.subtle.exportKey('jwk', keyPair.publicKey);
     const signingPrivateKeyJwk = await crypto.subtle.exportKey('jwk', keyPair.privateKey);
     return {
-      id: crypto.randomUUID(), label, email,
+      id: crypto.randomUUID(),
+      label: (matrixDisplayName || '').trim() || matrixUserId,
+      matrixUserId,
+      email: matrixUserId,
       githubToken: '', jiraProxyUrl: '', salesforceProxyUrl: '',
       signingPublicKeyJwk, signingPrivateKeyJwk
     };
@@ -451,15 +473,51 @@
   // default blank-project flow). Only runs the parts that are missing --
   // reconnecting to an already-set-up room must never clobber an
   // existing local identity or project list.
-  async function bootstrapLocalStorage(projectId, projectName, initialDoc, transport, fallbackUserId) {
-    let identities = JSON.parse(localStorage.getItem(core.IDENTITIES_KEY) || 'null');
-    if (!identities || !Array.isArray(identities.identities) || !identities.identities.length) {
-      const userId = await transport.whoAmI(fallbackUserId);
-      const identity = await generateIdentity('Matrix', userId || 'unknown-matrix-user');
-      identities = { activeIdentityId: identity.id, identities: [identity], lastActiveProjectByIdentity: {} };
-      localStorage.setItem(core.IDENTITIES_KEY, JSON.stringify(identities));
+  //
+  // Room-vs-identity: the derived project (the room) isn't "owned" by any
+  // identity in a meaningful sense -- PROJECTS_KEY.milestones[].identityId
+  // is per-browser bookkeeping only ("who I last wrote as here"), the same
+  // derived-not-assigned relationship a non-Matrix project already has
+  // (see requireAttribution's own comment in wigwag.html). Widget mode has
+  // no switcher exposing multiple identities anyway, so this is invisible
+  // in practice -- documented here so nothing later assumes a real
+  // ownership relationship exists.
+  async function bootstrapLocalStorage(projectId, projectName, initialDoc, transport, fallbackUserId, fallbackDisplayName) {
+    // Resolved first and unconditionally -- confirmed live-review finding
+    // (tracker #149): the old check ("only create an identity if
+    // IDENTITIES_KEY is completely empty") meant a second Matrix account,
+    // or a pre-existing personal identity, sharing this browser would
+    // silently sign every write as whoever was already active -- up to
+    // and including leaking a real personal email into a shared room.
+    // Never invent a shared placeholder for a failed lookup either
+    // ('unknown-matrix-user' would make every unresolvable user
+    // indistinguishable from every other) -- fail loudly instead.
+    const matrixUserId = await transport.whoAmI(fallbackUserId);
+    if (!matrixUserId) return { status: 'no-identity', message: 'Could not determine this session\'s Matrix user id.' };
+
+    let store = JSON.parse(localStorage.getItem(core.IDENTITIES_KEY) || 'null');
+    if (!store || !Array.isArray(store.identities)) store = { activeIdentityId: null, identities: [], lastActiveProjectByIdentity: {} };
+
+    // Find-or-create keyed on the Matrix user id itself, not "is any
+    // identity present" -- makes reconnecting from the same browser as
+    // the same Matrix user genuinely stable, and correctly ignores any
+    // OTHER identity (a different Matrix account, or a personal
+    // email-based one) already active here. The second fallback adopts
+    // an identity created before matrixUserId existed as a field (its
+    // email already equals this MXID) so it keeps its existing signing
+    // key rather than forking a new, unrelated one for the same person.
+    let identity = store.identities.find(i => i.matrixUserId === matrixUserId)
+      || store.identities.find(i => !i.matrixUserId && i.email === matrixUserId);
+    if (!identity) {
+      identity = await generateMatrixIdentity(matrixUserId, fallbackDisplayName);
+      store.identities.push(identity);
     }
-    const activeIdentityId = identities.activeIdentityId;
+    identity.matrixUserId = matrixUserId;
+    const freshLabel = (fallbackDisplayName || '').trim();
+    if (freshLabel) identity.label = freshLabel; // label is local/cosmetic only, never signed -- see generateMatrixIdentity
+    store.activeIdentityId = identity.id;
+    localStorage.setItem(core.IDENTITIES_KEY, JSON.stringify(store));
+    const activeIdentityId = identity.id;
 
     let projects = JSON.parse(localStorage.getItem(core.PROJECTS_KEY) || 'null');
     if (!projects || !Array.isArray(projects.milestones)) projects = { activeMilestoneId: null, milestones: [] };
@@ -472,9 +530,10 @@
     if (!localStorage.getItem(docKey(projectId))) {
       localStorage.setItem(docKey(projectId), JSON.stringify(initialDoc));
     }
+    return { status: 'ok' };
   }
 
-  function createMatrixBridge(transport, roomId, fallbackUserId) {
+  function createMatrixBridge(transport, roomId, fallbackUserId, fallbackDisplayName) {
     let remoteRawEvents = [];
     const knownEntryIds = new Set(); // entries already sent to, or received from, Matrix -- never re-sent either way
     let projectId, projectName;
@@ -545,7 +604,8 @@
 
         const remoteDoc = core.hydrateProjectFromMatrixTimeline(remoteRawEvents, { fieldDefs: core.defaultFieldDefs(), projectId, projectName });
         for (const item of flattenEntries(remoteDoc)) knownEntryIds.add(item.entry.id);
-        await bootstrapLocalStorage(projectId, projectName, docStorable({ fieldDefs: remoteDoc.fields, projectHistory: remoteDoc.projectHistory, issues: remoteDoc.issues }, []), transport, fallbackUserId);
+        const bootstrapResult = await bootstrapLocalStorage(projectId, projectName, docStorable({ fieldDefs: remoteDoc.fields, projectHistory: remoteDoc.projectHistory, issues: remoteDoc.issues }, []), transport, fallbackUserId, fallbackDisplayName);
+        if (bootstrapResult.status !== 'ok') return bootstrapResult;
         // A pre-existing local project at this same derived id may already
         // have entries the initial remote pull doesn't yet know about
         // (e.g. an earlier session's local edits that never made it out) --
@@ -592,7 +652,7 @@
       setStatus('This widget was not registered with a $matrix_room_id in its URL -- cannot tell which room to use.', 'error');
     } else {
       const transport = createWidgetTransport(widgetContext);
-      const bridge = createMatrixBridge(transport, widgetContext.roomId, widgetContext.userId);
+      const bridge = createMatrixBridge(transport, widgetContext.roomId, widgetContext.userId, widgetContext.displayName);
       bridge.start().then((result) => {
         if (result.status === 'ok') { showFrame(); return; }
         // Every widget-mode failure this early is plausibly the same root
@@ -629,7 +689,7 @@
             'no-access': 'This token\'s account is not joined to that room (or the room id is wrong).',
             error: 'Matrix error: ' + (result.message || 'unknown')
           };
-          setStatus(messages[result.status] || ('Could not connect (' + result.status + ').'), 'error');
+          setStatus(messages[result.status] || ('Could not connect (' + result.status + ').' + (result.message ? ' ' + result.message : '')), 'error');
           connectBtn.disabled = false;
           return;
         }

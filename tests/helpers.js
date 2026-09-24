@@ -566,7 +566,7 @@ function mockGithubContentsApi(page, repo, path = 'tracker.jsonl') {
 // room with no name set (the host falls back to a placeholder). Set
 // `accessDenied: true` to make every request 403, for testing the
 // no-access path without needing a second mocked room.
-function mockMatrixClientApi(page, { homeserverUrl, roomId, initialEntries = [], roomName, accessDenied = false } = {}) {
+function mockMatrixClientApi(page, { homeserverUrl, roomId, initialEntries = [], roomName, accessDenied = false, whoamiFails = false } = {}) {
   const state = { sentEntries: [], messagesCallCount: 0, pendingEntries: [] };
   const base = homeserverUrl.replace(/\/$/, '');
   const roomPath = base + '/_matrix/client/v3/rooms/' + encodeURIComponent(roomId);
@@ -598,8 +598,12 @@ function mockMatrixClientApi(page, { homeserverUrl, roomId, initialEntries = [],
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ room_id: roomId }) });
   });
 
+  // whoamiFails is independent of accessDenied -- a token can legitimately
+  // read/write room messages (probe succeeds) while lacking permission for
+  // (or hitting a flaky) /account/whoami specifically. Exercises the
+  // "resolvable-room, unresolvable-identity" path on its own.
   page.route(base + '/_matrix/client/v3/account/whoami', async (route) => {
-    if (accessDenied) { await route.fulfill({ status: 401, contentType: 'application/json', body: '{}' }); return; }
+    if (accessDenied || whoamiFails) { await route.fulfill({ status: 401, contentType: 'application/json', body: '{}' }); return; }
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ user_id: '@test-user:example.org' }) });
   });
 

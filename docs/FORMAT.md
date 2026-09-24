@@ -529,6 +529,32 @@ mechanism for sharing data between collaborators who are basically
 trusting each other already — not protection against a motivated
 adversary.
 
+### The `email` field is really a principal
+
+Tracker #149 (29e719c1): a signed entry's `email` is the author's
+**principal** — a canonical, stable, human-readable identifier they act
+under — not necessarily a literal email address. For a locally-configured
+identity that's an email address; for an identity originating from the
+Matrix widget (`wigwag-matrix-host.html`) it's a Matrix user id (e.g.
+`@tom:lant.uk`), mirrored into the same `email` slot rather than added as
+a new field: the signed payload's field set is fixed, and an *unsigned*
+attribution field would be forgeable in exactly the way everything else on
+the entry isn't. `wigwag-core.js`'s `principalKind(principal)` tells the
+two apart with one rule — a principal starting with `@` is a Matrix user
+id, anything else is an email — and `identityPrincipal(identity)` reads
+whichever an identity record actually carries.
+
+One consequence worth flagging for future TOFU work specifically: **one
+principal legitimately having multiple signing keys is the normal, steady
+state for a Matrix-originated identity**, not an anomaly — there's no
+portable-key mechanism for any wigwag identity today (Matrix or not), so
+the same person reconnecting from a different browser/device mints an
+unrelated local keypair every time. If per-entry key-trust ever gets wired
+up against render time (today's TOFU store above is populated but not
+actually consulted anywhere), "known principal, new key" needs to be a
+neutral fact worth recording, not a warning to raise — otherwise every
+multi-device Matrix user would trip it constantly.
+
 ### The `keys` registry: deduping a repeated pubKey on disk
 
 Tracker #132 (68d960f2): the public key above is the same ~180-byte JWK on

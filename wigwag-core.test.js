@@ -2242,3 +2242,26 @@ test('issueMatchesFieldToken: timestamp fields only resolve against a date-prese
   assert.equal(core.issueMatchesFieldToken(oldIssue, 'updated', def, 'today'), false);
   assert.equal(core.issueMatchesFieldToken(nowIssue, 'updated', def, 'not-a-real-preset'), null); // unresolved token, not a hard exclusion
 });
+
+// Tracker #149 (29e719c1): a signed entry's `email` is really the
+// author's principal -- an email address for a locally-configured
+// identity, a Matrix user id for one originating from the Matrix widget.
+
+test('principalKind: an MXID (@localpart:server) is "matrix", anything else is "email"', () => {
+  assert.equal(core.principalKind('@tom:lant.uk'), 'matrix');
+  assert.equal(core.principalKind('@a:b'), 'matrix');
+  assert.equal(core.principalKind('tom@lant.uk'), 'email');
+  assert.equal(core.principalKind(''), 'email');
+  assert.equal(core.principalKind(null), 'email');
+  assert.equal(core.principalKind(undefined), 'email');
+  assert.equal(core.principalKind('@no-server-part'), 'email'); // missing the ":server" half
+});
+
+test('identityPrincipal: prefers email, falls back to matrixUserId, never throws on a bare/missing identity', () => {
+  assert.equal(core.identityPrincipal({ email: 'tom@lant.uk', matrixUserId: '@tom:lant.uk' }), 'tom@lant.uk');
+  assert.equal(core.identityPrincipal({ email: '@tom:lant.uk', matrixUserId: '@tom:lant.uk' }), '@tom:lant.uk'); // the Matrix-mirror-into-email case
+  assert.equal(core.identityPrincipal({ matrixUserId: '@tom:lant.uk' }), '@tom:lant.uk'); // no email field at all
+  assert.equal(core.identityPrincipal({}), '');
+  assert.equal(core.identityPrincipal(null), '');
+  assert.equal(core.identityPrincipal(undefined), '');
+});

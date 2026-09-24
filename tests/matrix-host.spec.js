@@ -52,6 +52,19 @@ test.describe('wigwag-matrix-host.html: connecting', () => {
     await expect(page.locator('#connectBtn')).toBeEnabled(); // can retry, not stuck disabled
   });
 
+  test('a token that can read/write the room but fails /account/whoami fails loudly instead of writing a placeholder identity', async ({ page }) => {
+    h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, initialEntries: [], whoamiFails: true });
+    await page.goto('/wigwag-matrix-host.html');
+    await page.locator('#homeserverUrl').fill(HOMESERVER);
+    await page.locator('#accessToken').fill('tok123');
+    await page.locator('#roomId').fill(ROOM_ID);
+    await page.locator('#connectBtn').click();
+    await expect(page.locator('#status')).toContainText('Matrix user id');
+    await expect(page.locator('#frame')).toBeHidden();
+    const identities = await page.evaluate(() => localStorage.getItem('git_native_tracker_identities_v1'));
+    expect(identities).toBeNull(); // nothing written at all -- no placeholder identity
+  });
+
   test('a #alias room id resolves to a real room id before connecting', async ({ page }) => {
     h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, initialEntries: [] });
     await page.goto('/wigwag-matrix-host.html');
@@ -311,5 +324,104 @@ test.describe('wigwag-matrix-host.html: widget-embedded transport', () => {
     const reply = await page.evaluate(() => window.__state.supportedApiVersionsReply);
     expect(Array.isArray(reply.supported_versions)).toBe(true);
     expect(reply.supported_versions).toEqual(expect.arrayContaining(['org.matrix.msc2762', 'org.matrix.msc2876']));
+  });
+});
+
+// Tracker #149 (29e719c1): identity bootstrap must be keyed on the Matrix
+// user id itself, not "is any identity already present in this browser" --
+// the old check meant a second Matrix account, or a pre-existing personal
+// identity, sharing a browser would silently sign every write as whoever
+// was already active (including leaking a real personal email into a
+// shared room). See wigwag-matrix-host.html's own bootstrapLocalStorage
+// comment for the full reasoning.
+const IDENTITIES_LS_KEY = 'git_native_tracker_identities_v1';
+async function readIdentities(page) {
+  return page.evaluate((key) => {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw).identities : null;
+  }, IDENTITIES_LS_KEY);
+}
+
+test.describe('wigwag-matrix-host.html: MXID-keyed identity bootstrap', () => {
+  test('two different Matrix users connecting from the same browser each get their own identity', async ({ page }) => {
+    await h.gotoFakeWidgetHost(page, { roomId: '!widgetroom:example.org', userId: '@alice:example.org', roomName: 'Widget Room', initialEntries: [] });
+    await expect(page.frameLocator('#widget').locator('#frame')).toBeVisible();
+    const afterAlice = await readIdentities(page);
+    expect(afterAlice).toHaveLength(1);
+    expect(afterAlice[0].matrixUserId).toBe('@alice:example.org');
+
+    await h.gotoFakeWidgetHost(page, { roomId: '!widgetroom:example.org', userId: '@bob:example.org', roomName: 'Widget Room', initialEntries: [] });
+    await expect(page.frameLocator('#widget').locator('#frame')).toBeVisible();
+    const afterBob = await readIdentities(page);
+    expect(afterBob).toHaveLength(2); // Alice's own identity is untouched, not overwritten
+    expect(afterBob.map(i => i.matrixUserId).sort()).toEqual(['@alice:example.org', '@bob:example.org']);
+  });
+
+  test('reconnecting as the same Matrix user reuses the same identity and signing key, not a fresh one', async ({ page }) => {
+    await h.gotoFakeWidgetHost(page, { roomId: '!widgetroom:example.org', userId: '@tom:lant.uk', roomName: 'Widget Room', initialEntries: [] });
+    await expect(page.frameLocator('#widget').locator('#frame')).toBeVisible();
+    const first = (await readIdentities(page))[0];
+
+    await h.gotoFakeWidgetHost(page, { roomId: '!widgetroom:example.org', userId: '@tom:lant.uk', roomName: 'Widget Room', initialEntries: [] });
+    await expect(page.frameLocator('#widget').locator('#frame')).toBeVisible();
+    const afterReconnect = await readIdentities(page);
+    expect(afterReconnect).toHaveLength(1); // no duplicate minted
+    expect(afterReconnect[0].id).toBe(first.id);
+    expect(afterReconnect[0].signingPublicKeyJwk).toEqual(first.signingPublicKeyJwk); // same key, not a fresh one
+  });
+
+  test('a pre-existing personal (non-Matrix) identity in the same browser is never adopted or overwritten', async ({ page }) => {
+    // addInitScript re-runs on EVERY same-origin navigation in this page --
+    // including the nested #frame iframe loading wigwag.html AFTER
+    // bootstrapLocalStorage has already run -- so an unconditional write
+    // here would clobber the freshly-created Matrix identity right back
+    // to this seed. Guarded the same way seedDemoMilestone already is.
+    await page.addInitScript((key) => {
+      if (localStorage.getItem(key)) return;
+      localStorage.setItem(key, JSON.stringify({
+        activeIdentityId: 'personal-1',
+        identities: [{ id: 'personal-1', label: 'Real Person', email: 'real.person@example.com', githubToken: '', jiraProxyUrl: '', salesforceProxyUrl: '', signingPublicKeyJwk: {}, signingPrivateKeyJwk: {} }],
+        lastActiveProjectByIdentity: {}
+      }));
+    }, IDENTITIES_LS_KEY);
+    await h.gotoFakeWidgetHost(page, { roomId: '!widgetroom:example.org', userId: '@tom:lant.uk', roomName: 'Widget Room', initialEntries: [] });
+    await expect(page.frameLocator('#widget').locator('#frame')).toBeVisible();
+    const identities = await readIdentities(page);
+    expect(identities).toHaveLength(2);
+    const personal = identities.find(i => i.id === 'personal-1');
+    expect(personal.email).toBe('real.person@example.com'); // untouched
+    expect(personal.matrixUserId).toBeUndefined();
+    const matrixIdentity = identities.find(i => i.id !== 'personal-1');
+    expect(matrixIdentity.matrixUserId).toBe('@tom:lant.uk');
+  });
+
+  test('a legacy identity whose email already equals this MXID is adopted, keeping its existing signing key', async ({ page }) => {
+    // Same re-fires-on-every-navigation guard as above.
+    await page.addInitScript((key) => {
+      if (localStorage.getItem(key)) return;
+      localStorage.setItem(key, JSON.stringify({
+        activeIdentityId: 'legacy-1',
+        identities: [{ id: 'legacy-1', label: 'Matrix', email: '@tom:lant.uk', githubToken: '', jiraProxyUrl: '', salesforceProxyUrl: '', signingPublicKeyJwk: { kty: 'EC', x: 'legacy-x' }, signingPrivateKeyJwk: {} }],
+        lastActiveProjectByIdentity: {}
+      }));
+    }, IDENTITIES_LS_KEY);
+    await h.gotoFakeWidgetHost(page, { roomId: '!widgetroom:example.org', userId: '@tom:lant.uk', displayName: 'Tom', roomName: 'Widget Room', initialEntries: [] });
+    await expect(page.frameLocator('#widget').locator('#frame')).toBeVisible();
+    const identities = await readIdentities(page);
+    expect(identities).toHaveLength(1); // adopted, not duplicated
+    expect(identities[0].id).toBe('legacy-1');
+    expect(identities[0].signingPublicKeyJwk).toEqual({ kty: 'EC', x: 'legacy-x' }); // the pre-existing key survives
+    expect(identities[0].matrixUserId).toBe('@tom:lant.uk'); // backfilled
+    expect(identities[0].label).toBe('Tom'); // refreshed from the current display name
+  });
+
+  test('a widget with no resolvable Matrix user id fails loudly instead of writing a shared "unknown-matrix-user" placeholder', async ({ page }) => {
+    await h.gotoFakeWidgetHost(page, { roomId: '!widgetroom:example.org', userId: '', roomName: 'Widget Room', initialEntries: [] });
+    const widget = page.frameLocator('#widget');
+    await expect(widget.locator('#status')).toBeVisible();
+    await expect(widget.locator('#status')).toContainText('Matrix user id');
+    await expect(widget.locator('#frame')).toBeHidden();
+    const identities = await readIdentities(page);
+    expect(identities).toBeNull(); // nothing written at all -- no placeholder identity
   });
 });

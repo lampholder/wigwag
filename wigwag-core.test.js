@@ -2265,3 +2265,22 @@ test('identityPrincipal: prefers email, falls back to matrixUserId, never throws
   assert.equal(core.identityPrincipal(null), '');
   assert.equal(core.identityPrincipal(undefined), '');
 });
+
+test('renderMarkdown: a bare Matrix user id gets the same person-pill treatment as an email, minus the mailto: link', () => {
+  const html = core.renderMarkdown('cc @tom:lant.uk please');
+  assert.match(html, /class="email-pill"/);
+  assert.doesNotMatch(html, /href="mailto:/);
+  assert.match(html, /Matrix ID @tom:lant\.uk/);
+  assert.match(html, />@tom<.*>:lant\.uk</); // "@tom" at full strength, ":lant.uk" dimmed -- same split style as the email pill
+});
+
+test('renderMarkdown: a real email address is completely unaffected by the MXID pill pass', () => {
+  const html = core.renderMarkdown('reach tom@lant.uk anytime');
+  assert.match(html, /href="mailto:tom@lant\.uk"/);
+  assert.doesNotMatch(html, /Matrix ID/);
+});
+
+test('renderMarkdown: an MXID at the end of a sentence does not swallow the trailing period', () => {
+  const html = core.renderMarkdown('It was @tom:lant.uk.');
+  assert.match(html, /Matrix ID @tom:lant\.uk"/); // pill covers exactly the id, not "lant.uk."
+});

@@ -954,6 +954,17 @@ function renderMarkdownInline(line) {
     const local = email.slice(0, at), domain = email.slice(at);
     return push('<a href="mailto:' + email + '" title="Email ' + email + '" class="email-pill"><svg width="10" height="10" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="4" r="2.1" stroke="currentColor" stroke-width="1.2"></circle><path d="M2.3 10.2c0-2.05 1.66-3.3 3.7-3.3s3.7 1.25 3.7 3.3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"></path></svg><span>' + local + '<span style="opacity:0.6;">' + domain + '</span></span></a>');
   });
+  // Bare Matrix user ids (@localpart:server) -> the same person-pill
+  // treatment an email address gets, minus the mailto: link -- there's no
+  // universal, safely-clickable URI scheme for one here. The leading `@`
+  // is what the plain email regex above can never match (it requires a
+  // non-empty local part before the `@`), so there's no overlap between
+  // the two passes.
+  out = out.replace(/@[^\s:@]+:[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*/g, function (mxid) {
+    const colon = mxid.indexOf(':');
+    const local = mxid.slice(0, colon), domain = mxid.slice(colon);
+    return push('<span title="Matrix ID ' + mxid + '" class="email-pill"><svg width="10" height="10" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="4" r="2.1" stroke="currentColor" stroke-width="1.2"></circle><path d="M2.3 10.2c0-2.05 1.66-3.3 3.7-3.3s3.7 1.25 3.7 3.3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"></path></svg><span>' + local + '<span style="opacity:0.6;">' + domain + '</span></span></span>');
+  });
   out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   out = out.replace(/__([^_]+)__/g, '<strong>$1</strong>');
   out = out.replace(/~~([^~]+)~~/g, '<del>$1</del>');

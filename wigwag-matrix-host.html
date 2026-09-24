@@ -100,9 +100,18 @@
   // the plan doc). Deriving it deterministically from the room id means
   // reconnecting to the same room always resolves to the same local
   // project, with no separate persisted room->project mapping needed.
-  function deriveProjectId(roomId) {
-    const hash = Array.from(roomId).reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 0);
-    return 'matrix-' + hash.toString(16).padStart(8, '0');
+  //
+  // SHA-256 (truncated to 128 bits), not a 32-bit rolling hash -- a real
+  // collision-risk finding (tracker #149): two rooms colliding onto the
+  // same derived id would share a localStorage doc key, and since
+  // pushNewLocalEntries sends any local entry the room hasn't seen yet,
+  // room A's issues would get published straight into room B. A 32-bit
+  // space makes that a real (if small) risk; 128 bits makes it
+  // astronomically unlikely instead.
+  async function deriveProjectId(roomId) {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(roomId));
+    const hex = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
+    return 'matrix-' + hex.slice(0, 32);
   }
 
   function docKey(projectId) { return core.STORAGE_KEY + ':' + projectId; }
@@ -599,7 +608,7 @@
         if (initialPull.status !== 'ok') return initialPull;
         remoteRawEvents = initialPull.events;
 
-        projectId = deriveProjectId(roomId);
+        projectId = await deriveProjectId(roomId);
         projectName = (await transport.getRoomName()) || ('Matrix room ' + roomId);
 
         const remoteDoc = core.hydrateProjectFromMatrixTimeline(remoteRawEvents, { fieldDefs: core.defaultFieldDefs(), projectId, projectName });

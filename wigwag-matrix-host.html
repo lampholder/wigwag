@@ -264,16 +264,20 @@
         const txnId = 'wigwag-batch-' + Date.now() + '-' + Math.random().toString(36).slice(2);
         return core.sendMatrixEntries({ fetchImpl: fetch, homeserverUrl, accessToken, roomId, content: core.matrixEventContentFromEntries(items), txnId });
       },
-      async sendSnapshot(manifest, chunks) {
-        const manifestTxnId = 'wigwag-snapshot-' + manifest.snapshotId;
-        const manifestResult = await core.sendMatrixSnapshotManifest({ fetchImpl: fetch, homeserverUrl, accessToken, roomId, content: core.matrixEventContentFromSnapshotManifest(manifest), txnId: manifestTxnId });
-        if (manifestResult.status !== 'ok') return manifestResult;
-        for (const chunk of chunks) {
-          const chunkTxnId = 'wigwag-snapshot-chunk-' + chunk.snapshotId + '-' + chunk.sequenceNumber;
-          const chunkResult = await core.sendMatrixSnapshotChunk({ fetchImpl: fetch, homeserverUrl, accessToken, roomId, content: core.matrixEventContentFromSnapshotChunk(chunk), txnId: chunkTxnId });
-          if (chunkResult.status !== 'ok') return chunkResult;
-        }
-        return { status: 'ok' };
+      // Media-blob snapshot (tracker f6b39bf0's rate-limit fix, replacing
+      // the old chunk-event set) -- one upload, real access token, plain
+      // fetch. See core.uploadMatrixMedia's own comment for the endpoint
+      // choice (upload stays on /_matrix/media/v3/upload; only
+      // download/config moved under MSC3916).
+      async uploadSnapshotBlob(bytes) {
+        return core.uploadMatrixMedia({ fetchImpl: fetch, homeserverUrl, accessToken, bytes });
+      },
+      async downloadSnapshotBlob(mxc) {
+        return core.downloadMatrixMedia({ fetchImpl: fetch, homeserverUrl, accessToken, mxc });
+      },
+      async sendSnapshotManifest(manifestContent) {
+        const txnId = 'wigwag-snapshot-' + manifestContent.snapshotId;
+        return core.sendMatrixSnapshotManifest({ fetchImpl: fetch, homeserverUrl, accessToken, roomId, content: manifestContent, txnId });
       },
       async getRoomName() {
         try {
@@ -343,10 +347,11 @@
   // Element gates read/send per event type, not per "wigwag in general".
   const WIDGET_ENTRIES_TYPE = core.WIGWAG_MATRIX_ENTRIES_TYPE;
   // Room snapshot (tracker f6b39bf0/#153, f1c7098f/#154) -- see
-  // reassembleLatestSnapshots's own comment in wigwag-core.js. Two more
-  // event types, same "needs its own receive/send capability" treatment.
+  // WIGWAG_MATRIX_SNAPSHOT_TYPE's own comment in wigwag-core.js. Just the
+  // one small manifest event now (media-blob snapshots, not chunking) --
+  // same "needs its own receive/send capability" treatment as any other
+  // event type.
   const WIDGET_SNAPSHOT_TYPE = core.WIGWAG_MATRIX_SNAPSHOT_TYPE;
-  const WIDGET_SNAPSHOT_CHUNK_TYPE = core.WIGWAG_MATRIX_SNAPSHOT_CHUNK_TYPE;
   // Project index (tracker f6b39bf0, live-reported rate-limit incident) --
   // a STATE event type, needs send.state_event/receive.state_event
   // capabilities below, not the send.event/receive.event pair the other
@@ -404,11 +409,18 @@
       'org.matrix.msc2762.send.event:' + WIDGET_ENTRIES_TYPE,
       'org.matrix.msc2762.receive.event:' + WIDGET_SNAPSHOT_TYPE,
       'org.matrix.msc2762.send.event:' + WIDGET_SNAPSHOT_TYPE,
-      'org.matrix.msc2762.receive.event:' + WIDGET_SNAPSHOT_CHUNK_TYPE,
-      'org.matrix.msc2762.send.event:' + WIDGET_SNAPSHOT_CHUNK_TYPE,
       'org.matrix.msc2762.receive.state_event:' + WIDGET_PROJECT_STATE_TYPE,
       'org.matrix.msc2762.send.state_event:' + WIDGET_PROJECT_STATE_TYPE,
-      'org.matrix.msc2762.timeline:' + roomId
+      'org.matrix.msc2762.timeline:' + roomId,
+      // MSC4039 ("Access the Content repository with the Widget API") --
+      // media-blob snapshots (tracker f6b39bf0's rate-limit fix) need the
+      // widget transport to reach the media repo too, not just the direct
+      // transport's plain fetch. Still unstable/unmerged as of this
+      // writing (confirmed implemented in matrix-widget-api since v1.9.0
+      // and in Element's react-sdk), hence the namespaced prefix on both
+      // the capability strings here and the action names below.
+      'org.matrix.msc4039.upload_file',
+      'org.matrix.msc4039.download_file'
     ];
 
     function nextRequestId() { return 'wigwag-' + Date.now() + '-' + (seq++); }
@@ -582,17 +594,14 @@
             events.push(...((batchResult && batchResult.events) || []));
             if (batchResult && batchResult.nextToken) readCursor = batchResult.nextToken;
           } catch (e) { console.warn('[wigwag-matrix-host] batch read_events failed (non-fatal):', e.message); }
-          // Snapshot manifest + chunk events -- same best-effort treatment:
-          // a host that hasn't granted these newer capabilities yet must
-          // never break ordinary sync.
+          // Snapshot manifest events -- same best-effort treatment: a host
+          // that hasn't granted this newer capability yet must never break
+          // ordinary sync. Just the one small event now (media-blob
+          // snapshots, not chunking) -- no separate chunk-type read.
           try {
             const snapResult = await postToHost(READ_EVENTS_ACTION, { type: WIDGET_SNAPSHOT_TYPE, room_ids: [roomId], limit: WIDGET_PAGE_LIMIT, since: readCursor });
             events.push(...((snapResult && snapResult.events) || []));
           } catch (e) { console.warn('[wigwag-matrix-host] snapshot read_events failed (non-fatal):', e.message); }
-          try {
-            const chunkResult = await postToHost(READ_EVENTS_ACTION, { type: WIDGET_SNAPSHOT_CHUNK_TYPE, room_ids: [roomId], limit: WIDGET_PAGE_LIMIT, since: readCursor });
-            events.push(...((chunkResult && chunkResult.events) || []));
-          } catch (e) { console.warn('[wigwag-matrix-host] snapshot chunk read_events failed (non-fatal):', e.message); }
           // A project created by a moderator WHILE this session is already
           // connected rides this same live poll -- same best-effort
           // treatment as the other types above.
@@ -621,12 +630,36 @@
           return { status: 'error', message: e.message };
         }
       },
-      async sendSnapshot(manifest, chunks) {
+      // MSC4039 ("Access the Content repository with the Widget API") --
+      // exact request/response shapes confirmed against the proposal
+      // text: data.file / response.file are a raw XMLHttpRequestBodyInit
+      // (a Uint8Array/ArrayBuffer, structured-clonable through postMessage
+      // directly), never base64. Still unstable/unmerged; the exact wire
+      // behavior against a REAL Element build is worth a manual smoke test
+      // before relying on this live, same caveat as this file's other
+      // MSC-prefixed actions.
+      async uploadSnapshotBlob(bytes) {
         try {
-          await postToHost('send_event', { type: WIDGET_SNAPSHOT_TYPE, content: core.matrixEventContentFromSnapshotManifest(manifest) });
-          for (const chunk of chunks) {
-            await postToHost('send_event', { type: WIDGET_SNAPSHOT_CHUNK_TYPE, content: core.matrixEventContentFromSnapshotChunk(chunk) });
-          }
+          const result = await postToHost('org.matrix.msc4039.upload_file', { file: bytes });
+          if (!result || !result.content_uri) return { status: 'error', message: 'upload_file returned no content_uri' };
+          return { status: 'ok', mxc: result.content_uri };
+        } catch (e) {
+          return { status: 'error', message: e.message };
+        }
+      },
+      async downloadSnapshotBlob(mxc) {
+        try {
+          const result = await postToHost('org.matrix.msc4039.download_file', { content_uri: mxc });
+          if (!result || !result.file) return { status: 'error', message: 'download_file returned no file' };
+          const bytes = result.file instanceof Uint8Array ? result.file : new Uint8Array(result.file);
+          return { status: 'ok', bytes };
+        } catch (e) {
+          return { status: 'error', message: e.message };
+        }
+      },
+      async sendSnapshotManifest(manifestContent) {
+        try {
+          await postToHost('send_event', { type: WIDGET_SNAPSHOT_TYPE, content: manifestContent });
           return { status: 'ok' };
         } catch (e) {
           return { status: 'error', message: e.message };
@@ -927,19 +960,19 @@
     }
 
     // Room snapshot write side (tracker f6b39bf0/#153, f1c7098f/#154) --
-    // see reassembleLatestSnapshots's own comment in wigwag-core.js for
+    // see WIGWAG_MATRIX_SNAPSHOT_TYPE's own comment in wigwag-core.js for
     // the read side and full rationale. Repackages a project's FULL
     // current history (not squashed -- every entry keeps its own real
-    // signature) into a manifest + count-chunked payload, reusing the
+    // signature) into one client-side-encrypted media blob, reusing the
     // exact per-entry shape flattenEntries/matrixEventContentFromEntry
     // already produce for ordinary batch pushes.
     //
-    // This is ALSO now the one-time bulk-adopt push for a project just
-    // adopted into the room (tracker #149's original bulk-push, formerly
-    // its own separate pushAllEntriesAsBatch, now folded in here). Live-
-    // reported (Tom, tracker f6b39bf0): sending the full history as plain
-    // batch entries AND THEN a snapshot -- what this file used to do --
-    // means every bulk-adopted entry goes out on the wire TWICE, roughly
+    // This is ALSO the one-time bulk-adopt push for a project just adopted
+    // into the room (tracker #149's original bulk-push, formerly its own
+    // separate pushAllEntriesAsBatch, now folded in here). Live-reported
+    // (Tom, tracker f6b39bf0): sending the full history as plain batch
+    // entries AND THEN a snapshot -- what this file used to do -- means
+    // every bulk-adopted entry goes out on the wire TWICE, roughly
     // doubling the request volume at exactly the moment (a big import)
     // rate limiting is already most likely to bite. A snapshot alone is a
     // complete, sufficient representation on its own; there is nothing the
@@ -960,17 +993,27 @@
       items.forEach(item => knownEntryIds.add(item.entry.id));
       const cutoffSortKey = items.reduce((max, item) => Math.max(max, item.entry.sortKey || 0), 0);
       const snapshotId = crypto.randomUUID ? crypto.randomUUID() : ('snap-' + Date.now() + '-' + Math.random().toString(36).slice(2));
-      const chunkCount = Math.ceil(items.length / core.SNAPSHOT_CHUNK_SIZE);
-      const chunks = [];
-      for (let i = 0; i < chunkCount; i++) {
-        chunks.push({ snapshotId, sequenceNumber: i, items: items.slice(i * core.SNAPSHOT_CHUNK_SIZE, (i + 1) * core.SNAPSHOT_CHUNK_SIZE) });
+      const plaintextBytes = new TextEncoder().encode(JSON.stringify(items.map(item => core.matrixEventContentFromEntry(item))));
+      const { ciphertext, encryption } = await core.encryptSnapshotPayload(plaintextBytes);
+      const uploadResult = await transport.uploadSnapshotBlob(ciphertext);
+      if (uploadResult.status !== 'ok') {
+        console.warn('[wigwag-matrix-host] failed to upload snapshot blob for', projectId, uploadResult);
+        items.forEach(item => knownEntryIds.delete(item.entry.id)); // roll back the optimistic mark -- these were never actually sent
+        return;
       }
-      const result = await transport.sendSnapshot({ projectId, snapshotId, chunkCount, cutoffSortKey }, chunks);
-      if (result.status === 'ok') {
+      const manifestContent = core.matrixEventContentFromSnapshotManifest({ projectId, snapshotId, cutoffSortKey, mxc: uploadResult.mxc, size: ciphertext.length, encryption });
+      const manifestResult = await transport.sendSnapshotManifest(manifestContent);
+      if (manifestResult.status === 'ok') {
         lastSnapshotEntryCount.set(projectId, items.length);
       } else {
-        console.warn('[wigwag-matrix-host] failed to send snapshot for', projectId, result);
-        items.forEach(item => knownEntryIds.delete(item.entry.id)); // roll back the optimistic mark -- these were never actually sent
+        // The blob itself is already uploaded and orphaned at this point
+        // (harmless -- nothing references it, and cleaning up superseded/
+        // orphaned blobs is explicitly out of scope for now, same as the
+        // old chunk-event design never cleaned up superseded snapshots
+        // either). Rolling back knownEntryIds means a later retry starts
+        // completely fresh (a new blob, a new manifest), not a half state.
+        console.warn('[wigwag-matrix-host] failed to send snapshot manifest for', projectId, manifestResult);
+        items.forEach(item => knownEntryIds.delete(item.entry.id));
       }
     }
     // Checked from the live poll's own reconcile step (below) -- a snapshot
@@ -1107,18 +1150,28 @@
 
         const legacyDefaultProjectId = deriveProjectId(roomId);
         // Room snapshot integration (tracker f6b39bf0/#153, f1c7098f/#154)
-        // -- see reassembleLatestSnapshots's own comment in wigwag-core.js.
-        // A complete snapshot for a project REPLACES that project's older
-        // raw entries entirely (both represent the exact same signed
-        // history -- keeping both would double-count every pre-cutoff
-        // entry). Reassembled snapshot items are re-wrapped as synthetic
+        // -- see WIGWAG_MATRIX_SNAPSHOT_TYPE's own comment in
+        // wigwag-core.js. A resolved snapshot for a project REPLACES that
+        // project's older raw entries entirely (both represent the exact
+        // same signed history -- keeping both would double-count every
+        // pre-cutoff entry). Snapshot items are re-wrapped as synthetic
         // dev.wigwag.entry-shaped events so discoverProjects/
         // hydrateProjectFromMatrixTimeline need ZERO changes -- they can't
         // tell a snapshot-sourced entry from a directly-pulled one, by
-        // design. A project with no (complete) snapshot behaves exactly as
-        // before -- this is strictly additive, never a regression from not
-        // having one yet.
-        const snapshotsByProject = core.reassembleLatestSnapshots(initialPull.events);
+        // design. A project with no (resolvable) snapshot behaves exactly
+        // as before -- this is strictly additive, never a regression from
+        // not having one yet. Resolving is async now (a real
+        // download+decrypt per project), unlike the old chunk-reassembly
+        // which came for free from the already-pulled raw events -- worth
+        // its cost, since it also means there's no partial/incomplete
+        // state to reason about any more: a snapshot either fully resolves
+        // or it doesn't (see resolveSnapshotPayload's own comment).
+        const manifestsByProject = core.findLatestSnapshotManifests(initialPull.events);
+        const snapshotsByProject = new Map(); // projectId -> {cutoffSortKey, items}
+        for (const [projectId, manifest] of manifestsByProject) {
+          const resolved = await core.resolveSnapshotPayload(manifest, { downloadFn: transport.downloadSnapshotBlob });
+          if (resolved) snapshotsByProject.set(projectId, { cutoffSortKey: manifest.cutoffSortKey, items: resolved.items });
+        }
         const tailItems = core.decodeAllMatrixEntryItems(initialPull.events).filter(item => {
           const pid = item.projectId || legacyDefaultProjectId;
           const snap = snapshotsByProject.get(pid);

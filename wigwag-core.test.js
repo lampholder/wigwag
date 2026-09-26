@@ -2158,7 +2158,7 @@ test('fetchMatrixRoomEntries: filters to the wigwag entry type, paginates via `f
   assert.equal(okResult.status, 'ok');
   assert.deepEqual(okResult.events, [{ id: 'e1' }]);
   assert.equal(okResult.end, 'tok2');
-  assert.match(lastUrl, /filter=%7B%22types%22%3A%5B%22dev\.wigwag\.entry%22%2C%22dev\.wigwag\.entries%22%2C%22dev\.wigwag\.snapshot%22%2C%22dev\.wigwag\.snapshot\.chunk%22%2C%22dev\.wigwag\.project%22%5D%7D/);
+  assert.match(lastUrl, /filter=%7B%22types%22%3A%5B%22dev\.wigwag\.entry%22%2C%22dev\.wigwag\.entries%22%2C%22dev\.wigwag\.snapshot%22%2C%22dev\.wigwag\.project%22%5D%7D/);
   assert.match(lastUrl, /from=tok1/);
 
   const forbiddenFetch = async () => ({ ok: false, status: 403 });
@@ -2302,73 +2302,86 @@ test('hydrateProjectFromMatrixTimeline: expands a batch (dev.wigwag.entries) eve
   assert.deepEqual(result.issues.map(i => i.values.title).sort(), ['Also from a batch', 'From a batch']);
 });
 
+test('encryptSnapshotPayload / decryptSnapshotPayload: round-trips real bytes through real WebCrypto AES-CTR', async () => {
+  const plaintext = new TextEncoder().encode(JSON.stringify([{ scope: 'issue', issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Round trip', sortKey: 1 } }]));
+  const { ciphertext, encryption } = await core.encryptSnapshotPayload(plaintext);
+  assert.notDeepEqual(Array.from(ciphertext), Array.from(plaintext)); // actually encrypted, not passed through
+  assert.equal(encryption.v, 'v2');
+  assert.ok(encryption.key && encryption.key.kty); // a real JWK
+  const decrypted = await core.decryptSnapshotPayload({ ciphertext, encryption });
+  assert.deepEqual(Array.from(decrypted), Array.from(plaintext));
+});
+
+test('decryptSnapshotPayload: a corrupted/tampered ciphertext is caught by the hash check, never decrypted', async () => {
+  const plaintext = new TextEncoder().encode('hello snapshot');
+  const { ciphertext, encryption } = await core.encryptSnapshotPayload(plaintext);
+  const tampered = new Uint8Array(ciphertext);
+  tampered[0] ^= 0xff; // flip a bit
+  const result = await core.decryptSnapshotPayload({ ciphertext: tampered, encryption });
+  assert.equal(result, null);
+});
+
+test('decryptSnapshotPayload: tolerant of missing key material, never throws', async () => {
+  assert.equal(await core.decryptSnapshotPayload({ ciphertext: new Uint8Array([1, 2, 3]), encryption: null }), null);
+  assert.equal(await core.decryptSnapshotPayload({ ciphertext: null, encryption: { key: {}, iv: 'x', hashes: { sha256: 'x' } } }), null);
+});
+
 test('matrixEventContentFromSnapshotManifest / snapshotManifestFromMatrixEvent: round-trips', () => {
-  const content = core.matrixEventContentFromSnapshotManifest({ projectId: 'p1', snapshotId: 'snap-1', chunkCount: 3, cutoffSortKey: 500 });
+  const encryption = { key: { kty: 'oct', k: 'x' }, iv: 'aXY=', hashes: { sha256: 'aGFzaA==' }, v: 'v2' };
+  const content = core.matrixEventContentFromSnapshotManifest({ projectId: 'p1', snapshotId: 'snap-1', cutoffSortKey: 500, mxc: 'mxc://example.org/abc123', size: 4096, encryption });
   const decoded = core.snapshotManifestFromMatrixEvent({ type: 'dev.wigwag.snapshot', content });
-  assert.deepEqual(decoded, { projectId: 'p1', snapshotId: 'snap-1', chunkCount: 3, cutoffSortKey: 500 });
+  assert.deepEqual(decoded, { projectId: 'p1', snapshotId: 'snap-1', cutoffSortKey: 500, mxc: 'mxc://example.org/abc123', size: 4096, encryption });
 });
 
 test('snapshotManifestFromMatrixEvent: tolerant of malformed/foreign events', () => {
   assert.equal(core.snapshotManifestFromMatrixEvent({ type: 'dev.wigwag.snapshot', content: null }), null);
-  assert.equal(core.snapshotManifestFromMatrixEvent({ type: 'dev.wigwag.snapshot', content: { v: 1 } }), null); // missing snapshotId/projectId
+  assert.equal(core.snapshotManifestFromMatrixEvent({ type: 'dev.wigwag.snapshot', content: { v: 1 } }), null); // missing snapshotId/projectId/mxc/encryption
   assert.equal(core.snapshotManifestFromMatrixEvent({ type: 'm.room.message', content: { body: 'hi' } }), null);
 });
 
-test('matrixEventContentFromSnapshotChunk / snapshotChunkFromMatrixEvent: round-trips several entries through one chunk', () => {
-  const items = [
-    { scope: 'issue', issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'One', sortKey: 1 } },
-    { scope: 'issue', issueId: 'i2', entry: { id: 'h2', field: 'title', value: 'Two', sortKey: 2 } }
-  ];
-  const content = core.matrixEventContentFromSnapshotChunk({ snapshotId: 'snap-1', sequenceNumber: 0, items });
-  const decoded = core.snapshotChunkFromMatrixEvent({ type: 'dev.wigwag.snapshot.chunk', content });
-  assert.equal(decoded.snapshotId, 'snap-1');
-  assert.equal(decoded.sequenceNumber, 0);
-  assert.equal(decoded.items.length, 2);
-  assert.equal(decoded.items[0].entry.value, 'One');
-});
+function fakeManifestEvent({ projectId, snapshotId, cutoffSortKey, mxc }) {
+  return { type: 'dev.wigwag.snapshot', content: core.matrixEventContentFromSnapshotManifest({ projectId, snapshotId, cutoffSortKey, mxc: mxc || ('mxc://example.org/' + snapshotId), size: 100, encryption: { key: { kty: 'oct', k: 'x' }, iv: 'aXY=', hashes: { sha256: 'aGFzaA==' }, v: 'v2' } }) };
+}
 
-test('reassembleLatestSnapshots: a complete manifest+chunks set reassembles into one flat items array, in sequence order', () => {
-  const manifest = { type: 'dev.wigwag.snapshot', content: core.matrixEventContentFromSnapshotManifest({ projectId: 'p1', snapshotId: 'snap-1', chunkCount: 2, cutoffSortKey: 2 }) };
-  const chunk0 = { type: 'dev.wigwag.snapshot.chunk', content: core.matrixEventContentFromSnapshotChunk({ snapshotId: 'snap-1', sequenceNumber: 0, items: [{ scope: 'issue', issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'First', sortKey: 1 } }] }) };
-  const chunk1 = { type: 'dev.wigwag.snapshot.chunk', content: core.matrixEventContentFromSnapshotChunk({ snapshotId: 'snap-1', sequenceNumber: 1, items: [{ scope: 'issue', issueId: 'i2', entry: { id: 'h2', field: 'title', value: 'Second', sortKey: 2 } }] }) };
-  // Order shouldn't matter -- chunk1 arrives before chunk0 here.
-  const result = core.reassembleLatestSnapshots([chunk1, manifest, chunk0]);
-  assert.equal(result.size, 1);
-  const snap = result.get('p1');
-  assert.equal(snap.snapshotId, 'snap-1');
-  assert.equal(snap.cutoffSortKey, 2);
-  assert.deepEqual(snap.items.map(i => i.entry.value), ['First', 'Second']); // sequence order, not arrival order
-});
-
-test('reassembleLatestSnapshots: an incomplete snapshot (a missing chunk) is discarded entirely, not partially returned', () => {
-  const manifest = { type: 'dev.wigwag.snapshot', content: core.matrixEventContentFromSnapshotManifest({ projectId: 'p1', snapshotId: 'snap-1', chunkCount: 2, cutoffSortKey: 2 }) };
-  const chunk0 = { type: 'dev.wigwag.snapshot.chunk', content: core.matrixEventContentFromSnapshotChunk({ snapshotId: 'snap-1', sequenceNumber: 0, items: [{ scope: 'issue', issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'First', sortKey: 1 } }] }) };
-  // chunk1 (sequenceNumber 1) never arrives -- a torn/mid-flight write.
-  const result = core.reassembleLatestSnapshots([manifest, chunk0]);
-  assert.equal(result.size, 0); // no partial project entry at all
-});
-
-test('reassembleLatestSnapshots: the manifest with the HIGHEST cutoffSortKey wins per project, even if an older one\'s chunks are also present', () => {
-  const oldManifest = { type: 'dev.wigwag.snapshot', content: core.matrixEventContentFromSnapshotManifest({ projectId: 'p1', snapshotId: 'snap-old', chunkCount: 1, cutoffSortKey: 1 }) };
-  const oldChunk = { type: 'dev.wigwag.snapshot.chunk', content: core.matrixEventContentFromSnapshotChunk({ snapshotId: 'snap-old', sequenceNumber: 0, items: [{ scope: 'issue', issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Stale', sortKey: 1 } }] }) };
-  const newManifest = { type: 'dev.wigwag.snapshot', content: core.matrixEventContentFromSnapshotManifest({ projectId: 'p1', snapshotId: 'snap-new', chunkCount: 1, cutoffSortKey: 99 }) };
-  const newChunk = { type: 'dev.wigwag.snapshot.chunk', content: core.matrixEventContentFromSnapshotChunk({ snapshotId: 'snap-new', sequenceNumber: 0, items: [{ scope: 'issue', issueId: 'i1', entry: { id: 'h2', field: 'title', value: 'Fresh', sortKey: 99 } }] }) };
-  const result = core.reassembleLatestSnapshots([oldManifest, oldChunk, newManifest, newChunk]);
-  assert.equal(result.size, 1);
-  assert.equal(result.get('p1').snapshotId, 'snap-new');
-  assert.equal(result.get('p1').items[0].entry.value, 'Fresh');
-});
-
-test('reassembleLatestSnapshots: two different projects are reassembled independently', () => {
-  const events = [];
-  for (const [projectId, snapshotId, value] of [['p1', 'snap-p1', 'For P1'], ['p2', 'snap-p2', 'For P2']]) {
-    events.push({ type: 'dev.wigwag.snapshot', content: core.matrixEventContentFromSnapshotManifest({ projectId, snapshotId, chunkCount: 1, cutoffSortKey: 1 }) });
-    events.push({ type: 'dev.wigwag.snapshot.chunk', content: core.matrixEventContentFromSnapshotChunk({ snapshotId, sequenceNumber: 0, items: [{ scope: 'issue', issueId: 'i1', entry: { id: 'h1', field: 'title', value, sortKey: 1 } }] }) });
-  }
-  const result = core.reassembleLatestSnapshots(events);
+test('findLatestSnapshotManifests: picks the highest-cutoffSortKey manifest per project, pure and synchronous', () => {
+  const oldManifest = fakeManifestEvent({ projectId: 'p1', snapshotId: 'snap-old', cutoffSortKey: 1 });
+  const newManifest = fakeManifestEvent({ projectId: 'p1', snapshotId: 'snap-new', cutoffSortKey: 99 });
+  const otherProject = fakeManifestEvent({ projectId: 'p2', snapshotId: 'snap-p2', cutoffSortKey: 1 });
+  const result = core.findLatestSnapshotManifests([oldManifest, newManifest, otherProject, { type: 'm.room.message', content: {} }]);
   assert.equal(result.size, 2);
-  assert.equal(result.get('p1').items[0].entry.value, 'For P1');
-  assert.equal(result.get('p2').items[0].entry.value, 'For P2');
+  assert.equal(result.get('p1').snapshotId, 'snap-new');
+  assert.equal(result.get('p2').snapshotId, 'snap-p2');
+});
+
+test('resolveSnapshotPayload: downloads, decrypts, and JSON-parses the real encrypted blob a manifest points at', async () => {
+  const items = [
+    { scope: 'issue', issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'First', sortKey: 1 } },
+    { scope: 'issue', issueId: 'i2', entry: { id: 'h2', field: 'title', value: 'Second', sortKey: 2 } }
+  ];
+  const plaintext = new TextEncoder().encode(JSON.stringify(items.map(item => core.matrixEventContentFromEntry(item))));
+  const { ciphertext, encryption } = await core.encryptSnapshotPayload(plaintext);
+  const manifest = { mxc: 'mxc://example.org/blob1', encryption };
+  const downloadFn = async (mxc) => { assert.equal(mxc, 'mxc://example.org/blob1'); return { status: 'ok', bytes: ciphertext }; };
+  const result = await core.resolveSnapshotPayload(manifest, { downloadFn });
+  assert.equal(result.items.length, 2);
+  assert.deepEqual(result.items.map(i => i.entry.value), ['First', 'Second']);
+});
+
+test('resolveSnapshotPayload: a failed download, a hash mismatch, or malformed JSON all resolve to null -- never a partial/wrong hydration', async () => {
+  const plaintext = new TextEncoder().encode(JSON.stringify([{ v: 1, scope: 'issue', issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'x', sortKey: 1 } }]));
+  const { ciphertext, encryption } = await core.encryptSnapshotPayload(plaintext);
+  const manifest = { mxc: 'mxc://example.org/blob1', encryption };
+
+  // Download itself fails.
+  assert.equal(await core.resolveSnapshotPayload(manifest, { downloadFn: async () => ({ status: 'error', message: 'network' }) }), null);
+
+  // Downloaded bytes don't match the manifest's own hash (corrupted/tampered).
+  const tampered = new Uint8Array(ciphertext); tampered[0] ^= 0xff;
+  assert.equal(await core.resolveSnapshotPayload(manifest, { downloadFn: async () => ({ status: 'ok', bytes: tampered }) }), null);
+
+  // Decrypts fine but isn't valid JSON (or not an array) underneath.
+  const { ciphertext: badJsonCiphertext, encryption: badJsonEncryption } = await core.encryptSnapshotPayload(new TextEncoder().encode('not json'));
+  assert.equal(await core.resolveSnapshotPayload({ mxc: 'x', encryption: badJsonEncryption }, { downloadFn: async () => ({ status: 'ok', bytes: badJsonCiphertext }) }), null);
 });
 
 test('decodeAllMatrixEntryItems: flattens a mix of single and batch raw events into one array, skipping foreign/malformed ones', () => {
@@ -2397,14 +2410,14 @@ test('sendMatrixEntries: PUTs to the batch-scoped send endpoint, retries on 429 
   assert.equal(calls, 2);
 });
 
-test('fetchMatrixRoomEntries: filters to the single-entry, batch, AND snapshot/chunk event types', async () => {
+test('fetchMatrixRoomEntries: filters to the single-entry, batch, snapshot manifest, AND project-state event types', async () => {
   let lastUrl;
   const okFetch = async (url) => { lastUrl = url; return { ok: true, status: 200, json: async () => ({ chunk: [], end: null }) }; };
   await core.fetchMatrixRoomEntries({ fetchImpl: okFetch, homeserverUrl: 'https://matrix.example.org', accessToken: 'tok', roomId: '!room:example.org' });
   assert.match(lastUrl, /dev\.wigwag\.entry%22/);
   assert.match(lastUrl, /dev\.wigwag\.entries%22/);
   assert.match(lastUrl, /dev\.wigwag\.snapshot%22/);
-  assert.match(lastUrl, /dev\.wigwag\.snapshot\.chunk%22/);
+  assert.match(lastUrl, /dev\.wigwag\.project%22/);
 });
 
 test('storage keys carry no namespace prefix', () => {
@@ -2420,6 +2433,65 @@ test('storage keys carry no namespace prefix', () => {
   assert.equal(core.PROJECTS_KEY, 'git_native_tracker_milestones_v1');
   assert.equal(core.IDENTITIES_KEY, 'git_native_tracker_identities_v1');
   assert.equal(core.SECRETS_KEY, 'git_native_tracker_secrets_v1');
+});
+
+test('parseMxcUri: parses a real mxc:// URI, tolerant of malformed ones', () => {
+  assert.deepEqual(core.parseMxcUri('mxc://example.org/abc123'), { serverName: 'example.org', mediaId: 'abc123' });
+  assert.equal(core.parseMxcUri('not-an-mxc-uri'), null);
+  assert.equal(core.parseMxcUri(null), null);
+});
+
+test('uploadMatrixMedia: POSTs the raw bytes and returns the mxc:// content_uri, retrying on 429', async () => {
+  let calls = 0, capturedBody, capturedMethod, capturedContentType;
+  const flakyFetch = async (url, init) => {
+    calls++;
+    capturedBody = init.body; capturedMethod = init.method; capturedContentType = init.headers['Content-Type'];
+    if (calls === 1) return { ok: false, status: 429, json: async () => ({ retry_after_ms: 1 }) };
+    return { ok: true, status: 200, json: async () => ({ content_uri: 'mxc://example.org/uploaded1' }) };
+  };
+  const bytes = new Uint8Array([1, 2, 3, 4]);
+  const result = await core.uploadMatrixMedia({ fetchImpl: flakyFetch, homeserverUrl: 'https://matrix.example.org', accessToken: 'tok', bytes });
+  assert.equal(result.status, 'ok');
+  assert.equal(result.mxc, 'mxc://example.org/uploaded1');
+  assert.equal(calls, 2);
+  assert.equal(capturedMethod, 'POST');
+  assert.equal(capturedContentType, 'application/octet-stream');
+  assert.equal(capturedBody, bytes);
+});
+
+test('uploadMatrixMedia: a non-429, non-ok response is a plain error, never thrown', async () => {
+  const badFetch = async () => ({ ok: false, status: 413 });
+  const result = await core.uploadMatrixMedia({ fetchImpl: badFetch, homeserverUrl: 'https://matrix.example.org', accessToken: 'tok', bytes: new Uint8Array() });
+  assert.equal(result.status, 'error');
+  assert.match(result.message, /413/);
+});
+
+test('downloadMatrixMedia: GETs the authenticated client media endpoint (not the deprecated legacy one) and returns real bytes', async () => {
+  let capturedUrl;
+  const okFetch = async (url) => { capturedUrl = url; return { ok: true, status: 200, arrayBuffer: async () => new Uint8Array([9, 8, 7]).buffer }; };
+  const result = await core.downloadMatrixMedia({ fetchImpl: okFetch, homeserverUrl: 'https://matrix.example.org', accessToken: 'tok', mxc: 'mxc://example.org/abc123' });
+  assert.equal(result.status, 'ok');
+  assert.deepEqual(Array.from(result.bytes), [9, 8, 7]);
+  assert.match(capturedUrl, /\/_matrix\/client\/v1\/media\/download\/example\.org\/abc123$/);
+});
+
+test('downloadMatrixMedia: an invalid mxc URI is a plain error, never thrown', async () => {
+  const result = await core.downloadMatrixMedia({ fetchImpl: async () => ({ ok: true }), homeserverUrl: 'https://matrix.example.org', accessToken: 'tok', mxc: 'not-a-real-mxc-uri' });
+  assert.equal(result.status, 'error');
+});
+
+test('fetchWithMatrixRetry429: only reads the response body when about to retry, never on the response it hands back (so the caller can always safely read it exactly once)', async () => {
+  let jsonCallCount = 0;
+  const flakyFetch = async () => ({
+    ok: false, status: 429,
+    json: async () => { jsonCallCount++; return { retry_after_ms: 1 }; }
+  });
+  const res = await core.fetchWithMatrixRetry429(flakyFetch, 'https://example.org', {});
+  // Exhausted all retries -- the FINAL response's body must be untouched
+  // by this helper (jsonCallCount only counts the retried attempts, not
+  // this last one), so the caller can still call res.json() itself.
+  assert.equal(res.status, 429);
+  assert.equal(jsonCallCount, 6); // MATRIX_SEND_MAX_RETRIES retried attempts, the 7th (final) left unread
 });
 
 test('probeMatrixRoomAccess: no anonymous-read tier like GitHub -- just can-read-write or no-access (plus error)', async () => {

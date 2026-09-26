@@ -21,12 +21,19 @@
     // Project index (tracker f6b39bf0) -- simulates a non-moderator's power
     // level being too low for a dev.wigwag.project state send, same as the
     // direct transport's mocked 403.
-    forbidStateEventType: null
+    forbidStateEventType: null,
+    // Media-blob snapshots (tracker f6b39bf0's rate-limit fix, MSC4039) --
+    // rejectUploadTimes simulates a real homeserver-side upload rejection
+    // (e.g. a size cap) N times before succeeding; Infinity for "never
+    // succeeds".
+    rejectUploadTimes: 0
   }, window.__fakeHostConfig || {});
+  let uploadRejectRemaining = cfg.rejectUploadTimes;
   let rejectReadEventsRemaining = cfg.rejectReadEventsTimes;
   let dropReadEventsRemaining = cfg.dropReadEventsTimes;
 
-  window.__state = { sentEntries: [], sentStateEvents: [], pendingEntries: cfg.initialEntries.slice(), requestedCapabilities: null, supportedApiVersionsReply: null };
+  window.__state = { sentEntries: [], sentStateEvents: [], pendingEntries: cfg.initialEntries.slice(), requestedCapabilities: null, supportedApiVersionsReply: null, uploadedSnapshotBlobs: [] };
+  const mediaStore = new Map(); // mxc -> Uint8Array
 
   const iframe = document.getElementById('widget');
   const url = new URL('../../wigwag-matrix-host.html', location.href);
@@ -126,6 +133,21 @@
       // it, same as a real room would.
       window.__state.pendingEntries.push({ type: data.type, state_key: data.state_key, content: data.content });
       reply(msg, { event_id: '$' + Math.random().toString(36).slice(2) });
+    } else if (msg.action === 'org.matrix.msc4039.upload_file') {
+      if (uploadRejectRemaining > 0) {
+        uploadRejectRemaining--;
+        reply(msg, { error: { message: 'file too large' } });
+        return;
+      }
+      const bytes = data.file instanceof Uint8Array ? data.file : new Uint8Array(data.file);
+      const mxc = 'mxc://example.org/media' + (window.__state.uploadedSnapshotBlobs.length + 1);
+      mediaStore.set(mxc, bytes);
+      window.__state.uploadedSnapshotBlobs.push({ mxc, bytes });
+      reply(msg, { content_uri: mxc });
+    } else if (msg.action === 'org.matrix.msc4039.download_file') {
+      const bytes = mediaStore.get(data.content_uri);
+      if (!bytes) { reply(msg, { error: { message: 'not found' } }); return; }
+      reply(msg, { file: bytes });
     } else if (msg.action === 'send_event') {
       window.__state.sentEntries.push(data.content);
       reply(msg, { event_id: '$' + Math.random().toString(36).slice(2) });

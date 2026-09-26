@@ -368,6 +368,44 @@ test.describe('wigwag-matrix-host.html: widget-embedded transport', () => {
     expect(new Set(ids).size).toBe(ids.length); // same reentrancy guard as the direct transport, exercised through send_event this time
   });
 
+  test('a bulk-adopted project through the widget transport uploads its snapshot via MSC4039 upload_file, not send_event chunking', async ({ page }) => {
+    await h.gotoFakeWidgetHost(page, { roomId: '!widgetroom:example.org', roomName: 'Widget Room', initialEntries: seedLegacyEntries() });
+    const widget = page.frameLocator('#widget');
+    await expect(widget.locator('#frame')).toBeVisible();
+    const frame = widget.frameLocator('#frame');
+
+    const pastedJsonl = [
+      JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, id: 'widget-snapshot-proj', name: 'Widget Snapshot Project' }),
+      JSON.stringify({ type: 'issue', id: 'wsi1', num: 1, fieldRefs: {}, values: { title: 'Widget-imported issue' }, comments: [], history: [] })
+    ].join('\n');
+    await frame.locator('[data-testid=btn-import-merge]').click();
+    await page.waitForTimeout(150);
+    const [fc] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      frame.locator('[data-testid=btn-paste-merge-open-file]').click(),
+    ]);
+    await fc.setFiles({ name: 'widget-snapshot.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(pastedJsonl) });
+    await expect(frame.locator('[data-testid=confirm-dialog-modal]')).toBeVisible();
+    await frame.locator('[data-testid=btn-confirm-dialog-confirm]').click();
+    await page.waitForTimeout(500);
+
+    const fakeHostState = await page.evaluate(() => window.__state);
+    expect(fakeHostState.uploadedSnapshotBlobs.length).toBe(1); // one MSC4039 upload_file call, not one send_event per chunk
+    const manifest = fakeHostState.sentEntries.find(c => c.mxc); // the snapshot manifest is the only sent entry carrying an mxc
+    expect(manifest).toBeTruthy();
+    expect(manifest.projectId).toBe('widget-snapshot-proj');
+    expect(manifest.mxc).toBe(fakeHostState.uploadedSnapshotBlobs[0].mxc);
+
+    // Decrypt the real uploaded blob (via download_file's own store) and
+    // confirm the actual entry survived the round trip through MSC4039.
+    const blobBytesArray = fakeHostState.uploadedSnapshotBlobs[0].bytes;
+    const plaintextBytes = await core.decryptSnapshotPayload({ ciphertext: new Uint8Array(Object.values(blobBytesArray)), encryption: manifest.encryption });
+    const parsed = JSON.parse(new TextDecoder().decode(plaintextBytes));
+    const items = parsed.map(item => core.entryFromMatrixEvent({ content: item })).filter(Boolean);
+    const titlePush = items.find(i => i.scope === 'issue' && i.entry.field === 'title');
+    expect(titlePush.entry.value).toBe('Widget-imported issue');
+  });
+
   test('a remote entry arriving via read_events on a later poll is merged into the widget-embedded iframe live', async ({ page, browserName }) => {
     test.skip(browserName !== 'chromium', 'timer-dependent, one browser is enough to prove the mechanism');
     await h.gotoFakeWidgetHost(page, { roomId: '!widgetroom:example.org', roomName: 'Widget Room', initialEntries: seedLegacyEntries() });
@@ -812,17 +850,40 @@ test.describe('wigwag-matrix-host.html: connect pulls the FULL room history, not
   });
 });
 
-// Room snapshot (tracker f6b39bf0/#153, f1c7098f/#154): a repackaging of a
-// project's full history into fewer, more recent events, so a fresh
-// connect only needs the latest snapshot plus whatever's newer -- see
-// reassembleLatestSnapshots's own comment in wigwag-core.js for the full
-// design. These tests drive the READ side directly (a room that only has
-// a snapshot, no individual entries at all, still hydrates correctly) and
-// the WRITE side (a bulk-adopt automatically produces one).
-function snapshotEvents({ projectId, snapshotId, items, cutoffSortKey }) {
-  const manifest = { type: 'dev.wigwag.snapshot', content: core.matrixEventContentFromSnapshotManifest({ projectId, snapshotId, chunkCount: 1, cutoffSortKey }) };
-  const chunk = { type: 'dev.wigwag.snapshot.chunk', content: core.matrixEventContentFromSnapshotChunk({ snapshotId, sequenceNumber: 0, items }) };
-  return [manifest, chunk];
+// Inspects what a real bulk-adopt/snapshot push actually sent, for tests
+// that need to look inside the encrypted blob rather than just confirm a
+// snapshot happened -- finds the uploaded blob a given manifest points at
+// (by mxc) and decrypts it via the real core.js primitives (never
+// assuming/mocking the encryption itself), returning the same flat
+// {scope, issueId, stream, entry, projectId} item array the OLD
+// state.sentSnapshotChunks used to expose directly, pre-encryption.
+async function decryptedSnapshotItems(state, manifest) {
+  const blob = state.uploadedSnapshotBlobs.find(b => b.mxc === manifest.mxc);
+  if (!blob) return [];
+  const plaintextBytes = await core.decryptSnapshotPayload({ ciphertext: blob.bytes, encryption: manifest.encryption });
+  const parsed = JSON.parse(new TextDecoder().decode(plaintextBytes));
+  return parsed.map(item => core.entryFromMatrixEvent({ content: item })).filter(Boolean);
+}
+
+// Room snapshot (tracker f6b39bf0/#153, f1c7098f/#154): a project's full
+// history repackaged as ONE client-side-encrypted media blob (not chunked
+// events -- see WIGWAG_MATRIX_SNAPSHOT_TYPE's own comment in
+// wigwag-core.js for the full design and why chunking was replaced),
+// referenced by a single small manifest event. These tests drive the READ
+// side directly (a room that only has a snapshot, no individual entries at
+// all, still hydrates correctly, including a corrupted/unreachable blob
+// falling back safely) and the WRITE side (a bulk-adopt automatically
+// produces one, in far fewer requests than the old chunked design).
+//
+// Builds a REAL encrypted blob via the actual core.js primitives (never a
+// fake/stubbed encryption) and a manifest event referencing it at a given
+// mxc -- callers pass that mxc to mockMatrixClientApi's own
+// `seedMediaBlobs` so the manifest's reference actually resolves.
+async function snapshotEvent({ projectId, snapshotId, items, cutoffSortKey, mxc }) {
+  const plaintext = new TextEncoder().encode(JSON.stringify(items.map(item => core.matrixEventContentFromEntry(item))));
+  const { ciphertext, encryption } = await core.encryptSnapshotPayload(plaintext);
+  const manifestEvent = { type: 'dev.wigwag.snapshot', content: core.matrixEventContentFromSnapshotManifest({ projectId, snapshotId, cutoffSortKey, mxc, size: ciphertext.length, encryption }) };
+  return { manifestEvent, mediaBlob: { mxc, bytes: ciphertext } };
 }
 
 test.describe('wigwag-matrix-host.html: room snapshot', () => {
@@ -831,9 +892,10 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
       { scope: 'project', entry: { id: 'ph1', field: '__project_name__', value: 'Snapshotted Project', sortKey: 1, origin: 'authored' }, projectId: 'snap-project' },
       { scope: 'issue', issueId: 'si1', entry: { id: 'sh1', field: 'title', value: 'From the snapshot', sortKey: 2, origin: 'authored' }, projectId: 'snap-project' }
     ];
+    const { manifestEvent, mediaBlob } = await snapshotEvent({ projectId: 'snap-project', snapshotId: 'snap-1', items, cutoffSortKey: 2, mxc: 'mxc://example.org/preseed1' });
     h.mockMatrixClientApi(page, {
       homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
-      initialEntries: snapshotEvents({ projectId: 'snap-project', snapshotId: 'snap-1', items, cutoffSortKey: 2 })
+      initialEntries: [manifestEvent], seedMediaBlobs: [mediaBlob]
     });
 
     await page.goto('/wigwag-matrix-host.html');
@@ -855,10 +917,11 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
     const snapshotItems = [
       { scope: 'issue', issueId: 'si1', entry: { id: 'sh1', field: 'title', value: 'From the snapshot', sortKey: 1, origin: 'authored' }, projectId: 'snap-project' }
     ];
+    const { manifestEvent, mediaBlob } = await snapshotEvent({ projectId: 'snap-project', snapshotId: 'snap-1', items: snapshotItems, cutoffSortKey: 1, mxc: 'mxc://example.org/preseed2' });
     const tailEntry = entryEvent({ issueId: 'si2', entry: { id: 'th1', field: 'title', value: 'After the snapshot', sortKey: 2, origin: 'authored' }, projectId: 'snap-project' });
     h.mockMatrixClientApi(page, {
       homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
-      initialEntries: [...snapshotEvents({ projectId: 'snap-project', snapshotId: 'snap-1', items: snapshotItems, cutoffSortKey: 1 }), tailEntry]
+      initialEntries: [manifestEvent, tailEntry], seedMediaBlobs: [mediaBlob]
     });
 
     await page.goto('/wigwag-matrix-host.html');
@@ -874,15 +937,15 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
     await expect(frame.locator('[data-testid=row]').filter({ hasText: 'After the snapshot' })).toHaveCount(1);
   });
 
-  test('an INCOMPLETE snapshot (missing a declared chunk) is discarded -- falls back to the plain entries as if no snapshot existed', async ({ page }) => {
-    const manifest = { type: 'dev.wigwag.snapshot', content: core.matrixEventContentFromSnapshotManifest({ projectId: 'snap-project', snapshotId: 'snap-1', chunkCount: 2, cutoffSortKey: 1 }) };
-    const onlyChunk = { type: 'dev.wigwag.snapshot.chunk', content: core.matrixEventContentFromSnapshotChunk({ snapshotId: 'snap-1', sequenceNumber: 0, items: [{ scope: 'issue', issueId: 'si1', entry: { id: 'sh1', field: 'title', value: 'Should be discarded', sortKey: 1, origin: 'authored' }, projectId: 'snap-project' }] }) };
-    // sequenceNumber 1 never arrives -- a torn write. A real, plain entry
-    // for the same project exists independently of the (incomplete) snapshot.
+  test('a manifest pointing at a blob that was never actually uploaded (404) is discarded -- falls back to the plain entries as if no snapshot existed', async ({ page }) => {
+    const { manifestEvent } = await snapshotEvent({ projectId: 'snap-project', snapshotId: 'snap-1', items: [{ scope: 'issue', issueId: 'si1', entry: { id: 'sh1', field: 'title', value: 'Should be discarded', sortKey: 1, origin: 'authored' }, projectId: 'snap-project' }], cutoffSortKey: 1, mxc: 'mxc://example.org/never-uploaded' });
+    // A real, plain entry for the same project exists independently of the
+    // (unresolvable) snapshot -- deliberately NOT seeding the blob this
+    // manifest points at.
     const plainEntry = entryEvent({ issueId: 'si2', entry: { id: 'ph1', field: 'title', value: 'Plain entry survives', sortKey: 5, origin: 'authored' }, projectId: 'snap-project' });
     h.mockMatrixClientApi(page, {
       homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
-      initialEntries: [manifest, onlyChunk, plainEntry]
+      initialEntries: [manifestEvent, plainEntry]
     });
 
     await page.goto('/wigwag-matrix-host.html');
@@ -893,11 +956,33 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
     await expect(page.locator('#frame')).toBeVisible();
 
     const frame = page.frameLocator('#frame');
-    await expect(frame.locator('[data-testid=row]')).toHaveCount(1); // only the plain entry's issue -- the incomplete snapshot contributed nothing
+    await expect(frame.locator('[data-testid=row]')).toHaveCount(1); // only the plain entry's issue -- the unresolvable snapshot contributed nothing
     await expect(frame.locator('[data-testid=row]')).toContainText('Plain entry survives');
   });
 
-  test('a bulk-adopted (imported) project automatically gets a snapshot written for it', async ({ page }) => {
+  test('a corrupted/tampered blob (hash mismatch) is discarded exactly the same way -- never partially or incorrectly decrypted', async ({ page }) => {
+    const { manifestEvent, mediaBlob } = await snapshotEvent({ projectId: 'snap-project', snapshotId: 'snap-1', items: [{ scope: 'issue', issueId: 'si1', entry: { id: 'sh1', field: 'title', value: 'Should be discarded', sortKey: 1, origin: 'authored' }, projectId: 'snap-project' }], cutoffSortKey: 1, mxc: 'mxc://example.org/corrupted1' });
+    const tamperedBytes = new Uint8Array(mediaBlob.bytes);
+    tamperedBytes[0] ^= 0xff; // flip a bit after "upload" -- corrupted in transit/at rest
+    const plainEntry = entryEvent({ issueId: 'si2', entry: { id: 'ph1', field: 'title', value: 'Plain entry survives', sortKey: 5, origin: 'authored' }, projectId: 'snap-project' });
+    h.mockMatrixClientApi(page, {
+      homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
+      initialEntries: [manifestEvent, plainEntry], seedMediaBlobs: [{ mxc: mediaBlob.mxc, bytes: tamperedBytes }]
+    });
+
+    await page.goto('/wigwag-matrix-host.html');
+    await page.locator('#homeserverUrl').fill(HOMESERVER);
+    await page.locator('#accessToken').fill('tok123');
+    await page.locator('#roomId').fill(ROOM_ID);
+    await page.locator('#connectBtn').click();
+    await expect(page.locator('#frame')).toBeVisible();
+
+    const frame = page.frameLocator('#frame');
+    await expect(frame.locator('[data-testid=row]')).toHaveCount(1);
+    await expect(frame.locator('[data-testid=row]')).toContainText('Plain entry survives');
+  });
+
+  test('a bulk-adopted (imported) project automatically gets a snapshot written for it, in just one upload and one manifest event', async ({ page }) => {
     const state = h.mockMatrixClientApi(page, {
       homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
       initialEntries: [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Room issue', sortKey: 1, origin: 'authored' } })]
@@ -909,9 +994,17 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
     await page.locator('#connectBtn').click();
     await expect(page.locator('#frame')).toBeVisible();
 
+    // 40 issues -- large enough that the OLD chunked design (25/chunk)
+    // would have needed 2+ chunk events plus a manifest; the media-blob
+    // design needs exactly one upload and one manifest regardless of size
+    // (tracker f6b39bf0's actual rate-limit fix).
+    const issueLines = [];
+    for (let i = 1; i <= 40; i++) {
+      issueLines.push(JSON.stringify({ type: 'issue', id: 'si' + i, num: i, fieldRefs: {}, values: { title: 'Issue ' + i }, comments: [], history: [] }));
+    }
     const pastedJsonl = [
       JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, id: 'imported-for-snapshot', name: 'Imported For Snapshot' }),
-      JSON.stringify({ type: 'issue', id: 'ii1', num: 1, fieldRefs: {}, values: { title: 'An issue' }, comments: [], history: [] })
+      ...issueLines
     ].join('\n');
     const frame = page.frameLocator('#frame');
     await frame.locator('[data-testid=btn-import-merge]').click();
@@ -925,10 +1018,63 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
     await frame.locator('[data-testid=btn-confirm-dialog-confirm]').click();
     await page.waitForTimeout(500);
 
-    expect(state.sentSnapshotManifests.length).toBeGreaterThan(0);
-    const manifest = state.sentSnapshotManifests.find(m => m.projectId === 'imported-for-snapshot');
-    expect(manifest).toBeTruthy();
-    expect(state.sentSnapshotChunks.some(c => c.snapshotId === manifest.snapshotId)).toBe(true);
+    expect(state.sentSnapshotManifests.length).toBe(1);
+    expect(state.uploadedSnapshotBlobs.length).toBe(1); // one upload, not one-per-chunk
+    const manifest = state.sentSnapshotManifests[0];
+    expect(manifest.projectId).toBe('imported-for-snapshot');
+    expect(manifest.mxc).toBe(state.uploadedSnapshotBlobs[0].mxc);
+    expect(manifest.encryption).toBeTruthy();
+    expect(manifest.encryption.key).toBeTruthy(); // real key material, not squashed/plaintext
+  });
+
+  test('a homeserver rejecting the upload (e.g. rate-limited) is retried, same shared retry mechanics as any other Matrix write', async ({ page }) => {
+    const state = h.mockMatrixClientApi(page, {
+      homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
+      initialEntries: [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Room issue', sortKey: 1, origin: 'authored' } })],
+      rejectUploadTimes: 2
+    });
+    await page.goto('/wigwag-matrix-host.html');
+    await page.locator('#homeserverUrl').fill(HOMESERVER);
+    await page.locator('#accessToken').fill('tok123');
+    await page.locator('#roomId').fill(ROOM_ID);
+    await page.locator('#connectBtn').click();
+    await expect(page.locator('#frame')).toBeVisible();
+
+    // Tracker #149, live-reported: this exact scenario (a large import
+    // hitting real homeserver rate limiting) used to drop the project's
+    // own __project_name__ entry silently -- whichever request happened to
+    // carry it lost the race under the OLD per-entry/per-chunk send model.
+    // A single retried upload has no such race: either the whole blob
+    // (every entry, atomically) lands, or it doesn't.
+    const pastedJsonl = [
+      JSON.stringify({
+        type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, id: 'retry-project', name: 'Retry Project',
+        projectHistory: [{ id: 'rp1', field: '__project_name__', value: 'Retry Project', sortKey: 1, origin: 'authored', time: '', actor: 'Someone', email: '' }]
+      }),
+      JSON.stringify({ type: 'issue', id: 'ii1', num: 1, fieldRefs: {}, values: { title: 'An issue' }, comments: [], history: [] })
+    ].join('\n');
+    const frame = page.frameLocator('#frame');
+    await frame.locator('[data-testid=btn-import-merge]').click();
+    await page.waitForTimeout(150);
+    const [fc] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      frame.locator('[data-testid=btn-paste-merge-open-file]').click(),
+    ]);
+    await fc.setFiles({ name: 'retry-test.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(pastedJsonl) });
+    await expect(frame.locator('[data-testid=confirm-dialog-modal]')).toBeVisible();
+    await frame.locator('[data-testid=btn-confirm-dialog-confirm]').click();
+    await page.waitForTimeout(1000);
+
+    // Still exactly one snapshot manifest/upload once retries succeed --
+    // the earlier rejected attempts never produced a real upload.
+    expect(state.uploadedSnapshotBlobs.length).toBe(1);
+    expect(state.sentSnapshotManifests.length).toBe(1);
+    const manifest = state.sentSnapshotManifests[0];
+    expect(manifest.projectId).toBe('retry-project');
+    const items = await decryptedSnapshotItems(state, manifest);
+    const namePush = items.find(i => i.entry.field === '__project_name__');
+    expect(namePush, 'the project-name entry must survive rate limiting, not silently vanish').toBeTruthy();
+    expect(namePush.entry.value).toBe('Retry Project');
   });
 
   test('full round trip: a bulk-adopted project\'s auto-written snapshot is what a genuinely separate reconnecting session actually reads back', async ({ page }) => {
@@ -1119,7 +1265,7 @@ test.describe('wigwag-matrix-host.html: a locally-imported project is adopted in
     // to double the request volume for exactly this scenario).
     const manifest = state.sentSnapshotManifests.find(m => m.projectId === importedId);
     expect(manifest).toBeTruthy();
-    const pushedForImported = state.sentSnapshotChunks.filter(c => c.snapshotId === manifest.snapshotId).flatMap(c => c.items);
+    const pushedForImported = await decryptedSnapshotItems(state, manifest);
     expect(pushedForImported.length).toBeGreaterThan(0);
     // scope: 'issue' distinguishes the issue's own title VALUE entry from
     // a project-scope field-definition backfill entry that happens to
@@ -1241,136 +1387,6 @@ test.describe('wigwag-matrix-host.html: a locally-imported project is adopted in
   });
 });
 
-// Tracker #149, live-reported: a large imported project's bulk-adoption
-// push (many entries, one PUT each) hit real homeserver rate limiting --
-// visible live as two viewers disagreeing on the imported project's name,
-// because whichever entry happened to carry the real name got dropped
-// entirely (sendMatrixEntry used to treat 429 as a terminal failure).
-// Fixed in wigwag-core.js's sendMatrixEntry with a retry-and-backoff loop;
-// this drives that fix through the real adoption path end to end. Bulk-
-// adoption itself has since moved from a plain batch send to pushing a
-// snapshot directly (tracker f6b39bf0's double-send fix, live-reported)
-// -- the entries now travel as snapshot chunk items, but go through the
-// exact same shared retry-and-backoff mechanics (putMatrixEvent).
-test.describe('wigwag-matrix-host.html: adoption survives Matrix rate limiting', () => {
-  test('every entry of a large imported project still arrives after being rate-limited partway through', async ({ page }) => {
-    const state = h.mockMatrixClientApi(page, {
-      homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
-      initialEntries: [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Room issue', sortKey: 1, origin: 'authored' } })]
-    });
-    // Rate-limit the first 3 real chunk sends, then let everything through.
-    let chunkSendCount = 0;
-    const chunkItems = [];
-    await page.route(HOMESERVER + '/_matrix/client/v3/rooms/' + encodeURIComponent(ROOM_ID) + '/send/dev.wigwag.snapshot.chunk/*', async (route) => {
-      chunkSendCount++;
-      if (chunkSendCount <= 3) {
-        await route.fulfill({ status: 429, contentType: 'application/json', body: JSON.stringify({ errcode: 'M_LIMIT_EXCEEDED', retry_after_ms: 50 }) });
-        return;
-      }
-      const content = JSON.parse(route.request().postData());
-      chunkItems.push(...content.items);
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ event_id: '$chunk' + chunkSendCount }) });
-    });
-
-    await page.goto('/wigwag-matrix-host.html');
-    await page.locator('#homeserverUrl').fill(HOMESERVER);
-    await page.locator('#accessToken').fill('tok123');
-    await page.locator('#roomId').fill(ROOM_ID);
-    await page.locator('#connectBtn').click();
-    await expect(page.locator('#frame')).toBeVisible();
-    await page.waitForTimeout(300);
-
-    // Real import UI (see the earlier describe block's own comment for
-    // why this can no longer be a direct storage write) -- includes a real
-    // __project_name__ project-scope history entry, exactly the entry Tom
-    // saw go missing live under rate limiting.
-    const importedId = 'big-imported-proj';
-    const pastedJsonl = [
-      JSON.stringify({
-        type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, id: importedId, name: 'Wigwag',
-        projectHistory: [{ id: 'bph1', field: '__project_name__', value: 'Wigwag', sortKey: 1, origin: 'authored', time: '', actor: 'Someone', email: '' }]
-      }),
-      JSON.stringify({ type: 'issue', id: 'bi1', num: 1, fieldRefs: {}, values: { title: 'Issue one' }, comments: [], history: [] }),
-      JSON.stringify({ type: 'issue', id: 'bi2', num: 2, fieldRefs: {}, values: { title: 'Issue two' }, comments: [], history: [] })
-    ].join('\n');
-    const bigFrame = page.frameLocator('#frame');
-    await bigFrame.locator('[data-testid=btn-import-merge]').click();
-    await page.waitForTimeout(150);
-    const [fc1] = await Promise.all([
-      page.waitForEvent('filechooser'),
-      bigFrame.locator('[data-testid=btn-paste-merge-open-file]').click(),
-    ]);
-    await fc1.setFiles({ name: 'big.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(pastedJsonl) });
-    await expect(bigFrame.locator('[data-testid=confirm-dialog-modal]')).toBeVisible();
-    await bigFrame.locator('[data-testid=btn-confirm-dialog-confirm]').click();
-    await page.waitForTimeout(1500); // real backoff delays -- let every retry actually land
-
-    const pushedForImported = chunkItems.filter(c => c.projectId === importedId);
-    const namePush = pushedForImported.find(c => c.entry.field === '__project_name__');
-    // scope: 'issue' excludes the project-scope field-definition backfill
-    // entry for 'title' (fieldDefs key and issue field share the name) --
-    // a snapshot includes every current entry, unfiltered, so it's present
-    // alongside the two real issues' own title entries.
-    const titlePushes = pushedForImported.filter(c => c.scope === 'issue' && c.entry.field === 'title');
-    expect(namePush, 'the project-name entry must survive rate limiting, not silently vanish').toBeTruthy();
-    expect(namePush.entry.value).toBe('Wigwag');
-    expect(titlePushes.length).toBe(2); // both issues' entries also survived
-    expect(chunkSendCount).toBeGreaterThan(3); // actually exercised the rate-limit-then-retry path
-  });
-
-  test('a genuinely large imported project sends far fewer requests than it has entries -- the actual point of batching', async ({ page }) => {
-    const state = h.mockMatrixClientApi(page, {
-      homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
-      initialEntries: [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Room issue', sortKey: 1, origin: 'authored' } })]
-    });
-    let chunkSendCount = 0;
-    const chunkItems = [];
-    await page.route(HOMESERVER + '/_matrix/client/v3/rooms/' + encodeURIComponent(ROOM_ID) + '/send/dev.wigwag.snapshot.chunk/*', async (route) => {
-      chunkSendCount++;
-      const content = JSON.parse(route.request().postData());
-      chunkItems.push(...content.items);
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ event_id: '$chunk' + chunkSendCount }) });
-    });
-
-    await page.goto('/wigwag-matrix-host.html');
-    await page.locator('#homeserverUrl').fill(HOMESERVER);
-    await page.locator('#accessToken').fill('tok123');
-    await page.locator('#roomId').fill(ROOM_ID);
-    await page.locator('#connectBtn').click();
-    await expect(page.locator('#frame')).toBeVisible();
-    await page.waitForTimeout(300);
-
-    // Real import UI (see the earlier describe block's own comment) -- 60
-    // issues, one title entry each, large enough to force multiple chunks
-    // (SNAPSHOT_CHUNK_SIZE is 25), small enough to run fast.
-    const importedId = 'huge-imported-proj';
-    const issueLines = [];
-    for (let i = 1; i <= 60; i++) {
-      issueLines.push(JSON.stringify({ type: 'issue', id: 'bi' + i, num: i, fieldRefs: {}, values: { title: 'Issue ' + i }, comments: [], history: [] }));
-    }
-    const pastedJsonl = [
-      JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, id: importedId, name: 'Huge Project' }),
-      ...issueLines
-    ].join('\n');
-    const hugeFrame = page.frameLocator('#frame');
-    await hugeFrame.locator('[data-testid=btn-import-merge]').click();
-    await page.waitForTimeout(150);
-    const [fc2] = await Promise.all([
-      page.waitForEvent('filechooser'),
-      hugeFrame.locator('[data-testid=btn-paste-merge-open-file]').click(),
-    ]);
-    await fc2.setFiles({ name: 'huge.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(pastedJsonl) });
-    await expect(hugeFrame.locator('[data-testid=confirm-dialog-modal]')).toBeVisible();
-    await hugeFrame.locator('[data-testid=btn-confirm-dialog-confirm]').click();
-    await page.waitForTimeout(1000);
-
-    const pushedForImported = chunkItems.filter(c => c.projectId === importedId);
-    expect(pushedForImported.length).toBeGreaterThanOrEqual(60); // every entry arrived (60 titles + backfilled created/updated)
-    // 60+ entries chunked at 25 each should take 3 chunk requests, not 60+ individual ones.
-    expect(chunkSendCount).toBeLessThanOrEqual(3);
-    expect(chunkSendCount).toBeGreaterThan(0);
-  });
-});
 
 // Tracker #149, live-reported: PROJECTS_KEY used to be a single, shared-
 // origin localStorage key -- every room this browser ever connected to as
@@ -1434,7 +1450,13 @@ test.describe('wigwag-matrix-host.html: a project adopted in one room never leak
     // double-send fix), not plain batch entries.
     const manifestA = stateA.sentSnapshotManifests.find(m => m.projectId === importedId);
     expect(manifestA).toBeTruthy(); // sanity: room A really did adopt it
-    const pushedToRoomA = stateA.sentSnapshotChunks.filter(c => c.snapshotId === manifestA.snapshotId).flatMap(c => c.items);
+    // The real media repo is homeserver-wide, not room-scoped (no room id
+    // in its URL at all) -- both mocked "rooms" here share the same
+    // homeserver and so the same underlying upload/download routes;
+    // whichever blob landed could be recorded on either mock's own state
+    // object depending on Playwright's route-registration order, so check
+    // both rather than assuming stateA's own list has it.
+    const pushedToRoomA = await decryptedSnapshotItems({ uploadedSnapshotBlobs: [...stateA.uploadedSnapshotBlobs, ...stateB.uploadedSnapshotBlobs] }, manifestA);
     expect(pushedToRoomA.length).toBeGreaterThan(0);
 
     // Now connect to a COMPLETELY DIFFERENT room, in the SAME browser.

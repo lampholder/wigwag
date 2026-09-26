@@ -1123,63 +1123,111 @@ a member who joined after the original entries but before the snapshot
 still gets it, since they're a current member when the snapshot's own
 session is shared, unlike the old individual entries.
 
-Two new event types, chunked by entry **count** (not raw bytes — wigwag's
-entries are already well-formed JSON items, so there's no NeoBoard-style
-byte-slice/reassemble step needed):
+**Update (tracker `f6b39bf0`, live-reported rate-limit incident): a
+snapshot's payload is one client-side-encrypted media blob, not chunked
+events.** The original event-chunking design above (kept in this
+paragraph for history) turned out to BE the problem it was meant to
+solve, not just an efficiency question: a 1500-entry project chunked at
+25/event meant ~60 sequential room-event sends — exactly the kind of
+burst a real homeserver's rate limiter targets — and a chunk send that
+permanently failed partway through left a manifest promising N chunks
+with fewer actually delivered, which (correctly, by the completeness
+rule) gets discarded entirely on read, taking the *whole* project down
+with it, not just some missing entries. Since bulk-adopt sends a project's
+history *only* as a snapshot (no batch-entries fallback, see the
+double-send fix above), that meant a large enough import under sustained
+rate limiting could make the entire imported project silently vanish.
 
-- **`dev.wigwag.snapshot`** (manifest, one event): `{ v, projectId,
-  snapshotId, chunkCount, cutoffSortKey }`. `cutoffSortKey` is the highest
-  `sortKey` among included entries, so a "tail" pull afterward knows to
-  fetch only entries newer than this.
-- **`dev.wigwag.snapshot.chunk`**: `{ v, snapshotId, sequenceNumber,
-  items }` — `items` is exactly `matrixEventContentFromEntry`'s own output,
-  chunked at `SNAPSHOT_CHUNK_SIZE` (25, matching `BULK_PUSH_CHUNK_SIZE`'s
-  existing rate-limit-driven tuning) entries per event.
+A single encrypted blob has no such partial state: either the
+download+decrypt+hash-check succeeds, or the snapshot didn't happen and
+it's a full tail replay — nothing in between. It also cuts the write side
+from ~60 room-event sends to ~2 (one media upload, one small manifest
+event), almost entirely avoiding the per-room event-send rate limiter this
+incident actually hit.
 
-`reassembleLatestSnapshots(rawEvents)` (wigwag-core.js) finds, per
-project, the manifest with the highest `cutoffSortKey` and reassembles it
-**only if every declared chunk (`0` to `chunkCount - 1`) is actually
-present** — an incomplete snapshot (a torn write, or one still mid-flight)
-is discarded entirely for that project, exactly as if none existed. This
-makes the whole mechanism strictly additive: a room with no snapshot yet
-(every room before this shipped) or a stale/partial one behaves exactly
-as it always has.
+- **`dev.wigwag.snapshot`** (manifest, one event, unchanged type):
+  `{ v, projectId, snapshotId, cutoffSortKey, mxc, size, encryption }`.
+  `cutoffSortKey` is the highest `sortKey` among included entries, so a
+  "tail" pull afterward knows to fetch only entries newer than this.
+  `mxc` is the uploaded blob's own `mxc://` URI; `encryption` is
+  `{ key, iv, hashes: { sha256 }, v: "v2" }` — the same shape Element
+  already uses for encrypted images/files in E2EE rooms (AES-CTR, a JWK
+  key, base64 iv/counter), not a bespoke format. `dev.wigwag.snapshot.chunk`
+  no longer exists.
+- The blob itself is the JSON-encoded array of `matrixEventContentFromEntry`
+  outputs (exactly what a chunk's `items` used to hold, now all of them at
+  once), AES-CTR encrypted. The media repo provides no confidentiality on
+  its own — the manifest event carrying the key material is what's
+  actually protected (an ordinary Megolm-encrypted room event like any
+  other), so only a current room member who can decrypt the manifest ever
+  gets the key needed to decrypt the blob.
 
-`createMatrixBridge`'s `connect()` (wigwag-matrix-host.html) reassembles
-whatever snapshots the initial pull found, then re-wraps each snapshot's
-`items` as synthetic `dev.wigwag.entry`-shaped events and combines them
-with the "tail" — plain entries the pull also found, filtered to
-`sortKey > cutoffSortKey` for any project with a complete snapshot (a
-plain entry a snapshot already covers is dropped, not double-counted).
-`discoverProjects`/`hydrateProjectFromMatrixTimeline` need **zero**
-changes for this — they can't tell a snapshot-sourced entry from a
-directly-pulled one, by design.
+`findLatestSnapshotManifests(rawEvents)` (wigwag-core.js) is pure and
+synchronous — picks, per project, the manifest with the highest
+`cutoffSortKey` out of whatever's already been pulled. Actually resolving
+one is separate and async: `resolveSnapshotPayload(manifest, {downloadFn})`
+downloads the blob, verifies its sha256 hash **before ever attempting to
+decrypt** (a corrupted/tampered blob is caught cleanly this way), decrypts,
+and JSON-parses. Any failure at any step — download, hash mismatch,
+decrypt, malformed JSON — resolves to `null`, treated by the caller
+exactly like "no snapshot exists": strictly additive, a room with no
+snapshot (or an unresolvable one) behaves exactly as it always has.
+
+`createMatrixBridge`'s `connect()` (wigwag-matrix-host.html) finds the
+latest manifest per project, resolves each (now a real per-project
+network round trip, unlike the old chunk-reassembly which came for free
+from already-pulled events), and re-wraps resolved items as synthetic
+`dev.wigwag.entry`-shaped events, combined with the "tail" — plain entries
+the pull also found, filtered to `sortKey > cutoffSortKey` for any project
+with a resolved snapshot. `discoverProjects`/`hydrateProjectFromMatrixTimeline`
+need **zero** changes for this — they can't tell a snapshot-sourced entry
+from a directly-pulled one, by design.
+
+Media repo access: the *direct* transport uploads via the plain,
+still-current `POST /_matrix/media/v3/upload` and downloads via the newer
+authenticated `GET /_matrix/client/v1/media/download/...` (MSC3916 moved
+download/config under `/_matrix/client/v1/media/*` and deprecated the old
+unauthenticated download endpoint, but explicitly left upload alone,
+pending a future MSC). The *widget* transport reaches the media repo via
+MSC4039 ("Access the Content repository with the Widget API") — the
+`org.matrix.msc4039.upload_file`/`download_file` actions, still
+unstable/unmerged as of this writing but confirmed implemented in
+matrix-widget-api since v1.9.0 and in Element's react-sdk; `data.file`/
+`response.file` are a raw `XMLHttpRequestBodyInit` (a Uint8Array,
+structured-clonable through `postMessage` directly), never base64.
 
 Writing a new snapshot (`pushSnapshotForProject`, wigwag-matrix-host.html)
-happens two ways: **always**, immediately after a bulk-adopt
-(`pushAllEntriesAsBatch` completing) — the exact scenario that produced
-the original live bug, a bulk import's entries dominating the most recent
-page of history and burying an older project further back than a single
-connect's pull reached; and **by threshold** from the live poll's own
-reconcile step, once a project accumulates `SNAPSHOT_ENTRY_THRESHOLD`
-(200) entries since its last snapshot. Multiple viewers independently
-crossing the threshold around the same time is wasteful (redundant
-writes) but harmless — reassembly is idempotent, newest-`cutoffSortKey`
-wins, and there's no cross-viewer coordination lock.
+happens two ways: **always**, immediately after a bulk-adopt — the exact
+scenario that produced the original live bug, a bulk import's entries
+dominating the most recent page of history and burying an older project
+further back than a single connect's pull reached; and **by threshold**
+from the live poll's own reconcile step, once a project accumulates
+`SNAPSHOT_ENTRY_THRESHOLD` (200) entries since its last snapshot. Multiple
+viewers independently crossing the threshold around the same time is
+wasteful (redundant writes, and an orphaned unreferenced blob from the
+losing writer) but harmless — resolution is idempotent, newest-
+`cutoffSortKey` wins, and there's no cross-viewer coordination lock. The
+upload itself shares the same retry-on-429 mechanics
+(`fetchWithMatrixRetry429`) every other Matrix write in this file uses.
 
 **Explicitly not attempted**: cleaning up/redacting superseded snapshots
-(they sit in the room forever under this design — a real room-size cost
-over a long enough time, but not a correctness problem, and premature
-before the mechanism itself was proven); and, for the *widget* transport
-specifically, skipping the fetch of old pages entirely once a snapshot is
-found — MSC2876's `read_events` continuation token isn't reliably
-guaranteed to terminate (confirmed live, see the pagination fix above), so
-a multi-page skip-ahead loop there risks a worse bug than the one being
-fixed. The *direct* transport's standard, reliable Matrix `/messages`
-pagination could support that optimization safely; not built yet, since
-snapshot-aware hydration alone already delivers the real value (a
-correct result, and a much smaller amount of data that actually needs to
-be *processed*) without it.
+or their now-orphaned media blobs (they sit forever under this design — a
+real room/media-repo-size cost over a long enough time, but not a
+correctness problem, and premature before the mechanism itself was
+proven); multi-blob splitting for a snapshot whose encrypted payload
+would exceed the homeserver's own upload size cap (skip writing a
+snapshot for that project and fall back to full replay, rather than
+attempting and failing confusingly — a genuine v1 gap if a single
+project's history ever grows large enough to hit it); and, for the
+*widget* transport specifically, skipping the fetch of old pages entirely
+once a snapshot is found — MSC2876's `read_events` continuation token
+isn't reliably guaranteed to terminate (confirmed live, see the
+pagination fix above), so a multi-page skip-ahead loop there risks a
+worse bug than the one being fixed. The *direct* transport's standard,
+reliable Matrix `/messages` pagination could support that optimization
+safely; not built yet, since snapshot-aware hydration alone already
+delivers the real value (a correct result, and a much smaller amount of
+data that actually needs to be *processed*) without it.
 
 `num` is **derived**, never stored: sorted by each issue's own earliest
 entry `sortKey` (id as tiebreak) on every load, since Matrix's timeline

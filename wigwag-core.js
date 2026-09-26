@@ -3232,84 +3232,123 @@ function projectIdFromMatrixStateEvent(rawEvent) {
 // it -- they're a current member when the snapshot's own session is
 // shared, unlike the old individual entries.
 //
-// Two event types, mirroring NeoBoard's manifest+chunk pattern (see the
-// plan doc) but chunked by entry COUNT rather than raw bytes -- wigwag's
-// entries are already well-formed JSON items (matrixEventContentFromEntry
-// output), so there's no need for NeoBoard's own byte-slice/reassemble
-// dance, just the same per-event entry cap wigwag-matrix-host.html's own
-// bulk-adopt push already uses (BULK_PUSH_CHUNK_SIZE there, mirrored as
-// SNAPSHOT_CHUNK_SIZE below for anyone building a snapshot from scratch).
+// A snapshot's payload is one client-side-encrypted media blob (tracker
+// f6b39bf0, live-reported rate-limit incident), not a set of chunk
+// events. The original event-chunking design (mirroring NeoBoard's
+// manifest+chunk pattern) turned out to BE the problem, not just an
+// efficiency question: a 1500-entry project chunked at 25/event meant ~60
+// sequential room-event sends, which is exactly the kind of burst a real
+// homeserver's rate limiter targets -- and a chunk send that permanently
+// failed partway through left a manifest promising N chunks with fewer
+// actually delivered, which (correctly, by the completeness rule) gets
+// discarded entirely on read, taking the WHOLE project down with it, not
+// just some missing entries. A single blob has no such partial state:
+// either the download+decrypt+hash-check succeeds, or the snapshot didn't
+// happen and it's a full tail replay -- nothing in between. It also cuts
+// the write side from ~60 room-event sends to ~2 (one media upload, one
+// small manifest event), almost entirely avoiding the per-room event-send
+// rate limiter this incident actually hit. Confirmed via MSC4039 ("Access
+// the Content repository with the Widget API") that the widget transport
+// can reach the media repo too, not just the direct transport -- see
+// wigwag-matrix-host.html's uploadSnapshotBlob/downloadSnapshotBlob.
+//
+// Encryption follows Matrix's own established EncryptedFile convention
+// (the same shape Element already uses for encrypted images/files in
+// E2EE rooms) rather than inventing a bespoke format: AES-CTR, a JWK key,
+// a base64 iv/counter, and a sha256 hash of the CIPHERTEXT (checked
+// BEFORE ever attempting to decrypt, so a corrupted/tampered blob is
+// caught cleanly rather than fed to the cipher). The media repo itself
+// provides no confidentiality on its own -- the manifest event carrying
+// the key material is what's actually protected (it's an ordinary
+// Megolm-encrypted room event like any other), so only a current room
+// member who can decrypt the manifest ever gets the key needed to decrypt
+// the blob.
 const WIGWAG_MATRIX_SNAPSHOT_TYPE = 'dev.wigwag.snapshot';
-const WIGWAG_MATRIX_SNAPSHOT_CHUNK_TYPE = 'dev.wigwag.snapshot.chunk';
-const SNAPSHOT_CHUNK_SIZE = 25;
-// The manifest/anchor event: declares how many chunk events to expect and
-// the highest sortKey included, so a caller that finds this snapshot knows
-// exactly which (much smaller) tail of newer entries still needs pulling
-// separately.
-function matrixEventContentFromSnapshotManifest({ projectId, snapshotId, chunkCount, cutoffSortKey }) {
-  return { v: WIGWAG_MATRIX_EVENT_VERSION, projectId, snapshotId, chunkCount, cutoffSortKey };
+// 64-bit counter within the 128-bit IV (the other 64 bits are the fixed
+// nonce half) -- the same split Matrix's own AES-CTR encrypted-media
+// convention uses.
+const SNAPSHOT_AES_CTR_LENGTH = 64;
+async function encryptSnapshotPayload(plaintextBytes) {
+  const key = await crypto.subtle.generateKey({ name: 'AES-CTR', length: 256 }, true, ['encrypt', 'decrypt']);
+  const counter = crypto.getRandomValues(new Uint8Array(16));
+  const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-CTR', counter, length: SNAPSHOT_AES_CTR_LENGTH }, key, plaintextBytes));
+  const jwk = await crypto.subtle.exportKey('jwk', key);
+  const hashBytes = new Uint8Array(await crypto.subtle.digest('SHA-256', ciphertext));
+  return {
+    ciphertext,
+    encryption: { key: jwk, iv: base64FromBytes(counter), hashes: { sha256: base64FromBytes(hashBytes) }, v: 'v2' }
+  };
+}
+// Tolerant like every other decode in this adapter: any failure (missing
+// key material, a hash mismatch -- corrupted or tampered ciphertext,
+// caught BEFORE ever decrypting -- a bad key, a decrypt error) returns
+// null rather than throwing. The caller treats null exactly like "no
+// snapshot exists" and falls back to a full replay -- never a partial or
+// silently-wrong hydration.
+async function decryptSnapshotPayload({ ciphertext, encryption }) {
+  try {
+    if (!ciphertext || !encryption || !encryption.key || !encryption.iv || !encryption.hashes || !encryption.hashes.sha256) return null;
+    const actualHashBytes = new Uint8Array(await crypto.subtle.digest('SHA-256', ciphertext));
+    if (base64FromBytes(actualHashBytes) !== encryption.hashes.sha256) return null;
+    const key = await crypto.subtle.importKey('jwk', encryption.key, { name: 'AES-CTR' }, false, ['decrypt']);
+    const counter = bytesFromBase64(encryption.iv);
+    const plaintextBuf = await crypto.subtle.decrypt({ name: 'AES-CTR', counter, length: SNAPSHOT_AES_CTR_LENGTH }, key, ciphertext);
+    return new Uint8Array(plaintextBuf);
+  } catch (e) { return null; }
+}
+// The manifest/anchor event: points at the encrypted blob (mxc + the key
+// material needed to decrypt it) and declares the highest sortKey
+// included, so a caller that finds this snapshot knows exactly which
+// (much smaller) tail of newer entries still needs pulling separately.
+function matrixEventContentFromSnapshotManifest({ projectId, snapshotId, cutoffSortKey, mxc, size, encryption }) {
+  return { v: WIGWAG_MATRIX_EVENT_VERSION, projectId, snapshotId, cutoffSortKey, mxc, size, encryption };
 }
 function snapshotManifestFromMatrixEvent(rawEvent) {
   try {
     const content = rawEvent && rawEvent.content;
     if (!content || content.v !== WIGWAG_MATRIX_EVENT_VERSION) return null;
-    if (!content.snapshotId || !content.projectId || typeof content.chunkCount !== 'number') return null;
-    return { projectId: content.projectId, snapshotId: content.snapshotId, chunkCount: content.chunkCount, cutoffSortKey: content.cutoffSortKey || 0 };
+    if (!content.snapshotId || !content.projectId || !content.mxc || !content.encryption) return null;
+    return { projectId: content.projectId, snapshotId: content.snapshotId, cutoffSortKey: content.cutoffSortKey || 0, mxc: content.mxc, size: content.size || 0, encryption: content.encryption };
   } catch (e) { return null; }
 }
-// One page of a snapshot's payload -- items is exactly the same per-entry
-// shape matrixEventContentFromEntries already uses for live batch pushes;
-// snapshotId/sequenceNumber are what's new, identifying which manifest
-// this chunk belongs to and its place in the reassembly order.
-function matrixEventContentFromSnapshotChunk({ snapshotId, sequenceNumber, items }) {
-  return { v: WIGWAG_MATRIX_EVENT_VERSION, snapshotId, sequenceNumber, items: items.map(item => matrixEventContentFromEntry(item)) };
-}
-function snapshotChunkFromMatrixEvent(rawEvent) {
-  try {
-    const content = rawEvent && rawEvent.content;
-    if (!content || content.v !== WIGWAG_MATRIX_EVENT_VERSION || !content.snapshotId || typeof content.sequenceNumber !== 'number' || !Array.isArray(content.items)) return null;
-    const items = content.items.map(item => entryFromMatrixEvent({ content: item })).filter(Boolean);
-    return { snapshotId: content.snapshotId, sequenceNumber: content.sequenceNumber, items };
-  } catch (e) { return null; }
-}
-// Takes whatever raw manifest/chunk events a caller has already pulled
-// (any order, possibly spanning multiple snapshot generations or multiple
-// projects) and reassembles the LATEST *complete* snapshot per project --
-// "latest" by cutoffSortKey, "complete" meaning every sequenceNumber from
-// 0 to chunkCount-1 was actually found. An incomplete snapshot (a torn
-// write, or one still mid-flight) is discarded entirely for that
-// projectId, exactly as if no snapshot existed -- the caller falls back
-// to a full replay, never a partial/wrong hydration.
-function reassembleLatestSnapshots(rawEvents) {
+// Pure and synchronous, unlike resolving a snapshot's actual payload
+// below -- picks the highest-cutoffSortKey manifest per project out of
+// whatever raw events a caller has already pulled. Callers use this to
+// decide WHICH snapshot (if any) is worth resolving before paying for the
+// download.
+function findLatestSnapshotManifests(rawEvents) {
   const manifestsByProject = new Map(); // projectId -> latest manifest seen
-  const chunksBySnapshotId = new Map(); // snapshotId -> Map(sequenceNumber -> items)
   for (const rawEvent of (rawEvents || [])) {
-    if (rawEvent && rawEvent.type === WIGWAG_MATRIX_SNAPSHOT_TYPE) {
-      const manifest = snapshotManifestFromMatrixEvent(rawEvent);
-      if (!manifest) continue;
-      const existing = manifestsByProject.get(manifest.projectId);
-      if (!existing || manifest.cutoffSortKey >= existing.cutoffSortKey) manifestsByProject.set(manifest.projectId, manifest);
-    } else if (rawEvent && rawEvent.type === WIGWAG_MATRIX_SNAPSHOT_CHUNK_TYPE) {
-      const chunk = snapshotChunkFromMatrixEvent(rawEvent);
-      if (!chunk) continue;
-      if (!chunksBySnapshotId.has(chunk.snapshotId)) chunksBySnapshotId.set(chunk.snapshotId, new Map());
-      chunksBySnapshotId.get(chunk.snapshotId).set(chunk.sequenceNumber, chunk.items);
-    }
+    if (!rawEvent || rawEvent.type !== WIGWAG_MATRIX_SNAPSHOT_TYPE) continue;
+    const manifest = snapshotManifestFromMatrixEvent(rawEvent);
+    if (!manifest) continue;
+    const existing = manifestsByProject.get(manifest.projectId);
+    if (!existing || manifest.cutoffSortKey >= existing.cutoffSortKey) manifestsByProject.set(manifest.projectId, manifest);
   }
-  const result = new Map(); // projectId -> { snapshotId, cutoffSortKey, items }
-  for (const [projectId, manifest] of manifestsByProject) {
-    const chunksBySeq = chunksBySnapshotId.get(manifest.snapshotId);
-    if (!chunksBySeq || chunksBySeq.size !== manifest.chunkCount) continue; // incomplete -- discard
-    let items = [];
-    let complete = true;
-    for (let seq = 0; seq < manifest.chunkCount; seq++) {
-      if (!chunksBySeq.has(seq)) { complete = false; break; }
-      items = items.concat(chunksBySeq.get(seq));
-    }
-    if (!complete) continue;
-    result.set(projectId, { snapshotId: manifest.snapshotId, cutoffSortKey: manifest.cutoffSortKey, items });
-  }
-  return result;
+  return manifestsByProject;
+}
+// Async, unlike findLatestSnapshotManifests above -- actually fetches and
+// decrypts a given manifest's blob. `downloadFn(mxc)` is transport-
+// supplied (direct: a plain fetch against the media API; widget:
+// org.matrix.msc4039.download_file) and must resolve to
+// `{status:'ok', bytes}` or an error shape; this never assumes which.
+// Returns `{items}` (the same {scope, issueId, stream, entry, projectId}
+// shape entryFromMatrixEvent/entriesFromMatrixEvent already produce) on
+// full success, or null on ANY failure at all -- a failed download, a
+// hash/decrypt failure (see decryptSnapshotPayload), or malformed JSON
+// are all treated identically by the caller: this snapshot doesn't
+// count, fall back to a full replay for this project.
+async function resolveSnapshotPayload(manifest, { downloadFn }) {
+  try {
+    const downloadResult = await downloadFn(manifest.mxc);
+    if (!downloadResult || downloadResult.status !== 'ok' || !downloadResult.bytes) return null;
+    const plaintextBytes = await decryptSnapshotPayload({ ciphertext: downloadResult.bytes, encryption: manifest.encryption });
+    if (!plaintextBytes) return null;
+    const parsed = JSON.parse(new TextDecoder().decode(plaintextBytes));
+    if (!Array.isArray(parsed)) return null;
+    const items = parsed.map(item => entryFromMatrixEvent({ content: item })).filter(Boolean);
+    return { items };
+  } catch (e) { return null; }
 }
 // Decodes a flat list of raw Matrix events (single dev.wigwag.entry OR
 // batch dev.wigwag.entries, any order, foreign/malformed events silently
@@ -3460,7 +3499,7 @@ async function fetchMatrixRoomEntries({ fetchImpl, homeserverUrl, accessToken, r
     // reliable, order-independent discovery still comes from a real
     // current-state fetch (getMatrixRoomState), not from however far back
     // this pagination happens to reach.
-    const filter = encodeURIComponent(JSON.stringify({ types: [WIGWAG_MATRIX_ENTRY_TYPE, WIGWAG_MATRIX_ENTRIES_TYPE, WIGWAG_MATRIX_SNAPSHOT_TYPE, WIGWAG_MATRIX_SNAPSHOT_CHUNK_TYPE, WIGWAG_MATRIX_PROJECT_STATE_TYPE] }));
+    const filter = encodeURIComponent(JSON.stringify({ types: [WIGWAG_MATRIX_ENTRY_TYPE, WIGWAG_MATRIX_ENTRIES_TYPE, WIGWAG_MATRIX_SNAPSHOT_TYPE, WIGWAG_MATRIX_PROJECT_STATE_TYPE] }));
     let url = homeserverUrl.replace(/\/$/, '') + '/_matrix/client/v3/rooms/' + encodeURIComponent(roomId) + '/messages?dir=' + (dir || 'b') + '&filter=' + filter;
     if (from) url += '&from=' + encodeURIComponent(from);
     if (limit) url += '&limit=' + encodeURIComponent(limit);
@@ -3498,28 +3537,45 @@ const MATRIX_SEND_MAX_RETRIES = 6;
 // PUT needs no txnId at all: overwrite-by-state_key is already idempotent
 // server-side (a retried PUT with the same content is a genuine no-op),
 // unlike a timeline send where the SAME txnId is what makes a retry safe.
+// Shared by putMatrixEvent AND the media upload below (tracker f6b39bf0's
+// media-blob snapshot rework) -- any Matrix HTTP call (a /send or /state
+// PUT, a media upload POST) can hit the same M_LIMIT_EXCEEDED response
+// under burst volume, so this is the one place the retry loop lives.
+// Returns the real fetch Response on the first non-429 status, or on a
+// 429 once retries are exhausted (the caller sees that final 429 itself
+// and reports it -- its body is deliberately never read here in that
+// case, so the caller can still safely call .json()/.text() on it
+// exactly once, same discipline as everywhere else in this file). Only
+// ever reads the response body itself when about to retry (extracting
+// retry_after_ms), never on a response it's handing back. Throws only on
+// a genuine network-level failure -- the caller's own try/catch turns
+// that into its own {status:'error'} shape, matching existing per-caller
+// conventions; not caught here so a network error on a retry attempt
+// still terminates immediately rather than retrying into a wall.
+async function fetchWithMatrixRetry429(fetchImpl, url, init) {
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetchImpl(url, init);
+    if (res.status !== 429) return res;
+    if (attempt >= MATRIX_SEND_MAX_RETRIES) return res;
+    let retryAfterMs = 1000 * Math.pow(2, attempt);
+    try { const body = await res.json(); if (typeof body.retry_after_ms === 'number') retryAfterMs = body.retry_after_ms; } catch (e) { /* no/invalid JSON body -- keep the backoff default */ }
+    await new Promise(resolve => setTimeout(resolve, retryAfterMs));
+  }
+}
 async function putMatrixEvent({ fetchImpl, homeserverUrl, accessToken, roomId, eventType, content, txnId, stateKey }) {
   const base = homeserverUrl.replace(/\/$/, '') + '/_matrix/client/v3/rooms/' + encodeURIComponent(roomId);
   const url = (stateKey !== undefined)
     ? base + '/state/' + eventType + '/' + encodeURIComponent(stateKey)
     : base + '/send/' + eventType + '/' + encodeURIComponent(txnId);
-  for (let attempt = 0; ; attempt++) {
-    try {
-      const res = await fetchImpl(url, { method: 'PUT', headers: { Authorization: 'Bearer ' + accessToken, 'Content-Type': 'application/json' }, body: JSON.stringify(content) });
-      if (res.status === 403) return { status: 'forbidden' };
-      if (res.status === 429) {
-        if (attempt >= MATRIX_SEND_MAX_RETRIES) return { status: 'error', message: 'rate-limited (429) after ' + MATRIX_SEND_MAX_RETRIES + ' retries' };
-        let retryAfterMs = 1000 * Math.pow(2, attempt);
-        try { const body = await res.json(); if (typeof body.retry_after_ms === 'number') retryAfterMs = body.retry_after_ms; } catch (e) { /* no/invalid JSON body -- keep the backoff default */ }
-        await new Promise(resolve => setTimeout(resolve, retryAfterMs));
-        continue;
-      }
-      if (!res.ok) return { status: 'error', message: 'Matrix returned ' + res.status };
-      const data = await res.json();
-      return { status: 'ok', eventId: data.event_id };
-    } catch (e) {
-      return { status: 'error', message: e.message };
-    }
+  try {
+    const res = await fetchWithMatrixRetry429(fetchImpl, url, { method: 'PUT', headers: { Authorization: 'Bearer ' + accessToken, 'Content-Type': 'application/json' }, body: JSON.stringify(content) });
+    if (res.status === 403) return { status: 'forbidden' };
+    if (res.status === 429) return { status: 'error', message: 'rate-limited (429) after ' + MATRIX_SEND_MAX_RETRIES + ' retries' };
+    if (!res.ok) return { status: 'error', message: 'Matrix returned ' + res.status };
+    const data = await res.json();
+    return { status: 'ok', eventId: data.event_id };
+  } catch (e) {
+    return { status: 'error', message: e.message };
   }
 }
 async function sendMatrixEntry({ fetchImpl, homeserverUrl, accessToken, roomId, content, txnId }) {
@@ -3533,12 +3589,9 @@ async function sendMatrixEntry({ fetchImpl, homeserverUrl, accessToken, roomId, 
 async function sendMatrixEntries({ fetchImpl, homeserverUrl, accessToken, roomId, content, txnId }) {
   return putMatrixEvent({ fetchImpl, homeserverUrl, accessToken, roomId, eventType: WIGWAG_MATRIX_ENTRIES_TYPE, content, txnId });
 }
-// Same retry-on-429 mechanics, for the two snapshot event types.
+// Same retry-on-429 mechanics, for the snapshot manifest event.
 async function sendMatrixSnapshotManifest({ fetchImpl, homeserverUrl, accessToken, roomId, content, txnId }) {
   return putMatrixEvent({ fetchImpl, homeserverUrl, accessToken, roomId, eventType: WIGWAG_MATRIX_SNAPSHOT_TYPE, content, txnId });
-}
-async function sendMatrixSnapshotChunk({ fetchImpl, homeserverUrl, accessToken, roomId, content, txnId }) {
-  return putMatrixEvent({ fetchImpl, homeserverUrl, accessToken, roomId, eventType: WIGWAG_MATRIX_SNAPSHOT_CHUNK_TYPE, content, txnId });
 }
 // State write, not a timeline send -- stateKey (the project id) replaces
 // txnId. A 'forbidden' result here (putMatrixEvent's existing 403 handling,
@@ -3564,6 +3617,47 @@ async function getMatrixRoomState({ fetchImpl, homeserverUrl, accessToken, roomI
     if (!res.ok) return { status: 'error', message: 'Matrix returned ' + res.status };
     const data = await res.json();
     return { status: 'ok', events: Array.isArray(data) ? data : [] };
+  } catch (e) {
+    return { status: 'error', message: e.message };
+  }
+}
+// Direct-transport media repo access (tracker f6b39bf0's media-blob
+// snapshot rework) -- the widget transport's own equivalent goes through
+// MSC4039's upload_file/download_file actions instead (wigwag-matrix-
+// host.html), never this. Upload stays on the plain, still-current
+// /_matrix/media/v3/upload -- confirmed MSC3916 ("Authentication for
+// media") moved download/config to the new /_matrix/client/v1/media/*
+// namespace but explicitly left upload alone, pending a future MSC.
+// Download uses that new, authenticated endpoint (the legacy
+// unauthenticated one is deprecated).
+async function uploadMatrixMedia({ fetchImpl, homeserverUrl, accessToken, bytes }) {
+  try {
+    const url = homeserverUrl.replace(/\/$/, '') + '/_matrix/media/v3/upload?filename=snapshot.bin';
+    const res = await fetchWithMatrixRetry429(fetchImpl, url, { method: 'POST', headers: { Authorization: 'Bearer ' + accessToken, 'Content-Type': 'application/octet-stream' }, body: bytes });
+    if (res.status === 429) return { status: 'error', message: 'rate-limited (429) after ' + MATRIX_SEND_MAX_RETRIES + ' retries' };
+    if (!res.ok) return { status: 'error', message: 'Matrix media upload returned ' + res.status };
+    const data = await res.json();
+    return { status: 'ok', mxc: data.content_uri };
+  } catch (e) {
+    return { status: 'error', message: e.message };
+  }
+}
+// mxc://<server>/<mediaId> -- the only shape a real homeserver ever hands
+// back from an upload, but tolerant of a malformed one anyway (never
+// throws on a corrupt manifest field).
+function parseMxcUri(mxc) {
+  const m = /^mxc:\/\/([^/]+)\/([^/?#]+)$/.exec(mxc || '');
+  return m ? { serverName: m[1], mediaId: m[2] } : null;
+}
+async function downloadMatrixMedia({ fetchImpl, homeserverUrl, accessToken, mxc }) {
+  try {
+    const parsed = parseMxcUri(mxc);
+    if (!parsed) return { status: 'error', message: 'invalid mxc URI: ' + mxc };
+    const url = homeserverUrl.replace(/\/$/, '') + '/_matrix/client/v1/media/download/' + encodeURIComponent(parsed.serverName) + '/' + encodeURIComponent(parsed.mediaId);
+    const res = await fetchImpl(url, { headers: { Authorization: 'Bearer ' + accessToken } });
+    if (!res.ok) return { status: 'error', message: 'Matrix media download returned ' + res.status };
+    const buf = await res.arrayBuffer();
+    return { status: 'ok', bytes: new Uint8Array(buf) };
   } catch (e) {
     return { status: 'error', message: e.message };
   }
@@ -3605,8 +3699,9 @@ const WigwagCoreExports = {
   buildMergePreviewViewModel, buildMergeFieldTimeline, mergeRecordNeedsAttention, buildMergeFieldDiffLines, mergeSettledValueView, buildMergeIssueTimeline, resolveFieldValueView,
   WIGWAG_MATRIX_ENTRY_TYPE, WIGWAG_MATRIX_ENTRIES_TYPE, WIGWAG_MATRIX_EVENT_VERSION, matrixEventContentFromEntry, entryFromMatrixEvent, matrixEventContentFromEntries, entriesFromMatrixEvent, sendMatrixEntries, hydrateProjectFromMatrixTimeline,
   WIGWAG_MATRIX_PROJECT_STATE_TYPE, matrixStateEventContentFromProjectCreation, projectIdFromMatrixStateEvent, sendMatrixProjectStateEvent, getMatrixRoomState,
-  WIGWAG_MATRIX_SNAPSHOT_TYPE, WIGWAG_MATRIX_SNAPSHOT_CHUNK_TYPE, SNAPSHOT_CHUNK_SIZE, matrixEventContentFromSnapshotManifest, snapshotManifestFromMatrixEvent, matrixEventContentFromSnapshotChunk, snapshotChunkFromMatrixEvent, reassembleLatestSnapshots, decodeAllMatrixEntryItems, sendMatrixSnapshotManifest, sendMatrixSnapshotChunk,
-  resolveMatrixRoomAlias, fetchMatrixRoomEntries, sendMatrixEntry, probeMatrixRoomAccess
+  WIGWAG_MATRIX_SNAPSHOT_TYPE, encryptSnapshotPayload, decryptSnapshotPayload, matrixEventContentFromSnapshotManifest, snapshotManifestFromMatrixEvent, findLatestSnapshotManifests, resolveSnapshotPayload, decodeAllMatrixEntryItems, sendMatrixSnapshotManifest,
+  resolveMatrixRoomAlias, fetchMatrixRoomEntries, sendMatrixEntry, probeMatrixRoomAccess,
+  fetchWithMatrixRetry429, uploadMatrixMedia, downloadMatrixMedia, parseMxcUri
 };
 
 // wigwag.html carries its own separately-maintained inline copy of this

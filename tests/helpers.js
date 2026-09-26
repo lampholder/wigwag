@@ -574,8 +574,17 @@ function mockGithubContentsApi(page, repo, path = 'tracker.jsonl') {
 // occurrences alongside ordinary entries -- set to false to test that
 // getMatrixRoomState's real current-state fetch (not timeline scanning)
 // is what actually finds a project, independent of how much (or how
-// little) of the timeline a given pull happens to reach.
-function mockMatrixClientApi(page, { homeserverUrl, roomId, initialEntries = [], roomName, accessDenied = false, whoamiFails = false, messagesPageSize = null, projectCreationForbidden = false, messagesReturnsProjectStateEvents = true } = {}) {
+// little) of the timeline a given pull happens to reach. `rejectUploadTimes`
+// (default 0) makes the media upload endpoint fail N times before
+// succeeding (a real M_TOO_LARGE-shaped 413) -- for testing the
+// graceful-skip-this-snapshot path; pass Infinity to simulate a snapshot
+// that can never be written at all. `seedMediaBlobs` ([{mxc, bytes}])
+// pre-populates the media store BEFORE the page ever connects, so a
+// manifest event placed in `initialEntries` (simulating "this snapshot
+// already existed before this test's own session") can actually resolve
+// against a real, already-known mxc -- see tests/matrix-host.spec.js's
+// own snapshotEvent() helper.
+function mockMatrixClientApi(page, { homeserverUrl, roomId, initialEntries = [], roomName, accessDenied = false, whoamiFails = false, messagesPageSize = null, projectCreationForbidden = false, messagesReturnsProjectStateEvents = true, rejectUploadTimes = 0, seedMediaBlobs = [] } = {}) {
   const state = { sentEntries: [], messagesCallCount: 0, pendingEntries: [] };
   const base = homeserverUrl.replace(/\/$/, '');
   const roomPath = base + '/_matrix/client/v3/rooms/' + encodeURIComponent(roomId);
@@ -632,24 +641,49 @@ function mockMatrixClientApi(page, { homeserverUrl, roomId, initialEntries = [],
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ event_id: '$evt' + state.sentEntries.length }) });
   });
 
-  // Room snapshot (tracker f6b39bf0/#153, f1c7098f/#154): both event
-  // types get recorded AND fed back into pendingEntries, so a later
-  // connect() in the same test (a "second session"/reconnect scenario)
-  // can actually discover and reassemble what got sent, the same way a
-  // real room would hand it back on the next pull.
+  // Room snapshot (tracker f6b39bf0/#153, f1c7098f/#154): a media-blob
+  // snapshot, not chunked events -- the manifest event gets recorded AND
+  // fed back into pendingEntries (so a later connect() in the same test,
+  // a "second session"/reconnect scenario, can actually discover and
+  // resolve what got sent, the same way a real room would hand it back on
+  // the next pull); the encrypted blob itself lives in a separate,
+  // real-media-repo-shaped store, keyed by a generated mxc:// URI.
   state.sentSnapshotManifests = [];
-  state.sentSnapshotChunks = [];
   page.route(roomPath + '/send/dev.wigwag.snapshot/*', async (route) => {
     const content = JSON.parse(route.request().postData());
     state.sentSnapshotManifests.push(content);
     state.pendingEntries.push({ type: 'dev.wigwag.snapshot', content });
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ event_id: '$snap' + state.sentSnapshotManifests.length }) });
   });
-  page.route(roomPath + '/send/dev.wigwag.snapshot.chunk/*', async (route) => {
-    const content = JSON.parse(route.request().postData());
-    state.sentSnapshotChunks.push(content);
-    state.pendingEntries.push({ type: 'dev.wigwag.snapshot.chunk', content });
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ event_id: '$snapchunk' + state.sentSnapshotChunks.length }) });
+  // Media repo (tracker f6b39bf0's media-blob snapshot rework) -- upload
+  // stays on the plain, still-current /_matrix/media/v3/upload; download
+  // uses the newer authenticated /_matrix/client/v1/media/* endpoint
+  // (MSC3916), matching core.uploadMatrixMedia/downloadMatrixMedia's own
+  // endpoint choice exactly. `rejectUploadTimes` simulates a real 429
+  // (M_LIMIT_EXCEEDED) N times before succeeding -- exercises
+  // uploadMatrixMedia's shared fetchWithMatrixRetry429 mechanics, the
+  // actual rate-limit scenario this whole rework fixes; pass a huge
+  // number to simulate an upload that never succeeds at all.
+  state.uploadedSnapshotBlobs = []; // [{mxc, bytes}], in upload order
+  let uploadRejectRemaining = rejectUploadTimes;
+  const mediaStore = new Map(); // mediaId -> Buffer
+  for (const { mxc, bytes } of seedMediaBlobs) {
+    mediaStore.set(mxc.split('/').pop(), Buffer.from(bytes));
+  }
+  page.route(base + '/_matrix/media/v3/upload*', async (route) => {
+    if (uploadRejectRemaining > 0) { uploadRejectRemaining--; await route.fulfill({ status: 429, contentType: 'application/json', body: JSON.stringify({ errcode: 'M_LIMIT_EXCEEDED', retry_after_ms: 5 }) }); return; }
+    const bytes = route.request().postDataBuffer();
+    const mediaId = 'media' + (state.uploadedSnapshotBlobs.length + 1);
+    mediaStore.set(mediaId, bytes);
+    const mxc = 'mxc://example.org/' + mediaId;
+    state.uploadedSnapshotBlobs.push({ mxc, bytes });
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ content_uri: mxc }) });
+  });
+  page.route(base + '/_matrix/client/v1/media/download/example.org/*', async (route) => {
+    const mediaId = decodeURIComponent(new URL(route.request().url()).pathname.split('/').pop());
+    const bytes = mediaStore.get(mediaId);
+    if (!bytes) { await route.fulfill({ status: 404, contentType: 'application/json', body: '{}' }); return; }
+    await route.fulfill({ status: 200, contentType: 'application/octet-stream', body: bytes });
   });
 
   // Project index (tracker f6b39bf0, live-reported rate-limit incident) --

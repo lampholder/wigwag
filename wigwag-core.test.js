@@ -2328,9 +2328,9 @@ test('decryptSnapshotPayload: tolerant of missing key material, never throws', a
 
 test('matrixEventContentFromSnapshotManifest / snapshotManifestFromMatrixEvent: round-trips', () => {
   const encryption = { key: { kty: 'oct', k: 'x' }, iv: 'aXY=', hashes: { sha256: 'aGFzaA==' }, v: 'v2' };
-  const content = core.matrixEventContentFromSnapshotManifest({ projectId: 'p1', snapshotId: 'snap-1', cutoffSortKey: 500, mxc: 'mxc://example.org/abc123', size: 4096, encryption });
+  const content = core.matrixEventContentFromSnapshotManifest({ projectId: 'p1', snapshotId: 'snap-1', cutoffSortKey: 500, mxc: 'mxc://example.org/abc123', size: 4096, encryption, createdAt: 1700000000000 });
   const decoded = core.snapshotManifestFromMatrixEvent({ type: 'dev.wigwag.snapshot', content });
-  assert.deepEqual(decoded, { projectId: 'p1', snapshotId: 'snap-1', cutoffSortKey: 500, mxc: 'mxc://example.org/abc123', size: 4096, encryption });
+  assert.deepEqual(decoded, { projectId: 'p1', snapshotId: 'snap-1', cutoffSortKey: 500, mxc: 'mxc://example.org/abc123', size: 4096, encryption, createdAt: 1700000000000 });
 });
 
 test('snapshotManifestFromMatrixEvent: tolerant of malformed/foreign events', () => {

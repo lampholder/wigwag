@@ -3300,15 +3300,21 @@ async function decryptSnapshotPayload({ ciphertext, encryption }) {
 // material needed to decrypt it) and declares the highest sortKey
 // included, so a caller that finds this snapshot knows exactly which
 // (much smaller) tail of newer entries still needs pulling separately.
-function matrixEventContentFromSnapshotManifest({ projectId, snapshotId, cutoffSortKey, mxc, size, encryption }) {
-  return { v: WIGWAG_MATRIX_EVENT_VERSION, projectId, snapshotId, cutoffSortKey, mxc, size, encryption };
+// createdAt (wall-clock ms, tracker f6b39bf0's cadence-floor follow-up) is
+// when this snapshot was WRITTEN, not derived from the entries' own
+// sortKeys (cutoffSortKey) -- a quiet project's last real edit could be
+// long ago even on a snapshot taken today. Lets a reconnecting bridge
+// seed its own "when did we last snapshot this project" bookkeeping
+// accurately, without needing to have been the one that wrote it.
+function matrixEventContentFromSnapshotManifest({ projectId, snapshotId, cutoffSortKey, mxc, size, encryption, createdAt }) {
+  return { v: WIGWAG_MATRIX_EVENT_VERSION, projectId, snapshotId, cutoffSortKey, mxc, size, encryption, createdAt };
 }
 function snapshotManifestFromMatrixEvent(rawEvent) {
   try {
     const content = rawEvent && rawEvent.content;
     if (!content || content.v !== WIGWAG_MATRIX_EVENT_VERSION) return null;
     if (!content.snapshotId || !content.projectId || !content.mxc || !content.encryption) return null;
-    return { projectId: content.projectId, snapshotId: content.snapshotId, cutoffSortKey: content.cutoffSortKey || 0, mxc: content.mxc, size: content.size || 0, encryption: content.encryption };
+    return { projectId: content.projectId, snapshotId: content.snapshotId, cutoffSortKey: content.cutoffSortKey || 0, mxc: content.mxc, size: content.size || 0, encryption: content.encryption, createdAt: content.createdAt || 0 };
   } catch (e) { return null; }
 }
 // Pure and synchronous, unlike resolving a snapshot's actual payload

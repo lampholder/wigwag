@@ -979,7 +979,14 @@
     // separate batch send was accomplishing that the snapshot doesn't
     // already cover, for a fresh adopt.
     const lastSnapshotEntryCount = new Map(); // projectId -> entry count as of its last snapshot
+    const lastSnapshotAt = new Map(); // projectId -> wall-clock ms as of its last snapshot
     const SNAPSHOT_ENTRY_THRESHOLD = 200; // same order of magnitude as the pagination page size this is meant to bound
+    // A quiet, rarely-edited project would otherwise never cross the
+    // entry-count threshold above, accumulating an ever-larger
+    // never-snapshotted tail over months -- this is a floor, not a
+    // replacement: whichever of the two conditions is met first triggers a
+    // fresh snapshot (see pushSnapshotIfDue below).
+    const SNAPSHOT_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h
     async function pushSnapshotForProject(projectId) {
       const current = readCurrentLocalDoc(projectId);
       const items = flattenEntries(current).map(item => ({ ...item, projectId }));
@@ -1001,10 +1008,11 @@
         items.forEach(item => knownEntryIds.delete(item.entry.id)); // roll back the optimistic mark -- these were never actually sent
         return;
       }
-      const manifestContent = core.matrixEventContentFromSnapshotManifest({ projectId, snapshotId, cutoffSortKey, mxc: uploadResult.mxc, size: ciphertext.length, encryption });
+      const manifestContent = core.matrixEventContentFromSnapshotManifest({ projectId, snapshotId, cutoffSortKey, mxc: uploadResult.mxc, size: ciphertext.length, encryption, createdAt: Date.now() });
       const manifestResult = await transport.sendSnapshotManifest(manifestContent);
       if (manifestResult.status === 'ok') {
         lastSnapshotEntryCount.set(projectId, items.length);
+        lastSnapshotAt.set(projectId, manifestContent.createdAt);
       } else {
         // The blob itself is already uploaded and orphaned at this point
         // (harmless -- nothing references it, and cleaning up superseded/
@@ -1025,8 +1033,23 @@
     async function pushSnapshotIfDue(projectId) {
       const current = readCurrentLocalDoc(projectId);
       const entryCount = flattenEntries(current).length;
-      const sinceLast = entryCount - (lastSnapshotEntryCount.get(projectId) || 0);
-      if (sinceLast >= SNAPSHOT_ENTRY_THRESHOLD) await pushSnapshotForProject(projectId);
+      const sinceLastCount = entryCount - (lastSnapshotEntryCount.get(projectId) || 0);
+      // A project with no tracked snapshot time yet (never snapshotted in
+      // this bridge instance's lifetime, and connect() found no existing
+      // one to seed from) starts its age clock now, rather than being
+      // treated as "infinitely overdue" -- a small/fresh project shouldn't
+      // get an immediate, pointless snapshot the moment it's first polled.
+      if (!lastSnapshotAt.has(projectId)) lastSnapshotAt.set(projectId, Date.now());
+      const sinceLastMs = Date.now() - lastSnapshotAt.get(projectId);
+      // Test-only override (never set in production) -- faking real
+      // wall-clock elapse across a 24h floor isn't practical (Playwright's
+      // clock virtualizes this file's own 5s poll interval too, so
+      // bridging the gap would mean firing it thousands of times); a
+      // test shrinks the floor itself instead, same in spirit as every
+      // other test-introspection hook in this file (window.__wigwagHostStorage
+      // etc).
+      const maxAgeMs = (typeof window !== 'undefined' && typeof window.__wigwagSnapshotMaxAgeMsOverride === 'number') ? window.__wigwagSnapshotMaxAgeMsOverride : SNAPSHOT_MAX_AGE_MS;
+      if (sinceLastCount >= SNAPSHOT_ENTRY_THRESHOLD || sinceLastMs >= maxAgeMs) await pushSnapshotForProject(projectId);
     }
 
     // Adopts any project this browser holds locally that isn't bridged
@@ -1167,10 +1190,10 @@
         // state to reason about any more: a snapshot either fully resolves
         // or it doesn't (see resolveSnapshotPayload's own comment).
         const manifestsByProject = core.findLatestSnapshotManifests(initialPull.events);
-        const snapshotsByProject = new Map(); // projectId -> {cutoffSortKey, items}
+        const snapshotsByProject = new Map(); // projectId -> {cutoffSortKey, createdAt, items}
         for (const [projectId, manifest] of manifestsByProject) {
           const resolved = await core.resolveSnapshotPayload(manifest, { downloadFn: transport.downloadSnapshotBlob });
-          if (resolved) snapshotsByProject.set(projectId, { cutoffSortKey: manifest.cutoffSortKey, items: resolved.items });
+          if (resolved) snapshotsByProject.set(projectId, { cutoffSortKey: manifest.cutoffSortKey, createdAt: manifest.createdAt, items: resolved.items });
         }
         const tailItems = core.decodeAllMatrixEntryItems(initialPull.events).filter(item => {
           const pid = item.projectId || legacyDefaultProjectId;
@@ -1186,7 +1209,10 @@
         // an entry.
         const projectStateEvents = initialPull.events.filter(ev => ev && ev.type === core.WIGWAG_MATRIX_PROJECT_STATE_TYPE);
         remoteRawEvents = snapshotItems.concat(tailItems).map(item => ({ type: core.WIGWAG_MATRIX_ENTRY_TYPE, content: core.matrixEventContentFromEntry(item) })).concat(projectStateEvents);
-        for (const [projectId, snap] of snapshotsByProject) lastSnapshotEntryCount.set(projectId, snap.items.length);
+        for (const [projectId, snap] of snapshotsByProject) {
+          lastSnapshotEntryCount.set(projectId, snap.items.length);
+          if (snap.createdAt) lastSnapshotAt.set(projectId, snap.createdAt);
+        }
 
         const legacyDefaultProjectName = (await transport.getRoomName()) || ('Matrix room ' + roomId);
         const projects = discoverProjects(remoteRawEvents, legacyDefaultProjectId, legacyDefaultProjectName, indexedProjectIds);
@@ -1257,7 +1283,16 @@
         window.addEventListener('message', onFrameMessage);
         bridgeTimer = setInterval(async () => {
           const result = await transport.pullMore();
-          if (result.status === 'ok' && result.events.length) {
+          if (result.status !== 'ok') return;
+          // Tracker f6b39bf0's cadence-floor follow-up: checked on EVERY
+          // successful poll tick, not just ones that found new events --
+          // the whole point of the time-based floor is catching a project
+          // that's gone quiet for a long time, which by definition never
+          // has new events to reconcile. The old structure (nested inside
+          // the "found new events" branch below) meant a truly quiet
+          // project's age never got checked at all.
+          for (const id of bridgedProjects.keys()) await pushSnapshotIfDue(id);
+          if (result.events.length) {
             remoteRawEvents = remoteRawEvents.concat(result.events);
             for (const id of bridgedProjects.keys()) reconcileIntoLocal(id);
             // Live-reported (Tom, tracker f6b39bf0): a project that first
@@ -1281,7 +1316,6 @@
               await bootstrapLocalStorage(p.id, p.label, docStorable({ fieldDefs: remoteDoc.fields, projectHistory: remoteDoc.projectHistory, issues: remoteDoc.issues }, []), transport, fallbackUserId, fallbackDisplayName);
               reconcileIntoLocal(p.id);
             }
-            for (const id of bridgedProjects.keys()) await pushSnapshotIfDue(id);
           }
         }, 5000);
 

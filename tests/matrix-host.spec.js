@@ -1027,6 +1027,44 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
     expect(manifest.encryption.key).toBeTruthy(); // real key material, not squashed/plaintext
   });
 
+  // Tracker f6b39bf0's cadence-floor follow-up: a quiet project that never
+  // crosses SNAPSHOT_ENTRY_THRESHOLD (200) would otherwise never get
+  // snapshotted at all, accumulating an ever-larger tail over time.
+  // Faking real wall-clock elapse across the real 24h floor isn't
+  // practical here (Playwright's clock API virtualizes this file's own 5s
+  // poll interval too once installed, so bridging a 24h gap would mean
+  // firing it thousands of times) -- shrinks the floor itself instead, via
+  // the same test-only override every other test-introspection hook in
+  // this file already uses (window.__wigwagHostStorage etc).
+  test('a quiet project well under the entry-count threshold still gets snapshotted once the age floor is crossed', async ({ page, browserName }) => {
+    test.skip(browserName !== 'chromium', 'timer-dependent, one browser is enough to prove the mechanism');
+    await page.addInitScript(() => { window.__wigwagSnapshotMaxAgeMsOverride = 100; });
+    const state = h.mockMatrixClientApi(page, {
+      homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
+      initialEntries: [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Quiet issue', sortKey: 1, origin: 'authored' } })] // one entry, nowhere near the 200-entry threshold, no pre-existing snapshot
+    });
+    await page.goto('/wigwag-matrix-host.html');
+    await page.locator('#homeserverUrl').fill(HOMESERVER);
+    await page.locator('#accessToken').fill('tok123');
+    await page.locator('#roomId').fill(ROOM_ID);
+    await page.locator('#connectBtn').click();
+    await expect(page.locator('#frame')).toBeVisible();
+
+    // First real poll tick (~5s after connect): lazily seeds this
+    // project's "last snapshotted at" clock to roughly now (never having
+    // been snapshotted before) and checks it in the very same pass, well
+    // under even the shrunk 100ms floor -- must NOT itself trigger a
+    // snapshot yet.
+    await page.waitForTimeout(5500);
+    expect(state.sentSnapshotManifests.length).toBe(0);
+
+    // Second real poll tick (~5s later still): now several real seconds
+    // have elapsed since that seed, comfortably past the shrunk floor.
+    await page.waitForTimeout(5500);
+    expect(state.sentSnapshotManifests.length).toBe(1);
+    expect(state.sentSnapshotManifests[0].cutoffSortKey).toBe(1);
+  });
+
   test('a homeserver rejecting the upload (e.g. rate-limited) is retried, same shared retry mechanics as any other Matrix write', async ({ page }) => {
     const state = h.mockMatrixClientApi(page, {
       homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',

@@ -1197,15 +1197,35 @@ matrix-widget-api since v1.9.0 and in Element's react-sdk; `data.file`/
 structured-clonable through `postMessage` directly), never base64.
 
 Writing a new snapshot (`pushSnapshotForProject`, wigwag-matrix-host.html)
-happens two ways: **always**, immediately after a bulk-adopt — the exact
-scenario that produced the original live bug, a bulk import's entries
-dominating the most recent page of history and burying an older project
-further back than a single connect's pull reached; and **by threshold**
-from the live poll's own reconcile step, once a project accumulates
-`SNAPSHOT_ENTRY_THRESHOLD` (200) entries since its last snapshot. Multiple
-viewers independently crossing the threshold around the same time is
-wasteful (redundant writes, and an orphaned unreferenced blob from the
-losing writer) but harmless — resolution is idempotent, newest-
+happens three ways, checked in `pushSnapshotIfDue`: **always**,
+immediately after a bulk-adopt — the exact scenario that produced the
+original live bug, a bulk import's entries dominating the most recent page
+of history and burying an older project further back than a single
+connect's pull reached; **by entry count**, once a project accumulates
+`SNAPSHOT_ENTRY_THRESHOLD` (200) entries since its last snapshot; and **by
+age**, once `SNAPSHOT_MAX_AGE_MS` (24h) has passed since its last snapshot
+— a floor, not a replacement, for a project whose edits trickle in too
+slowly to ever cross the count threshold but still accumulate an
+ever-larger never-snapshotted tail over months. A project's "last
+snapshotted at" clock is seeded from a resolved snapshot's own `createdAt`
+(wall-clock ms the manifest was written, tracked alongside `cutoffSortKey`
+specifically because a quiet project's last real *edit* can be long before
+today even on a fresh snapshot) if one already exists in the room at
+connect time, or lazily to "now" the first time a not-yet-snapshotted
+project is checked — never to "the epoch," which would make every
+brand-new project look infinitely overdue and force an immediate, pointless
+snapshot the moment it's first polled.
+
+The count/age check itself runs on **every** successful poll tick for
+every bridged project, not only ticks that found new remote events — the
+age floor exists specifically to catch a project that has gone quiet, which
+by definition has nothing new to reconcile; gating the check on "found new
+events" would mean the one case the floor is meant to catch never gets
+checked at all.
+
+Multiple viewers independently crossing either threshold around the same
+time is wasteful (redundant writes, and an orphaned unreferenced blob from
+the losing writer) but harmless — resolution is idempotent, newest-
 `cutoffSortKey` wins, and there's no cross-viewer coordination lock. The
 upload itself shares the same retry-on-429 mechanics
 (`fetchWithMatrixRetry429`) every other Matrix write in this file uses.

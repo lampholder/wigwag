@@ -380,9 +380,10 @@ test.describe('M4: paste sheet', () => {
     await page.waitForTimeout(300);
     // No project id in the pasted text -- accept the resulting "brand new
     // project" mismatch warning, same as desktop's equivalent test.
-    page.once('dialog', d => d.accept());
     await page.locator('[data-testid=mobile-paste-merge-textarea]').fill(pastedJsonl);
     await page.locator('[data-testid=mobile-paste-merge-submit]').click();
+    await expect(page.locator('[data-testid=confirm-dialog-modal]')).toBeVisible();
+    await page.locator('[data-testid=btn-confirm-dialog-confirm]').click();
     await page.waitForTimeout(400);
     await expect(page.locator('[data-testid=mobile-paste-merge-page]')).toHaveCount(0);
   });

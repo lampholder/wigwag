@@ -714,8 +714,8 @@ test.describe('Merge provenance: the pre-merge gate and Merge History (tracker #
     await page.locator('[data-testid=merge-history-item]').first().click();
     await page.waitForTimeout(200);
 
-    page.once('dialog', d => d.accept());
     await page.locator('[data-testid=btn-merge-primary]').click(); // "Back out this update" in review mode
+    await page.locator('[data-testid=btn-confirm-dialog-confirm]').click();
     await page.waitForTimeout(400);
 
     const after = await h.readActiveMilestoneDoc(page);

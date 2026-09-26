@@ -355,16 +355,22 @@ test.describe('Bulk actions: Delete', () => {
     await page.locator('[data-testid=row]').nth(2).locator('[data-testid=row-select-checkbox]').click({ modifiers: ['ControlOrMeta'] });
     await expect(page.locator('[data-testid=bulk-action-bar]')).toContainText('3 selected of 9');
 
-    let dialogMessage = '';
-    page.once('dialog', d => { dialogMessage = d.message(); d.accept(); });
     await page.locator('[data-testid=bulk-delete-btn]').click();
+    const dialogMessage = await page.locator('[data-testid=confirm-dialog-modal]').textContent();
+    await page.locator('[data-testid=btn-confirm-dialog-confirm]').click();
     await page.waitForTimeout(300);
 
     expect(dialogMessage).toContain('3 issues');
     await expect(page.locator('[data-testid=row]')).toHaveCount(6);
+    // Tracker #149: deletion is a tombstone now, not a hard removal -- the
+    // issue objects stay in storage (so another party/device sees the
+    // deletion), just flagged, and filtered out of the visible grid above.
     const after = await page.evaluate((pid) => JSON.parse(localStorage.getItem('git_native_tracker_v1:' + pid)), idx.activeMilestoneId);
-    const remainingIds = after.issues.map(i => i.id);
-    for (const id of idsToDelete) expect(remainingIds).not.toContain(id);
+    for (const id of idsToDelete) {
+      const iss = after.issues.find(i => i.id === id);
+      expect(iss, 'deleted issue must still exist in storage').toBeTruthy();
+      expect(iss.history.some(h => h.field === '__deleted__' && h.value === true)).toBe(true);
+    }
     await expect(page.locator('[data-testid=bulk-action-bar]')).toHaveCount(0);
   });
 

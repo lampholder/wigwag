@@ -258,9 +258,9 @@ test.describe('GitHub repo sync', () => {
     await page.reload({ waitUntil: 'networkidle' });
     await h.waitUntil(() => Promise.resolve(gh.pushCount >= 1)); // initial-commit push, rag intact
 
-    page.on('dialog', dialog => dialog.accept());
     await h.openColumnMenu(page, 'rag');
     await page.getByText('Delete field', { exact: true }).click();
+    await page.locator('[data-testid=btn-confirm-dialog-confirm]').click();
     await page.waitForTimeout(500); // past the (shrunk) push debounce
     await h.waitUntil(() => Promise.resolve(gh.pushCount >= 2)); // deletion pushed
     await expect(page.locator('[data-testid=col-header][data-col="rag"]')).toHaveCount(0);

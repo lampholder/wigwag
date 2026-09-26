@@ -122,9 +122,9 @@ test.describe('JSONL export/import', () => {
   // definition. squashHistory now also redacts any entry whose field id
   // isn't in the project's current fieldDefs at all.
   test('a squashed export also redacts a DELETED field\'s entries entirely, not just its superseded ones', async ({ page }) => {
-    page.on('dialog', dialog => dialog.accept());
     await h.openColumnMenu(page, 'rag');
     await page.getByText('Delete field', { exact: true }).click();
+    await page.locator('[data-testid=btn-confirm-dialog-confirm]').click();
     await page.waitForTimeout(200);
     await expect(page.locator('[data-testid=col-header][data-col="rag"]')).toHaveCount(0);
 
@@ -152,8 +152,9 @@ test.describe('JSONL export/import', () => {
     // to apply-update's own mismatch warning -- accepting it imports it as
     // its own project (mirrors "Import project from file..."), it never
     // merges into whatever's currently open.
-    page.once('dialog', d => d.accept());
     await page.locator('[data-testid=merge-file-input]').setInputFiles({ name: 'incoming.jsonl', mimeType: 'application/octet-stream', buffer: fixture });
+    await expect(page.locator('[data-testid=confirm-dialog-modal]')).toBeVisible();
+    await page.locator('[data-testid=btn-confirm-dialog-confirm]').click();
     await page.waitForTimeout(300);
     await expect(page.locator('[data-testid=row]')).toHaveCount(1); // just the new project's own issue
     await expect(page.locator('[data-testid=row]')).toContainText('Merged-in issue');
@@ -172,9 +173,10 @@ test.describe('JSONL export/import', () => {
     // No project id match -- handleApplyUpdateParsed asks to confirm
     // importing as a brand new project (unlike a same/known-project
     // match, this path never gates through a merge-preview card).
-    page.once('dialog', d => d.accept());
     await page.locator('[data-testid=paste-merge-textarea]').fill(pastedJsonl);
     await page.locator('[data-testid=btn-submit-paste-merge]').click();
+    await expect(page.locator('[data-testid=confirm-dialog-modal]')).toBeVisible();
+    await page.locator('[data-testid=btn-confirm-dialog-confirm]').click();
     await page.waitForTimeout(400);
 
     await expect(page.locator('[data-testid=paste-merge-modal]')).toHaveCount(0);
@@ -254,9 +256,10 @@ test.describe('JSONL export/import', () => {
 
     // No project id in the pasted text -- accept the resulting "brand new
     // project" mismatch warning, same as "Import & merge..." above.
-    page.once('dialog', d => d.accept());
     await page.locator('[data-testid=paste-merge-textarea]').fill(pastedJsonl);
     await page.locator('[data-testid=btn-submit-paste-merge]').click();
+    await expect(page.locator('[data-testid=confirm-dialog-modal]')).toBeVisible();
+    await page.locator('[data-testid=btn-confirm-dialog-confirm]').click();
     await page.waitForTimeout(400);
 
     await expect(page.locator('[data-testid=paste-merge-modal]')).toHaveCount(0);
@@ -511,8 +514,8 @@ test.describe('Comment signing & redaction', () => {
     await page.keyboard.press('Control+Enter');
     await page.waitForTimeout(300);
 
-    page.once('dialog', d => d.accept());
     await page.locator('[data-testid=activity-redact-btn]').first().click();
+    await page.locator('[data-testid=btn-confirm-dialog-confirm]').click();
     await page.waitForTimeout(300);
 
     const doc = await h.readActiveMilestoneDoc(page);
@@ -537,8 +540,8 @@ test.describe('Comment signing & redaction', () => {
     await page.locator('[data-testid=activity-tab-history]').click();
     await page.waitForTimeout(150);
 
-    page.once('dialog', d => d.accept());
     await page.locator('[data-testid=activity-redact-btn]').first().click();
+    await page.locator('[data-testid=btn-confirm-dialog-confirm]').click();
     await page.waitForTimeout(300);
 
     const doc = await h.readActiveMilestoneDoc(page);
@@ -612,8 +615,8 @@ test.describe('Comment signing & redaction', () => {
     expect(fullOk).toBe(true);
     expect(redactedOk).toBe(true);
 
-    page.once('dialog', d => d.accept());
     await page.locator('[data-testid=project-activity-redact-btn]').first().click();
+    await page.locator('[data-testid=btn-confirm-dialog-confirm]').click();
     await page.waitForTimeout(300);
 
     doc = await h.readActiveMilestoneDoc(page);
@@ -686,8 +689,6 @@ test.describe('Import / Apply-update: shared project-identity warnings', () => {
       JSON.stringify({ type: 'issue', id: 'f1', num: 1, comments: [], history: [{ id: 'fh1', time: new Date().toISOString(), actor: 'Tester', email: 't@example.com', text: 'title set', field: 'title', value: 'Foreign issue', origin: 'authored', sortKey: Date.now(), sig: null, pubKey: null }] })
     ].join('\n');
 
-    let dialogMsg = null;
-    page.once('dialog', async d => { dialogMsg = d.message(); await d.dismiss(); });
     await page.locator('[data-testid=btn-import-merge]').click();
     await page.waitForTimeout(150);
     const [chooser1] = await Promise.all([
@@ -695,12 +696,14 @@ test.describe('Import / Apply-update: shared project-identity warnings', () => {
       page.locator('[data-testid=btn-paste-merge-open-file]').click(),
     ]);
     await chooser1.setFiles({ name: 'foreign.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(foreignJsonl) });
+    await expect(page.locator('[data-testid=confirm-dialog-modal]')).toBeVisible();
+    const dialogMsg = await page.locator('[data-testid=confirm-dialog-modal]').textContent();
+    await page.locator('[data-testid=btn-confirm-dialog-cancel]').click();
     await page.waitForTimeout(400);
     expect(dialogMsg).toContain('brand new project');
     await expect(page.locator('[data-testid=row]')).toHaveCount(9); // dismissed -- nothing merged
     await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Delivery tracker');
 
-    page.once('dialog', d => d.accept());
     await page.locator('[data-testid=btn-import-merge]').click();
     await page.waitForTimeout(150);
     const [chooser2] = await Promise.all([
@@ -708,6 +711,8 @@ test.describe('Import / Apply-update: shared project-identity warnings', () => {
       page.locator('[data-testid=btn-paste-merge-open-file]').click(),
     ]);
     await chooser2.setFiles({ name: 'foreign2.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(foreignJsonl) });
+    await expect(page.locator('[data-testid=confirm-dialog-modal]')).toBeVisible();
+    await page.locator('[data-testid=btn-confirm-dialog-confirm]').click();
     await page.waitForTimeout(400);
     // Confirmed -- imported as its OWN new project (a plain
     // navigation to it, same as "Import project from file..." already
@@ -733,8 +738,6 @@ test.describe('Import / Apply-update: shared project-identity warnings', () => {
       JSON.stringify({ type: 'issue', id: 'op1', num: 1, comments: [], history: [{ id: 'oph1', time: new Date().toISOString(), actor: 'Tester', email: 't@example.com', text: 'title set', field: 'title', value: 'Landed on the other project', origin: 'authored', sortKey: Date.now(), sig: null, pubKey: null }] })
     ].join('\n');
 
-    let dialogMsg = null;
-    page.once('dialog', async d => { dialogMsg = d.message(); await d.dismiss(); });
     await page.locator('[data-testid=btn-import-merge]').click();
     await page.waitForTimeout(150);
     const [chooser1] = await Promise.all([
@@ -742,11 +745,13 @@ test.describe('Import / Apply-update: shared project-identity warnings', () => {
       page.locator('[data-testid=btn-paste-merge-open-file]').click(),
     ]);
     await chooser1.setFiles({ name: 'other-update.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(updateForOther) });
+    await expect(page.locator('[data-testid=confirm-dialog-modal]')).toBeVisible();
+    const dialogMsg = await page.locator('[data-testid=confirm-dialog-modal]').textContent();
+    await page.locator('[data-testid=btn-confirm-dialog-cancel]').click();
     await page.waitForTimeout(400);
     expect(dialogMsg).toContain('Other Project');
     await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Delivery tracker'); // dismissed -- stayed put
 
-    page.once('dialog', d => d.accept());
     await page.locator('[data-testid=btn-import-merge]').click();
     await page.waitForTimeout(150);
     const [chooser2] = await Promise.all([
@@ -754,6 +759,8 @@ test.describe('Import / Apply-update: shared project-identity warnings', () => {
       page.locator('[data-testid=btn-paste-merge-open-file]').click(),
     ]);
     await chooser2.setFiles({ name: 'other-update2.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(updateForOther) });
+    await expect(page.locator('[data-testid=confirm-dialog-modal]')).toBeVisible();
+    await page.locator('[data-testid=btn-confirm-dialog-confirm]').click();
     await page.waitForTimeout(500);
     await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Other Project'); // switched to it
     // tracker #124: switching lands the gate, not an instant apply -- confirm it.
@@ -1400,9 +1407,9 @@ test.describe('Project-level schema history (Batch 3)', () => {
 
   test('deleting a field logs a real signed tombstone to projectHistory -- it stays gone across a reload, not just a local mutation', async ({ page }) => {
     await h.gotoTracker(page);
-    page.on('dialog', dialog => dialog.accept());
     await h.openColumnMenu(page, 'rag');
     await page.getByText('Delete field', { exact: true }).click();
+    await page.locator('[data-testid=btn-confirm-dialog-confirm]').click();
     await page.waitForTimeout(200);
 
     await expect(page.locator('[data-testid=col-header][data-col="rag"]')).toHaveCount(0);
@@ -1420,7 +1427,7 @@ test.describe('Project-level schema history (Batch 3)', () => {
   // Tracker issue 4ac15b77: renaming a project (the switcher's own
   // metadata array, separate from fieldDefs) updated the displayed name
   // but never logged anything -- unlike every other project-level change.
-  test('renaming a project via the Project panel logs a narrative entry to projectHistory, and survives reload', async ({ page }) => {
+  test('renaming a project via the Project panel logs a narrative + derivable entry to projectHistory, and survives reload', async ({ page }) => {
     await h.gotoTracker(page);
     await page.locator('[data-testid=btn-notes]').click();
     await page.waitForTimeout(300);
@@ -1438,7 +1445,12 @@ test.describe('Project-level schema history (Batch 3)', () => {
     const doc = await h.readActiveMilestoneDoc(page);
     const entry = doc.projectHistory.find(hh => hh.text && hh.text.includes('Renamed project from'));
     expect(entry).toBeTruthy();
-    expect(entry.field).toBeFalsy(); // narrative-only, no field derivation implied
+    // Tracker #149: promoted from narrative-only to a real, derivable
+    // field/value pair (reserved sentinel field id) alongside the prose,
+    // so another browser can derive the current name from history alone.
+    expect(entry.field).toBe('__project_name__');
+    expect(entry.value).toBe('Renamed tracker');
+    expect(doc.fieldDefs['__project_name__']).toBeUndefined(); // never leaks into fieldDefs as a real field
 
     // Renaming back to the same name is a no-op -- no duplicate entry.
     const countBefore = doc.projectHistory.length;

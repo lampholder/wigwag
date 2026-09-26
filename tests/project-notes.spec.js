@@ -372,8 +372,8 @@ test.describe('Project activity feed (Comments/History tabs)', () => {
     await page.waitForTimeout(150);
     await expect(page.locator('[data-testid=project-activity-entry]')).toContainText('Created field "Owner"');
 
-    page.once('dialog', d => d.accept());
     await page.locator('[data-testid=project-activity-redact-btn]').first().click();
+    await page.locator('[data-testid=btn-confirm-dialog-confirm]').click();
     await page.waitForTimeout(300);
 
     await expect(page.locator('[data-testid=project-activity-redacted-placeholder]')).toHaveCount(1);

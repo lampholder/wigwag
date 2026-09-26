@@ -130,12 +130,16 @@ The app manages multiple independent tracker documents ("milestones") per
 browser, each with its own id, name, schema, issues, and project
 notes/comments — switchable from a dropdown next to the milestone title.
 **A single `.jsonl` file/export always represents exactly one milestone**;
-the multi-milestone concept exists only in the app's own per-browser
-storage (a small index of `{id, name}` pairs, plus one localStorage key per
-milestone holding its actual document), never inside the file format
-itself. Importing a file creates a new milestone rather than overwriting
-the current one (unless using "Open file…", which explicitly replaces the
-current milestone's working copy in place, with a confirmation prompt).
+the multi-milestone concept (which id is active, which ids exist at all)
+exists only in the app's own per-browser storage (a small index of
+`{id, name}` pairs, plus one localStorage key per milestone holding its
+actual document), never inside the file format itself. That local `name`
+is a cache, though, not the source of truth — see "A project's name is
+also derived from a log" below — kept around so the switcher has
+*something* to show before a project has ever been hydrated. Importing a
+file creates a new milestone rather than overwriting the current one
+(unless using "Open file…", which explicitly replaces the current
+milestone's working copy in place, with a confirmation prompt).
 GitHub repo-sync target is also per-milestone (not global), specifically to
 avoid one milestone's auto-push clobbering another's repo the moment a
 second milestone is created — this was a deliberate fix, not an oversight.
@@ -177,6 +181,112 @@ migration gap) falls back to whatever's already in the persisted `fields`
 object for that key. The same `legacy-backfill` migration treatment as
 issue history applies here too, for schema data written before this
 shipped.
+
+## A project's name is also derived from a log
+
+A project's name (tracker #149) used to be purely local browser metadata —
+`PROJECTS_KEY.milestones[].name` — with only a narrative, field-less
+history entry ("Renamed project from X to Y") left behind for a human
+reading the History tab. That was never derivable by another browser the
+way a real field definition is: two browsers loading the same
+`projectHistory` had no way to agree on the project's current name from
+the log alone, only whatever each one happened to have cached locally.
+
+The name is now promoted to a real, derivable value, following the exact
+same "latest signed entry wins" pattern as field definitions above, using
+a reserved, sentinel field id — `__project_name__` — that can never
+collide with (or be created as) a real user-facing field, since
+`deriveFieldDefs` explicitly excludes it:
+
+```json
+{
+  "id": "ph_y7n3_cd45",
+  "time": "Aug 3, 2:14pm",
+  "actor": "tom",
+  "email": "tom@example.com",
+  "text": "Renamed project from \"Old Name\" to \"New Name\"",
+  "field": "__project_name__",
+  "value": "New Name",
+  "origin": "authored",
+  "sortKey": 1738594440100,
+  "sig": "base64…",
+  "pubKey": { ... }
+}
+```
+
+`deriveProjectName(projectHistory)` scans for entries with this field id,
+takes the highest `sortKey`, and returns its `value` (`null` counts as a
+value here too — a tombstone, same convention as a deleted field — and
+`null` is also what's returned when no such entry has ever been written,
+e.g. a project imported before this shipped). `hydrateProject`'s return
+now includes this derived `projectName` alongside `fieldDefs`/
+`projectHistory`; every load path that hydrates a project (switching to
+it, a cross-tab storage sync, boot) reconciles a non-null derived name
+into the local `PROJECTS_KEY` cache, so a rename made by any peer —
+another browser via GitHub sync, another Matrix room participant, a
+Connect Remote source — eventually overwrites this browser's own stale
+cached name rather than the reverse. The local cache is never treated as
+authoritative once a real derived name exists; it only wins when nothing
+has ever written this sentinel field, which is exactly the "migration
+gap" fallback field definitions already use.
+
+## Issue deletion is also a tombstone, not a removal
+
+Deleting an issue used to be a direct, unlogged removal from `issues[]` --
+harmless for local-only and GitHub-sync usage, since both are
+whole-document operations where an absent issue is simply absent from
+what gets written. It broke the Matrix bridge (tracker #149,
+live-reported): the bridge reconstructs state by replaying a room's
+*entire* timeline on every reconnect, and since nothing recorded "this
+issue was deleted," the room's still-present creation event was read as
+newly-arrived and the issue came right back.
+
+Deletion is now a real, derivable tombstone, the same reserved-sentinel
+pattern as a project's name above, but on the issue's own `history`
+rather than `projectHistory`:
+
+```json
+{
+  "id": "h_...",
+  "time": "...", "actor": "...", "email": "...",
+  "text": "Deleted issue",
+  "field": "__deleted__",
+  "value": true,
+  "origin": "authored",
+  "sortKey": 1738594440200,
+  "sig": "base64…",
+  "pubKey": { ... }
+}
+```
+
+`issueIsDeleted(history)` takes the highest-`sortKey` entry with this
+field id and returns whether its value is `true` (a later entry can, in
+principle, reverse it). No exclusion is needed in `deriveIssueValues` --
+it only ever populates keys that exist in `fieldDefs`, and nobody defines
+a real field named `__deleted__`. `hydrateIssue` and `mergeIssuePair` both
+expose the result as `deleted` on the issue's own derived shape; the
+history union in `mergeIssuePair` needs no special-case handling at all --
+a tombstone is just another field entry flowing through the same generic
+merge as everything else, which is also what fixes the resurrection bug:
+a tombstoned issue stays present (just flagged) in `state.issues`, so a
+reconnect's merge correctly folds histories together instead of treating
+the room's copy as brand new.
+
+**A tombstoned issue is never removed from the persisted doc, `git`-synced
+file, or Matrix room** -- that fidelity is exactly what lets another
+device/party see the deletion instead of resurrecting it. It's filtered
+out of every human-facing view instead: the main grid/sort/filter/search
+pipeline, CSV/XLSX export, per-project issue counts, and mention/
+subscription notifications. The one place it's dropped entirely, not just
+hidden, is a **squashed** export (`buildSourceText('squashed', ...)`,
+used for the "Export as HTML" snapshot) -- a shared/archived snapshot has
+no reason to carry a deleted issue's data at all, unlike a `'full'` export
+(GitHub push, plain JSONL download, "View source", clipboard/share),
+which keeps the tombstone for exactly the sync-fidelity reason above.
+
+Field deletion, by contrast, stays a direct, unlogged removal -- field
+definitions aren't replayed from an external timeline the way issue
+history is, so this asymmetry is deliberate, not an oversight.
 
 ## Field types
 
@@ -728,6 +838,355 @@ stale or leak past a later redaction): a renderer joins these ids live
 against the issue's own real, redaction-respecting history. The Merge
 History project-panel section (see below) is what actually renders this
 log.
+
+## Matrix room backing (`wigwag-matrix-host.html`)
+
+Tracker #147 (320b4b08): a separate, non-bundled container bridges a
+Matrix room's own timeline into wigwag.html. wigwag.html's Room Scoped
+Widget Mode footprint is deliberately tiny and Matrix-agnostic — it knows
+nothing about Matrix, only "a parent frame may answer a small handshake
+and service some storage keys for me" (see "Room Scoped Widget Mode: a
+storage substrate, not a storage location" below) — but it is not zero,
+since an earlier version of this design was ("no changes to wigwag.html at
+all," via shared same-origin localStorage). That changed for a real
+reason: see below. Every wigwag history
+entry — issue-level, project-level, or a comment-stream entry — becomes
+one Matrix room (timeline) event of type `dev.wigwag.entry`:
+
+```json
+{
+  "v": 1,
+  "scope": "issue",
+  "issueId": "9c1e...-uuid",
+  "stream": null,
+  "projectId": "matrix-a1b2c3d4",
+  "entry": { "id": "h_...", "time": "...", "actor": "...", "email": "...", "text": "...", "field": "...", "value": "...", "origin": "authored", "sortKey": 1738594440000, "sig": "...", "pubKey": {...} }
+}
+```
+
+`scope` is `"issue"` or `"project"` (`issueId` present only for the
+former); `stream` is a comment-stream field id, or `null` for an
+ordinary field/history entry. `entry` is exactly the signed shape
+documented above for any other history entry, with one deliberate
+omission: never `keyRef` — the `keys`-registry dedup above is a
+JSONL-*file*-size optimization that doesn't apply once every entry is
+already its own independently-sized Matrix event; inline `pubKey` per
+event is simplest and correct here.
+
+**`projectId` (tracker #149, added after the initial shape shipped)**:
+which local project this entry belongs to. A room is not required to
+hold only one project — importing an existing project (from a Tauri
+instance, say) into a room must keep that project's own identity rather
+than getting mangled into "the" room's one project, so a room's timeline
+can carry more than one project's entries interleaved. An entry with no
+`projectId` at all is the *original* shape, from before this field
+existed: `hydrateProjectFromMatrixTimeline` treats a missing `projectId`
+as belonging to whichever project is being hydrated by default
+(`includeUntaggedEntries: true`, the default), so an already-live room's
+pre-existing history keeps resolving to the same project it always did.
+A caller hydrating any project OTHER than that original default one must
+pass `includeUntaggedEntries: false` explicitly, so a second project
+never silently absorbs the first project's untagged history. Every entry
+a client sends should carry its real `projectId` going forward — omitting
+it is a legacy shape to keep *reading*, not one to keep *writing*.
+
+**Project index (tracker `f6b39bf0`, live-reported rate-limit incident):
+a Matrix STATE event, `dev.wigwag.project`, one per project
+(`state_key` is the project id itself, content carries no authoritative
+data — a project's name/fields/issues are still derived purely from its
+signed timeline entries, exactly as before).** Two independent reasons for
+this, not one: a current-state fetch (`GET /state`) is always instantly
+and completely readable, immune to how much unrelated room traffic sits
+between "now" and when a project was created — unlike scanning a
+timeline, which might have to page arbitrarily far back to find the one
+event that matters. And Matrix's own power-level model gates STATE events
+at `state_default` (typically 50) by default, unlike ordinary messages
+(`events_default`, typically 0) — Tom's explicit call was to lean on
+exactly this as a real *access-control* gate, not just a discoverability
+optimization: **only room moderators can create a new project.** No
+bootstrap override lowers that bar; a room that wants ordinary members to
+create projects needs its own moderator to grant one explicitly (same
+pattern any Matrix bot bootstrapping a low-privilege custom event type
+uses), which this project does not do automatically.
+
+This is a deliberate, permanent divergence from User Scoped Local Mode
+(where "+ New project" is unconditional): Room Scoped Widget Mode has a
+real **"no projects yet"** state. A brand-new, empty room shows exactly
+that — never a silently-synthesized default project the moment it's
+opened.
+
+**Backward compatibility.** Every room using wigwag before this event type
+existed has projects with no `dev.wigwag.project` state event at all —
+requiring one retroactively would silently orphan them. `discoverProjects`
+treats a project as existing if *either* a state event names it (the
+going-forward path) *or* it's already evidenced by real timeline entries
+(the grandfather clause — matches the exact discovery rule that existed
+before this feature: an untagged entry, or any entry carrying a real
+`projectId`, is taken as proof that project already exists). Only
+genuinely *new* projects, created after this shipped, go through the
+moderator gate. The one thing that *did* change for old rooms: connecting
+to a room with truly nothing in it (no entries, no state event) now
+reports zero projects — the old unconditional "always at least the legacy
+default" fallback is gone.
+
+Ongoing discovery rides two different mechanisms depending on when it's
+needed. At `connect()` time, the reliable source is a real current-state
+fetch (`getMatrixRoomState`/the widget's own best-effort `read_events`
+equivalent), immune to room chattiness. During an already-connected
+session, a state event is also an ordinary timeline event at the position
+it was sent — so a project a moderator creates mid-session rides the
+existing type-filtered timeline poll naturally (the same `pullMore`
+mechanism every other event type already uses), with no separate polling
+path required.
+
+Each discovered project's label prefers its own real derived name
+(`deriveProjectName`, see "A project's name is also derived from a log"
+above) computed from that project's own project-scope entries in the
+pulled timeline; a project with no rename entry of its own yet falls back
+to a generic `Project <short-id>` label until it gets one. `createMatrixBridge`'s
+public interface is split into `connect()` (probe the room, fetch the
+project index, pull history, run discovery) and
+`openAll(projects, defaultProjectId)` (bootstrap and bridge *every*
+discovered project, then pin the local "active" one to whichever is meant
+to be shown first — tolerating `projects: []` cleanly for the empty-room
+case). There is deliberately no "which project would you like to open?"
+prompt for an already-existing set: the room's own data already tells you
+everything that exists, so every discovered project is bootstrapped and
+immediately available through wigwag.html's own switcher (left fully live
+-- see below) rather than gating access behind a one-time choice.
+`defaultProjectId` prefers the room's own legacy/default project when it's
+among the discovered set, falling back to the first discovered project
+otherwise (a room holding only explicitly-tagged projects, no
+legacy/untagged content at all, never produces a legacy default to
+prefer) — a future refinement could remember per-viewer "last looked at"
+instead, the same way wigwag.html's own `lastActiveProjectByIdentity`
+already does across identity switches.
+
+**Creating a project, and what happens on rejection.** `adoptLocalProjects`
+(any not-yet-bridged project this browser holds locally — an import, "+
+New project", or wigwag.html's own delete-fallback) now calls
+`transport.createProject(projectId)` *before* bridging anything. Only on
+success does the project get pushed/bootstrapped as before. On rejection
+(a non-moderator, a real 403) the optimistically-created local project is
+rolled back — removed from `PROJECTS_KEY`'s milestone list, which notifies
+the iframe via the existing `wigwag:storage-changed` mechanism — and a
+distinct `wigwag:room-write-rejected` message (`{projectId, reason}`)
+tells wigwag.html to show a real, human-readable error. This is the second
+half of the double-send incident's own lesson: a rejected or failed write
+must never look like it succeeded. wigwag.html shows this both as a
+dismissible banner (an existing project's own "+ New project" rejected)
+and inline on the empty-room screen itself (the first project rejected).
+
+**Widget mode has no local-only/private project concept.** Tauri/browser
+wigwag.html is organized around *identity* as the container -- you can
+hold several, and a project with no `identityId` ("Shared with you") is a
+real, meaningful holding state waiting for you to attribute it to one.
+Widget mode is organized around the *room* instead: there is exactly one
+(auto-bootstrapped) identity, so that limbo state has no reason to exist.
+Any project this browser comes to hold locally while connected --
+imported, created via "+ New project", or produced by wigwag.html's own
+delete-fallback (auto-creating a blank project when the last one is
+deleted) -- is adopted unconditionally: `createMatrixBridge` tracks a
+*set* of bridged project ids rather than one, and a `wigwag:local-write`
+message for `PROJECTS_KEY` (see below) triggers `adoptLocalProjects()`,
+which normalizes the new project's `identityId` (see identity, below) and
+bulk-pushes its existing history to the room tagged with its own id,
+preserving each entry's real original signature/authorship.
+
+**Room Scoped Widget Mode: a storage substrate, not a storage location.**
+This is a permanent architectural commitment, not a bug fix — see
+tracker `f6b39bf0` ("Two permanent storage models: Room Scoped Widget Mode
+vs User Scoped Local Mode") for the full framework, and Tom's own words on
+the requirement (`f6b39bf0`/`#153`): *"the objective of room scoped widget
+mode is that all the data lives securely managed under the same conditions
+as in the room. Decrypting and storing in local browser storage managed by
+the wigwag client is a fail."* An earlier version of this file relied on
+wigwag.html and this page sharing the SAME real browser localStorage
+(same-origin parent/iframe pairs share it natively) and closed a
+subsequent cross-room leak by *namespacing* that shared storage
+(`storageNamespacePrefix()`/`?storageNamespace=`) — both are gone now,
+because namespacing only stops two rooms' plaintext colliding in the same
+bucket, it doesn't stop decrypted room content being persisted, at all, in
+a store wigwag itself controls.
+
+The fix: wigwag.html's `docKey(projectId)`/`PROJECTS_KEY` content never
+touches real browser storage in Room Mode at all. A top-level
+`let localStorage = ...` inside wigwag.html's own script (a classic,
+non-module script — this legally shadows the platform global for every
+method in the file that closes over this scope) resolves to either the
+real `window.localStorage` (Local Mode — every existing call site, and
+`persist()`/`persistProjectIndex()`/the `storage`-event cross-tab listener,
+needs zero changes) or an in-memory, `Storage`-shaped shim
+(`createRoomModeStorageShim`) for exactly `PROJECTS_KEY` and
+`docKey(projectId)` — everything else (per-device UI prefs, `SECRETS_KEY`)
+passes through to real `localStorage` unchanged in both modes. `IDENTITIES_KEY`
+is also deliberately excluded from the shim — see "Identity in Room Scoped
+Widget Mode" below.
+
+wigwag.html and this page talk over a small `postMessage` protocol instead
+of shared storage:
+
+- `wigwag:hello` (iframe → host, once at boot, only when
+  `window.parent !== window` and the URL carries no legacy
+  `?storageNamespace=` — see the migration note below): "is a Room Scoped
+  Widget Mode host listening?"
+- `wigwag:hello-ack` (host → iframe): `{ capabilities: { mode: 'room',
+  multiIdentity: false, sharedProjectContext: true }, snapshot: {
+  <PROJECTS_KEY/docKey(id) → JSON string>, ... }, matrixUserId,
+  fallbackDisplayName }`. By the time a real connection's iframe sends
+  `wigwag:hello`, this file's own `openAll()` has already fully populated
+  its own in-memory `localStorage` shim (same shim mechanism, mirrored on
+  this side — see `window.__wigwagHostStorage`, exposed read-only for test
+  introspection only), so the ack answers immediately with the current,
+  complete snapshot — no further round-trip needed for it.
+  `wigwag.html`'s constructor defers its whole boot sequence
+  (`runBootSequence()`) until this ack arrives (`roomModeBootstrapping`
+  state, a small loading screen), rather than running it against an empty
+  shim and bootstrapping a phantom blank project/identity (the
+  "placeholder pollution" failure mode).
+- `wigwag:local-write` (iframe → host): `{ key, newValue }` — a local edit
+  to push to Matrix. This file's `onFrameMessage` applies it to its own
+  shim and reacts exactly like the old `storage`-event listener did
+  (`adoptLocalProjects()` for `PROJECTS_KEY`, `pushNewLocalEntries(id)` for
+  a bridged project's `docKey`).
+- `wigwag:storage-changed` (host → iframe): `{ key, newValue }` — a remote
+  (or another locally-adopted project's) change to apply. The iframe's
+  shim updates its own map and dispatches a **real `StorageEvent`** shaped
+  exactly like the native cross-tab one — wigwag.html's existing
+  `_onStorageEvent` needs zero changes to handle it.
+
+Cross-room isolation now falls out structurally, not from namespacing:
+each room's bridge instance (this file) and each widget's iframe
+(wigwag.html) get their own private in-memory `Map`, existing only for
+that one page/connection — there is no shared bucket for two rooms'
+content to ever collide in, so the `MATRIX_BRIDGED_ROOMS_KEY` registry
+this session's first fix introduced is gone too (it solved exactly the
+problem namespacing solved, at a different layer — both superseded by
+removing the shared bucket entirely).
+
+**Identity in Room Scoped Widget Mode.** A signing keypair is a device
+credential, not room content — the same category as any real Matrix
+client's own E2EE device keys, which every client legitimately keeps
+locally — so `IDENTITIES_KEY` is deliberately **not** part of the shim: it
+stays in wigwag.html's real, unshimmed, unprefixed `localStorage`,
+persisting across reloads/reconnects exactly like Local Mode's identities
+always have, and shared (correctly) across every room this browser ever
+bridges. `resolveRoomModeIdentity(matrixUserId, fallbackDisplayName)`
+(wigwag.html) does the MXID-keyed find-or-create — label = the room
+display name (cosmetic, local, unsigned, never used for attribution, since
+a Matrix display name is user-settable and would make impersonation
+trivial), `email` carries the Matrix user id itself (the one signed,
+human-readable "who did this" slot wigwag's fixed entry shape has). This
+runs once, right after the handshake ack and before `runBootSequence()`,
+so `ensureDefaultIdentityIfNeeded`'s own "already exists, skip" check sees
+the real, resolved identity rather than bootstrapping a fresh, wrong one.
+`bootstrapLocalStorage` (this file) only resolves *which* MXID is
+connecting (`transport.whoAmI()`) and hands it over in the ack — it has no
+access to identities at all any more, and pushes a new project's milestone
+with `identityId: null`; wigwag.html's own `persistProjectIndex()`
+self-corrects any project it finds with a falsy `identityId` to the
+now-resolved `activeIdentityId` (covers both the initial snapshot and any
+later import/"+ New project", uniformly, once per occurrence).
+
+**Historical note**: wigwag.html's constructor still checks for a
+`?storageNamespace=` URL param and, if present, skips the handshake
+attempt entirely (normal Local Mode-shaped boot). No real host sets this
+param any more — the host that once did (real shared-storage poking, then
+namespaced shared-storage poking) is fully gone, replaced by the handshake
+protocol above. The check is kept purely as a low-cost defensive guard
+(a stray/older embedder passing this param would otherwise stall the
+handshake's multi-second timeout on every visit for no reason), not
+because anything in this codebase still produces it. `storageNamespacePrefix()`/
+`STORAGE_NS` themselves (the wigwag-core.js/wigwag.html mechanism that
+namespacing depended on) have been removed entirely, not just superseded.
+
+**Room snapshot: connect stops meaning "replay the whole timeline."**
+Tracker `f6b39bf0`/`#153`, `f1c7098f`/`#154`: without a snapshot, every
+connect (by every viewer, forever) replays a project's entire append-only
+history from scratch. That got genuinely painful two ways in the same
+session — live-reported piecemeal/wrong-project loading from incomplete
+pagination (fixed separately, see above), and the pre-existing structural
+problem that a new member joining an E2EE room can't decrypt Megolm
+sessions from before they joined, so old history is undecryptable to them
+regardless of pagination. NeoBoard's answer — a periodic full snapshot, so
+a client only ever needs the *latest* one — fixes both for the same
+reason: neither problem matters if a fresh connect doesn't need old
+history at all.
+
+This is **not** a squash to current values — "history is the sole source
+of truth" (above) still holds; every entry keeps its own real signature,
+only *where it lives* changes. It's a repackaging of a project's full
+history-so-far into fewer, more recent events. This is also what makes it
+a real E2EE fix, not just a pagination one: a fresh snapshot is a *new*
+event, encrypted under whatever Megolm session is current when it's sent —
+a member who joined after the original entries but before the snapshot
+still gets it, since they're a current member when the snapshot's own
+session is shared, unlike the old individual entries.
+
+Two new event types, chunked by entry **count** (not raw bytes — wigwag's
+entries are already well-formed JSON items, so there's no NeoBoard-style
+byte-slice/reassemble step needed):
+
+- **`dev.wigwag.snapshot`** (manifest, one event): `{ v, projectId,
+  snapshotId, chunkCount, cutoffSortKey }`. `cutoffSortKey` is the highest
+  `sortKey` among included entries, so a "tail" pull afterward knows to
+  fetch only entries newer than this.
+- **`dev.wigwag.snapshot.chunk`**: `{ v, snapshotId, sequenceNumber,
+  items }` — `items` is exactly `matrixEventContentFromEntry`'s own output,
+  chunked at `SNAPSHOT_CHUNK_SIZE` (25, matching `BULK_PUSH_CHUNK_SIZE`'s
+  existing rate-limit-driven tuning) entries per event.
+
+`reassembleLatestSnapshots(rawEvents)` (wigwag-core.js) finds, per
+project, the manifest with the highest `cutoffSortKey` and reassembles it
+**only if every declared chunk (`0` to `chunkCount - 1`) is actually
+present** — an incomplete snapshot (a torn write, or one still mid-flight)
+is discarded entirely for that project, exactly as if none existed. This
+makes the whole mechanism strictly additive: a room with no snapshot yet
+(every room before this shipped) or a stale/partial one behaves exactly
+as it always has.
+
+`createMatrixBridge`'s `connect()` (wigwag-matrix-host.html) reassembles
+whatever snapshots the initial pull found, then re-wraps each snapshot's
+`items` as synthetic `dev.wigwag.entry`-shaped events and combines them
+with the "tail" — plain entries the pull also found, filtered to
+`sortKey > cutoffSortKey` for any project with a complete snapshot (a
+plain entry a snapshot already covers is dropped, not double-counted).
+`discoverProjects`/`hydrateProjectFromMatrixTimeline` need **zero**
+changes for this — they can't tell a snapshot-sourced entry from a
+directly-pulled one, by design.
+
+Writing a new snapshot (`pushSnapshotForProject`, wigwag-matrix-host.html)
+happens two ways: **always**, immediately after a bulk-adopt
+(`pushAllEntriesAsBatch` completing) — the exact scenario that produced
+the original live bug, a bulk import's entries dominating the most recent
+page of history and burying an older project further back than a single
+connect's pull reached; and **by threshold** from the live poll's own
+reconcile step, once a project accumulates `SNAPSHOT_ENTRY_THRESHOLD`
+(200) entries since its last snapshot. Multiple viewers independently
+crossing the threshold around the same time is wasteful (redundant
+writes) but harmless — reassembly is idempotent, newest-`cutoffSortKey`
+wins, and there's no cross-viewer coordination lock.
+
+**Explicitly not attempted**: cleaning up/redacting superseded snapshots
+(they sit in the room forever under this design — a real room-size cost
+over a long enough time, but not a correctness problem, and premature
+before the mechanism itself was proven); and, for the *widget* transport
+specifically, skipping the fetch of old pages entirely once a snapshot is
+found — MSC2876's `read_events` continuation token isn't reliably
+guaranteed to terminate (confirmed live, see the pagination fix above), so
+a multi-page skip-ahead loop there risks a worse bug than the one being
+fixed. The *direct* transport's standard, reliable Matrix `/messages`
+pagination could support that optimization safely; not built yet, since
+snapshot-aware hydration alone already delivers the real value (a
+correct result, and a much smaller amount of data that actually needs to
+be *processed*) without it.
+
+`num` is **derived**, never stored: sorted by each issue's own earliest
+entry `sortKey` (id as tiebreak) on every load, since Matrix's timeline
+has no serialization point equivalent to GitHub's sha-conditional PUT —
+two clients creating an issue "simultaneously" is a real possibility, and
+deriving `num` this way means it self-corrects on the next load rather
+than two issues ever colliding on one number.
 
 ## Merge algorithm
 

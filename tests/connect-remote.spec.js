@@ -253,13 +253,14 @@ test.describe('Connect a remote -- finishing the connection', () => {
       ].join('\n'),
     }];
 
-    page.on('dialog', dialog => dialog.accept());
     await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
     await openConnectRemote(page);
     await page.locator('[data-testid=connect-remote-address-input]').fill('acme-corp/wigwag');
     await page.waitForTimeout(500);
     await page.locator('[data-testid=connect-remote-connect-btn]').click();
+    await expect(page.locator('[data-testid=confirm-dialog-modal]')).toBeVisible();
+    await page.locator('[data-testid=btn-confirm-dialog-confirm]').click();
     await page.waitForTimeout(800);
 
     // startMerge (the same merge machinery a normal re-import uses) unions
@@ -293,13 +294,14 @@ test.describe('Connect a remote -- finishing the connection', () => {
       text: JSON.stringify({ type: 'fields', id: 'existing-uuid-1', name: 'Project A (renamed upstream)', fields: { title: { label: 'Issue', type: 'text' } }, columnOrder: [] }),
     }];
 
-    page.on('dialog', dialog => dialog.dismiss());
     await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
     await openConnectRemote(page);
     await page.locator('[data-testid=connect-remote-address-input]').fill('acme-corp/wigwag');
     await page.waitForTimeout(500);
     await page.locator('[data-testid=connect-remote-connect-btn]').click();
+    await expect(page.locator('[data-testid=confirm-dialog-modal]')).toBeVisible();
+    await page.locator('[data-testid=btn-confirm-dialog-cancel]').click();
     await page.waitForTimeout(500);
 
     await expect(page.locator('[data-testid=connect-remote-modal]')).toBeVisible();

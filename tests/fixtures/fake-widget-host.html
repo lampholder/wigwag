@@ -17,12 +17,16 @@
 (function () {
   const cfg = Object.assign({
     widgetId: 'test-widget-1', roomId: '!fakeroom:example.org', userId: '@fake-user:example.org',
-    displayName: 'Fake User', roomName: '', initialEntries: [], rejectReadEventsTimes: 0, dropReadEventsTimes: 0
+    displayName: 'Fake User', roomName: '', initialEntries: [], rejectReadEventsTimes: 0, dropReadEventsTimes: 0,
+    // Project index (tracker f6b39bf0) -- simulates a non-moderator's power
+    // level being too low for a dev.wigwag.project state send, same as the
+    // direct transport's mocked 403.
+    forbidStateEventType: null
   }, window.__fakeHostConfig || {});
   let rejectReadEventsRemaining = cfg.rejectReadEventsTimes;
   let dropReadEventsRemaining = cfg.dropReadEventsTimes;
 
-  window.__state = { sentEntries: [], pendingEntries: cfg.initialEntries.slice(), requestedCapabilities: null, supportedApiVersionsReply: null };
+  window.__state = { sentEntries: [], sentStateEvents: [], pendingEntries: cfg.initialEntries.slice(), requestedCapabilities: null, supportedApiVersionsReply: null };
 
   const iframe = document.getElementById('widget');
   const url = new URL('../../wigwag-matrix-host.html', location.href);
@@ -110,6 +114,18 @@
       // is the worst case that dedupe has to handle; exercising it here
       // is the point, not an oversight.
       reply(msg, { events: window.__state.pendingEntries.slice(), nextToken: 'cursor-' + Date.now() });
+    } else if (msg.action === 'send_event' && data.state_key !== undefined) {
+      if (cfg.forbidStateEventType && data.type === cfg.forbidStateEventType) {
+        reply(msg, { error: { message: 'insufficient power level' } });
+        return;
+      }
+      window.__state.sentStateEvents.push({ type: data.type, state_key: data.state_key, content: data.content });
+      // A real Matrix state event is also a timeline event at the position
+      // it was sent -- reflected into pendingEntries so a subsequent
+      // read_events call (this file's own getProjectIndex/pullMore) sees
+      // it, same as a real room would.
+      window.__state.pendingEntries.push({ type: data.type, state_key: data.state_key, content: data.content });
+      reply(msg, { event_id: '$' + Math.random().toString(36).slice(2) });
     } else if (msg.action === 'send_event') {
       window.__state.sentEntries.push(data.content);
       reply(msg, { event_id: '$' + Math.random().toString(36).slice(2) });

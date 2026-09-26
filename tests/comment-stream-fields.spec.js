@@ -177,8 +177,8 @@ test.describe('Comment stream fields', () => {
     await expect(entries.first()).toContainText('Corrected second entry');
 
     // redacting the other entry
-    page.once('dialog', d => d.accept());
     await entries.nth(1).locator('[data-testid=activity-redact-btn]').click();
+    await page.locator('[data-testid=btn-confirm-dialog-confirm]').click();
     await page.waitForTimeout(300);
     await expect(entries.nth(1)).toContainText('redacted');
   });

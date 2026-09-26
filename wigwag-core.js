@@ -1231,18 +1231,40 @@ function migrateLegacyComments(issue) {
   const { comments, ...rest } = issue;
   return { ...rest, commentStreams: { ...(issue.commentStreams || {}), comments: issue.commentStreams && issue.commentStreams.comments ? issue.commentStreams.comments : (comments || []) } };
 }
+// An issue's deletion state, derived the same "latest signed entry wins"
+// way as everything else (tracker #149, live-reported): the Matrix bridge
+// replays a room's full timeline on every reconnect, and a hard, unlogged
+// removal (the old behavior) leaves nothing to stop an issue's original
+// creation event from being read as "newly arrived" and re-added. A real
+// reserved field id, never a genuine field (nobody defines one named
+// this), makes deletion a normal, mergeable, sync-able fact instead of an
+// out-of-band structural operation. No exclusion is needed in
+// deriveIssueValues -- it only ever populates keys that exist in
+// fieldDefs, and this id is never a real field definition.
+const ISSUE_DELETED_FIELD_ID = '__deleted__';
+function issueIsDeleted(history) {
+  let latest = null;
+  for (const h of (history || [])) {
+    if (h.field !== ISSUE_DELETED_FIELD_ID || h.value === undefined) continue;
+    if (!latest || h.sortKey > latest.sortKey) latest = h;
+  }
+  return !!(latest && latest.value === true);
+}
 function hydrateIssue(issue, fieldDefs) {
   const migrated = migrateLegacyComments(issue);
   const backfilled = backfillIssueHistoryFromValues(migrated, fieldDefs);
-  return { ...backfilled, values: deriveIssueValues(backfilled, fieldDefs), fieldRefs: deriveIssueFieldRefs(backfilled, fieldDefs) };
+  return { ...backfilled, values: deriveIssueValues(backfilled, fieldDefs), fieldRefs: deriveIssueFieldRefs(backfilled, fieldDefs), deleted: issueIsDeleted(backfilled.history) };
 }
 // Project-level counterpart to deriveIssueValues -- but unlike issue
 // values (where the SET of fields is fixed by fieldDefs and every value
 // has a type-appropriate default), a field's very existence isn't
 // derivable from history at all: field deletion stays a direct, unlogged
-// removal (same reasoning as issue deletion -- see docs/EDITING.md /
-// the plan's "explicitly not touched" list), so resurrecting a deleted
-// field's old creation entry would be wrong. currentFieldDefs is the
+// removal (unlike issue deletion above, which switched to a real
+// tombstone -- tracker #149 -- specifically because the Matrix bridge
+// replays full history on reconnect; field definitions aren't replayed
+// the same way, so this asymmetry is deliberate, not an oversight), so
+// resurrecting a deleted field's old creation entry would be wrong.
+// currentFieldDefs is the
 // authoritative KEY SET (which fields exist right now, maintained
 // directly by submitNewField/deleteField); this only re-derives each
 // existing key's CONTENT (label/type/options/linkedSourceId/rule) from
@@ -1262,10 +1284,32 @@ function hydrateIssue(issue, fieldDefs) {
 // fields with no real history backing on every future merge -- a real,
 // live incident (2026-08-31, see the plan doc). There is no longer any
 // parameter here for that kind of value to leak in through.
+// A project's name (tracker #149): historically local-only browser
+// metadata (PROJECTS_KEY.milestones[].name), with only a NARRATIVE,
+// field-less "Renamed project from X to Y" history entry left behind --
+// readable by a human in the History tab, but not derivable by another
+// browser the way a field definition is. Promoted to a real, derivable
+// value here, following the exact same "latest signed entry wins"
+// pattern as everything else in this format. Reserved, sentinel field id
+// (never a real user-facing field) so it can never collide with an
+// actual field definition of the same name -- deriveFieldDefs below
+// explicitly excludes it for that reason.
+const PROJECT_NAME_FIELD_ID = '__project_name__';
+function deriveProjectName(projectHistory) {
+  let latest = null;
+  for (const h of (projectHistory || [])) {
+    if (h.field !== PROJECT_NAME_FIELD_ID || h.value === undefined) continue;
+    if (!latest || h.sortKey > latest.sortKey) latest = h;
+  }
+  // latest.value may itself be null (a tombstone, same convention as
+  // deriveFieldDefs) -- returning it as-is collapses to the same "no
+  // derived name" result a caller already handles for "never renamed".
+  return latest ? latest.value : null;
+}
 function deriveFieldDefs(projectHistory) {
   const latestByField = {};
   for (const h of (projectHistory || [])) {
-    if (!h.field || h.value === undefined) continue;
+    if (!h.field || h.field === PROJECT_NAME_FIELD_ID || h.value === undefined) continue;
     const existing = latestByField[h.field];
     if (!existing || h.sortKey > existing.sortKey) latestByField[h.field] = h;
   }
@@ -1341,7 +1385,11 @@ function ensureTimestampFieldDefs(fieldDefs) {
 function hydrateProject(fieldDefs, projectHistory) {
   const ensuredFieldDefs = ensureTimestampFieldDefs(ensureCommentsFieldDef(fieldDefs));
   const backfilled = backfillProjectHistory(ensuredFieldDefs, projectHistory);
-  return { fieldDefs: deriveFieldDefs(backfilled), projectHistory: backfilled };
+  // null (not '') when no field:'name' entry exists yet -- an older
+  // project that predates this, or one that's never been renamed -- so a
+  // caller can tell "no derived name yet" apart from "derived name is
+  // empty" and fall back to its own locally-cached name instead.
+  return { fieldDefs: deriveFieldDefs(backfilled), projectHistory: backfilled, projectName: deriveProjectName(backfilled) };
 }
 
 
@@ -1924,7 +1972,14 @@ function buildSourceText(mode, doc) {
   const projectHistory = mode === 'squashed' ? squashHistory(rawProjectHistory) : rawProjectHistory;
   const keys = keyRegistryEncoder();
   const encodedProjectHistory = projectHistory.map(keys.encode);
-  const issueLines = issues.map(iss => {
+  // A squashed export (tracker #149) drops a tombstoned issue's data
+  // entirely, not just its history -- there's no reason a shared/archived
+  // snapshot should carry a deleted issue at all. A 'full' export keeps
+  // it (tombstone included), since that's exactly what needs to survive
+  // for another device/party to correctly see the deletion rather than
+  // resurrect the issue from its still-present creation entry.
+  const exportedIssues = mode === 'squashed' ? issues.filter(iss => !issueIsDeleted(iss.history)) : issues;
+  const issueLines = exportedIssues.map(iss => {
     const history = (mode === 'squashed' ? squashHistory(iss.history, fieldDefs) : iss.history).map(keys.encode);
     const commentStreams = {};
     for (const colId in (iss.commentStreams || {})) commentStreams[colId] = (iss.commentStreams[colId] || []).map(keys.encode);
@@ -2215,7 +2270,11 @@ function mergeIssuePair(localIssue, incomingIssue, fieldDefs) {
     if (incomingOnly) touchedFields.push(colId);
   }
   const merged = { ...localIssue, commentStreams, history };
-  const mergedIssue = { ...merged, values: deriveIssueValues(merged, fieldDefs), fieldRefs: deriveIssueFieldRefs(merged, fieldDefs) };
+  // A tombstone (field: ISSUE_DELETED_FIELD_ID) flows through the same
+  // generic history union above as any other field entry -- no special
+  // merge-conflict handling needed, just re-derive deleted status fresh
+  // like values/fieldRefs.
+  const mergedIssue = { ...merged, values: deriveIssueValues(merged, fieldDefs), fieldRefs: deriveIssueFieldRefs(merged, fieldDefs), deleted: issueIsDeleted(history) };
   return { mergedIssue, overlappingFields, touchedFields };
 }
 
@@ -3072,9 +3131,17 @@ const WIGWAG_MATRIX_EVENT_VERSION = 1;
 // lines of ONE JSONL FILE; on Matrix every entry is already its own
 // independently-sized event, so inline pubKey is simplest and correct
 // here, not a gap to close later.
-function matrixEventContentFromEntry({ scope, issueId, stream, entry }) {
+// projectId is optional -- a room predating this field (or a caller not
+// yet distinguishing multiple projects) omits it entirely, which
+// hydrateProjectFromMatrixTimeline below treats as "the room's one
+// legacy/default project" by default. Once a room genuinely holds
+// several projects, every NEW entry a client sends should carry its
+// real projectId explicitly -- untagged is a legacy shape to keep
+// reading, not one to keep writing.
+function matrixEventContentFromEntry({ scope, issueId, stream, entry, projectId }) {
   const content = { v: WIGWAG_MATRIX_EVENT_VERSION, scope, stream: stream || null, entry };
   if (scope === 'issue') content.issueId = issueId;
+  if (projectId) content.projectId = projectId;
   return content;
 }
 // Inverse of matrixEventContentFromEntry. Tolerant of malformed or
@@ -3089,8 +3156,181 @@ function entryFromMatrixEvent(rawEvent) {
     if (content.scope !== 'issue' && content.scope !== 'project') return null;
     if (!content.entry || typeof content.entry !== 'object') return null;
     if (content.scope === 'issue' && !content.issueId) return null;
-    return { scope: content.scope, issueId: content.issueId || null, stream: content.stream || null, entry: content.entry };
+    return { scope: content.scope, issueId: content.issueId || null, stream: content.stream || null, entry: content.entry, projectId: content.projectId || null };
   } catch (e) { return null; }
+}
+const WIGWAG_MATRIX_ENTRIES_TYPE = 'dev.wigwag.entries';
+// Bulk-transport optimization (tracker #149, live-reported): a one-time
+// bulk operation -- adopting a newly-imported project into a room, say --
+// sending one event per entry hit real homeserver rate limiting hard
+// enough to matter. Fewer, bigger requests sidesteps that at the source,
+// rather than only retrying through it (sendMatrixEntry's own
+// retry-with-backoff below still matters for this too, just less often).
+// Each item in `items` is exactly the per-entry content
+// matrixEventContentFromEntry already produces -- carried inside one
+// event's array instead of each being its own event. Never used for a
+// normal single incremental edit; one event per entry is already optimal
+// there (nothing to batch).
+function matrixEventContentFromEntries(items) {
+  return { v: WIGWAG_MATRIX_EVENT_VERSION, items: items.map(item => matrixEventContentFromEntry(item)) };
+}
+// Inverse of matrixEventContentFromEntries. Tolerant like
+// entryFromMatrixEvent: a malformed batch event, or one bad item inside an
+// otherwise-good batch, is skipped rather than throwing away (or crashing
+// on) the whole thing. Returns an array (possibly empty), not a single
+// item or null, since one batch event decodes to many entries.
+function entriesFromMatrixEvent(rawEvent) {
+  try {
+    const content = rawEvent && rawEvent.content;
+    if (!content || content.v !== WIGWAG_MATRIX_EVENT_VERSION || !Array.isArray(content.items)) return [];
+    return content.items.map(item => entryFromMatrixEvent({ content: item })).filter(Boolean);
+  } catch (e) { return []; }
+}
+// Project index (tracker f6b39bf0/#153, live-reported rate-limit incident):
+// a Matrix STATE event, not a timeline event -- deliberately the one
+// exception to this whole adapter's "no separate current-state event"
+// stance (see the top-of-section comment above). Two things a state event
+// gives that a timeline entry can't: (1) always instantly and completely
+// readable via a current-state fetch, immune to how much unrelated room
+// traffic sits between "now" and when a project was created, unlike
+// scanning a timeline that might have to page arbitrarily far back; (2)
+// Matrix's own power-level model gates STATE events at `state_default`
+// (typically 50) by default, unlike ordinary messages (`events_default`,
+// typically 0) -- Tom's explicit call was to lean on exactly this as a
+// real access-control gate, not just a discoverability optimization: only
+// room moderators can create a new project. `state_key` is the project id
+// itself (one state event per project, "exists or doesn't" -- content
+// carries no authoritative data of its own; a project's name/fields/
+// issues are still derived purely from its signed timeline entries, same
+// as ever). Backward compatibility for every room that predates this
+// event type lives in discoverProjects (wigwag-matrix-host.html), not
+// here: a project already evidenced by real timeline entries is never
+// gated retroactively.
+const WIGWAG_MATRIX_PROJECT_STATE_TYPE = 'dev.wigwag.project';
+function matrixStateEventContentFromProjectCreation({ createdAt, createdBy }) {
+  return { v: WIGWAG_MATRIX_EVENT_VERSION, createdAt: createdAt || null, createdBy: createdBy || null };
+}
+// Tolerant like entryFromMatrixEvent: a state_key is required (Matrix
+// itself guarantees one is present on any real state event, but a
+// malformed/foreign event is still handled the same defensive way as
+// everything else in this adapter).
+function projectIdFromMatrixStateEvent(rawEvent) {
+  if (!rawEvent || rawEvent.type !== WIGWAG_MATRIX_PROJECT_STATE_TYPE) return null;
+  if (typeof rawEvent.state_key !== 'string' || !rawEvent.state_key) return null;
+  return rawEvent.state_key;
+}
+// Room snapshot (tracker f6b39bf0/#153, f1c7098f/#154): a repackaging of a
+// project's full history-so-far into fewer, more recent events, so a fresh
+// connect only needs the LATEST snapshot plus whatever's newer, not the
+// room's entire timeline from the start. Deliberately NOT a squash to
+// current values -- "history is the sole source of truth" (docs/FORMAT.md)
+// still holds; every entry keeps its own real signature, just repackaged.
+// This is also what makes it a real E2EE fix (tracker f1c7098f), not just
+// a pagination one: a fresh snapshot is a NEW event, encrypted under
+// whatever Megolm session is current when it's sent, so a member who
+// joined after the original entries but before the snapshot still gets
+// it -- they're a current member when the snapshot's own session is
+// shared, unlike the old individual entries.
+//
+// Two event types, mirroring NeoBoard's manifest+chunk pattern (see the
+// plan doc) but chunked by entry COUNT rather than raw bytes -- wigwag's
+// entries are already well-formed JSON items (matrixEventContentFromEntry
+// output), so there's no need for NeoBoard's own byte-slice/reassemble
+// dance, just the same per-event entry cap wigwag-matrix-host.html's own
+// bulk-adopt push already uses (BULK_PUSH_CHUNK_SIZE there, mirrored as
+// SNAPSHOT_CHUNK_SIZE below for anyone building a snapshot from scratch).
+const WIGWAG_MATRIX_SNAPSHOT_TYPE = 'dev.wigwag.snapshot';
+const WIGWAG_MATRIX_SNAPSHOT_CHUNK_TYPE = 'dev.wigwag.snapshot.chunk';
+const SNAPSHOT_CHUNK_SIZE = 25;
+// The manifest/anchor event: declares how many chunk events to expect and
+// the highest sortKey included, so a caller that finds this snapshot knows
+// exactly which (much smaller) tail of newer entries still needs pulling
+// separately.
+function matrixEventContentFromSnapshotManifest({ projectId, snapshotId, chunkCount, cutoffSortKey }) {
+  return { v: WIGWAG_MATRIX_EVENT_VERSION, projectId, snapshotId, chunkCount, cutoffSortKey };
+}
+function snapshotManifestFromMatrixEvent(rawEvent) {
+  try {
+    const content = rawEvent && rawEvent.content;
+    if (!content || content.v !== WIGWAG_MATRIX_EVENT_VERSION) return null;
+    if (!content.snapshotId || !content.projectId || typeof content.chunkCount !== 'number') return null;
+    return { projectId: content.projectId, snapshotId: content.snapshotId, chunkCount: content.chunkCount, cutoffSortKey: content.cutoffSortKey || 0 };
+  } catch (e) { return null; }
+}
+// One page of a snapshot's payload -- items is exactly the same per-entry
+// shape matrixEventContentFromEntries already uses for live batch pushes;
+// snapshotId/sequenceNumber are what's new, identifying which manifest
+// this chunk belongs to and its place in the reassembly order.
+function matrixEventContentFromSnapshotChunk({ snapshotId, sequenceNumber, items }) {
+  return { v: WIGWAG_MATRIX_EVENT_VERSION, snapshotId, sequenceNumber, items: items.map(item => matrixEventContentFromEntry(item)) };
+}
+function snapshotChunkFromMatrixEvent(rawEvent) {
+  try {
+    const content = rawEvent && rawEvent.content;
+    if (!content || content.v !== WIGWAG_MATRIX_EVENT_VERSION || !content.snapshotId || typeof content.sequenceNumber !== 'number' || !Array.isArray(content.items)) return null;
+    const items = content.items.map(item => entryFromMatrixEvent({ content: item })).filter(Boolean);
+    return { snapshotId: content.snapshotId, sequenceNumber: content.sequenceNumber, items };
+  } catch (e) { return null; }
+}
+// Takes whatever raw manifest/chunk events a caller has already pulled
+// (any order, possibly spanning multiple snapshot generations or multiple
+// projects) and reassembles the LATEST *complete* snapshot per project --
+// "latest" by cutoffSortKey, "complete" meaning every sequenceNumber from
+// 0 to chunkCount-1 was actually found. An incomplete snapshot (a torn
+// write, or one still mid-flight) is discarded entirely for that
+// projectId, exactly as if no snapshot existed -- the caller falls back
+// to a full replay, never a partial/wrong hydration.
+function reassembleLatestSnapshots(rawEvents) {
+  const manifestsByProject = new Map(); // projectId -> latest manifest seen
+  const chunksBySnapshotId = new Map(); // snapshotId -> Map(sequenceNumber -> items)
+  for (const rawEvent of (rawEvents || [])) {
+    if (rawEvent && rawEvent.type === WIGWAG_MATRIX_SNAPSHOT_TYPE) {
+      const manifest = snapshotManifestFromMatrixEvent(rawEvent);
+      if (!manifest) continue;
+      const existing = manifestsByProject.get(manifest.projectId);
+      if (!existing || manifest.cutoffSortKey >= existing.cutoffSortKey) manifestsByProject.set(manifest.projectId, manifest);
+    } else if (rawEvent && rawEvent.type === WIGWAG_MATRIX_SNAPSHOT_CHUNK_TYPE) {
+      const chunk = snapshotChunkFromMatrixEvent(rawEvent);
+      if (!chunk) continue;
+      if (!chunksBySnapshotId.has(chunk.snapshotId)) chunksBySnapshotId.set(chunk.snapshotId, new Map());
+      chunksBySnapshotId.get(chunk.snapshotId).set(chunk.sequenceNumber, chunk.items);
+    }
+  }
+  const result = new Map(); // projectId -> { snapshotId, cutoffSortKey, items }
+  for (const [projectId, manifest] of manifestsByProject) {
+    const chunksBySeq = chunksBySnapshotId.get(manifest.snapshotId);
+    if (!chunksBySeq || chunksBySeq.size !== manifest.chunkCount) continue; // incomplete -- discard
+    let items = [];
+    let complete = true;
+    for (let seq = 0; seq < manifest.chunkCount; seq++) {
+      if (!chunksBySeq.has(seq)) { complete = false; break; }
+      items = items.concat(chunksBySeq.get(seq));
+    }
+    if (!complete) continue;
+    result.set(projectId, { snapshotId: manifest.snapshotId, cutoffSortKey: manifest.cutoffSortKey, items });
+  }
+  return result;
+}
+// Decodes a flat list of raw Matrix events (single dev.wigwag.entry OR
+// batch dev.wigwag.entries, any order, foreign/malformed events silently
+// skipped) into one flat array of {scope, issueId, stream, entry,
+// projectId} items -- the same shape entryFromMatrixEvent/
+// entriesFromMatrixEvent already produce, just uniformly flattened. Used
+// wherever a caller needs to reason about individual entries directly
+// (e.g. filtering out ones a found snapshot already covers, see
+// createMatrixBridge's own connect() in wigwag-matrix-host.html) rather
+// than feeding raw events straight into hydrateProjectFromMatrixTimeline.
+function decodeAllMatrixEntryItems(rawEvents) {
+  const items = [];
+  for (const rawEvent of (rawEvents || [])) {
+    if (rawEvent && rawEvent.type === WIGWAG_MATRIX_ENTRIES_TYPE) {
+      items.push(...entriesFromMatrixEvent(rawEvent));
+    } else {
+      const decoded = entryFromMatrixEvent(rawEvent);
+      if (decoded) items.push(decoded);
+    }
+  }
+  return items;
 }
 // The Matrix analog of parseJsonl: takes a flat list of raw Matrix room
 // events (any order -- callers are not required to pre-sort, and a
@@ -3109,21 +3349,44 @@ function entryFromMatrixEvent(rawEvent) {
 // other materialized value in this format) means it self-corrects on
 // the next load rather than two issues ever colliding on one number.
 //
-// projectId/projectName/projectNotes/projectComments are not represented
-// in the Matrix event shape at all yet -- a deliberate v1 gap, not an
-// oversight (see the "wigwag as a Matrix widget" plan): the caller
+// projectName/projectNotes/projectComments are not represented in the
+// Matrix event shape at all yet -- a deliberate v1 gap, not an oversight
+// (see the "wigwag as a Matrix widget" plan): the caller
 // (wigwag-matrix-host.html) already knows which Matrix room maps to
 // which local project id from its own bootstrap, independent of
-// anything in the timeline, so projectId/projectName are accepted as
-// caller-supplied overrides here rather than derived.
+// anything in the timeline, so projectName is accepted as a
+// caller-supplied override here rather than derived.
+//
+// A room can hold more than one project's worth of entries in one
+// timeline (tracker #149, confirmed necessary live -- importing an
+// existing project into a room must keep its own identity, not get
+// mangled into "the" room's one project). `projectId` says which
+// project THIS hydration pass is for; an entry matches it if its own
+// content.projectId equals it, OR the entry has no projectId at all
+// AND `includeUntaggedEntries` is true (default) -- untagged is the
+// legacy shape every entry had before this field existed, so treating
+// it as "belongs to the one default project" keeps a room's existing
+// history intact. A caller hydrating anything OTHER than that legacy
+// default project should pass `includeUntaggedEntries: false`
+// explicitly, so a second project's hydration never silently absorbs
+// the first project's untagged history.
 function hydrateProjectFromMatrixTimeline(rawEvents, opts) {
-  const { fieldDefs: fallbackFieldDefs, projectId, projectName } = opts || {};
+  const { fieldDefs: fallbackFieldDefs, projectId, projectName, includeUntaggedEntries } = opts || {};
+  const includeUntagged = includeUntaggedEntries !== false;
   const projectHistory = [];
   const issueHistoryById = new Map();
   const commentStreamsById = new Map();
   for (const rawEvent of (rawEvents || [])) {
-    const decoded = entryFromMatrixEvent(rawEvent);
-    if (!decoded) continue;
+    // A batch event (bulk-transport optimization, tracker #149) expands
+    // into the same per-item shape a normal single-entry event decodes to
+    // -- everything below is blind to which shape an entry originally
+    // arrived as.
+    const decodedItems = (rawEvent && rawEvent.type === WIGWAG_MATRIX_ENTRIES_TYPE)
+      ? entriesFromMatrixEvent(rawEvent)
+      : [entryFromMatrixEvent(rawEvent)].filter(Boolean);
+    for (const decoded of decodedItems) {
+    const matchesThisProject = decoded.projectId ? decoded.projectId === projectId : includeUntagged;
+    if (!matchesThisProject) continue;
     if (decoded.scope === 'project') { projectHistory.push(decoded.entry); continue; }
     const issueId = decoded.issueId;
     if (decoded.stream) {
@@ -3134,6 +3397,7 @@ function hydrateProjectFromMatrixTimeline(rawEvents, opts) {
     } else {
       if (!issueHistoryById.has(issueId)) issueHistoryById.set(issueId, []);
       issueHistoryById.get(issueId).push(decoded.entry);
+    }
     }
   }
   const issueIds = new Set([...issueHistoryById.keys(), ...commentStreamsById.keys()]);
@@ -3148,9 +3412,14 @@ function hydrateProjectFromMatrixTimeline(rawEvents, opts) {
   const backfilledProjectHistory = backfillProjectHistory(ensuredFieldDefs, projectHistory);
   const fieldDefs = deriveFieldDefs(backfilledProjectHistory);
   const hydratedIssues = rawIssues.map(iss => hydrateIssue(iss, fieldDefs));
+  // A real, derivable field:'name' entry (tracker #149) always wins over
+  // the caller's fallback (e.g. a room-name-derived placeholder) -- the
+  // fallback only applies once, before any project-scope rename entry has
+  // ever been written to this timeline.
+  const derivedProjectName = deriveProjectName(backfilledProjectHistory);
   return {
     fields: fieldDefs, projectHistory: backfilledProjectHistory, issues: hydratedIssues,
-    projectId: projectId || null, projectName: projectName || null, projectNotes: null, projectComments: null,
+    projectId: projectId || null, projectName: derivedProjectName || projectName || null, projectNotes: null, projectComments: null,
     formatVersion: WIGWAG_MATRIX_EVENT_VERSION
   };
 }
@@ -3176,11 +3445,25 @@ async function resolveMatrixRoomAlias({ fetchImpl, homeserverUrl, accessToken, a
 // dir: 'b' (backwards, newest-first -- the default, matching a normal
 // scrollback fetch) or 'f' (forwards, for resuming from a stored cursor).
 // from, if given, is a previous response's own `end` pagination token.
-async function fetchMatrixRoomEntries({ fetchImpl, homeserverUrl, accessToken, roomId, from, dir }) {
+// limit, if given, caps how many events one call returns -- omitted means
+// whatever the homeserver's own default is (often small; a caller that
+// needs a real room's full history should pass an explicit limit and loop
+// on `end` until a call returns an empty chunk, see createDirectTransport's
+// own pullInitial in wigwag-matrix-host.html).
+async function fetchMatrixRoomEntries({ fetchImpl, homeserverUrl, accessToken, roomId, from, dir, limit }) {
   try {
-    const filter = encodeURIComponent(JSON.stringify({ types: [WIGWAG_MATRIX_ENTRY_TYPE] }));
+    // dev.wigwag.project (a state event) rides this same type-filtered
+    // pull deliberately -- Matrix state events are also ordinary timeline
+    // events at the position they were sent, so a project created WHILE
+    // an already-connected viewer's poll is running is picked up here with
+    // zero extra mechanism, same as any other new entry. A cold connect's
+    // reliable, order-independent discovery still comes from a real
+    // current-state fetch (getMatrixRoomState), not from however far back
+    // this pagination happens to reach.
+    const filter = encodeURIComponent(JSON.stringify({ types: [WIGWAG_MATRIX_ENTRY_TYPE, WIGWAG_MATRIX_ENTRIES_TYPE, WIGWAG_MATRIX_SNAPSHOT_TYPE, WIGWAG_MATRIX_SNAPSHOT_CHUNK_TYPE, WIGWAG_MATRIX_PROJECT_STATE_TYPE] }));
     let url = homeserverUrl.replace(/\/$/, '') + '/_matrix/client/v3/rooms/' + encodeURIComponent(roomId) + '/messages?dir=' + (dir || 'b') + '&filter=' + filter;
     if (from) url += '&from=' + encodeURIComponent(from);
+    if (limit) url += '&limit=' + encodeURIComponent(limit);
     const res = await fetchImpl(url, { headers: { Authorization: 'Bearer ' + accessToken } });
     if (res.status === 403) return { status: 'forbidden' };
     if (res.status === 404) return { status: 'not-found' };
@@ -3195,14 +3478,92 @@ async function fetchMatrixRoomEntries({ fetchImpl, homeserverUrl, accessToken, r
 // idempotency here) -- a random-enough string the caller generates once
 // per attempt, retried with the SAME txnId on a network retry so a
 // flaky connection can never double-send the same entry.
+//
+// Retries on 429 (M_LIMIT_EXCEEDED) -- tracker #149, live-reported: bulk-
+// adopting a large imported project (createMatrixBridge's
+// adoptLocalProjects, wigwag-matrix-host.html) sends one PUT per history
+// entry in a tight loop with no pacing, which real homeservers rate-limit
+// under real-world burst volume. Before this fix, a 429 was treated as a
+// terminal error -- the entry was silently dropped (visible live as two
+// viewers disagreeing on a project's name: whichever entry carrying the
+// real name happened to lose the race showed a generic "Project
+// <short-id>" placeholder instead). Honors the server's own
+// retry_after_ms when present, exponential backoff otherwise, same
+// txnId every attempt (a retried PUT is idempotent).
+const MATRIX_SEND_MAX_RETRIES = 6;
+// Shared by sendMatrixEntry, sendMatrixEntries, and (via an explicit
+// stateKey) sendMatrixProjectStateEvent -- identical PUT-with-retry
+// mechanics regardless of event type/content shape, or whether this is a
+// timeline send (txnId-keyed) or a state write (state_key-keyed). A state
+// PUT needs no txnId at all: overwrite-by-state_key is already idempotent
+// server-side (a retried PUT with the same content is a genuine no-op),
+// unlike a timeline send where the SAME txnId is what makes a retry safe.
+async function putMatrixEvent({ fetchImpl, homeserverUrl, accessToken, roomId, eventType, content, txnId, stateKey }) {
+  const base = homeserverUrl.replace(/\/$/, '') + '/_matrix/client/v3/rooms/' + encodeURIComponent(roomId);
+  const url = (stateKey !== undefined)
+    ? base + '/state/' + eventType + '/' + encodeURIComponent(stateKey)
+    : base + '/send/' + eventType + '/' + encodeURIComponent(txnId);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const res = await fetchImpl(url, { method: 'PUT', headers: { Authorization: 'Bearer ' + accessToken, 'Content-Type': 'application/json' }, body: JSON.stringify(content) });
+      if (res.status === 403) return { status: 'forbidden' };
+      if (res.status === 429) {
+        if (attempt >= MATRIX_SEND_MAX_RETRIES) return { status: 'error', message: 'rate-limited (429) after ' + MATRIX_SEND_MAX_RETRIES + ' retries' };
+        let retryAfterMs = 1000 * Math.pow(2, attempt);
+        try { const body = await res.json(); if (typeof body.retry_after_ms === 'number') retryAfterMs = body.retry_after_ms; } catch (e) { /* no/invalid JSON body -- keep the backoff default */ }
+        await new Promise(resolve => setTimeout(resolve, retryAfterMs));
+        continue;
+      }
+      if (!res.ok) return { status: 'error', message: 'Matrix returned ' + res.status };
+      const data = await res.json();
+      return { status: 'ok', eventId: data.event_id };
+    } catch (e) {
+      return { status: 'error', message: e.message };
+    }
+  }
+}
 async function sendMatrixEntry({ fetchImpl, homeserverUrl, accessToken, roomId, content, txnId }) {
+  return putMatrixEvent({ fetchImpl, homeserverUrl, accessToken, roomId, eventType: WIGWAG_MATRIX_ENTRY_TYPE, content, txnId });
+}
+// Bulk-transport optimization (tracker #149) -- see
+// matrixEventContentFromEntries above. `content` is already the batch
+// shape (matrixEventContentFromEntries's own return value); this just
+// PUTs it as a dev.wigwag.entries event instead of dev.wigwag.entry,
+// reusing the exact same retry-on-429 mechanics.
+async function sendMatrixEntries({ fetchImpl, homeserverUrl, accessToken, roomId, content, txnId }) {
+  return putMatrixEvent({ fetchImpl, homeserverUrl, accessToken, roomId, eventType: WIGWAG_MATRIX_ENTRIES_TYPE, content, txnId });
+}
+// Same retry-on-429 mechanics, for the two snapshot event types.
+async function sendMatrixSnapshotManifest({ fetchImpl, homeserverUrl, accessToken, roomId, content, txnId }) {
+  return putMatrixEvent({ fetchImpl, homeserverUrl, accessToken, roomId, eventType: WIGWAG_MATRIX_SNAPSHOT_TYPE, content, txnId });
+}
+async function sendMatrixSnapshotChunk({ fetchImpl, homeserverUrl, accessToken, roomId, content, txnId }) {
+  return putMatrixEvent({ fetchImpl, homeserverUrl, accessToken, roomId, eventType: WIGWAG_MATRIX_SNAPSHOT_CHUNK_TYPE, content, txnId });
+}
+// State write, not a timeline send -- stateKey (the project id) replaces
+// txnId. A 'forbidden' result here (putMatrixEvent's existing 403 handling,
+// unchanged) is Matrix's own power-level check doing exactly its job: the
+// connecting user isn't a room moderator. The caller is responsible for
+// turning that into a real, visible "only moderators can add projects
+// here" message -- never a silent drop (tracker f6b39bf0, live-reported
+// double-send incident: a rejected/failed write must never look like it
+// succeeded).
+async function sendMatrixProjectStateEvent({ fetchImpl, homeserverUrl, accessToken, roomId, projectId, content }) {
+  return putMatrixEvent({ fetchImpl, homeserverUrl, accessToken, roomId, eventType: WIGWAG_MATRIX_PROJECT_STATE_TYPE, content, stateKey: projectId });
+}
+// Current room state, in one call -- unlike /messages, this is never
+// paginated and never a function of how much unrelated history sits in
+// the room: it's always the complete, current answer. Used at connect
+// time to find every dev.wigwag.project state event reliably, regardless
+// of room chattiness (see that event type's own comment above).
+async function getMatrixRoomState({ fetchImpl, homeserverUrl, accessToken, roomId }) {
   try {
-    const url = homeserverUrl.replace(/\/$/, '') + '/_matrix/client/v3/rooms/' + encodeURIComponent(roomId) + '/send/' + WIGWAG_MATRIX_ENTRY_TYPE + '/' + encodeURIComponent(txnId);
-    const res = await fetchImpl(url, { method: 'PUT', headers: { Authorization: 'Bearer ' + accessToken, 'Content-Type': 'application/json' }, body: JSON.stringify(content) });
+    const url = homeserverUrl.replace(/\/$/, '') + '/_matrix/client/v3/rooms/' + encodeURIComponent(roomId) + '/state';
+    const res = await fetchImpl(url, { headers: { Authorization: 'Bearer ' + accessToken } });
     if (res.status === 403) return { status: 'forbidden' };
     if (!res.ok) return { status: 'error', message: 'Matrix returned ' + res.status };
     const data = await res.json();
-    return { status: 'ok', eventId: data.event_id };
+    return { status: 'ok', events: Array.isArray(data) ? data : [] };
   } catch (e) {
     return { status: 'error', message: e.message };
   }
@@ -3231,7 +3592,7 @@ async function probeMatrixRoomAccess({ fetchImpl, homeserverUrl, accessToken, ro
 }
 
 const WigwagCoreExports = {
-  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, xlsxDateTimeSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, tokenizeFilterQuery, parseFilterQuery, issueMatchesFieldToken, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, COMMENT_READS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, formatNow, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, hydrateIssue, migrateLegacyComments, deriveFieldDefs, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, issueTimestampValue, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, MATRIX_USER_ID_RE, principalKind, identityPrincipal, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, evalRule, computeBoundValue, isFieldLocked, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, sortValue, computeSortSnapshot, issueCreatedAt,
+  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, xlsxDateTimeSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, tokenizeFilterQuery, parseFilterQuery, issueMatchesFieldToken, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, COMMENT_READS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, formatNow, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, migrateLegacyComments, deriveFieldDefs, PROJECT_NAME_FIELD_ID, deriveProjectName, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, issueTimestampValue, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, MATRIX_USER_ID_RE, principalKind, identityPrincipal, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, evalRule, computeBoundValue, isFieldLocked, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, sortValue, computeSortSnapshot, issueCreatedAt,
   importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry,
   squashHistory, displayValueForHistory, buildSourceText, keyRegistryEncoder, rehydrateKeyRef, humanFileSize, parseJsonl, entryKey, commentKey, unionByKey, mergeCommentStreams, mergeIssuePair, computeIssueMerge, mergeHasRealChanges, computeFieldDefsMerge, computeDerivedChangeEntries,
   isPastedTextASingleUrl, wrapSelectionWithMarkdownLink,
@@ -3242,7 +3603,9 @@ const WigwagCoreExports = {
   MERGE_LOG_TYPE, MERGE_LOG_VERSION, mergeLogStorageKey, buildMergeRecord, buildMergeIssueSummary,
   patchMergeSummaryResultEntryId, fieldStillSafeToRevert, computeMergeRollbackEntries,
   buildMergePreviewViewModel, buildMergeFieldTimeline, mergeRecordNeedsAttention, buildMergeFieldDiffLines, mergeSettledValueView, buildMergeIssueTimeline, resolveFieldValueView,
-  WIGWAG_MATRIX_ENTRY_TYPE, WIGWAG_MATRIX_EVENT_VERSION, matrixEventContentFromEntry, entryFromMatrixEvent, hydrateProjectFromMatrixTimeline,
+  WIGWAG_MATRIX_ENTRY_TYPE, WIGWAG_MATRIX_ENTRIES_TYPE, WIGWAG_MATRIX_EVENT_VERSION, matrixEventContentFromEntry, entryFromMatrixEvent, matrixEventContentFromEntries, entriesFromMatrixEvent, sendMatrixEntries, hydrateProjectFromMatrixTimeline,
+  WIGWAG_MATRIX_PROJECT_STATE_TYPE, matrixStateEventContentFromProjectCreation, projectIdFromMatrixStateEvent, sendMatrixProjectStateEvent, getMatrixRoomState,
+  WIGWAG_MATRIX_SNAPSHOT_TYPE, WIGWAG_MATRIX_SNAPSHOT_CHUNK_TYPE, SNAPSHOT_CHUNK_SIZE, matrixEventContentFromSnapshotManifest, snapshotManifestFromMatrixEvent, matrixEventContentFromSnapshotChunk, snapshotChunkFromMatrixEvent, reassembleLatestSnapshots, decodeAllMatrixEntryItems, sendMatrixSnapshotManifest, sendMatrixSnapshotChunk,
   resolveMatrixRoomAlias, fetchMatrixRoomEntries, sendMatrixEntry, probeMatrixRoomAccess
 };
 

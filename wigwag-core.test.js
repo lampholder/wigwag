@@ -2031,22 +2031,29 @@ test('locality invariant: buildSourceText never emits a wigwag.merge record, eve
 test('matrixEventContentFromEntry / entryFromMatrixEvent: round-trips an issue-scope, a project-scope, and a comment-stream entry', () => {
   const issueEntry = { id: 'h1', field: 'status', value: 'todo', sortKey: 1, origin: 'authored', sig: 'sig', pubKey: { kty: 'EC' } };
   const issueContent = core.matrixEventContentFromEntry({ scope: 'issue', issueId: 'i1', stream: null, entry: issueEntry });
-  assert.deepEqual(issueContent, { v: 1, scope: 'issue', stream: null, issueId: 'i1', entry: issueEntry });
-  assert.deepEqual(core.entryFromMatrixEvent({ content: issueContent }), { scope: 'issue', issueId: 'i1', stream: null, entry: issueEntry });
+  assert.deepEqual(issueContent, { v: 1, scope: 'issue', stream: null, issueId: 'i1', entry: issueEntry }); // no projectId when omitted -- the legacy shape
+  assert.deepEqual(core.entryFromMatrixEvent({ content: issueContent }), { scope: 'issue', issueId: 'i1', stream: null, entry: issueEntry, projectId: null });
 
   const projectEntry = { id: 'ph1', field: 'status', value: { label: 'Status', type: 'select', options: [] }, sortKey: 1 };
   const projectContent = core.matrixEventContentFromEntry({ scope: 'project', entry: projectEntry });
   assert.equal(projectContent.issueId, undefined); // never carried for a project-scope entry
-  assert.deepEqual(core.entryFromMatrixEvent({ content: projectContent }), { scope: 'project', issueId: null, stream: null, entry: projectEntry });
+  assert.deepEqual(core.entryFromMatrixEvent({ content: projectContent }), { scope: 'project', issueId: null, stream: null, entry: projectEntry, projectId: null });
 
   const commentEntry = { id: 'c1', author: 'me', text: 'hi', sortKey: 1 };
   const commentContent = core.matrixEventContentFromEntry({ scope: 'issue', issueId: 'i1', stream: 'comments', entry: commentEntry });
-  assert.deepEqual(core.entryFromMatrixEvent({ content: commentContent }), { scope: 'issue', issueId: 'i1', stream: 'comments', entry: commentEntry });
+  assert.deepEqual(core.entryFromMatrixEvent({ content: commentContent }), { scope: 'issue', issueId: 'i1', stream: 'comments', entry: commentEntry, projectId: null });
 
   // Never carries keyRef -- deliberate simplification (tracker #132's
   // dedup is a JSONL-file-size optimization, moot once every entry is
   // already its own independently-sized event).
   assert.equal('keyRef' in issueContent, false);
+});
+
+test('matrixEventContentFromEntry / entryFromMatrixEvent: projectId round-trips when supplied, distinguishing which project an entry belongs to', () => {
+  const entry = { id: 'h1', field: 'status', value: 'todo', sortKey: 1, origin: 'authored' };
+  const content = core.matrixEventContentFromEntry({ scope: 'issue', issueId: 'i1', entry, projectId: 'proj-a' });
+  assert.equal(content.projectId, 'proj-a');
+  assert.deepEqual(core.entryFromMatrixEvent({ content }), { scope: 'issue', issueId: 'i1', stream: null, entry, projectId: 'proj-a' });
 });
 
 test('entryFromMatrixEvent: tolerant of malformed or foreign event content -- returns null, never throws', () => {
@@ -2106,6 +2113,44 @@ test('hydrateProjectFromMatrixTimeline: field definitions derive from project-sc
   assert.equal(result.fields.status.label, 'Workflow Status');
 });
 
+// Tracker #149: a room can hold more than one project's worth of
+// entries -- confirmed necessary live (importing an existing project
+// into a room must keep its own identity). Untagged (legacy) entries
+// default to belonging to whichever project is being hydrated, so an
+// already-live room's pre-existing history keeps working unchanged;
+// explicitly-tagged entries only belong to their own project.
+
+test('hydrateProjectFromMatrixTimeline: by default (includeUntaggedEntries omitted), untagged legacy entries belong to whichever project is being hydrated', () => {
+  const rawEvents = [
+    { content: core.matrixEventContentFromEntry({ scope: 'issue', issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Legacy issue', sortKey: 1, origin: 'authored' } }) } // no projectId at all
+  ];
+  const result = core.hydrateProjectFromMatrixTimeline(rawEvents, { fieldDefs: { title: { label: 'Title', type: 'issue' } }, projectId: 'the-legacy-default' });
+  assert.equal(result.issues.length, 1);
+  assert.equal(result.issues[0].values.title, 'Legacy issue');
+});
+
+test('hydrateProjectFromMatrixTimeline: with includeUntaggedEntries:false, untagged legacy entries are excluded -- a second project never absorbs the first project\'s history', () => {
+  const rawEvents = [
+    { content: core.matrixEventContentFromEntry({ scope: 'issue', issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Legacy issue', sortKey: 1, origin: 'authored' } }) } // no projectId
+  ];
+  const result = core.hydrateProjectFromMatrixTimeline(rawEvents, { fieldDefs: { title: { label: 'Title', type: 'issue' } }, projectId: 'a-brand-new-project', includeUntaggedEntries: false });
+  assert.equal(result.issues.length, 0);
+});
+
+test('hydrateProjectFromMatrixTimeline: explicitly-tagged entries only match hydration for their own projectId, regardless of includeUntaggedEntries', () => {
+  const rawEvents = [
+    { content: core.matrixEventContentFromEntry({ scope: 'issue', issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'In project A', sortKey: 1, origin: 'authored' }, projectId: 'proj-a' }) },
+    { content: core.matrixEventContentFromEntry({ scope: 'issue', issueId: 'i2', entry: { id: 'h2', field: 'title', value: 'In project B', sortKey: 2, origin: 'authored' }, projectId: 'proj-b' }) },
+  ];
+  const resultA = core.hydrateProjectFromMatrixTimeline(rawEvents, { fieldDefs: { title: { label: 'Title', type: 'issue' } }, projectId: 'proj-a' });
+  assert.equal(resultA.issues.length, 1);
+  assert.equal(resultA.issues[0].values.title, 'In project A');
+
+  const resultB = core.hydrateProjectFromMatrixTimeline(rawEvents, { fieldDefs: { title: { label: 'Title', type: 'issue' } }, projectId: 'proj-b' });
+  assert.equal(resultB.issues.length, 1);
+  assert.equal(resultB.issues[0].values.title, 'In project B');
+});
+
 test('fetchMatrixRoomEntries: filters to the wigwag entry type, paginates via `from`, and maps 403/404/network failure to distinct statuses', async () => {
   let lastUrl;
   const okFetch = async (url) => { lastUrl = url; return { ok: true, status: 200, json: async () => ({ chunk: [{ id: 'e1' }], end: 'tok2' }) }; };
@@ -2113,7 +2158,7 @@ test('fetchMatrixRoomEntries: filters to the wigwag entry type, paginates via `f
   assert.equal(okResult.status, 'ok');
   assert.deepEqual(okResult.events, [{ id: 'e1' }]);
   assert.equal(okResult.end, 'tok2');
-  assert.match(lastUrl, /filter=%7B%22types%22%3A%5B%22dev\.wigwag\.entry%22%5D%7D/);
+  assert.match(lastUrl, /filter=%7B%22types%22%3A%5B%22dev\.wigwag\.entry%22%2C%22dev\.wigwag\.entries%22%2C%22dev\.wigwag\.snapshot%22%2C%22dev\.wigwag\.snapshot\.chunk%22%2C%22dev\.wigwag\.project%22%5D%7D/);
   assert.match(lastUrl, /from=tok1/);
 
   const forbiddenFetch = async () => ({ ok: false, status: 403 });
@@ -2140,6 +2185,241 @@ test('sendMatrixEntry: PUTs to the txn-scoped send endpoint and never throws on 
 
   const forbiddenFetch = async () => ({ ok: false, status: 403 });
   assert.equal((await core.sendMatrixEntry({ fetchImpl: forbiddenFetch, homeserverUrl: 'https://matrix.example.org', accessToken: 'tok', roomId: '!room:example.org', content, txnId: 'txn2' })).status, 'forbidden');
+});
+
+test('sendMatrixEntry: retries on 429 (M_LIMIT_EXCEEDED), honoring the server\'s own retry_after_ms, same txnId every attempt', async () => {
+  const content = core.matrixEventContentFromEntry({ scope: 'issue', issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'x', sortKey: 1 } });
+  let calls = 0;
+  const txnIdsSeen = [];
+  const flakyFetch = async (url) => {
+    calls++;
+    txnIdsSeen.push(url);
+    if (calls <= 2) return { ok: false, status: 429, json: async () => ({ errcode: 'M_LIMIT_EXCEEDED', error: 'Too Many Requests', retry_after_ms: 1 }) };
+    return { ok: true, status: 200, json: async () => ({ event_id: '$after-retry' }) };
+  };
+  const result = await core.sendMatrixEntry({ fetchImpl: flakyFetch, homeserverUrl: 'https://matrix.example.org', accessToken: 'tok', roomId: '!room:example.org', content, txnId: 'txn-retry' });
+  assert.equal(result.status, 'ok');
+  assert.equal(result.eventId, '$after-retry');
+  assert.equal(calls, 3); // 2 rate-limited attempts, then success
+  assert.ok(txnIdsSeen.every(u => u.includes(encodeURIComponent('txn-retry')))); // same txnId retried, never a fresh one
+});
+
+test('sendMatrixEntry: gives up with a clear error after persistent 429s, never hangs or throws', async () => {
+  const content = core.matrixEventContentFromEntry({ scope: 'issue', issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'x', sortKey: 1 } });
+  const alwaysLimited = async () => ({ ok: false, status: 429, json: async () => ({ retry_after_ms: 1 }) });
+  const result = await core.sendMatrixEntry({ fetchImpl: alwaysLimited, homeserverUrl: 'https://matrix.example.org', accessToken: 'tok', roomId: '!room:example.org', content, txnId: 'txn-stuck' });
+  assert.equal(result.status, 'error');
+  assert.ok(/rate-limited/.test(result.message));
+});
+
+test('projectIdFromMatrixStateEvent: recognizes a real dev.wigwag.project state event by state_key, tolerant of anything else', () => {
+  assert.equal(core.projectIdFromMatrixStateEvent({ type: 'dev.wigwag.project', state_key: 'proj-1', content: core.matrixStateEventContentFromProjectCreation({ createdAt: 't', createdBy: '@a:b' }) }), 'proj-1');
+  assert.equal(core.projectIdFromMatrixStateEvent({ type: 'dev.wigwag.project', state_key: '' }), null);
+  assert.equal(core.projectIdFromMatrixStateEvent({ type: 'm.room.name', state_key: '' }), null);
+  assert.equal(core.projectIdFromMatrixStateEvent(null), null);
+});
+
+test('entryFromMatrixEvent: a dev.wigwag.project state event is never mistaken for an ordinary entry (no scope field)', () => {
+  const stateEvent = { type: 'dev.wigwag.project', state_key: 'proj-1', content: core.matrixStateEventContentFromProjectCreation({ createdAt: 't', createdBy: '@a:b' }) };
+  assert.equal(core.entryFromMatrixEvent(stateEvent), null);
+  assert.deepEqual(core.decodeAllMatrixEntryItems([stateEvent]), []);
+});
+
+test('sendMatrixProjectStateEvent: PUTs to the state (not send/txn) endpoint, keyed by projectId, and surfaces a moderator-power-level rejection as "forbidden"', async () => {
+  let capturedUrl, capturedMethod, capturedBody;
+  const okFetch = async (url, init) => { capturedUrl = url; capturedMethod = init.method; capturedBody = JSON.parse(init.body); return { ok: true, status: 200, json: async () => ({ event_id: '$abc' }) }; };
+  const content = core.matrixStateEventContentFromProjectCreation({ createdAt: 't', createdBy: '@mod:example.org' });
+  const result = await core.sendMatrixProjectStateEvent({ fetchImpl: okFetch, homeserverUrl: 'https://matrix.example.org', accessToken: 'tok', roomId: '!room:example.org', projectId: 'proj-1', content });
+  assert.equal(result.status, 'ok');
+  assert.equal(capturedMethod, 'PUT');
+  assert.match(capturedUrl, /\/state\/dev\.wigwag\.project\/proj-1$/);
+  assert.deepEqual(capturedBody, content);
+
+  // A non-moderator's power level is exactly what a real homeserver
+  // enforces here (Matrix's own state_default gate) -- must come back as
+  // a distinct, recognizable rejection, never silently swallowed (tracker
+  // f6b39bf0, live-reported: a rejected write must never look like it
+  // succeeded).
+  const forbiddenFetch = async () => ({ ok: false, status: 403 });
+  const rejected = await core.sendMatrixProjectStateEvent({ fetchImpl: forbiddenFetch, homeserverUrl: 'https://matrix.example.org', accessToken: 'tok', roomId: '!room:example.org', projectId: 'proj-2', content });
+  assert.equal(rejected.status, 'forbidden');
+});
+
+test('getMatrixRoomState: fetches current state in one call, no pagination, filterable client-side for dev.wigwag.project', async () => {
+  const stateEvents = [
+    { type: 'm.room.name', state_key: '', content: { name: 'Bridge Room' } },
+    { type: 'dev.wigwag.project', state_key: 'proj-1', content: core.matrixStateEventContentFromProjectCreation({ createdAt: 't1', createdBy: '@mod:example.org' }) },
+    { type: 'dev.wigwag.project', state_key: 'proj-2', content: core.matrixStateEventContentFromProjectCreation({ createdAt: 't2', createdBy: '@mod:example.org' }) }
+  ];
+  let capturedUrl;
+  const okFetch = async (url) => { capturedUrl = url; return { ok: true, status: 200, json: async () => stateEvents }; };
+  const result = await core.getMatrixRoomState({ fetchImpl: okFetch, homeserverUrl: 'https://matrix.example.org', accessToken: 'tok', roomId: '!room:example.org' });
+  assert.equal(result.status, 'ok');
+  assert.match(capturedUrl, /\/state$/);
+  const projectIds = result.events.map(core.projectIdFromMatrixStateEvent).filter(Boolean);
+  assert.deepEqual(projectIds.sort(), ['proj-1', 'proj-2']);
+
+  const forbiddenFetch = async () => ({ ok: false, status: 403 });
+  assert.equal((await core.getMatrixRoomState({ fetchImpl: forbiddenFetch, homeserverUrl: 'https://matrix.example.org', accessToken: 'tok', roomId: '!room:example.org' })).status, 'forbidden');
+});
+
+test('matrixEventContentFromEntries / entriesFromMatrixEvent: round-trips several entries through one batch event', () => {
+  const items = [
+    { scope: 'project', entry: { id: 'p1', field: '__project_name__', value: 'Wigwag', sortKey: 1 } },
+    { scope: 'issue', issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'One', sortKey: 2 }, projectId: 'proj-1' },
+    { scope: 'issue', issueId: 'i2', stream: 'comments', entry: { id: 'c1', text: 'hi', sortKey: 3 }, projectId: 'proj-1' }
+  ];
+  const content = core.matrixEventContentFromEntries(items);
+  const decoded = core.entriesFromMatrixEvent({ type: 'dev.wigwag.entries', content });
+  assert.equal(decoded.length, 3);
+  assert.equal(decoded[0].scope, 'project');
+  assert.equal(decoded[0].entry.value, 'Wigwag');
+  assert.equal(decoded[1].issueId, 'i1');
+  assert.equal(decoded[1].projectId, 'proj-1');
+  assert.equal(decoded[2].stream, 'comments');
+});
+
+test('entriesFromMatrixEvent: tolerant of a malformed batch, and of one bad item inside an otherwise-good batch', () => {
+  assert.deepEqual(core.entriesFromMatrixEvent({ type: 'dev.wigwag.entries', content: null }), []);
+  assert.deepEqual(core.entriesFromMatrixEvent({ type: 'dev.wigwag.entries', content: { v: 1, items: 'not-an-array' } }), []);
+
+  const goodItem = core.matrixEventContentFromEntry({ scope: 'issue', issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'ok', sortKey: 1 } });
+  const content = { v: 1, items: [goodItem, { garbage: true }, null] };
+  const decoded = core.entriesFromMatrixEvent({ type: 'dev.wigwag.entries', content });
+  assert.equal(decoded.length, 1); // only the one well-formed item survives
+  assert.equal(decoded[0].entry.value, 'ok');
+});
+
+test('hydrateProjectFromMatrixTimeline: expands a batch (dev.wigwag.entries) event the same as individual dev.wigwag.entry events', () => {
+  const fieldDefs = { title: { label: 'Issue', type: 'text' } };
+  const batchContent = core.matrixEventContentFromEntries([
+    { scope: 'issue', issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'From a batch', sortKey: 1 } },
+    { scope: 'issue', issueId: 'i2', entry: { id: 'h2', field: 'title', value: 'Also from a batch', sortKey: 2 } }
+  ]);
+  const rawEvents = [{ type: 'dev.wigwag.entries', content: batchContent }];
+  const result = core.hydrateProjectFromMatrixTimeline(rawEvents, { fieldDefs, projectId: 'p1', includeUntaggedEntries: true });
+  assert.equal(result.issues.length, 2);
+  assert.deepEqual(result.issues.map(i => i.values.title).sort(), ['Also from a batch', 'From a batch']);
+});
+
+test('matrixEventContentFromSnapshotManifest / snapshotManifestFromMatrixEvent: round-trips', () => {
+  const content = core.matrixEventContentFromSnapshotManifest({ projectId: 'p1', snapshotId: 'snap-1', chunkCount: 3, cutoffSortKey: 500 });
+  const decoded = core.snapshotManifestFromMatrixEvent({ type: 'dev.wigwag.snapshot', content });
+  assert.deepEqual(decoded, { projectId: 'p1', snapshotId: 'snap-1', chunkCount: 3, cutoffSortKey: 500 });
+});
+
+test('snapshotManifestFromMatrixEvent: tolerant of malformed/foreign events', () => {
+  assert.equal(core.snapshotManifestFromMatrixEvent({ type: 'dev.wigwag.snapshot', content: null }), null);
+  assert.equal(core.snapshotManifestFromMatrixEvent({ type: 'dev.wigwag.snapshot', content: { v: 1 } }), null); // missing snapshotId/projectId
+  assert.equal(core.snapshotManifestFromMatrixEvent({ type: 'm.room.message', content: { body: 'hi' } }), null);
+});
+
+test('matrixEventContentFromSnapshotChunk / snapshotChunkFromMatrixEvent: round-trips several entries through one chunk', () => {
+  const items = [
+    { scope: 'issue', issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'One', sortKey: 1 } },
+    { scope: 'issue', issueId: 'i2', entry: { id: 'h2', field: 'title', value: 'Two', sortKey: 2 } }
+  ];
+  const content = core.matrixEventContentFromSnapshotChunk({ snapshotId: 'snap-1', sequenceNumber: 0, items });
+  const decoded = core.snapshotChunkFromMatrixEvent({ type: 'dev.wigwag.snapshot.chunk', content });
+  assert.equal(decoded.snapshotId, 'snap-1');
+  assert.equal(decoded.sequenceNumber, 0);
+  assert.equal(decoded.items.length, 2);
+  assert.equal(decoded.items[0].entry.value, 'One');
+});
+
+test('reassembleLatestSnapshots: a complete manifest+chunks set reassembles into one flat items array, in sequence order', () => {
+  const manifest = { type: 'dev.wigwag.snapshot', content: core.matrixEventContentFromSnapshotManifest({ projectId: 'p1', snapshotId: 'snap-1', chunkCount: 2, cutoffSortKey: 2 }) };
+  const chunk0 = { type: 'dev.wigwag.snapshot.chunk', content: core.matrixEventContentFromSnapshotChunk({ snapshotId: 'snap-1', sequenceNumber: 0, items: [{ scope: 'issue', issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'First', sortKey: 1 } }] }) };
+  const chunk1 = { type: 'dev.wigwag.snapshot.chunk', content: core.matrixEventContentFromSnapshotChunk({ snapshotId: 'snap-1', sequenceNumber: 1, items: [{ scope: 'issue', issueId: 'i2', entry: { id: 'h2', field: 'title', value: 'Second', sortKey: 2 } }] }) };
+  // Order shouldn't matter -- chunk1 arrives before chunk0 here.
+  const result = core.reassembleLatestSnapshots([chunk1, manifest, chunk0]);
+  assert.equal(result.size, 1);
+  const snap = result.get('p1');
+  assert.equal(snap.snapshotId, 'snap-1');
+  assert.equal(snap.cutoffSortKey, 2);
+  assert.deepEqual(snap.items.map(i => i.entry.value), ['First', 'Second']); // sequence order, not arrival order
+});
+
+test('reassembleLatestSnapshots: an incomplete snapshot (a missing chunk) is discarded entirely, not partially returned', () => {
+  const manifest = { type: 'dev.wigwag.snapshot', content: core.matrixEventContentFromSnapshotManifest({ projectId: 'p1', snapshotId: 'snap-1', chunkCount: 2, cutoffSortKey: 2 }) };
+  const chunk0 = { type: 'dev.wigwag.snapshot.chunk', content: core.matrixEventContentFromSnapshotChunk({ snapshotId: 'snap-1', sequenceNumber: 0, items: [{ scope: 'issue', issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'First', sortKey: 1 } }] }) };
+  // chunk1 (sequenceNumber 1) never arrives -- a torn/mid-flight write.
+  const result = core.reassembleLatestSnapshots([manifest, chunk0]);
+  assert.equal(result.size, 0); // no partial project entry at all
+});
+
+test('reassembleLatestSnapshots: the manifest with the HIGHEST cutoffSortKey wins per project, even if an older one\'s chunks are also present', () => {
+  const oldManifest = { type: 'dev.wigwag.snapshot', content: core.matrixEventContentFromSnapshotManifest({ projectId: 'p1', snapshotId: 'snap-old', chunkCount: 1, cutoffSortKey: 1 }) };
+  const oldChunk = { type: 'dev.wigwag.snapshot.chunk', content: core.matrixEventContentFromSnapshotChunk({ snapshotId: 'snap-old', sequenceNumber: 0, items: [{ scope: 'issue', issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Stale', sortKey: 1 } }] }) };
+  const newManifest = { type: 'dev.wigwag.snapshot', content: core.matrixEventContentFromSnapshotManifest({ projectId: 'p1', snapshotId: 'snap-new', chunkCount: 1, cutoffSortKey: 99 }) };
+  const newChunk = { type: 'dev.wigwag.snapshot.chunk', content: core.matrixEventContentFromSnapshotChunk({ snapshotId: 'snap-new', sequenceNumber: 0, items: [{ scope: 'issue', issueId: 'i1', entry: { id: 'h2', field: 'title', value: 'Fresh', sortKey: 99 } }] }) };
+  const result = core.reassembleLatestSnapshots([oldManifest, oldChunk, newManifest, newChunk]);
+  assert.equal(result.size, 1);
+  assert.equal(result.get('p1').snapshotId, 'snap-new');
+  assert.equal(result.get('p1').items[0].entry.value, 'Fresh');
+});
+
+test('reassembleLatestSnapshots: two different projects are reassembled independently', () => {
+  const events = [];
+  for (const [projectId, snapshotId, value] of [['p1', 'snap-p1', 'For P1'], ['p2', 'snap-p2', 'For P2']]) {
+    events.push({ type: 'dev.wigwag.snapshot', content: core.matrixEventContentFromSnapshotManifest({ projectId, snapshotId, chunkCount: 1, cutoffSortKey: 1 }) });
+    events.push({ type: 'dev.wigwag.snapshot.chunk', content: core.matrixEventContentFromSnapshotChunk({ snapshotId, sequenceNumber: 0, items: [{ scope: 'issue', issueId: 'i1', entry: { id: 'h1', field: 'title', value, sortKey: 1 } }] }) });
+  }
+  const result = core.reassembleLatestSnapshots(events);
+  assert.equal(result.size, 2);
+  assert.equal(result.get('p1').items[0].entry.value, 'For P1');
+  assert.equal(result.get('p2').items[0].entry.value, 'For P2');
+});
+
+test('decodeAllMatrixEntryItems: flattens a mix of single and batch raw events into one array, skipping foreign/malformed ones', () => {
+  const single = { type: 'dev.wigwag.entry', content: core.matrixEventContentFromEntry({ scope: 'issue', issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Single', sortKey: 1 } }) };
+  const batch = { type: 'dev.wigwag.entries', content: core.matrixEventContentFromEntries([
+    { scope: 'issue', issueId: 'i2', entry: { id: 'h2', field: 'title', value: 'Batch A', sortKey: 2 } },
+    { scope: 'issue', issueId: 'i3', entry: { id: 'h3', field: 'title', value: 'Batch B', sortKey: 3 } }
+  ]) };
+  const foreign = { type: 'm.room.message', content: { body: 'hi' } };
+  const items = core.decodeAllMatrixEntryItems([single, batch, foreign, null]);
+  assert.equal(items.length, 3);
+  assert.deepEqual(items.map(i => i.entry.value), ['Single', 'Batch A', 'Batch B']);
+});
+
+test('sendMatrixEntries: PUTs to the batch-scoped send endpoint, retries on 429 the same as sendMatrixEntry', async () => {
+  const content = core.matrixEventContentFromEntries([{ scope: 'issue', issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'x', sortKey: 1 } }]);
+  let calls = 0;
+  const flakyFetch = async (url) => {
+    calls++;
+    assert.match(url, /\/send\/dev\.wigwag\.entries\//);
+    if (calls === 1) return { ok: false, status: 429, json: async () => ({ retry_after_ms: 1 }) };
+    return { ok: true, status: 200, json: async () => ({ event_id: '$batch1' }) };
+  };
+  const result = await core.sendMatrixEntries({ fetchImpl: flakyFetch, homeserverUrl: 'https://matrix.example.org', accessToken: 'tok', roomId: '!room:example.org', content, txnId: 'txn-batch' });
+  assert.equal(result.status, 'ok');
+  assert.equal(calls, 2);
+});
+
+test('fetchMatrixRoomEntries: filters to the single-entry, batch, AND snapshot/chunk event types', async () => {
+  let lastUrl;
+  const okFetch = async (url) => { lastUrl = url; return { ok: true, status: 200, json: async () => ({ chunk: [], end: null }) }; };
+  await core.fetchMatrixRoomEntries({ fetchImpl: okFetch, homeserverUrl: 'https://matrix.example.org', accessToken: 'tok', roomId: '!room:example.org' });
+  assert.match(lastUrl, /dev\.wigwag\.entry%22/);
+  assert.match(lastUrl, /dev\.wigwag\.entries%22/);
+  assert.match(lastUrl, /dev\.wigwag\.snapshot%22/);
+  assert.match(lastUrl, /dev\.wigwag\.snapshot\.chunk%22/);
+});
+
+test('storage keys carry no namespace prefix', () => {
+  // Tracker #149 (storage-models framework, wigwag issue f6b39bf0): an
+  // earlier design (storageNamespacePrefix(), since removed -- Room Scoped
+  // Widget Mode isolates content via a private in-memory shim now, not a
+  // shared-storage key prefix) briefly made these keys conditional. This
+  // regression guard stays even though the mechanism is gone: every other
+  // test in this suite already depends on bare, unprefixed key names
+  // implicitly, so an explicit assertion protects against that silently
+  // breaking again in the future.
+  assert.equal(core.STORAGE_KEY, 'git_native_tracker_v1');
+  assert.equal(core.PROJECTS_KEY, 'git_native_tracker_milestones_v1');
+  assert.equal(core.IDENTITIES_KEY, 'git_native_tracker_identities_v1');
+  assert.equal(core.SECRETS_KEY, 'git_native_tracker_secrets_v1');
 });
 
 test('probeMatrixRoomAccess: no anonymous-read tier like GitHub -- just can-read-write or no-access (plus error)', async () => {
@@ -2214,6 +2494,122 @@ test('hydrateProject: a project without created/updated yet gets them backfilled
   assert.equal(hydrated.fieldDefs.updated.type, 'timestamp');
   assert.ok(hydrated.projectHistory.some(h => h.field === 'created' && h.origin === 'legacy-backfill'));
   assert.ok(hydrated.projectHistory.some(h => h.field === 'updated' && h.origin === 'legacy-backfill'));
+});
+
+test('deriveProjectName: latest field:__project_name__ entry wins, same "signed history wins" pattern as deriveFieldDefs', () => {
+  assert.equal(core.deriveProjectName([]), null);
+  assert.equal(core.deriveProjectName(null), null);
+  const history = [
+    { field: core.PROJECT_NAME_FIELD_ID, value: 'First Name', sortKey: 1 },
+    { field: 'title', value: { label: 'Issue', type: 'text' }, sortKey: 2 }, // unrelated field, ignored
+    { field: core.PROJECT_NAME_FIELD_ID, value: 'Second Name', sortKey: 3 }
+  ];
+  assert.equal(core.deriveProjectName(history), 'Second Name');
+});
+
+test('deriveProjectName: a later null value is a tombstone, not a name of "null" -- overrides an earlier real name back to no derived name', () => {
+  const history = [
+    { field: core.PROJECT_NAME_FIELD_ID, value: 'A Name', sortKey: 1 },
+    { field: core.PROJECT_NAME_FIELD_ID, value: null, sortKey: 2 }
+  ];
+  assert.equal(core.deriveProjectName(history), null);
+  // ...but a null entry that ISN'T the latest by sortKey must not win just
+  // because it happens to appear later in the array.
+  const historyOutOfOrder = [
+    { field: core.PROJECT_NAME_FIELD_ID, value: null, sortKey: 1 },
+    { field: core.PROJECT_NAME_FIELD_ID, value: 'Later Real Name', sortKey: 2 }
+  ];
+  assert.equal(core.deriveProjectName(historyOutOfOrder), 'Later Real Name');
+});
+
+test('deriveFieldDefs: the reserved PROJECT_NAME_FIELD_ID sentinel never surfaces as a real field definition', () => {
+  const history = [
+    { field: core.PROJECT_NAME_FIELD_ID, value: 'Some Name', sortKey: 1 },
+    { field: 'title', value: { label: 'Issue', type: 'text' }, sortKey: 2 }
+  ];
+  const fieldDefs = core.deriveFieldDefs(history);
+  assert.equal(fieldDefs[core.PROJECT_NAME_FIELD_ID], undefined);
+  assert.ok(fieldDefs.title);
+});
+
+test('hydrateProject: exposes projectName derived from history, null when no rename has ever happened', () => {
+  const fieldDefs = { title: { type: 'issue' } };
+  const hydratedNoName = core.hydrateProject(fieldDefs, []);
+  assert.equal(hydratedNoName.projectName, null);
+
+  const hydratedNamed = core.hydrateProject(fieldDefs, [
+    { field: core.PROJECT_NAME_FIELD_ID, value: 'Renamed Project', sortKey: 1 }
+  ]);
+  assert.equal(hydratedNamed.projectName, 'Renamed Project');
+});
+
+test('hydrateProjectFromMatrixTimeline: a derived project name from a real history entry wins over the caller-supplied fallback', () => {
+  const rawEvents = [
+    { type: 'dev.wigwag.entry', content: { v: 1, scope: 'project', entry: { id: 'e1', field: core.PROJECT_NAME_FIELD_ID, value: 'Room Project Renamed', sortKey: 1, time: '', actor: '', email: '' } } }
+  ];
+  const result = core.hydrateProjectFromMatrixTimeline(rawEvents, { fieldDefs: {}, projectId: 'p1', projectName: 'Matrix room X (fallback)' });
+  assert.equal(result.projectName, 'Room Project Renamed');
+
+  const resultNoRename = core.hydrateProjectFromMatrixTimeline([], { fieldDefs: {}, projectId: 'p1', projectName: 'Matrix room X (fallback)' });
+  assert.equal(resultNoRename.projectName, 'Matrix room X (fallback)');
+});
+
+test('issueIsDeleted: latest field:__deleted__ entry wins, same pattern as deriveProjectName', () => {
+  assert.equal(core.issueIsDeleted([]), false);
+  assert.equal(core.issueIsDeleted(null), false);
+  const history = [
+    { field: core.ISSUE_DELETED_FIELD_ID, value: true, sortKey: 1 },
+    { field: 'title', value: 'Hello', sortKey: 2 }, // unrelated field, ignored
+    { field: core.ISSUE_DELETED_FIELD_ID, value: false, sortKey: 3 } // "undeleted" -- a later entry can reverse it
+  ];
+  assert.equal(core.issueIsDeleted(history), false);
+  const historyStillDeleted = history.concat([{ field: core.ISSUE_DELETED_FIELD_ID, value: true, sortKey: 4 }]);
+  assert.equal(core.issueIsDeleted(historyStillDeleted), true);
+});
+
+test('hydrateIssue: exposes deleted, false for an ordinary issue, true once a tombstone entry exists', () => {
+  const fieldDefs = { title: { label: 'Issue', type: 'text' } };
+  const ordinary = core.hydrateIssue({ id: 'i1', history: [{ field: 'title', value: 'Hi', sortKey: 1 }] }, fieldDefs);
+  assert.equal(ordinary.deleted, false);
+  const tombstoned = core.hydrateIssue({
+    id: 'i1',
+    history: [{ field: 'title', value: 'Hi', sortKey: 1 }, { field: core.ISSUE_DELETED_FIELD_ID, value: true, sortKey: 2 }]
+  }, fieldDefs);
+  assert.equal(tombstoned.deleted, true);
+  assert.equal(tombstoned.values.title, 'Hi'); // deletion doesn't erase the issue's own field values
+});
+
+test('mergeIssuePair: a tombstone from one side merges in via the generic history union, no special-case needed', () => {
+  const fieldDefs = { title: { label: 'Issue', type: 'text' }, status: { label: 'Status', type: 'text' } };
+  const localIssue = core.hydrateIssue({
+    id: 'i1', history: [{ id: 'h1', field: 'title', value: 'Hi', sortKey: 1 }]
+  }, fieldDefs);
+  const incomingIssue = core.hydrateIssue({
+    id: 'i1',
+    history: [
+      { id: 'h1', field: 'title', value: 'Hi', sortKey: 1 },
+      { id: 'h2', field: core.ISSUE_DELETED_FIELD_ID, value: true, sortKey: 2 },
+      { id: 'h3', field: 'status', value: 'done', sortKey: 3 }
+    ]
+  }, fieldDefs);
+  const { mergedIssue } = core.mergeIssuePair(localIssue, incomingIssue, fieldDefs);
+  assert.equal(mergedIssue.deleted, true);
+  assert.equal(mergedIssue.values.status, 'done'); // the incoming side's other real edit isn't lost
+});
+
+test('buildSourceText: squashed mode drops a tombstoned issue entirely; full mode keeps it (tombstone included)', () => {
+  const fieldDefs = { title: { label: 'Issue', type: 'text' } };
+  const liveIssue = { id: 'i1', num: 1, commentStreams: {}, history: [{ id: 'h1', field: 'title', value: 'Alive', sortKey: 1 }] };
+  const deletedIssue = { id: 'i2', num: 2, commentStreams: {}, history: [{ id: 'h2', field: 'title', value: 'Dead', sortKey: 1 }, { id: 'h3', field: core.ISSUE_DELETED_FIELD_ID, value: true, sortKey: 2 }] };
+  const doc = { projectId: 'p1', projectName: 'Test', fieldDefs, projectHistory: [], projectNotes: '', projectComments: [], issues: [liveIssue, deletedIssue] };
+
+  const fullText = core.buildSourceText('full', doc);
+  assert.ok(fullText.includes('"id":"i1"'));
+  assert.ok(fullText.includes('"id":"i2"')); // tombstone kept -- another party must still see the deletion
+
+  const squashedText = core.buildSourceText('squashed', doc);
+  assert.ok(squashedText.includes('"id":"i1"'));
+  assert.ok(!squashedText.includes('"id":"i2"')); // fully dropped, not just squashed history
 });
 
 test('issueValueMatchesFilter: timestamp range filtering converts YYYY-MM-DD bounds to ms-epoch, unlike a plain string compare', () => {

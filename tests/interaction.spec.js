@@ -879,8 +879,9 @@ test.describe('Detail slide-over', () => {
 
   test('Delete asks for confirmation; dismissing it leaves the issue untouched', async ({ page }) => {
     const slideover = await h.openSlideover(page, 3);
-    page.once('dialog', d => d.dismiss());
     await page.locator('[data-testid=slideover-delete-btn]').click();
+    await expect(page.locator('[data-testid=confirm-dialog-modal]')).toBeVisible();
+    await page.locator('[data-testid=btn-confirm-dialog-cancel]').click();
     await page.waitForTimeout(200);
     await expect(page.locator('[data-testid=row]')).toHaveCount(9);
     await expect(slideover).toBeVisible();
@@ -888,8 +889,9 @@ test.describe('Detail slide-over', () => {
 
   test('Delete removes the issue and closes the slide-over once confirmed', async ({ page }) => {
     await h.openSlideover(page, 3);
-    page.once('dialog', d => d.accept());
     await page.locator('[data-testid=slideover-delete-btn]').click();
+    await expect(page.locator('[data-testid=confirm-dialog-modal]')).toBeVisible();
+    await page.locator('[data-testid=btn-confirm-dialog-confirm]').click();
     await page.waitForTimeout(300);
     await expect(page.locator('[data-testid=row]')).toHaveCount(8);
     await expect(page.locator('[data-testid=slideover]')).toHaveCount(0);

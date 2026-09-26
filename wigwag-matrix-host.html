@@ -6,17 +6,42 @@
 <!--
   wigwag-matrix-host.html -- a separate, non-bundled container that lets
   wigwag.html read/write its data through a Matrix room instead of (or
-  alongside) localStorage+GitHub, without wigwag.html itself knowing
-  Matrix exists. See /home/dev/.claude/plans/encapsulated-waddling-gizmo.md
-  ("wigwag as a Matrix widget") for the full design; short version:
+  alongside) localStorage+GitHub. See
+  /home/dev/.claude/plans/encapsulated-waddling-gizmo.md ("Room Scoped
+  Widget Mode") and tracker f6b39bf0 for the full design; short version:
 
-  - wigwag.html already reacts live to another same-origin browsing
-    context writing a new value to localStorage[docKey(projectId)] (its
-    own cross-tab sync, `_onStorageEvent`) -- and the native `storage`
-    event fires across a same-origin parent/iframe pair just as it does
-    across tabs. So THIS file bridges Matrix <-> that one localStorage
-    key directly: no new protocol on wigwag.html's side, no changes to
-    wigwag.html at all.
+  - Room Scoped Widget Mode's whole point (per Tom, tracker f6b39bf0/#153)
+    is that decrypted room content never sits in a browser storage this
+    client controls, outside the room's own protection lifecycle. An
+    earlier version of this file relied on wigwag.html and this page
+    sharing the SAME real browser localStorage (same-origin parent/iframe
+    pairs share it natively) -- which meant every project this browser
+    ever bridged sat in real, persistent, un-namespaced local storage.
+    That's fixed now: wigwag.html holds an in-memory-only shim instead of
+    ever touching real localStorage for content (see its own
+    createRoomModeStorageShim), and this file does the same on its own
+    side (see the `localStorage` shim right below) -- nothing durable on
+    either end, ever. The two sides now talk over a small `postMessage`
+    protocol instead of shared storage: the iframe sends `wigwag:hello`
+    once at boot; this page answers `wigwag:hello-ack` with capabilities
+    and a full snapshot of the three content keys
+    (docKey(projectId)/PROJECTS_KEY/IDENTITIES_KEY); after that, a
+    `wigwag:local-write` from the iframe is a local edit to push to
+    Matrix, and a `wigwag:storage-changed` from this page is a remote (or
+    another-tab) change to apply -- wigwag.html's own existing
+    `_onStorageEvent` handles the latter completely unchanged, since the
+    shim dispatches a real `StorageEvent` shaped exactly like the native
+    cross-tab one it already knew how to handle.
+  - This IS a small, deliberate addition to wigwag.html (the handshake
+    protocol) -- it stays Matrix-agnostic (no Matrix-specific code, just
+    "does a parent frame answer this handshake"), but the "wigwag.html
+    doesn't need to know Matrix exists" framing from the original v1 design
+    no longer means "wigwag.html has zero code for this at all."
+  - Same-origin is no longer required for hosting this alongside
+    wigwag.html -- `postMessage` works cross-origin. (The one exception is
+    the widget-embedded transport's own separate protocol, which is
+    cross-origin by nature already -- Element and the widget rarely share
+    an origin.)
   - This file is NOT part of the bundled-artifact workflow docs/EDITING.md
     describes, and is NOT required to be offline-capable (it inherently
     needs network access to reach Matrix) -- so unlike wigwag.html it's
@@ -42,10 +67,6 @@
   I can without live verification -- flagged honestly in the plan as
   needing a real Element smoke test before being trusted, not something
   this file's own test suite can certify by itself.
-
-  Hosting requirement: this file and wigwag.html must be served from the
-  SAME ORIGIN (same scheme+host+port, any path) -- that's what makes the
-  localStorage bridge below work at all; it's not optional.
 -->
 <script src="wigwag-core.js"></script>
 <style>
@@ -101,53 +122,87 @@
   // reconnecting to the same room always resolves to the same local
   // project, with no separate persisted room->project mapping needed.
   //
-  // SHA-256 (truncated to 128 bits), not a 32-bit rolling hash -- a real
-  // collision-risk finding (tracker #149): two rooms colliding onto the
-  // same derived id would share a localStorage doc key, and since
-  // pushNewLocalEntries sends any local entry the room hasn't seen yet,
-  // room A's issues would get published straight into room B. A 32-bit
-  // space makes that a real (if small) risk; 128 bits makes it
-  // astronomically unlikely instead.
-  async function deriveProjectId(roomId) {
-    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(roomId));
-    const hex = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
-    return 'matrix-' + hex.slice(0, 32);
+  // REVERTED (tracker #149, confirmed live): a SHA-256-based version of
+  // this shipped briefly to close a theoretical room-id collision risk,
+  // but this id isn't just an internal detail -- it's the actual
+  // localStorage key a browser stores its copy of "the project for this
+  // room" under. Changing the ALGORITHM meant every browser that
+  // reconnected after picking up that change derived a DIFFERENT id for
+  // the exact same room than it had before, and since that new id had no
+  // existing local doc, bootstrapLocalStorage treated it as a genuinely
+  // new project and seeded a second, parallel one from the room's
+  // current timeline -- without touching or removing the original. Real
+  // damage, confirmed live: two users ended up on two different local
+  // projects for the same room, each showing a different, seemingly
+  // "not synced" slice of the same underlying data. The room's own
+  // shared timeline was never affected -- this was purely a local-
+  // derivation mismatch -- but it's a hard lesson: this value is
+  // effectively part of the persisted format, not free to change without
+  // a real migration path. Back to the original weak-but-stable hash
+  // until a migration (detect + adopt the old-scheme id) is designed
+  // properly, not shipped as a "safe" one-line improvement again.
+  function deriveProjectId(roomId) {
+    const hash = Array.from(roomId).reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 0);
+    return 'matrix-' + hash.toString(16).padStart(8, '0');
   }
 
   function docKey(projectId) { return core.STORAGE_KEY + ':' + projectId; }
 
-  // A Matrix-originated identity. Two things worth being explicit about:
-  //  - label is the room display name (matrix_display_name, a standard
-  //    widget URL template var Element substitutes in) -- cosmetic, local,
-  //    unsigned, switcher/Settings display only. Deliberately NOT used for
-  //    attribution: a Matrix display name is user-settable and
-  //    room-overridable, so putting it on a signed entry's `actor` would
-  //    make impersonation trivial. The Matrix user id is what's actually
-  //    attributed (see email below).
-  //  - email carries the Matrix user id. wigwag's signed-entry payload has
-  //    a fixed field set (docs/FORMAT.md) with no room for a new signed
-  //    attribution field, and an UNSIGNED one would be worse than none at
-  //    all on a tamper-evident log -- forgeable in exactly the way
-  //    everything around it isn't. `email` is the one signed, human-
-  //    readable "who did this" slot that exists, so the Matrix user id
-  //    goes there: it IS this user's principal, just not an email
-  //    address. matrixUserId (below) is the local marker that this
-  //    identity's email is an MXID mirror, not a real address -- used for
-  //    MXID-keyed lookup on reconnect and correct future display (never
-  //    written to a file, localStorage only).
-  async function generateMatrixIdentity(matrixUserId, matrixDisplayName) {
-    const keyPair = await crypto.subtle.generateKey(core.SIGN_ALG, true, ['sign', 'verify']);
-    const signingPublicKeyJwk = await crypto.subtle.exportKey('jwk', keyPair.publicKey);
-    const signingPrivateKeyJwk = await crypto.subtle.exportKey('jwk', keyPair.privateKey);
+  // --- In-memory storage shim (Room Scoped Widget Mode) -------------------
+  // Every function below (readCurrentLocalDoc, bootstrapLocalStorage,
+  // adoptLocalProjects, reconcileIntoLocal, ...) was written assuming
+  // ordinary synchronous localStorage semantics, back when this page and
+  // wigwag.html shared the SAME real browser localStorage (same-origin
+  // parent/iframe pairs share it natively). That's exactly the thing Tom
+  // objected to (tracker f6b39bf0/#153) -- decrypted room content sitting
+  // in a real, persistent, client-controlled store. Fix: shadow the bare
+  // `localStorage` identifier used everywhere below with this in-memory
+  // shim instead, so none of those functions need to change at all. No
+  // namespacing needed here either (unlike the now-superseded
+  // storageNamespacePrefix approach) -- each bridge instance/room
+  // connection gets its own separate shim in its own separate page, so
+  // there's no shared bucket for two rooms' content to collide in.
+  let localStorage = (() => {
+    const mem = new Map();
+    let frame = null;
+    function notifyFrame(key, newValue) {
+      if (frame && frame.contentWindow) frame.contentWindow.postMessage({ type: 'wigwag:storage-changed', key, newValue }, '*');
+    }
     return {
-      id: crypto.randomUUID(),
-      label: (matrixDisplayName || '').trim() || matrixUserId,
-      matrixUserId,
-      email: matrixUserId,
-      githubToken: '', jiraProxyUrl: '', salesforceProxyUrl: '',
-      signingPublicKeyJwk, signingPrivateKeyJwk
+      attachFrame(f) { frame = f; },
+      // General-purpose escape hatch alongside notifyFrame's own
+      // storage-changed-specific messaging -- used for the moderator-gate
+      // rejection notice (createMatrixBridge's adoptOneLocalProject),
+      // which is not itself a storage-key change.
+      postMessageToFrame(msg) { if (frame && frame.contentWindow) frame.contentWindow.postMessage(msg, '*'); },
+      getItem(key) { return mem.has(key) ? mem.get(key) : null; },
+      setItem(key, value) { mem.set(key, value); notifyFrame(key, value); },
+      removeItem(key) { mem.delete(key); notifyFrame(key, null); },
+      // Applies a write that originated FROM the iframe itself (a
+      // wigwag:local-write message) -- updates this page's own copy, same
+      // as any other setItem, but does NOT echo wigwag:storage-changed
+      // back to the iframe that just sent it (a harmless but pointless
+      // round-trip otherwise).
+      applyFromFrame(key, value) { if (value === null || value === undefined) mem.delete(key); else mem.set(key, value); },
+      // The full current snapshot, handed to the iframe once as part of
+      // wigwag:hello-ack -- by the time a real connection's iframe sends
+      // wigwag:hello, openAll() below has already fully populated this.
+      dumpAll() { return Object.fromEntries(mem); }
     };
-  }
+  })();
+  // Test-only introspection hook -- this content lives only in the two
+  // in-memory shims (this one and wigwag.html's own) now, nowhere a test
+  // could otherwise observe it (real localStorage, on either side of the
+  // frame boundary, deliberately never holds it -- see above). Read-only
+  // and harmless in production: it exposes nothing a real client
+  // couldn't already see by watching the postMessage traffic itself.
+  window.__wigwagHostStorage = localStorage;
+
+  // Identity generation (Matrix-originated: label = display name,
+  // email = MXID, see wigwag.html's own resolveRoomModeIdentity for the
+  // full rationale) now happens on wigwag.html's side, since the signing
+  // keypair is a device credential that lives in the iframe's own real
+  // localStorage -- this page has no access to it and no reason to.
 
   // ----- Transports -----------------------------------------------------
   // Both expose the same small interface: probeAccess/pullInitial/pullMore
@@ -164,10 +219,37 @@
       async probeAccess() {
         return core.probeMatrixRoomAccess({ fetchImpl: fetch, homeserverUrl, accessToken, roomId });
       },
+      // Loops backward through the room's FULL history rather than
+      // returning after one page -- live-reported (Tom, tracker f6b39bf0):
+      // a single-page pull meant discoverProjects() only ever saw whatever
+      // fit in one page of the most RECENT events, so a room whose older
+      // history held a different project than a just-pushed bulk import
+      // would show only the new one (and, if the import's own name entry
+      // happened to sit further back than one page reached, no name for
+      // it either) until the slow 5s poll eventually happened to catch up
+      // -- a real correctness bug, not just a slow load. Standard Matrix
+      // `/messages` pagination (`dir`+`from`+`end`) is a reliable,
+      // documented mechanism (unlike the widget transport's `read_events`
+      // continuation token -- see PAGE_LIMIT below, and this file's own
+      // fake-widget-host.html comment on why that one can't loop the same
+      // way), so this can safely loop to genuine exhaustion: stop once a
+      // page comes back empty (reached the start of the room), or once a
+      // page fails outright (return whatever was already accumulated
+      // rather than discarding real progress over one flaky request).
       async pullInitial() {
-        const result = await core.fetchMatrixRoomEntries({ fetchImpl: fetch, homeserverUrl, accessToken, roomId, dir: 'b' });
-        if (result.status === 'ok') syncCursor = result.end;
-        return result;
+        const PAGE_LIMIT = 500;
+        const MAX_PAGES = 50; // ~25k events -- a sanity cap, not expected to bind in practice
+        let allEvents = [];
+        let cursor = undefined;
+        for (let page = 0; page < MAX_PAGES; page++) {
+          const result = await core.fetchMatrixRoomEntries({ fetchImpl: fetch, homeserverUrl, accessToken, roomId, from: cursor, dir: 'b', limit: PAGE_LIMIT });
+          if (result.status !== 'ok') return page === 0 ? result : { status: 'ok', events: allEvents, end: cursor };
+          allEvents = allEvents.concat(result.events);
+          if (!result.events.length || !result.end) { cursor = result.end; break; }
+          cursor = result.end;
+        }
+        syncCursor = cursor;
+        return { status: 'ok', events: allEvents, end: cursor };
       },
       async pullMore() {
         const result = await core.fetchMatrixRoomEntries({ fetchImpl: fetch, homeserverUrl, accessToken, roomId, from: syncCursor || undefined, dir: 'f' });
@@ -178,6 +260,21 @@
         const txnId = 'wigwag-' + Date.now() + '-' + Math.random().toString(36).slice(2);
         return core.sendMatrixEntry({ fetchImpl: fetch, homeserverUrl, accessToken, roomId, content, txnId });
       },
+      async sendBatch(items) {
+        const txnId = 'wigwag-batch-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+        return core.sendMatrixEntries({ fetchImpl: fetch, homeserverUrl, accessToken, roomId, content: core.matrixEventContentFromEntries(items), txnId });
+      },
+      async sendSnapshot(manifest, chunks) {
+        const manifestTxnId = 'wigwag-snapshot-' + manifest.snapshotId;
+        const manifestResult = await core.sendMatrixSnapshotManifest({ fetchImpl: fetch, homeserverUrl, accessToken, roomId, content: core.matrixEventContentFromSnapshotManifest(manifest), txnId: manifestTxnId });
+        if (manifestResult.status !== 'ok') return manifestResult;
+        for (const chunk of chunks) {
+          const chunkTxnId = 'wigwag-snapshot-chunk-' + chunk.snapshotId + '-' + chunk.sequenceNumber;
+          const chunkResult = await core.sendMatrixSnapshotChunk({ fetchImpl: fetch, homeserverUrl, accessToken, roomId, content: core.matrixEventContentFromSnapshotChunk(chunk), txnId: chunkTxnId });
+          if (chunkResult.status !== 'ok') return chunkResult;
+        }
+        return { status: 'ok' };
+      },
       async getRoomName() {
         try {
           const res = await fetch(homeserverUrl.replace(/\/$/, '') + '/_matrix/client/v3/rooms/' + encodeURIComponent(roomId) + '/state/m.room.name', { headers: { Authorization: 'Bearer ' + accessToken } });
@@ -185,6 +282,26 @@
           const data = await res.json();
           return data.name || null;
         } catch (e) { return null; }
+      },
+      // Moderator-gated (tracker f6b39bf0, live-reported rate-limit
+      // incident, Tom's explicit call): a state write, so Matrix's own
+      // power-level check (state_default, typically 50) enforces this --
+      // nothing client-side to bypass or rely on. A 'forbidden' result is
+      // the real, correct outcome for a non-moderator, not an error to
+      // paper over.
+      async createProject(projectId) {
+        const content = core.matrixStateEventContentFromProjectCreation({ createdAt: new Date().toISOString(), createdBy: await this.whoAmI() });
+        return core.sendMatrixProjectStateEvent({ fetchImpl: fetch, homeserverUrl, accessToken, roomId, projectId, content });
+      },
+      // Current-state fetch -- always complete and instant, unlike
+      // scanning the timeline, which is what makes this the reliable way
+      // to discover every project at connect time (see
+      // WIGWAG_MATRIX_PROJECT_STATE_TYPE's own comment in wigwag-core.js).
+      async getProjectIndex() {
+        const result = await core.getMatrixRoomState({ fetchImpl: fetch, homeserverUrl, accessToken, roomId });
+        if (result.status !== 'ok') return result;
+        const projectIds = result.events.map(core.projectIdFromMatrixStateEvent).filter(Boolean);
+        return { status: 'ok', projectIds };
       },
       // A signed wigwag entry needs a non-empty identityEmail before
       // wigwag.html will commit it at all (requireIdentityEmail gates
@@ -220,6 +337,21 @@
   // capability this file will ever need has to be declared here, not
   // discovered lazily.
   const WIDGET_EVENT_TYPE = core.WIGWAG_MATRIX_ENTRY_TYPE;
+  // Bulk-transport optimization (tracker #149) -- see
+  // matrixEventContentFromEntries in wigwag-core.js. Needs its own
+  // receive/send capability grant below, same as the single-entry type --
+  // Element gates read/send per event type, not per "wigwag in general".
+  const WIDGET_ENTRIES_TYPE = core.WIGWAG_MATRIX_ENTRIES_TYPE;
+  // Room snapshot (tracker f6b39bf0/#153, f1c7098f/#154) -- see
+  // reassembleLatestSnapshots's own comment in wigwag-core.js. Two more
+  // event types, same "needs its own receive/send capability" treatment.
+  const WIDGET_SNAPSHOT_TYPE = core.WIGWAG_MATRIX_SNAPSHOT_TYPE;
+  const WIDGET_SNAPSHOT_CHUNK_TYPE = core.WIGWAG_MATRIX_SNAPSHOT_CHUNK_TYPE;
+  // Project index (tracker f6b39bf0, live-reported rate-limit incident) --
+  // a STATE event type, needs send.state_event/receive.state_event
+  // capabilities below, not the send.event/receive.event pair the other
+  // types use.
+  const WIDGET_PROJECT_STATE_TYPE = core.WIGWAG_MATRIX_PROJECT_STATE_TYPE;
   // The bare "read_events" action name doesn't exist in any shipped Widget
   // API driver -- confirmed live against real Element ("Unknown or
   // unsupported from-widget action: read_events"). Reading past timeline
@@ -268,6 +400,14 @@
     const WIDGET_CAPABILITIES = [
       'org.matrix.msc2762.receive.event:' + WIDGET_EVENT_TYPE,
       'org.matrix.msc2762.send.event:' + WIDGET_EVENT_TYPE,
+      'org.matrix.msc2762.receive.event:' + WIDGET_ENTRIES_TYPE,
+      'org.matrix.msc2762.send.event:' + WIDGET_ENTRIES_TYPE,
+      'org.matrix.msc2762.receive.event:' + WIDGET_SNAPSHOT_TYPE,
+      'org.matrix.msc2762.send.event:' + WIDGET_SNAPSHOT_TYPE,
+      'org.matrix.msc2762.receive.event:' + WIDGET_SNAPSHOT_CHUNK_TYPE,
+      'org.matrix.msc2762.send.event:' + WIDGET_SNAPSHOT_CHUNK_TYPE,
+      'org.matrix.msc2762.receive.state_event:' + WIDGET_PROJECT_STATE_TYPE,
+      'org.matrix.msc2762.send.state_event:' + WIDGET_PROJECT_STATE_TYPE,
       'org.matrix.msc2762.timeline:' + roomId
     ];
 
@@ -410,9 +550,56 @@
           // read_events request rather than answering with an error.
           // Naming this room explicitly steers Element to its other,
           // apparently-working code path instead.
-          const result = await postToHost(READ_EVENTS_ACTION, { type: WIDGET_EVENT_TYPE, room_ids: [roomId], limit: 200, since: readCursor });
-          const events = (result && result.events) || [];
+          //
+          // WIDGET_PAGE_LIMIT is a mitigation, not a complete fix, for the
+          // same live-reported problem createDirectTransport's pullInitial
+          // solves properly (see its own comment): unlike the direct
+          // transport's standard, documented Matrix `/messages` pagination,
+          // MSC2876's `read_events` continuation token has no confirmed
+          // guarantee of eventually returning an empty/exhausted result
+          // (see fake-widget-host.html's own comment on why this file
+          // dedupes by entry id instead of trusting `since`) -- looping on
+          // it the same way risks a worse bug (a loop that never
+          // terminates) than the one being fixed. A much larger single-call
+          // limit shrinks the piecemeal-loading window in practice without
+          // that risk, but doesn't guarantee full-history completeness the
+          // way the direct transport now does. Closing that gap for real
+          // needs a room snapshot mechanism (tracker f1c7098f), not a
+          // bigger number here.
+          const WIDGET_PAGE_LIMIT = 2000;
+          const result = await postToHost(READ_EVENTS_ACTION, { type: WIDGET_EVENT_TYPE, room_ids: [roomId], limit: WIDGET_PAGE_LIMIT, since: readCursor });
+          const events = ((result && result.events) || []).slice();
           if (result && result.nextToken) readCursor = result.nextToken;
+          // Batch (bulk-transport) events are a separate event type --
+          // read_events filters by exactly one `type` per call (confirmed
+          // by the primary call above, no evidence an array is accepted),
+          // so this is a second, independent read. Best-effort: a host
+          // that hasn't granted the newer batch capability (or briefly
+          // errors) must never break ordinary single-entry sync, which is
+          // why this failure is swallowed rather than propagated.
+          try {
+            const batchResult = await postToHost(READ_EVENTS_ACTION, { type: WIDGET_ENTRIES_TYPE, room_ids: [roomId], limit: WIDGET_PAGE_LIMIT, since: readCursor });
+            events.push(...((batchResult && batchResult.events) || []));
+            if (batchResult && batchResult.nextToken) readCursor = batchResult.nextToken;
+          } catch (e) { console.warn('[wigwag-matrix-host] batch read_events failed (non-fatal):', e.message); }
+          // Snapshot manifest + chunk events -- same best-effort treatment:
+          // a host that hasn't granted these newer capabilities yet must
+          // never break ordinary sync.
+          try {
+            const snapResult = await postToHost(READ_EVENTS_ACTION, { type: WIDGET_SNAPSHOT_TYPE, room_ids: [roomId], limit: WIDGET_PAGE_LIMIT, since: readCursor });
+            events.push(...((snapResult && snapResult.events) || []));
+          } catch (e) { console.warn('[wigwag-matrix-host] snapshot read_events failed (non-fatal):', e.message); }
+          try {
+            const chunkResult = await postToHost(READ_EVENTS_ACTION, { type: WIDGET_SNAPSHOT_CHUNK_TYPE, room_ids: [roomId], limit: WIDGET_PAGE_LIMIT, since: readCursor });
+            events.push(...((chunkResult && chunkResult.events) || []));
+          } catch (e) { console.warn('[wigwag-matrix-host] snapshot chunk read_events failed (non-fatal):', e.message); }
+          // A project created by a moderator WHILE this session is already
+          // connected rides this same live poll -- same best-effort
+          // treatment as the other types above.
+          try {
+            const projectResult = await postToHost(READ_EVENTS_ACTION, { type: WIDGET_PROJECT_STATE_TYPE, room_ids: [roomId], limit: WIDGET_PAGE_LIMIT, since: readCursor });
+            events.push(...((projectResult && projectResult.events) || []));
+          } catch (e) { console.warn('[wigwag-matrix-host] project-index read_events failed (non-fatal):', e.message); }
           return { status: 'ok', events: dedupeNew(events) };
         } catch (e) {
           return { status: 'error', message: e.message };
@@ -426,6 +613,25 @@
           return { status: 'error', message: e.message };
         }
       },
+      async sendBatch(items) {
+        try {
+          await postToHost('send_event', { type: WIDGET_ENTRIES_TYPE, content: core.matrixEventContentFromEntries(items) });
+          return { status: 'ok' };
+        } catch (e) {
+          return { status: 'error', message: e.message };
+        }
+      },
+      async sendSnapshot(manifest, chunks) {
+        try {
+          await postToHost('send_event', { type: WIDGET_SNAPSHOT_TYPE, content: core.matrixEventContentFromSnapshotManifest(manifest) });
+          for (const chunk of chunks) {
+            await postToHost('send_event', { type: WIDGET_SNAPSHOT_CHUNK_TYPE, content: core.matrixEventContentFromSnapshotChunk(chunk) });
+          }
+          return { status: 'ok' };
+        } catch (e) {
+          return { status: 'error', message: e.message };
+        }
+      },
       async getRoomName() {
         try {
           const result = await postToHost(READ_EVENTS_ACTION, { type: 'm.room.name', room_ids: [roomId], state_key: '', limit: 1 });
@@ -433,6 +639,55 @@
           const last = events[events.length - 1];
           return (last && last.content && last.content.name) || null;
         } catch (e) { return null; } // best-effort -- falls back to the placeholder name, same as the direct transport
+      },
+      // Moderator-gated (see WIGWAG_MATRIX_PROJECT_STATE_TYPE's own comment
+      // in wigwag-core.js) -- a state send via send_event needs a
+      // `state_key` alongside type/content, same shape the real
+      // matrix-widget-api client library uses for its own
+      // sendStateEvent(). A 'forbidden'-shaped rejection here is Element
+      // surfacing the SAME real power-level check the direct transport's
+      // homeserver PUT would -- not a widget-specific restriction.
+      async createProject(projectId) {
+        try {
+          await postToHost('send_event', { type: WIDGET_PROJECT_STATE_TYPE, state_key: projectId, content: core.matrixStateEventContentFromProjectCreation({ createdAt: new Date().toISOString(), createdBy: null }) });
+          return { status: 'ok' };
+        } catch (e) {
+          // Element reports a capability/power-level rejection as a
+          // rejected promise (postToHost's own error path above), not a
+          // distinct status -- there is no separate 403 to inspect here
+          // the way the direct transport's raw fetch has. Treat any
+          // failure as 'forbidden' for the caller's purposes: either
+          // reading is genuinely correct (no power level), or it's some
+          // other transient widget-API error -- both should surface as
+          // "this didn't work," never silently look like success.
+          return { status: 'forbidden', message: e.message };
+        }
+      },
+      // Same read_events mechanism as every other type this transport
+      // reads (getRoomName above included) -- NOT the direct transport's
+      // real always-current getMatrixRoomState. There is no confirmed
+      // "give me current state regardless of history depth" primitive on
+      // the widget API as used elsewhere in this file, so this inherits
+      // the same depth-limited caveat pullMore's own comment already
+      // documents for ordinary entries: a real fix (if this ever proves
+      // insufficient live) needs verifying against a real Element build,
+      // not assumed here. Multiple state_keys under one type -- unlike
+      // getRoomName's single fixed '' key -- so no state_key filter is
+      // passed; the latest occurrence per state_key (by arrival order)
+      // is taken as current.
+      async getProjectIndex() {
+        try {
+          const result = await postToHost(READ_EVENTS_ACTION, { type: WIDGET_PROJECT_STATE_TYPE, room_ids: [roomId], limit: 2000 });
+          const events = (result && result.events) || [];
+          const projectIds = new Set();
+          for (const ev of events) {
+            const id = core.projectIdFromMatrixStateEvent(ev);
+            if (id) projectIds.add(id);
+          }
+          return { status: 'ok', projectIds: [...projectIds] };
+        } catch (e) {
+          return { status: 'error', message: e.message };
+        }
       },
       async whoAmI(fallbackUserId) { return fallbackUserId || null; } // already known from the widget URL, no round-trip needed
     };
@@ -475,6 +730,85 @@
     return out;
   }
 
+  // Tracker #149: a room can hold more than one project's history (an
+  // imported project keeps its own id rather than getting mangled into
+  // "the" room's one project -- see docs/FORMAT.md's "Matrix room
+  // backing" section). Discovery is deliberately the simplest thing that
+  // could work for now: scan whatever's already been pulled for distinct
+  // projectId values, no separate discovery event/capability needed. An
+  // untagged entry (the shape every entry had before projectId existed)
+  // always counts as evidence of the room's own legacy/default project,
+  // never a project of its own.
+  //
+  // Names for anything other than the legacy default are a real, known
+  // gap: a project's own name has only ever been local, per-browser
+  // metadata (PROJECTS_KEY.milestones[].name), never part of the shared
+  // signed history -- so a project discovered purely from the timeline,
+  // that this browser has never locally seen before, has no shared name
+  // to show yet. Falls back to a short id-based label until project
+  // naming is itself shared (a real project-scope history entry, not
+  // solved here).
+  // indexedProjectIds (tracker f6b39bf0, live-reported rate-limit
+  // incident): the reliable, always-current set of project ids from a
+  // real current-state read (createMatrixBridge's own connect(), via
+  // transport.getProjectIndex()) -- immune to how much unrelated room
+  // traffic sits between "now" and when a project was created, unlike
+  // scanning a timeline that might have to reach arbitrarily far back.
+  // Omitted (or empty) on ongoing/live calls (the bridgeTimer poll loop
+  // below), which instead rely on this function's own timeline scan
+  // picking up dev.wigwag.project occurrences as they arrive naturally in
+  // the poll -- see that event type's own comment in wigwag-core.js.
+  function discoverProjects(rawEvents, legacyDefaultProjectId, legacyDefaultProjectName, indexedProjectIds) {
+    const ids = new Set(indexedProjectIds || []);
+    let sawUntagged = false;
+    // Bucket project-scope entries by the project they belong to (an
+    // untagged entry belongs to the legacy default project, same rule
+    // hydrateProjectFromMatrixTimeline's includeUntaggedEntries default
+    // uses), so each discovered project's label can prefer its own real
+    // derived name (tracker #149) over a generic placeholder.
+    const projectScopeEntriesById = new Map();
+    for (const rawEvent of rawEvents) {
+      if (rawEvent && rawEvent.type === core.WIGWAG_MATRIX_PROJECT_STATE_TYPE) {
+        const id = core.projectIdFromMatrixStateEvent(rawEvent);
+        if (id) ids.add(id);
+        continue;
+      }
+      const decodedItems = (rawEvent && rawEvent.type === core.WIGWAG_MATRIX_ENTRIES_TYPE)
+        ? core.entriesFromMatrixEvent(rawEvent)
+        : [core.entryFromMatrixEvent(rawEvent)].filter(Boolean);
+      for (const decoded of decodedItems) {
+      if (decoded.projectId) ids.add(decoded.projectId);
+      else sawUntagged = true;
+      if (decoded.scope === 'project') {
+        const bucketId = decoded.projectId || legacyDefaultProjectId;
+        if (!projectScopeEntriesById.has(bucketId)) projectScopeEntriesById.set(bucketId, []);
+        projectScopeEntriesById.get(bucketId).push(decoded.entry);
+      }
+      }
+    }
+    // Backward compatibility (tracker f6b39bf0): a project already
+    // evidenced by real timeline entries counts as existing regardless of
+    // whether a dev.wigwag.project state event names it -- every room
+    // using wigwag before this event type existed has projects with no
+    // such event at all, and requiring one retroactively would silently
+    // orphan them; only NEW projects go through the moderator gate. The
+    // one behavior that DOES change: a room with genuinely nothing (no
+    // entries, no state event) now correctly reports zero projects --
+    // the old unconditional "always at least the legacy default" force-
+    // add is gone, since Room Scoped Widget Mode now has a real "no
+    // projects yet" state.
+    if (sawUntagged) ids.add(legacyDefaultProjectId);
+    return [...ids].map(id => {
+      const isDefault = id === legacyDefaultProjectId;
+      const derivedName = core.deriveProjectName(projectScopeEntriesById.get(id) || []);
+      return {
+        id,
+        label: derivedName || (isDefault ? legacyDefaultProjectName : ('Project ' + id.slice(-8))),
+        isDefault
+      };
+    });
+  }
+
   // Seeds the exact localStorage shapes wigwag.html itself would create
   // for a brand-new local project (tests/helpers.js's own gotoTracker
   // seeds structurally the same shapes, for the same reason: hand a
@@ -491,47 +825,26 @@
   // no switcher exposing multiple identities anyway, so this is invisible
   // in practice -- documented here so nothing later assumes a real
   // ownership relationship exists.
+  // Identity is no longer this function's job (tracker f6b39bf0/#153): a
+  // signing keypair is a device credential, not room content, so it lives
+  // in the IFRAME's own real, unshimmed localStorage now -- this page has
+  // no access to it at all (its own `localStorage` above never sees
+  // IDENTITIES_KEY, since wigwag.html's isRoomModeContentKey deliberately
+  // excludes it). MXID resolution still happens here (matrixUserId is
+  // needed to hand to the iframe so IT can do the find-or-create, in
+  // wigwag.html's own resolveRoomModeIdentity) -- see wigwag:hello-ack
+  // below, where matrixUserId/fallbackDisplayName travel over.
   async function bootstrapLocalStorage(projectId, projectName, initialDoc, transport, fallbackUserId, fallbackDisplayName) {
-    // Resolved first and unconditionally -- confirmed live-review finding
-    // (tracker #149): the old check ("only create an identity if
-    // IDENTITIES_KEY is completely empty") meant a second Matrix account,
-    // or a pre-existing personal identity, sharing this browser would
-    // silently sign every write as whoever was already active -- up to
-    // and including leaking a real personal email into a shared room.
-    // Never invent a shared placeholder for a failed lookup either
-    // ('unknown-matrix-user' would make every unresolvable user
-    // indistinguishable from every other) -- fail loudly instead.
     const matrixUserId = await transport.whoAmI(fallbackUserId);
     if (!matrixUserId) return { status: 'no-identity', message: 'Could not determine this session\'s Matrix user id.' };
-
-    let store = JSON.parse(localStorage.getItem(core.IDENTITIES_KEY) || 'null');
-    if (!store || !Array.isArray(store.identities)) store = { activeIdentityId: null, identities: [], lastActiveProjectByIdentity: {} };
-
-    // Find-or-create keyed on the Matrix user id itself, not "is any
-    // identity present" -- makes reconnecting from the same browser as
-    // the same Matrix user genuinely stable, and correctly ignores any
-    // OTHER identity (a different Matrix account, or a personal
-    // email-based one) already active here. The second fallback adopts
-    // an identity created before matrixUserId existed as a field (its
-    // email already equals this MXID) so it keeps its existing signing
-    // key rather than forking a new, unrelated one for the same person.
-    let identity = store.identities.find(i => i.matrixUserId === matrixUserId)
-      || store.identities.find(i => !i.matrixUserId && i.email === matrixUserId);
-    if (!identity) {
-      identity = await generateMatrixIdentity(matrixUserId, fallbackDisplayName);
-      store.identities.push(identity);
-    }
-    identity.matrixUserId = matrixUserId;
-    const freshLabel = (fallbackDisplayName || '').trim();
-    if (freshLabel) identity.label = freshLabel; // label is local/cosmetic only, never signed -- see generateMatrixIdentity
-    store.activeIdentityId = identity.id;
-    localStorage.setItem(core.IDENTITIES_KEY, JSON.stringify(store));
-    const activeIdentityId = identity.id;
 
     let projects = JSON.parse(localStorage.getItem(core.PROJECTS_KEY) || 'null');
     if (!projects || !Array.isArray(projects.milestones)) projects = { activeMilestoneId: null, milestones: [] };
     if (!projects.milestones.some(m => m.id === projectId)) {
-      projects.milestones.push({ id: projectId, name: projectName, identityId: activeIdentityId });
+      // identityId is corrected client-side once wigwag.html resolves the
+      // real identity for this MXID (persistProjectIndex's own self-
+      // correction) -- this page can't know that id any more.
+      projects.milestones.push({ id: projectId, name: projectName, identityId: null });
     }
     projects.activeMilestoneId = projectId;
     localStorage.setItem(core.PROJECTS_KEY, JSON.stringify(projects));
@@ -539,17 +852,35 @@
     if (!localStorage.getItem(docKey(projectId))) {
       localStorage.setItem(docKey(projectId), JSON.stringify(initialDoc));
     }
-    return { status: 'ok' };
+    return { status: 'ok', matrixUserId };
   }
 
   function createMatrixBridge(transport, roomId, fallbackUserId, fallbackDisplayName) {
     let remoteRawEvents = [];
     const knownEntryIds = new Set(); // entries already sent to, or received from, Matrix -- never re-sent either way
-    let projectId, projectName;
+    // Tracker #149: generalized from a single projectId to a discovered
+    // SET -- widget mode has no local-only/private project concept (the
+    // room IS the container, unlike Tauri/browser mode where identity is
+    // the container and "Shared with you" is a real holding state). Every
+    // project this browser ever comes to hold locally while connected
+    // gets bridged, not just the one originally opened.
+    const bridgedProjects = new Map(); // id -> { name, includeUntagged }
+    // Resolved once in openAll() (via bootstrapLocalStorage's whoAmI call)
+    // and handed to the iframe in wigwag:hello-ack so IT can do the
+    // MXID-keyed find-or-create against its own real, unshimmed
+    // IDENTITIES_KEY -- this page has no identity of its own to track any
+    // more.
+    let resolvedMatrixUserId = null;
+    let resolvedDisplayName = null;
     let bridgeTimer = null;
 
-    function reconcileIntoLocal() {
-      const remoteDoc = core.hydrateProjectFromMatrixTimeline(remoteRawEvents, { fieldDefs: core.defaultFieldDefs(), projectId, projectName });
+    function reconcileIntoLocal(projectId) {
+      const { name: projectName, includeUntagged } = bridgedProjects.get(projectId);
+      // includeUntagged is true only for the room's one legacy/default
+      // project -- untagged (pre-projectId) entries only ever belong to
+      // that one, so a second, genuinely different project can never
+      // silently absorb them.
+      const remoteDoc = core.hydrateProjectFromMatrixTimeline(remoteRawEvents, { fieldDefs: core.defaultFieldDefs(), projectId, projectName, includeUntaggedEntries: includeUntagged });
       for (const item of flattenEntries(remoteDoc)) knownEntryIds.add(item.entry.id);
 
       const current = readCurrentLocalDoc(projectId);
@@ -566,84 +897,414 @@
     // Creating one issue writes to localStorage more than once in quick
     // succession (a "Created" entry, then a "Title set" entry, ...) --
     // each write fires its own storage event. Without this guard, two
-    // overlapping calls could each compute their own toSend list from the
-    // same stale knownEntryIds snapshot before either finishes adding to
-    // it, and both send the same entry. Only one pass ever runs at a
-    // time; a call that arrives mid-pass just asks for one more pass
-    // (re-reading local state fresh) once the current one finishes,
-    // rather than starting a second overlapping one.
-    let pushInFlight = false;
-    let pushAgainRequested = false;
-    async function pushNewLocalEntries() {
-      if (pushInFlight) { pushAgainRequested = true; return; }
-      pushInFlight = true;
+    // overlapping calls for the SAME project could each compute their own
+    // toSend list from the same stale knownEntryIds snapshot before
+    // either finishes adding to it, and both send the same entry. Only
+    // one pass per project ever runs at a time; a call that arrives
+    // mid-pass just asks for one more pass (re-reading local state fresh)
+    // once the current one finishes, rather than starting a second
+    // overlapping one. Different projects push fully independently.
+    const pushInFlight = new Set();
+    const pushAgainRequested = new Set();
+    async function pushNewLocalEntries(projectId) {
+      if (pushInFlight.has(projectId)) { pushAgainRequested.add(projectId); return; }
+      pushInFlight.add(projectId);
       try {
         do {
-          pushAgainRequested = false;
+          pushAgainRequested.delete(projectId);
           const current = readCurrentLocalDoc(projectId);
           const toSend = flattenEntries(current).filter(item => !knownEntryIds.has(item.entry.id));
           for (const item of toSend) {
             knownEntryIds.add(item.entry.id); // mark before sending -- a resend on failure is a harmless duplicate (deduped by entry id on read), a missed send from a race is not
-            const content = core.matrixEventContentFromEntry(item);
+            const content = core.matrixEventContentFromEntry({ ...item, projectId });
             const result = await transport.send(content);
             if (result.status !== 'ok') { console.warn('[wigwag-matrix-host] failed to send entry', item.entry.id, result); knownEntryIds.delete(item.entry.id); }
           }
-        } while (pushAgainRequested);
+        } while (pushAgainRequested.has(projectId));
       } finally {
-        pushInFlight = false;
+        pushInFlight.delete(projectId);
       }
     }
 
-    function onStorageChange(e) {
-      if (e.key !== docKey(projectId)) return;
-      pushNewLocalEntries();
+    // Room snapshot write side (tracker f6b39bf0/#153, f1c7098f/#154) --
+    // see reassembleLatestSnapshots's own comment in wigwag-core.js for
+    // the read side and full rationale. Repackages a project's FULL
+    // current history (not squashed -- every entry keeps its own real
+    // signature) into a manifest + count-chunked payload, reusing the
+    // exact per-entry shape flattenEntries/matrixEventContentFromEntry
+    // already produce for ordinary batch pushes.
+    //
+    // This is ALSO now the one-time bulk-adopt push for a project just
+    // adopted into the room (tracker #149's original bulk-push, formerly
+    // its own separate pushAllEntriesAsBatch, now folded in here). Live-
+    // reported (Tom, tracker f6b39bf0): sending the full history as plain
+    // batch entries AND THEN a snapshot -- what this file used to do --
+    // means every bulk-adopted entry goes out on the wire TWICE, roughly
+    // doubling the request volume at exactly the moment (a big import)
+    // rate limiting is already most likely to bite. A snapshot alone is a
+    // complete, sufficient representation on its own; there is nothing the
+    // separate batch send was accomplishing that the snapshot doesn't
+    // already cover, for a fresh adopt.
+    const lastSnapshotEntryCount = new Map(); // projectId -> entry count as of its last snapshot
+    const SNAPSHOT_ENTRY_THRESHOLD = 200; // same order of magnitude as the pagination page size this is meant to bound
+    async function pushSnapshotForProject(projectId) {
+      const current = readCurrentLocalDoc(projectId);
+      const items = flattenEntries(current).map(item => ({ ...item, projectId }));
+      if (!items.length) return;
+      // Marked before sending, same reasoning as pushNewLocalEntries: a
+      // snapshot always includes EVERY entry regardless of knownEntryIds
+      // (it must be complete and self-sufficient on its own, unlike an
+      // incremental push) -- marking here just prevents a later
+      // pushNewLocalEntries/reconcile pass from treating these as
+      // still-unsent and pushing them again separately.
+      items.forEach(item => knownEntryIds.add(item.entry.id));
+      const cutoffSortKey = items.reduce((max, item) => Math.max(max, item.entry.sortKey || 0), 0);
+      const snapshotId = crypto.randomUUID ? crypto.randomUUID() : ('snap-' + Date.now() + '-' + Math.random().toString(36).slice(2));
+      const chunkCount = Math.ceil(items.length / core.SNAPSHOT_CHUNK_SIZE);
+      const chunks = [];
+      for (let i = 0; i < chunkCount; i++) {
+        chunks.push({ snapshotId, sequenceNumber: i, items: items.slice(i * core.SNAPSHOT_CHUNK_SIZE, (i + 1) * core.SNAPSHOT_CHUNK_SIZE) });
+      }
+      const result = await transport.sendSnapshot({ projectId, snapshotId, chunkCount, cutoffSortKey }, chunks);
+      if (result.status === 'ok') {
+        lastSnapshotEntryCount.set(projectId, items.length);
+      } else {
+        console.warn('[wigwag-matrix-host] failed to send snapshot for', projectId, result);
+        items.forEach(item => knownEntryIds.delete(item.entry.id)); // roll back the optimistic mark -- these were never actually sent
+      }
+    }
+    // Checked from the live poll's own reconcile step (below) -- a snapshot
+    // taken here is purely a threshold-triggered convenience (bounding how
+    // large the "replay everything" cost can grow for an active project
+    // that was never bulk-imported); multiple viewers independently
+    // crossing the threshold around the same time is wasteful but
+    // harmless (idempotent, newest-wins on read).
+    async function pushSnapshotIfDue(projectId) {
+      const current = readCurrentLocalDoc(projectId);
+      const entryCount = flattenEntries(current).length;
+      const sinceLast = entryCount - (lastSnapshotEntryCount.get(projectId) || 0);
+      if (sinceLast >= SNAPSHOT_ENTRY_THRESHOLD) await pushSnapshotForProject(projectId);
     }
 
+    // Adopts any project this browser holds locally that isn't bridged
+    // yet -- an import, "+ New project", or wigwag.html's own
+    // delete-fallback (auto-creating a blank project when the last one is
+    // deleted) all show up here the same way, and all belong to the room
+    // unconditionally in this mode. Two things happen for each one found:
+    // its identityId is normalized onto the room's own single
+    // bootstrapped identity (wigwag.html's own PROJECTS_KEY storage
+    // listener adopts the correction live -- closes the "stuck in Shared
+    // with you, can't get back to the room's own scope" trap, since that
+    // limbo state never had a reason to exist here), and its full existing
+    // history is bulk-pushed to the room tagged with its own id, each
+    // entry keeping its real original authorship (nothing is re-signed).
+    //
+    // No cross-room contamination guard needed here any more (unlike the
+    // old shared-origin-localStorage design, tracker #149's original fix)
+    // -- this page's own `localStorage` above is a private in-memory Map
+    // that only ever exists for THIS bridge instance/room connection, so
+    // there's no shared bucket a second room's widget could ever read.
+    // identityId correction (a plain import lands with identityId: null,
+    // wrong for a mode with no "Shared with you" concept) is now done
+    // client-side, by wigwag.html's own persistProjectIndex -- this page
+    // has no identity to correct it TO any more.
+    function adoptLocalProjects() {
+      let projects;
+      try { projects = JSON.parse(localStorage.getItem(core.PROJECTS_KEY) || 'null'); } catch (e) { return; }
+      if (!projects || !Array.isArray(projects.milestones)) return;
+      for (const m of projects.milestones) {
+        if (bridgedProjects.has(m.id)) continue;
+        adoptOneLocalProject(m.id, m.name);
+      }
+    }
+    // Moderator-gated (tracker f6b39bf0, live-reported rate-limit
+    // incident, Tom's explicit call): creating the room's index entry for
+    // this project MUST succeed before anything else about it is treated
+    // as real. On rejection (a non-moderator), the optimistically-created
+    // local project is rolled back (removed from PROJECTS_KEY, which
+    // notifies the iframe via the existing wigwag:storage-changed
+    // mechanism, same as any other local write) and a distinct
+    // wigwag:room-write-rejected message carries a human-readable reason
+    // -- never a silent console.warn. This is the second half of the
+    // double-send incident's own lesson: a rejected/failed write must
+    // never look like it succeeded.
+    async function adoptOneLocalProject(projectId, projectName) {
+      const createResult = await transport.createProject(projectId);
+      if (createResult.status !== 'ok') {
+        console.warn('[wigwag-matrix-host] project creation rejected for', projectId, createResult);
+        try {
+          const current = JSON.parse(localStorage.getItem(core.PROJECTS_KEY) || 'null');
+          if (current && Array.isArray(current.milestones)) {
+            current.milestones = current.milestones.filter(m => m.id !== projectId);
+            localStorage.setItem(core.PROJECTS_KEY, JSON.stringify(current));
+          }
+        } catch (e) { /* best-effort rollback -- the rejection notice below still fires either way */ }
+        localStorage.postMessageToFrame({
+          type: 'wigwag:room-write-rejected',
+          projectId,
+          reason: createResult.status === 'forbidden'
+            ? 'Only room moderators can add new projects to this room.'
+            : ('Could not add this project to the room (' + createResult.status + (createResult.message ? ': ' + createResult.message : '') + ').')
+        });
+        return;
+      }
+      bridgedProjects.set(projectId, { name: projectName, includeUntagged: false });
+      pushSnapshotForProject(projectId);
+    }
+
+    // Message-based equivalent of the old native `storage` event listener
+    // -- the iframe no longer shares real localStorage with this page at
+    // all, so instead of reacting to a native event, this reacts to the
+    // iframe's own wigwag:local-write messages (see the `localStorage`
+    // shim above for the wigwag:hello/wigwag:hello-ack side of the same
+    // protocol).
+    function onFrameMessage(e) {
+      if (!e.data) return;
+      if (e.data.type === 'wigwag:hello') {
+        if (e.source) e.source.postMessage({
+          type: 'wigwag:hello-ack',
+          capabilities: { mode: 'room', multiIdentity: false, sharedProjectContext: true },
+          snapshot: localStorage.dumpAll(),
+          matrixUserId: resolvedMatrixUserId,
+          fallbackDisplayName: resolvedDisplayName
+        }, '*');
+        return;
+      }
+      if (e.data.type !== 'wigwag:local-write') return;
+      localStorage.applyFromFrame(e.data.key, e.data.newValue);
+      if (e.data.key === core.PROJECTS_KEY) { adoptLocalProjects(); return; }
+      for (const id of bridgedProjects.keys()) {
+        if (e.data.key === docKey(id)) { pushNewLocalEntries(id); return; }
+      }
+    }
+
+    // Split from a single start() into connect() + openProject() (tracker
+    // #149): the room's own timeline has to actually be pulled before
+    // it's possible to know how many projects it holds, and if there's
+    // more than one, a human needs to pick which one before anything
+    // gets bootstrapped/shown -- start() used to do all of that in one
+    // uninterruptible pass, assuming exactly one project always existed.
     return {
-      async start() {
+      // Connects and discovers what's there -- does NOT bootstrap or show
+      // anything yet. Caller decides what to do with the discovered list
+      // (auto-open the only one, or show a picker).
+      async connect() {
         const probe = await transport.probeAccess();
         if (probe.status !== 'can-read-write') return probe;
 
+        // Project index (tracker f6b39bf0, live-reported rate-limit
+        // incident) -- a real current-state read, reliable regardless of
+        // room chattiness (see discoverProjects's own comment). Best-
+        // effort: a transport error here must not block connecting
+        // altogether -- discoverProjects's own timeline-scan/grandfather-
+        // clause fallback still runs regardless below.
+        let indexedProjectIds = [];
+        const indexResult = await transport.getProjectIndex();
+        if (indexResult.status === 'ok') indexedProjectIds = indexResult.projectIds;
+
         const initialPull = await transport.pullInitial();
         if (initialPull.status !== 'ok') return initialPull;
-        remoteRawEvents = initialPull.events;
 
-        projectId = await deriveProjectId(roomId);
-        projectName = (await transport.getRoomName()) || ('Matrix room ' + roomId);
+        const legacyDefaultProjectId = deriveProjectId(roomId);
+        // Room snapshot integration (tracker f6b39bf0/#153, f1c7098f/#154)
+        // -- see reassembleLatestSnapshots's own comment in wigwag-core.js.
+        // A complete snapshot for a project REPLACES that project's older
+        // raw entries entirely (both represent the exact same signed
+        // history -- keeping both would double-count every pre-cutoff
+        // entry). Reassembled snapshot items are re-wrapped as synthetic
+        // dev.wigwag.entry-shaped events so discoverProjects/
+        // hydrateProjectFromMatrixTimeline need ZERO changes -- they can't
+        // tell a snapshot-sourced entry from a directly-pulled one, by
+        // design. A project with no (complete) snapshot behaves exactly as
+        // before -- this is strictly additive, never a regression from not
+        // having one yet.
+        const snapshotsByProject = core.reassembleLatestSnapshots(initialPull.events);
+        const tailItems = core.decodeAllMatrixEntryItems(initialPull.events).filter(item => {
+          const pid = item.projectId || legacyDefaultProjectId;
+          const snap = snapshotsByProject.get(pid);
+          return !snap || (item.entry.sortKey || 0) > snap.cutoffSortKey;
+        });
+        const snapshotItems = [].concat(...[...snapshotsByProject.values()].map(s => s.items));
+        // dev.wigwag.project state events are carried through separately
+        // (re-wrapping loses them, since matrixEventContentFromEntry has
+        // no concept of them) -- discoverProjects's own timeline-scan
+        // branch (the grandfather-clause/live-discovery path) needs them
+        // present in remoteRawEvents in their real shape, not decoded as
+        // an entry.
+        const projectStateEvents = initialPull.events.filter(ev => ev && ev.type === core.WIGWAG_MATRIX_PROJECT_STATE_TYPE);
+        remoteRawEvents = snapshotItems.concat(tailItems).map(item => ({ type: core.WIGWAG_MATRIX_ENTRY_TYPE, content: core.matrixEventContentFromEntry(item) })).concat(projectStateEvents);
+        for (const [projectId, snap] of snapshotsByProject) lastSnapshotEntryCount.set(projectId, snap.items.length);
 
-        const remoteDoc = core.hydrateProjectFromMatrixTimeline(remoteRawEvents, { fieldDefs: core.defaultFieldDefs(), projectId, projectName });
-        for (const item of flattenEntries(remoteDoc)) knownEntryIds.add(item.entry.id);
-        const bootstrapResult = await bootstrapLocalStorage(projectId, projectName, docStorable({ fieldDefs: remoteDoc.fields, projectHistory: remoteDoc.projectHistory, issues: remoteDoc.issues }, []), transport, fallbackUserId, fallbackDisplayName);
-        if (bootstrapResult.status !== 'ok') return bootstrapResult;
-        // A pre-existing local project at this same derived id may already
-        // have entries the initial remote pull doesn't yet know about
-        // (e.g. an earlier session's local edits that never made it out) --
-        // reconcile once, immediately, before wiring up the live bridge.
-        reconcileIntoLocal();
+        const legacyDefaultProjectName = (await transport.getRoomName()) || ('Matrix room ' + roomId);
+        const projects = discoverProjects(remoteRawEvents, legacyDefaultProjectId, legacyDefaultProjectName, indexedProjectIds);
 
-        window.addEventListener('storage', onStorageChange);
+        return { status: 'ok', projects, legacyDefaultProjectId };
+      },
+      // Bootstraps and reconciles EVERY project connect() discovered --
+      // tracker #149, live-reported: the room's own data already tells you
+      // every project that exists, so there's no reason to make a human
+      // pick just one before anything is usable. All of them become
+      // immediately available through wigwag.html's own normal switcher
+      // (left fully live -- identity chrome is hidden by wigwag.html
+      // itself now, driven by wigwag:hello-ack's capabilities);
+      // defaultProjectId
+      // picks which one is actually shown first (today: the room's own
+      // legacy/default project, always present in connect()'s discovered
+      // list; a future refinement could remember per-viewer "last looked
+      // at" instead, the same way wigwag.html's own
+      // lastActiveProjectByIdentity already does for identity switches).
+      async openAll(projects, defaultProjectId) {
+        // Resolved unconditionally, regardless of whether any project
+        // exists yet (tracker f6b39bf0: a genuinely empty room -- no
+        // projects, nothing to bootstrap -- still needs to tell wigwag.html
+        // WHO is connected, so its own empty-state UI can render something
+        // other than an unknown identity). The per-project loop below used
+        // to be the only place this got set, via bootstrapLocalStorage's
+        // own whoAmI call -- that loop simply never running for an empty
+        // room left it permanently null otherwise. Checked here, upfront,
+        // rather than only inside bootstrapLocalStorage's own per-project
+        // check (still present, still fires for the non-empty case) --
+        // that check simply never ran at all when projects=[], which
+        // would have silently let a whoAmI failure through to a real
+        // connect (fails-loudly was the original, pre-existing intent for
+        // this failure -- never a placeholder identity).
+        resolvedMatrixUserId = await transport.whoAmI(fallbackUserId);
+        if (!resolvedMatrixUserId) return { status: 'no-identity', message: 'Could not determine this session\'s Matrix user id.' };
+        resolvedDisplayName = fallbackDisplayName;
+        for (const p of projects) {
+          const isDefault = p.id === deriveProjectId(roomId);
+          bridgedProjects.set(p.id, { name: p.label, includeUntagged: isDefault });
+
+          const remoteDoc = core.hydrateProjectFromMatrixTimeline(remoteRawEvents, { fieldDefs: core.defaultFieldDefs(), projectId: p.id, projectName: p.label, includeUntaggedEntries: isDefault });
+          for (const item of flattenEntries(remoteDoc)) knownEntryIds.add(item.entry.id);
+          const bootstrapResult = await bootstrapLocalStorage(p.id, p.label, docStorable({ fieldDefs: remoteDoc.fields, projectHistory: remoteDoc.projectHistory, issues: remoteDoc.issues }, []), transport, fallbackUserId, fallbackDisplayName);
+          if (bootstrapResult.status !== 'ok') return bootstrapResult;
+          // A pre-existing local project at this same derived id may already
+          // have entries the initial remote pull doesn't yet know about
+          // (e.g. an earlier session's local edits that never made it out) --
+          // reconcile once, immediately, before wiring up the live bridge.
+          reconcileIntoLocal(p.id);
+        }
+        // bootstrapLocalStorage sets activeMilestoneId on every call --
+        // after bootstrapping the whole discovered set, pin it back to the
+        // one actually meant to be shown. A genuinely empty room (projects
+        // = [], defaultProjectId still the derived legacy id even though
+        // nothing bootstrapped it) leaves PROJECTS_KEY unset entirely --
+        // nothing to pin, and wigwag.html's own empty-state handles it.
+        try {
+          const store = JSON.parse(localStorage.getItem(core.PROJECTS_KEY) || 'null');
+          if (store) { store.activeMilestoneId = defaultProjectId; localStorage.setItem(core.PROJECTS_KEY, JSON.stringify(store)); }
+        } catch (e) { /* non-fatal -- wigwag.html's own switcher still works, just may default to the wrong tab */ }
+        // Any OTHER project already sitting in this browser's local
+        // project list, from BEFORE this connection and not among the
+        // room's own discovered set (a previous, disconnected import; a
+        // stray leftover), gets adopted too, right from the start.
+        adoptLocalProjects();
+
+        window.addEventListener('message', onFrameMessage);
         bridgeTimer = setInterval(async () => {
           const result = await transport.pullMore();
           if (result.status === 'ok' && result.events.length) {
             remoteRawEvents = remoteRawEvents.concat(result.events);
-            reconcileIntoLocal();
+            for (const id of bridgedProjects.keys()) reconcileIntoLocal(id);
+            // Live-reported (Tom, tracker f6b39bf0): a project that first
+            // appears in the room AFTER this viewer already connected
+            // (someone else's import, mid-session) was invisible here
+            // until a full reconnect -- the loop above only ever
+            // reconciles projects it ALREADY knows about. "Everyone who
+            // can see the widget in the room sees the same state" (the
+            // whole point of Room Scoped Widget Mode) requires
+            // discovering genuinely new ones too, not just refreshing
+            // known ones. Mirrors openAll's own per-project bootstrap,
+            // just triggered reactively instead of once at connect.
+            const legacyDefaultProjectId = deriveProjectId(roomId);
+            const discovered = discoverProjects(remoteRawEvents, legacyDefaultProjectId, '');
+            for (const p of discovered) {
+              if (bridgedProjects.has(p.id)) continue;
+              const isDefault = p.id === legacyDefaultProjectId;
+              bridgedProjects.set(p.id, { name: p.label, includeUntagged: isDefault });
+              const remoteDoc = core.hydrateProjectFromMatrixTimeline(remoteRawEvents, { fieldDefs: core.defaultFieldDefs(), projectId: p.id, projectName: p.label, includeUntaggedEntries: isDefault });
+              for (const item of flattenEntries(remoteDoc)) knownEntryIds.add(item.entry.id);
+              await bootstrapLocalStorage(p.id, p.label, docStorable({ fieldDefs: remoteDoc.fields, projectHistory: remoteDoc.projectHistory, issues: remoteDoc.issues }, []), transport, fallbackUserId, fallbackDisplayName);
+              reconcileIntoLocal(p.id);
+            }
+            for (const id of bridgedProjects.keys()) await pushSnapshotIfDue(id);
           }
         }, 5000);
 
-        return { status: 'ok', projectId };
+        return { status: 'ok', projectId: defaultProjectId };
       },
       stop() {
-        window.removeEventListener('storage', onStorageChange);
+        window.removeEventListener('message', onFrameMessage);
         if (bridgeTimer) clearInterval(bridgeTimer);
       }
     };
   }
 
+  // A room bridged here is one shared "project holder" (tracker #149,
+  // live-reported): switching or creating PROJECTS must stay fully live
+  // (that's the whole point of the picker/discovery work above) -- what
+  // shouldn't be visible or switchable in a widget is the IDENTITY concept
+  // itself. wigwag.html's own identity system (multiple named identities,
+  // each with its own signing key, switchable/creatable from the same
+  // switcher menu) exists for its normal multi-identity desktop use; a
+  // room-backed viewer already has exactly one identity, auto-bootstrapped
+  // and keyed to their own Matrix user id (see bootstrapLocalStorage
+  // above) -- there is nothing useful to switch TO, and exposing the UI
+  // for it (add identity, per-identity settings) only invites exactly the
+  // confusion Tom reported. wigwag.html is iframed completely unmodified,
+  // so this is done from out here with injected CSS once the iframe
+  // loads, rather than teaching wigwag.html anything about being embedded:
+  // the switcher's left column (the identity/"scope" list -- scope rows,
+  // the settings cog on each, "Add identity...") has no testid of its own,
+  // so it's targeted structurally as switcher-menu's first child (see the
+  // markup: two un-testid'd wrapper divs are switcher-menu's only two
+  // top-level children, left = identity list, right = project list); the
+  // header's identity breadcrumb (identity-title-prefix) and the "/"
+  // separator right after it go the same way. The project list (right
+  // column) and everything else in the switcher is untouched.
+  //
+  // NOTE: an earlier version of this also hid "Delete project", to guard
+  // against wigwag.html's own "never leave zero projects" fallback
+  // (deleting the last project auto-creates a disconnected local one --
+  // the actual cause of a live two-different-"Untitled Project 1"s
+  // incident). Reverted on Tom's explicit call: deleting must stay
+  // available. That fallback behavior is still a real gap for the
+  // room-bridged case -- not solved here, deliberately left alone rather
+  // than guessed at again.
+  //
+  // hideIdentityChrome (the CSS-injection version of the above) is gone --
+  // wigwag.html now hides this itself, driven by the real
+  // `sharedProjectContext`/`multiIdentity` capabilities handed over in
+  // wigwag:hello-ack, instead of being puppeted from out here after the
+  // fact. See wigwag.html's own switcher rendering.
   function showFrame() {
     $('setup').style.display = 'none';
     const frame = $('frame');
     frame.style.display = 'block';
+    localStorage.attachFrame(frame);
     frame.src = 'wigwag.html';
+  }
+
+  // Shared by both transports once connect() has succeeded: bootstraps
+  // and bridges EVERY discovered project (tracker #149, live-reported --
+  // no "which project should everybody see?" prompt; the room's own data
+  // already tells you what's there, and wigwag.html's own switcher is the
+  // real way to move between them once shown). Shows the room's own
+  // legacy/default project first.
+  async function proceedAfterConnect(bridge, connectResult, onOpenFail) {
+    setStatus('Opening…');
+    const projects = connectResult.projects;
+    // legacyDefaultProjectId isn't always one of the discovered projects
+    // (a room holding only explicitly-tagged projects, no legacy/untagged
+    // content at all, never adds it -- see discoverProjects) -- fall back
+    // to whichever project actually exists.
+    const defaultProjectId = projects.some(p => p.id === connectResult.legacyDefaultProjectId)
+      ? connectResult.legacyDefaultProjectId
+      : (projects[0] ? projects[0].id : connectResult.legacyDefaultProjectId);
+    const openResult = await bridge.openAll(projects, defaultProjectId);
+    if (openResult.status === 'ok') { showFrame(); return; }
+    onOpenFail(openResult);
   }
 
   // ----- Entry point ------------------------------------------------------
@@ -662,17 +1323,22 @@
     } else {
       const transport = createWidgetTransport(widgetContext);
       const bridge = createMatrixBridge(transport, widgetContext.roomId, widgetContext.userId, widgetContext.displayName);
-      bridge.start().then((result) => {
-        if (result.status === 'ok') { showFrame(); return; }
-        // Every widget-mode failure this early is plausibly the same root
-        // cause: Element gates each requested capability (read/send
-        // dev.wigwag.entry) behind its own user-facing approval prompt,
-        // shown once when the widget first loads -- a dismissed or
-        // never-shown prompt looks like an ordinary protocol error
-        // ("Cannot read room events of this type") with nothing in this
-        // file able to distinguish it from a real one. Surfacing the hint
-        // unconditionally is cheap and, worst case, irrelevant noise.
-        setStatus('Could not connect (' + result.status + (result.message ? ': ' + result.message : '') + ').\n\nIf this is the first time this widget has loaded in this room, check that Element\'s widget-permissions prompt was approved -- try removing and re-adding the widget if you\'re not sure one appeared.', 'error');
+      bridge.connect().then(async (connectResult) => {
+        if (connectResult.status !== 'ok') {
+          // Every widget-mode failure this early is plausibly the same root
+          // cause: Element gates each requested capability (read/send
+          // dev.wigwag.entry) behind its own user-facing approval prompt,
+          // shown once when the widget first loads -- a dismissed or
+          // never-shown prompt looks like an ordinary protocol error
+          // ("Cannot read room events of this type") with nothing in this
+          // file able to distinguish it from a real one. Surfacing the hint
+          // unconditionally is cheap and, worst case, irrelevant noise.
+          setStatus('Could not connect (' + connectResult.status + (connectResult.message ? ': ' + connectResult.message : '') + ').\n\nIf this is the first time this widget has loaded in this room, check that Element\'s widget-permissions prompt was approved -- try removing and re-adding the widget if you\'re not sure one appeared.', 'error');
+          return;
+        }
+        await proceedAfterConnect(bridge, connectResult, (openResult) => {
+          setStatus('Could not open project (' + openResult.status + (openResult.message ? ': ' + openResult.message : '') + ').', 'error');
+        });
       }).catch((e) => setStatus('Unexpected error: ' + e.message, 'error'));
     }
   } else {
@@ -692,18 +1358,21 @@
         }
         const transport = createDirectTransport({ homeserverUrl, accessToken, roomId });
         const bridge = createMatrixBridge(transport, roomId, null);
-        const result = await bridge.start();
-        if (result.status !== 'ok') {
+        const connectResult = await bridge.connect();
+        if (connectResult.status !== 'ok') {
           const messages = {
             'no-access': 'This token\'s account is not joined to that room (or the room id is wrong).',
-            error: 'Matrix error: ' + (result.message || 'unknown')
+            error: 'Matrix error: ' + (connectResult.message || 'unknown')
           };
-          setStatus(messages[result.status] || ('Could not connect (' + result.status + ').' + (result.message ? ' ' + result.message : '')), 'error');
+          setStatus(messages[connectResult.status] || ('Could not connect (' + connectResult.status + ').' + (connectResult.message ? ' ' + connectResult.message : '')), 'error');
           connectBtn.disabled = false;
           return;
         }
         setStatus('Connected.', 'ok');
-        showFrame();
+        await proceedAfterConnect(bridge, connectResult, (openResult) => {
+          setStatus('Could not open project (' + openResult.status + (openResult.message ? ': ' + openResult.message : '') + ').', 'error');
+          connectBtn.disabled = false;
+        });
       } catch (e) {
         setStatus('Unexpected error: ' + e.message, 'error');
         connectBtn.disabled = false;

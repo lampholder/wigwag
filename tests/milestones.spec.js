@@ -174,6 +174,63 @@ test.describe('Tracker switcher', () => {
     await expect(page.locator('[data-testid=switcher-project-row]').first()).toContainText('should NOT be committed by a stray click');
   });
 
+  // Tracker #149: a project's name used to be purely local browser metadata
+  // (PROJECTS_KEY.milestones[].name) plus a narrative-only, field-less
+  // history entry -- readable by a human, but not derivable by another
+  // browser the way a real field definition is. A rename now also appends
+  // a real field:'__project_name__' entry, so it round-trips through the
+  // same signed-history mechanism as everything else in the file.
+  test('renaming appends a real, derivable field:__project_name__ history entry, not just the narrative text', async ({ page }) => {
+    await page.locator('[data-testid=btn-notes]').click();
+    await page.waitForTimeout(300);
+    await page.locator('[data-testid=notes-rename-btn]').click();
+    await page.locator('[data-testid=notes-rename-input]').fill('Derivable Name Test');
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(200);
+
+    const doc = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_v1:demo-milestone')));
+    const nameEntries = doc.projectHistory.filter(h => h.field === '__project_name__');
+    expect(nameEntries.length).toBeGreaterThan(0);
+    expect(nameEntries[nameEntries.length - 1].value).toBe('Derivable Name Test');
+    // The sentinel field id must never leak into fieldDefs as a real field.
+    expect(doc.fieldDefs['__project_name__']).toBeUndefined();
+  });
+
+  // The whole point of making the name derivable: another session picking
+  // up a name change purely from history, the same way a field-definition
+  // change already propagates via wigwag's existing cross-tab storage sync
+  // (a stand-in here for a real peer -- GitHub sync pull, Matrix room,
+  // Connect Remote -- pushing new signed history for this same project).
+  test('a peer-authored rename (new field:__project_name__ entry, no local cache update) is picked up via cross-tab storage sync', async ({ page }) => {
+    const title = page.locator('[data-testid=tracker-name-title]');
+    await expect(title).toContainText('Delivery tracker');
+
+    await page.evaluate(() => {
+      const key = 'git_native_tracker_v1:demo-milestone';
+      const doc = JSON.parse(localStorage.getItem(key));
+      doc.projectHistory.push({
+        id: 'peer-rename-1', time: new Date().toISOString(), actor: 'Peer', email: 'peer@example.com',
+        text: 'Renamed project from "Delivery tracker" to "Peer Renamed It"',
+        field: '__project_name__', value: 'Peer Renamed It',
+        origin: 'authored', sortKey: Date.now() + 100000, sig: null, sigRedacted: null, pubKey: null
+      });
+      const newValue = JSON.stringify(doc);
+      localStorage.setItem(key, newValue);
+      window.dispatchEvent(new StorageEvent('storage', { key, newValue, oldValue: null, storageArea: localStorage }));
+    });
+    await page.waitForTimeout(300);
+    await expect(title).toContainText('Peer Renamed It');
+
+    // Reconciled into the milestone cache too, not just this render.
+    const milestones = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1')).milestones);
+    expect(milestones.find(m => m.id === 'demo-milestone').name).toBe('Peer Renamed It');
+
+    // Survives a fresh boot (loadPersisted), not just the live storage-event path.
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+    await expect(title).toContainText('Peer Renamed It');
+  });
+
   test('importing a file for a genuinely new project creates a separate milestone without touching the current one', async ({ page }) => {
     const pastedJsonl = [
       JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, id: 'genuinely-new-project', name: 'Genuinely New' }),
@@ -189,8 +246,9 @@ test.describe('Tracker switcher', () => {
     const projectsBefore = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1')).milestones);
     // No project id match -- handleApplyUpdateParsed asks to confirm
     // importing as a brand new project.
-    page.once('dialog', d => d.accept());
     await fc.setFiles({ name: 'new-project.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(pastedJsonl) });
+    await expect(page.locator('[data-testid=confirm-dialog-modal]')).toBeVisible();
+    await page.locator('[data-testid=btn-confirm-dialog-confirm]').click();
     await page.waitForTimeout(400);
     await expect(page.locator('[data-testid=row]')).toHaveCount(1);
     await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Genuinely New');

@@ -494,59 +494,132 @@ async function setGithubRepoSync(page, { repo, path, branch, token, tokenOverrid
   }
 }
 
-// Mocks the Contents API endpoint the repo-sync feature itself talks to
-// (GET to pull, PUT to push) for one repo/path -- separate from
-// mockGithubApi above, which fakes the unrelated per-field issue-link
-// endpoints. `state.getResponses` is a script of {status, sha, text}
-// consumed one per GET call (the last entry repeats for any GET beyond the
-// script's length, so a test only has to describe the calls it cares
-// about). `state.pushStatusOverride` lets a test make exactly one PUT come
-// back as e.g. 409 before reverting to normal 200s. Returns live counters
-// and the raw bodies of every PUT actually sent, for assertions.
+// Mocks the Git-backed sync endpoints the repo-sync feature itself talks
+// to for one repo/path -- separate from mockGithubApi above, which fakes
+// the unrelated per-field issue-link endpoints.
+//
+// Rewritten (tracker f6b39bf0, live-reported): the old implementation
+// mocked only a single GET/PUT to the Contents API's own contents/{path}
+// endpoint, matching pullGithubFile/pushGithubFile's OLD implementation --
+// but GitHub's Contents API caps inline base64 content at 1MB, silently
+// (200, content:"", encoding:"none", no error) past that size, which the
+// old code read as "this file is empty". The fix moves reads onto
+// Accept: raw (still contents/{path}, just a different Accept header, no
+// size cap) and writes onto the Git Data API's own multi-step blob ->
+// tree -> commit -> ref sequence (also uncapped). This mock now covers
+// all of that, while keeping the exact same test-facing state shape
+// (getResponses/pushes/pushCount/pushStatusOverride/lastAuthHeader/
+// getCount) so every existing call site needs no changes beyond the shape
+// of what a single push's own content actually looks like now (see
+// state.pushes below).
 function mockGithubContentsApi(page, repo, path = 'tracker.jsonl') {
   const state = { getCount: 0, pushCount: 0, pushes: [], getResponses: [], pushStatusOverride: null, lastAuthHeader: null };
-  page.route(`https://api.github.com/repos/${repo}/contents/${path}`, async (route) => {
-    const method = route.request().method();
-    state.lastAuthHeader = route.request().headers()['authorization'] || null;
-    if (method === 'GET') {
-      const idx = Math.min(state.getCount, state.getResponses.length - 1);
-      const resp = state.getResponses[idx];
-      state.getCount++;
-      if (!resp || resp.status === 404) {
-        await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ message: 'Not Found' }) });
-      } else {
-        // Real GitHub ETags are quoted strings, deterministic per blob --
-        // derived from the same sha the app already tracks, so a test can
-        // drive a real conditional-GET 304 just by repeating a getResponses
-        // entry with the same sha and checking the incoming If-None-Match.
-        // Access-Control-Expose-Headers is required for this to actually
-        // work, not just be present on the wire -- fetch() can't read an
-        // arbitrary response header cross-origin without it, a real CORS
-        // restriction the app's own code has to work within too (confirmed
-        // this is the real GitHub API's own behavior, not just this mock's).
-        const etag = '"' + resp.sha + '"';
-        const ifNoneMatch = route.request().headers()['if-none-match'];
-        if (ifNoneMatch && ifNoneMatch === etag) {
-          await route.fulfill({ status: 304, headers: { etag, 'access-control-expose-headers': 'ETag' } });
-        } else {
-          await route.fulfill({ status: 200, contentType: 'application/json', headers: { etag, 'access-control-expose-headers': 'ETag' }, body: JSON.stringify({ sha: resp.sha, content: Buffer.from(resp.text, 'utf8').toString('base64') }) });
-        }
-      }
+  let commitSha = 'initial-commit-sha';
+  let treeSha = 'initial-tree-sha';
+  const repoEscaped = repo.replace(/\//g, '\\/');
+  const track = (route) => { state.lastAuthHeader = route.request().headers()['authorization'] || null; };
+
+  const currentGetResponse = () => state.getResponses[Math.min(state.getCount, state.getResponses.length - 1)];
+
+  // pushGithubFile's own conflict check re-requests this same contents
+  // endpoint with a resolved branch's `?ref=` query string attached (real
+  // GitHub behavior, needed to check the right branch) -- a bare-string
+  // route pattern doesn't match that suffix at all, so an unmatched
+  // request silently escapes to the real, unmocked github.com and comes
+  // back with a genuine 401 (fake token), which the app retries in a
+  // tight loop with no backoff, hanging any networkidle wait forever.
+  // Confirmed live via an ad-hoc reproduction script before this fix.
+  page.route(new RegExp('^https://api\\.github\\.com/repos/' + repoEscaped + '/contents/' + path.replace(/\./g, '\\.') + '(\\?.*)?$'), async (route) => {
+    track(route);
+    if (route.request().method() !== 'GET') { await route.fulfill({ status: 404, contentType: 'application/json', body: '{}' }); return; }
+    // Two genuinely different callers hit this same URL+method, exactly
+    // like real GitHub: pullGithubFile's own real pull (Accept: raw, no
+    // size cap, advances the getResponses script) and both
+    // pushGithubFile's conflict check and the standalone "Connect a
+    // remote" one-off fetch (Accept: json) -- real GitHub returns the
+    // same {sha, content, encoding} shape for those either way, so this
+    // mock does too; a conflict check only ever reads .sha off it.
+    const wantsRaw = (route.request().headers()['accept'] || '').includes('raw');
+    const resp = currentGetResponse();
+    if (wantsRaw) state.getCount++;
+    if (!resp || resp.status === 404) {
+      await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ message: 'Not Found' }) });
       return;
     }
-    if (method === 'PUT') {
-      const body = JSON.parse(route.request().postData());
-      state.pushCount++;
-      state.pushes.push(body);
-      if (state.pushStatusOverride && state.pushCount === state.pushStatusOverride.onCall) {
-        await route.fulfill({ status: state.pushStatusOverride.status, contentType: 'application/json', body: '{}' });
-      } else {
-        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ content: { sha: 'sha-after-push-' + state.pushCount } }) });
-      }
+    // Real GitHub ETags are quoted strings, deterministic per blob --
+    // derived from the same sha the app already tracks, so a test can
+    // drive a real conditional-GET 304 just by repeating a getResponses
+    // entry with the same sha and checking the incoming If-None-Match.
+    // Access-Control-Expose-Headers is required for this to actually
+    // work, not just be present on the wire -- fetch() can't read an
+    // arbitrary response header cross-origin without it, a real CORS
+    // restriction the app's own code has to work within too (confirmed
+    // this is the real GitHub API's own behavior, not just this mock's).
+    const etag = '"' + resp.sha + '"';
+    if (!wantsRaw) {
+      await route.fulfill({ status: 200, contentType: 'application/json', headers: { etag, 'access-control-expose-headers': 'ETag' }, body: JSON.stringify({ sha: resp.sha, content: Buffer.from(resp.text, 'utf8').toString('base64'), encoding: 'base64' }) });
       return;
     }
-    await route.fulfill({ status: 404, contentType: 'application/json', body: '{}' });
+    const ifNoneMatch = route.request().headers()['if-none-match'];
+    if (ifNoneMatch && ifNoneMatch === etag) {
+      await route.fulfill({ status: 304, headers: { etag, 'access-control-expose-headers': 'ETag' } });
+    } else {
+      await route.fulfill({ status: 200, contentType: 'text/plain', headers: { etag, 'access-control-expose-headers': 'ETag' }, body: resp.text });
+    }
   });
+
+  page.route(`https://api.github.com/repos/${repo}`, async (route) => {
+    // The exact same bare repo:// URL is also what mockGithubRepoAccessApi
+    // mocks, for a genuinely different caller (probeGithubRepoAccess's
+    // access-level probe) -- a test using both (any "Connect a remote"
+    // test) registers that route first, so ours (registered later) would
+    // otherwise always win and silently break the probe. The two callers
+    // ARE distinguishable on the wire: pushGithubFile's own default-branch
+    // lookup always sends Content-Type: application/json (it reuses the
+    // same header set as its POST/PATCH calls); probeGithubRepoAccess
+    // never sends a Content-Type at all. Fall back to whatever route was
+    // registered before this one for anything that isn't ours to answer.
+    if (route.request().method() !== 'GET' || !route.request().headers()['content-type']) { await route.fallback(); return; }
+    track(route);
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ default_branch: 'main' }) });
+  });
+
+  page.route(new RegExp('^https://api\\.github\\.com/repos/' + repoEscaped + '/commits/'), async (route) => {
+    track(route);
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ sha: commitSha, commit: { tree: { sha: treeSha } } }) });
+  });
+
+  page.route(`https://api.github.com/repos/${repo}/git/blobs`, async (route) => {
+    track(route);
+    const body = JSON.parse(route.request().postData());
+    state.pushCount++;
+    state.pushes.push(body.content); // real utf-8 text now, not a base64-wrapped PUT body -- see the call sites reading this
+    await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ sha: 'blob-after-push-' + state.pushCount }) });
+  });
+
+  page.route(`https://api.github.com/repos/${repo}/git/trees`, async (route) => {
+    track(route);
+    await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ sha: 'tree-after-push-' + state.pushCount }) });
+  });
+
+  page.route(`https://api.github.com/repos/${repo}/git/commits`, async (route) => {
+    track(route);
+    await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ sha: 'commit-after-push-' + state.pushCount }) });
+  });
+
+  const finishRef = async (route) => {
+    track(route);
+    if (state.pushStatusOverride && state.pushCount === state.pushStatusOverride.onCall) {
+      await route.fulfill({ status: state.pushStatusOverride.status, contentType: 'application/json', body: '{}' });
+      return;
+    }
+    commitSha = 'commit-after-push-' + state.pushCount;
+    treeSha = 'tree-after-push-' + state.pushCount;
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ sha: 'sha-after-push-' + state.pushCount }) });
+  };
+  page.route(new RegExp('^https://api\\.github\\.com/repos/' + repoEscaped + '/git/refs/heads/'), finishRef);
+  page.route(`https://api.github.com/repos/${repo}/git/refs`, finishRef);
+
   return state;
 }
 
@@ -735,8 +808,8 @@ function mockMatrixClientApi(page, { homeserverUrl, roomId, initialEntries = [],
 // Returns nothing to poll for state -- read `window.__state` on the
 // returned page directly (`page.evaluate(() => window.__state)`), and reach
 // the tracker UI itself via page.frameLocator('#widget').frameLocator('#frame').
-async function gotoFakeWidgetHost(page, { roomId, userId, displayName, roomName, initialEntries, rejectReadEventsTimes, dropReadEventsTimes } = {}) {
-  await page.addInitScript((cfg) => { window.__fakeHostConfig = cfg; }, { roomId, userId, displayName, roomName, initialEntries, rejectReadEventsTimes, dropReadEventsTimes });
+async function gotoFakeWidgetHost(page, { roomId, userId, displayName, roomName, initialEntries, rejectReadEventsTimes, dropReadEventsTimes, forbidStateEventType, rejectUploadTimes, seedMediaBlobs } = {}) {
+  await page.addInitScript((cfg) => { window.__fakeHostConfig = cfg; }, { roomId, userId, displayName, roomName, initialEntries, rejectReadEventsTimes, dropReadEventsTimes, forbidStateEventType, rejectUploadTimes, seedMediaBlobs });
   await page.goto('/tests/fixtures/fake-widget-host.html');
 }
 

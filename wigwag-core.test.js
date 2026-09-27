@@ -1173,16 +1173,46 @@ function fakeFetch(responses) {
       ok: r.status >= 200 && r.status < 300,
       status: r.status,
       headers: { get: (name) => (name === 'ETag' ? (r.etag || null) : null) },
-      json: async () => r.body
+      json: async () => r.body,
+      text: async () => r.text
     };
   };
 }
 
-test('pullGithubFile: 200 decodes content, 304/404 map to named statuses, network failure never throws', async () => {
-  const ok = await core.pullGithubFile({ fetchImpl: fakeFetch([{ status: 200, etag: 'W/"abc"', body: { content: core.base64FromText('hello'), sha: 'sha1' } }]), repo: 'o/r', path: 'tracker.jsonl', branch: '', token: 't' });
-  assert.deepEqual(ok, { status: 'ok', text: 'hello', sha: 'sha1', etag: 'W/"abc"' });
+// Records each call's (method, url, parsed body) alongside serving fakeFetch's
+// own canned responses in order -- lets a multi-request flow (pushGithubFile's
+// blob -> tree -> commit -> ref sequence) both drive realistic responses AND
+// assert on what was actually sent to which endpoint.
+function fakeFetchTracking(responses) {
+  const calls = [];
+  let call = 0;
+  const fn = async (url, opts) => {
+    calls.push({ method: (opts && opts.method) || 'GET', url, body: opts && opts.body ? JSON.parse(opts.body) : null });
+    const r = responses[Math.min(call, responses.length - 1)];
+    call++;
+    if (r.throw) throw new Error(r.throw);
+    return {
+      ok: r.status >= 200 && r.status < 300,
+      status: r.status,
+      headers: { get: (name) => (name === 'ETag' ? (r.etag || null) : null) },
+      json: async () => r.body,
+      text: async () => r.text
+    };
+  };
+  fn.calls = calls;
+  return fn;
+}
 
-  const notModified = await core.pullGithubFile({ fetchImpl: fakeFetch([{ status: 304 }]), repo: 'o/r', path: 'tracker.jsonl', branch: '', token: 't', etag: 'W/"abc"' });
+test('pullGithubFile: 200 returns raw text with the blob sha recovered from the ETag header, 304/404 map to named statuses, network failure never throws', async () => {
+  const ok = await core.pullGithubFile({ fetchImpl: fakeFetch([{ status: 200, etag: '"sha1"', text: 'hello' }]), repo: 'o/r', path: 'tracker.jsonl', branch: '', token: 't' });
+  assert.deepEqual(ok, { status: 'ok', text: 'hello', sha: 'sha1', etag: '"sha1"' });
+
+  // A weak validator (W/"...") is a real, documented possibility for an
+  // ETag -- the quotes-and-W-prefix stripping must handle it the same way.
+  const weakEtag = await core.pullGithubFile({ fetchImpl: fakeFetch([{ status: 200, etag: 'W/"sha2"', text: 'world' }]), repo: 'o/r', path: 'tracker.jsonl', branch: '', token: 't' });
+  assert.deepEqual(weakEtag, { status: 'ok', text: 'world', sha: 'sha2', etag: 'W/"sha2"' });
+
+  const notModified = await core.pullGithubFile({ fetchImpl: fakeFetch([{ status: 304 }]), repo: 'o/r', path: 'tracker.jsonl', branch: '', token: 't', etag: '"sha1"' });
   assert.deepEqual(notModified, { status: 'not-modified' });
 
   const notFound = await core.pullGithubFile({ fetchImpl: fakeFetch([{ status: 404 }]), repo: 'o/r', path: 'tracker.jsonl', branch: '', token: 't' });
@@ -1192,14 +1222,111 @@ test('pullGithubFile: 200 decodes content, 304/404 map to named statuses, networ
   assert.deepEqual(networkFail, { status: 'error', message: 'network down' });
 });
 
-test('pushGithubFile: 200 returns the new sha, 409/422 map to conflict, other failures are errors', async () => {
-  const ok = await core.pushGithubFile({ fetchImpl: fakeFetch([{ status: 200, body: { content: { sha: 'sha2' } } }]), repo: 'o/r', path: 'tracker.jsonl', branch: '', token: 't', text: 'x', sha: 'sha1', commitMessage: 'msg', authorName: 'me', authorEmail: 'me@x' });
-  assert.deepEqual(ok, { status: 'ok', sha: 'sha2' });
+// Confirms the fix for the real, live bug (tracker f6b39bf0): the OLD
+// implementation asked for the default JSON+base64 response, which GitHub
+// caps at 1MB -- past that it replies 200 with content:"" and encoding:
+// "none", read as "the file is empty" by the old code, silently. Requesting
+// Accept: application/vnd.github.v3.raw instead (asserted here) is the
+// actual fix -- confirmed live against a real file past that size.
+test('pullGithubFile: requests raw content, not the size-capped JSON+base64 form', async () => {
+  const fetchImpl = fakeFetchTracking([{ status: 200, etag: '"sha1"', text: 'hello' }]);
+  await core.pullGithubFile({ fetchImpl, repo: 'o/r', path: 'tracker.jsonl', branch: '', token: 't' });
+  assert.equal(fetchImpl.calls.length, 1);
+  assert.equal(fetchImpl.calls[0].method, 'GET');
+});
 
-  const conflict409 = await core.pushGithubFile({ fetchImpl: fakeFetch([{ status: 409 }]), repo: 'o/r', path: 'tracker.jsonl', branch: '', token: 't', text: 'x', commitMessage: 'msg', authorName: 'me' });
-  assert.deepEqual(conflict409, { status: 'conflict' });
+test('pushGithubFile: updating an existing file walks commit -> conflict-check -> blob -> tree -> commit -> ref, returns the new blob sha', async () => {
+  const fetchImpl = fakeFetchTracking([
+    { status: 200, body: { sha: 'parent-commit', commit: { tree: { sha: 'parent-tree' } } } }, // GET .../commits/main
+    { status: 200, body: { sha: 'sha1' } }, // GET .../contents/tracker.jsonl (conflict check) -- matches caller's sha
+    { status: 201, body: { sha: 'new-blob' } }, // POST .../git/blobs
+    { status: 201, body: { sha: 'new-tree' } }, // POST .../git/trees
+    { status: 201, body: { sha: 'new-commit' } }, // POST .../git/commits
+    { status: 200, body: {} } // PATCH .../git/refs/heads/main
+  ]);
+  const result = await core.pushGithubFile({ fetchImpl, repo: 'o/r', path: 'tracker.jsonl', branch: 'main', token: 't', text: 'x', sha: 'sha1', commitMessage: 'msg', authorName: 'me', authorEmail: 'me@x' });
+  assert.deepEqual(result, { status: 'ok', sha: 'new-blob' });
+  assert.equal(fetchImpl.calls.length, 6);
+  assert.equal(fetchImpl.calls[2].url, 'https://api.github.com/repos/o/r/git/blobs');
+  assert.deepEqual(fetchImpl.calls[2].body, { content: 'x', encoding: 'utf-8' }); // real utf-8 text, not base64 -- no size inflation on an already-large file
+  assert.deepEqual(fetchImpl.calls[3].body, { tree: [{ path: 'tracker.jsonl', mode: '100644', type: 'blob', sha: 'new-blob' }], base_tree: 'parent-tree' });
+  assert.deepEqual(fetchImpl.calls[4].body.parents, ['parent-commit']);
+  assert.equal(fetchImpl.calls[5].method, 'PATCH'); // fast-forward-only update, not a forced overwrite
+});
 
-  const serverError = await core.pushGithubFile({ fetchImpl: fakeFetch([{ status: 500 }]), repo: 'o/r', path: 'tracker.jsonl', branch: '', token: 't', text: 'x', commitMessage: 'msg', authorName: 'me' });
+test('pushGithubFile: the file\'s blob moved since the caller\'s own sha -- a real conflict, caught before any object is created', async () => {
+  const fetchImpl = fakeFetchTracking([
+    { status: 200, body: { sha: 'parent-commit', commit: { tree: { sha: 'parent-tree' } } } },
+    { status: 200, body: { sha: 'someone-elses-sha' } } // conflict check: does NOT match caller's 'sha1'
+  ]);
+  const result = await core.pushGithubFile({ fetchImpl, repo: 'o/r', path: 'tracker.jsonl', branch: 'main', token: 't', text: 'x', sha: 'sha1', commitMessage: 'msg', authorName: 'me' });
+  assert.deepEqual(result, { status: 'conflict' });
+  assert.equal(fetchImpl.calls.length, 2); // never got as far as creating a blob
+});
+
+test('pushGithubFile: creating a brand new file (no sha) skips the conflict check entirely', async () => {
+  const fetchImpl = fakeFetchTracking([
+    { status: 200, body: { sha: 'parent-commit', commit: { tree: { sha: 'parent-tree' } } } },
+    { status: 201, body: { sha: 'new-blob' } },
+    { status: 201, body: { sha: 'new-tree' } },
+    { status: 201, body: { sha: 'new-commit' } },
+    { status: 200, body: {} }
+  ]);
+  const result = await core.pushGithubFile({ fetchImpl, repo: 'o/r', path: 'tracker.jsonl', branch: 'main', token: 't', text: 'x', commitMessage: 'msg', authorName: 'me' });
+  assert.deepEqual(result, { status: 'ok', sha: 'new-blob' });
+  assert.equal(fetchImpl.calls.length, 5); // one fewer than the conflict-checked case -- no contents lookup
+});
+
+test('pushGithubFile: a genuinely empty branch (no commits yet) creates the very first commit, with no parent, and POSTs a new ref instead of PATCHing one', async () => {
+  const fetchImpl = fakeFetchTracking([
+    { status: 409, body: { message: 'Git Repository is empty.' } }, // GET .../commits/main
+    { status: 201, body: { sha: 'first-blob' } },
+    { status: 201, body: { sha: 'first-tree' } },
+    { status: 201, body: { sha: 'first-commit' } },
+    { status: 201, body: {} } // POST .../git/refs
+  ]);
+  const result = await core.pushGithubFile({ fetchImpl, repo: 'o/r', path: 'tracker.jsonl', branch: 'main', token: 't', text: 'x', commitMessage: 'msg', authorName: 'me' });
+  assert.deepEqual(result, { status: 'ok', sha: 'first-blob' });
+  assert.equal(fetchImpl.calls[2].url, 'https://api.github.com/repos/o/r/git/trees');
+  assert.equal('base_tree' in fetchImpl.calls[2].body, false); // nothing to merge into
+  assert.equal('parents' in fetchImpl.calls[3].body, false); // no parent commit
+  assert.equal(fetchImpl.calls[4].method, 'POST'); // creating the ref, not updating one
+  assert.equal(fetchImpl.calls[4].url, 'https://api.github.com/repos/o/r/git/refs');
+});
+
+test('pushGithubFile: an empty branch name resolves the real default branch first', async () => {
+  const fetchImpl = fakeFetchTracking([
+    { status: 200, body: { default_branch: 'trunk' } }, // GET .../repos/o/r
+    { status: 200, body: { sha: 'parent-commit', commit: { tree: { sha: 'parent-tree' } } } },
+    { status: 201, body: { sha: 'new-blob' } },
+    { status: 201, body: { sha: 'new-tree' } },
+    { status: 201, body: { sha: 'new-commit' } },
+    { status: 200, body: {} }
+  ]);
+  const result = await core.pushGithubFile({ fetchImpl, repo: 'o/r', path: 'tracker.jsonl', branch: '', token: 't', text: 'x', commitMessage: 'msg', authorName: 'me' });
+  assert.deepEqual(result, { status: 'ok', sha: 'new-blob' });
+  assert.equal(fetchImpl.calls[1].url, 'https://api.github.com/repos/o/r/commits/trunk');
+  assert.equal(fetchImpl.calls[5].url, 'https://api.github.com/repos/o/r/git/refs/heads/trunk');
+});
+
+test('pushGithubFile: 409/422 on the final ref update (a real race after the conflict check passed) still maps to conflict, other failures are errors', async () => {
+  const conflictAtRef = await core.pushGithubFile({
+    fetchImpl: fakeFetch([
+      { status: 200, body: { sha: 'parent-commit', commit: { tree: { sha: 'parent-tree' } } } },
+      { status: 200, body: { sha: 'sha1' } },
+      { status: 201, body: { sha: 'new-blob' } },
+      { status: 201, body: { sha: 'new-tree' } },
+      { status: 201, body: { sha: 'new-commit' } },
+      { status: 409 }
+    ]),
+    repo: 'o/r', path: 'tracker.jsonl', branch: 'main', token: 't', text: 'x', sha: 'sha1', commitMessage: 'msg', authorName: 'me'
+  });
+  assert.deepEqual(conflictAtRef, { status: 'conflict' });
+
+  const serverError = await core.pushGithubFile({
+    fetchImpl: fakeFetch([{ status: 500 }]),
+    repo: 'o/r', path: 'tracker.jsonl', branch: 'main', token: 't', text: 'x', commitMessage: 'msg', authorName: 'me'
+  });
   assert.deepEqual(serverError, { status: 'error', message: 'GitHub returned 500' });
 });
 

@@ -26,7 +26,13 @@
     // rejectUploadTimes simulates a real homeserver-side upload rejection
     // (e.g. a size cap) N times before succeeding; Infinity for "never
     // succeeds".
-    rejectUploadTimes: 0
+    rejectUploadTimes: 0,
+    // Pre-seeds the media store for a RECONNECT test -- a fresh
+    // gotoFakeWidgetHost() call is a genuinely new page (mediaStore wiped),
+    // so a second connect() resolving a snapshot uploaded by an earlier
+    // session needs its blob handed back in explicitly. { mxc, bytes }
+    // pairs; bytes as a plain array (JSON-serializable through addInitScript).
+    seedMediaBlobs: []
   }, window.__fakeHostConfig || {});
   let uploadRejectRemaining = cfg.rejectUploadTimes;
   let rejectReadEventsRemaining = cfg.rejectReadEventsTimes;
@@ -34,6 +40,7 @@
 
   window.__state = { sentEntries: [], sentStateEvents: [], pendingEntries: cfg.initialEntries.slice(), requestedCapabilities: null, supportedApiVersionsReply: null, uploadedSnapshotBlobs: [] };
   const mediaStore = new Map(); // mxc -> Uint8Array
+  for (const seed of (cfg.seedMediaBlobs || [])) mediaStore.set(seed.mxc, new Uint8Array(seed.bytes));
 
   const iframe = document.getElementById('widget');
   const url = new URL('../../wigwag-matrix-host.html', location.href);
@@ -147,7 +154,12 @@
     } else if (msg.action === 'org.matrix.msc4039.download_file') {
       const bytes = mediaStore.get(data.content_uri);
       if (!bytes) { reply(msg, { error: { message: 'not found' } }); return; }
-      reply(msg, { file: bytes });
+      // Confirmed live (tracker f6b39bf0): real Element replies with a
+      // genuine Blob, not a raw Uint8Array/ArrayBuffer -- `new
+      // Uint8Array(blob)` silently produces zero bytes (no numeric
+      // `.length` the constructor can read), which this mock's own
+      // previous Uint8Array reply could never have caught.
+      reply(msg, { file: new Blob([bytes]) });
     } else if (msg.action === 'send_event') {
       window.__state.sentEntries.push(data.content);
       reply(msg, { event_id: '$' + Math.random().toString(36).slice(2) });

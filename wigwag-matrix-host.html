@@ -141,6 +141,14 @@
   // a real migration path. Back to the original weak-but-stable hash
   // until a migration (detect + adopt the old-scheme id) is designed
   // properly, not shipped as a "safe" one-line improvement again.
+  // The one column every project genuinely needs regardless of anything
+  // else (tracker f6b39bf0) -- a safe, minimal fallback for a project
+  // whose own real history has no field-definition entries of its own
+  // yet, unlike core.defaultFieldDefs() (a much richer, opinionated demo-
+  // style set) which used to be passed here unconditionally and ended up
+  // permanently baking itself into ANY project's history, not just ones
+  // that genuinely had nothing else to go on.
+  const MINIMAL_FALLBACK_FIELD_DEFS = { title: { label: 'Issue', type: 'issue' } };
   function deriveProjectId(roomId) {
     const hash = Array.from(roomId).reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 0);
     return 'matrix-' + hash.toString(16).padStart(8, '0');
@@ -293,8 +301,8 @@
       // nothing client-side to bypass or rely on. A 'forbidden' result is
       // the real, correct outcome for a non-moderator, not an error to
       // paper over.
-      async createProject(projectId) {
-        const content = core.matrixStateEventContentFromProjectCreation({ createdAt: new Date().toISOString(), createdBy: await this.whoAmI() });
+      async createProject(projectId, createdBy) {
+        const content = core.matrixStateEventContentFromProjectCreation({ createdAt: new Date().toISOString(), createdBy: createdBy || null });
         return core.sendMatrixProjectStateEvent({ fetchImpl: fetch, homeserverUrl, accessToken, roomId, projectId, content });
       },
       // Current-state fetch -- always complete and instant, unlike
@@ -606,7 +614,7 @@
           // connected rides this same live poll -- same best-effort
           // treatment as the other types above.
           try {
-            const projectResult = await postToHost(READ_EVENTS_ACTION, { type: WIDGET_PROJECT_STATE_TYPE, room_ids: [roomId], limit: WIDGET_PAGE_LIMIT, since: readCursor });
+            const projectResult = await postToHost(READ_EVENTS_ACTION, { type: WIDGET_PROJECT_STATE_TYPE, room_ids: [roomId], limit: WIDGET_PAGE_LIMIT, since: readCursor, state_key: true });
             events.push(...((projectResult && projectResult.events) || []));
           } catch (e) { console.warn('[wigwag-matrix-host] project-index read_events failed (non-fatal):', e.message); }
           return { status: 'ok', events: dedupeNew(events) };
@@ -651,7 +659,18 @@
         try {
           const result = await postToHost('org.matrix.msc4039.download_file', { content_uri: mxc });
           if (!result || !result.file) return { status: 'error', message: 'download_file returned no file' };
-          const bytes = result.file instanceof Uint8Array ? result.file : new Uint8Array(result.file);
+          // Confirmed live (tracker f6b39bf0): real Element replies with a
+          // genuine Blob for `file`, not an ArrayBuffer/Uint8Array/plain
+          // array -- `new Uint8Array(blob)` silently produces ZERO bytes
+          // (Blob has no numeric `.length` the constructor can read, so it
+          // reads as an empty array-like), which then failed the
+          // snapshot's own hash check and looked exactly like a corrupted
+          // blob. Blob's bytes only come out via its own async
+          // arrayBuffer() method.
+          let bytes;
+          if (result.file instanceof Uint8Array) bytes = result.file;
+          else if (typeof Blob !== 'undefined' && result.file instanceof Blob) bytes = new Uint8Array(await result.file.arrayBuffer());
+          else bytes = new Uint8Array(result.file);
           return { status: 'ok', bytes };
         } catch (e) {
           return { status: 'error', message: e.message };
@@ -680,9 +699,9 @@
       // sendStateEvent(). A 'forbidden'-shaped rejection here is Element
       // surfacing the SAME real power-level check the direct transport's
       // homeserver PUT would -- not a widget-specific restriction.
-      async createProject(projectId) {
+      async createProject(projectId, createdBy) {
         try {
-          await postToHost('send_event', { type: WIDGET_PROJECT_STATE_TYPE, state_key: projectId, content: core.matrixStateEventContentFromProjectCreation({ createdAt: new Date().toISOString(), createdBy: null }) });
+          await postToHost('send_event', { type: WIDGET_PROJECT_STATE_TYPE, state_key: projectId, content: core.matrixStateEventContentFromProjectCreation({ createdAt: new Date().toISOString(), createdBy: createdBy || null }) });
           return { status: 'ok' };
         } catch (e) {
           // Element reports a capability/power-level rejection as a
@@ -698,20 +717,31 @@
       },
       // Same read_events mechanism as every other type this transport
       // reads (getRoomName above included) -- NOT the direct transport's
-      // real always-current getMatrixRoomState. There is no confirmed
-      // "give me current state regardless of history depth" primitive on
-      // the widget API as used elsewhere in this file, so this inherits
-      // the same depth-limited caveat pullMore's own comment already
-      // documents for ordinary entries: a real fix (if this ever proves
-      // insufficient live) needs verifying against a real Element build,
-      // not assumed here. Multiple state_keys under one type -- unlike
-      // getRoomName's single fixed '' key -- so no state_key filter is
-      // passed; the latest occurrence per state_key (by arrival order)
-      // is taken as current.
+      // real always-current getMatrixRoomState, but genuinely reliable
+      // regardless: confirmed live (tracker f6b39bf0) that Element's
+      // ClientWidgetApi routes a read_events request into its STATE-read
+      // path (real per-state_key current state, no timeline-depth
+      // limitation) only when `state_key` is present at all in the
+      // request; omitting it entirely -- as this used to -- makes Element
+      // treat it as an ordinary TIMELINE read instead, which then gets
+      // rejected outright ("Cannot read room events of this type") since
+      // this widget was only ever granted a receive.state_event capability
+      // for this type, not receive.event. `state_key: true` is the
+      // documented wildcard sentinel for "every state_key of this type",
+      // as opposed to a specific key string like getRoomName's `''`.
+      // Genuinely returns every currently-live state_key this way -- not
+      // "latest occurrence per key by arrival order" as previously
+      // (wrongly) assumed here.
       async getProjectIndex() {
         try {
-          const result = await postToHost(READ_EVENTS_ACTION, { type: WIDGET_PROJECT_STATE_TYPE, room_ids: [roomId], limit: 2000 });
+          const result = await postToHost(READ_EVENTS_ACTION, { type: WIDGET_PROJECT_STATE_TYPE, room_ids: [roomId], limit: 2000, state_key: true });
           const events = (result && result.events) || [];
+          // Temporary diagnostic (live bug: only the newest of several real
+          // dev.wigwag.project state events surfaces in the switcher) --
+          // makes it a one-line copy/paste to see exactly what Element's
+          // read_events actually handed back, instead of digging through
+          // devtools' collapsed object tree.
+          console.log('[wigwag-widget] getProjectIndex raw events:', events.length, JSON.stringify(events.map(ev => ({ state_key: ev && ev.state_key, content: ev && ev.content }))));
           const projectIds = new Set();
           for (const ev of events) {
             const id = core.projectIdFromMatrixStateEvent(ev);
@@ -742,7 +772,14 @@
 
   function readCurrentLocalDoc(projectId) {
     const raw = localStorage.getItem(docKey(projectId));
-    const doc = raw ? JSON.parse(raw) : { fieldDefs: core.defaultFieldDefs(), projectHistory: [], issues: [], hiddenFieldIds: [] };
+    // {} not core.defaultFieldDefs() -- see reconcileIntoLocal's own
+    // comment (tracker f6b39bf0): that fallback bakes in real, permanent
+    // history entries for every field it has that the project's own
+    // history doesn't happen to mention, which is only ever reasonable
+    // for the room's legacy/untagged-entries default project, not a
+    // never-yet-bootstrapped project reached here as a defensive
+    // fallback (normally bootstrapLocalStorage has already run first).
+    const doc = raw ? JSON.parse(raw) : { fieldDefs: MINIMAL_FALLBACK_FIELD_DEFS, projectHistory: [], issues: [], hiddenFieldIds: [] };
     const hydratedProject = core.hydrateProject(doc.fieldDefs, doc.projectHistory || []);
     const hydratedIssues = (doc.issues || []).map(iss => core.hydrateIssue(iss, hydratedProject.fieldDefs));
     return { hiddenFieldIds: doc.hiddenFieldIds || [], fieldDefs: hydratedProject.fieldDefs, projectHistory: hydratedProject.projectHistory, issues: hydratedIssues };
@@ -913,7 +950,21 @@
       // project -- untagged (pre-projectId) entries only ever belong to
       // that one, so a second, genuinely different project can never
       // silently absorb them.
-      const remoteDoc = core.hydrateProjectFromMatrixTimeline(remoteRawEvents, { fieldDefs: core.defaultFieldDefs(), projectId, projectName, includeUntaggedEntries: includeUntagged });
+      // Live-reported (Tom, tracker f6b39bf0): an explicitly-tagged
+      // project sprouted a bunch of fields it never actually had (the
+      // built-in demo-style set core.defaultFieldDefs() carries) within
+      // a poll tick or two of being created. hydrateProjectFromMatrixTimeline's
+      // own fallbackFieldDefs isn't just a "use this if truly nothing
+      // else exists" default -- backfillProjectHistory bakes in a real,
+      // permanent history entry for EVERY field the fallback has that
+      // the project's own real history doesn't happen to mention, no
+      // matter how many real fields it already has. core.defaultFieldDefs()
+      // is only a reasonable stand-in for the room's own legacy/
+      // untagged-entries default project (genuinely pre-fieldDefs data,
+      // nothing else to go on) -- any other, modern, explicitly-created
+      // project must only ever show fields it actually has real history
+      // for.
+      const remoteDoc = core.hydrateProjectFromMatrixTimeline(remoteRawEvents, { fieldDefs: includeUntagged ? core.defaultFieldDefs() : MINIMAL_FALLBACK_FIELD_DEFS, projectId, projectName, includeUntaggedEntries: includeUntagged });
       for (const item of flattenEntries(remoteDoc)) knownEntryIds.add(item.entry.id);
 
       const current = readCurrentLocalDoc(projectId);
@@ -925,6 +976,39 @@
         issues: issueMerge.mergedIssues
       };
       localStorage.setItem(docKey(projectId), JSON.stringify(docStorable(mergedHydrated, current.hiddenFieldIds)));
+
+      // Keep the switcher's own display name current for EVERY bridged
+      // project, not just whichever one is currently open -- tracker
+      // f6b39bf0, live-reported: two viewers disagreeing on a project's
+      // name, because PROJECTS_KEY.milestones[].name (what the switcher
+      // actually renders) was only ever refreshed when a project was
+      // actively opened/switched to. A project sitting un-opened in the
+      // switcher kept whatever name it had at first discovery, forever,
+      // even after a real rename landed in the room's own signed history
+      // afterward. The current, real name is already derived right above
+      // on every poll tick for every bridged project -- it just never
+      // used to reach the switcher's own local cache. Deliberately a
+      // plain local write, not a state event: the name's authoritative
+      // source stays the signed __project_name__ history entry (anyone
+      // can rename, same as any other field edit) -- see the tracker
+      // comment thread for why mirroring it into dev.wigwag.project's
+      // state content was considered and rejected (Matrix's power-level
+      // model can't distinguish creating a new state_key from updating an
+      // existing one, so keeping a state-mirrored name fresh would need
+      // the same moderator power the creation gate uses, silently
+      // failing to propagate a non-moderator's rename).
+      const derivedName = core.deriveProjectName(mergedHydrated.projectHistory);
+      if (derivedName && derivedName !== projectName) {
+        bridgedProjects.set(projectId, { name: derivedName, includeUntagged });
+        try {
+          const projects = JSON.parse(localStorage.getItem(core.PROJECTS_KEY) || 'null');
+          const milestone = projects && Array.isArray(projects.milestones) && projects.milestones.find(m => m.id === projectId);
+          if (milestone && milestone.name !== derivedName) {
+            milestone.name = derivedName;
+            localStorage.setItem(core.PROJECTS_KEY, JSON.stringify(projects));
+          }
+        } catch (e) { /* best-effort -- the switcher just keeps showing the previous name until the next successful reconcile */ }
+      }
     }
 
     // Creating one issue writes to localStorage more than once in quick
@@ -947,6 +1031,19 @@
           pushAgainRequested.delete(projectId);
           const current = readCurrentLocalDoc(projectId);
           const toSend = flattenEntries(current).filter(item => !knownEntryIds.has(item.entry.id));
+          // A batch this large gets the same one-blob-plus-manifest
+          // treatment as a fresh bulk adopt (tracker f6b39bf0), not
+          // individual sends -- otherwise a paste-merge import into a
+          // project that's already bridged (as opposed to a brand new
+          // adopt, the only case this used to cover) reintroduces exactly
+          // the hundreds-of-requests-at-once problem the snapshot
+          // mechanism exists to avoid. pushSnapshotForProject always
+          // captures the FULL current doc and marks every entry id as
+          // known, so toSend's own items are correctly covered by it too.
+          if (toSend.length >= SNAPSHOT_ENTRY_THRESHOLD) {
+            await pushSnapshotForProject(projectId);
+            continue;
+          }
           for (const item of toSend) {
             knownEntryIds.add(item.entry.id); // mark before sending -- a resend on failure is a harmless duplicate (deduped by entry id on read), a missed send from a race is not
             const content = core.matrixEventContentFromEntry({ ...item, projectId });
@@ -1095,7 +1192,7 @@
     // double-send incident's own lesson: a rejected/failed write must
     // never look like it succeeded.
     async function adoptOneLocalProject(projectId, projectName) {
-      const createResult = await transport.createProject(projectId);
+      const createResult = await transport.createProject(projectId, resolvedMatrixUserId);
       if (createResult.status !== 'ok') {
         console.warn('[wigwag-matrix-host] project creation rejected for', projectId, createResult);
         try {
@@ -1132,7 +1229,17 @@
           capabilities: { mode: 'room', multiIdentity: false, sharedProjectContext: true },
           snapshot: localStorage.dumpAll(),
           matrixUserId: resolvedMatrixUserId,
-          fallbackDisplayName: resolvedDisplayName
+          fallbackDisplayName: resolvedDisplayName,
+          // Cosmetic/metadata prefs (column order, sort, etc.) are keyed
+          // by projectId alone, real localStorage, no room-awareness --
+          // predates Room Mode, built for Local Mode's "many unrelated
+          // projects in one browser" case. A project id CAN repeat across
+          // rooms (more so now that Receive can reuse an original id), so
+          // the iframe needs this to compose a room-scoped key itself
+          // (roomId:projectId) rather than bleeding those prefs across
+          // rooms that happen to share a project id. The iframe otherwise
+          // has zero knowledge of which room it's in, by design.
+          roomId: roomId
         }, '*');
         return;
       }
@@ -1254,7 +1361,10 @@
           const isDefault = p.id === deriveProjectId(roomId);
           bridgedProjects.set(p.id, { name: p.label, includeUntagged: isDefault });
 
-          const remoteDoc = core.hydrateProjectFromMatrixTimeline(remoteRawEvents, { fieldDefs: core.defaultFieldDefs(), projectId: p.id, projectName: p.label, includeUntaggedEntries: isDefault });
+          // See reconcileIntoLocal's own comment on why the fallback is
+          // conditional -- core.defaultFieldDefs() only belongs to the
+          // room's legacy/untagged-entries default project.
+          const remoteDoc = core.hydrateProjectFromMatrixTimeline(remoteRawEvents, { fieldDefs: isDefault ? core.defaultFieldDefs() : MINIMAL_FALLBACK_FIELD_DEFS, projectId: p.id, projectName: p.label, includeUntaggedEntries: isDefault });
           for (const item of flattenEntries(remoteDoc)) knownEntryIds.add(item.entry.id);
           const bootstrapResult = await bootstrapLocalStorage(p.id, p.label, docStorable({ fieldDefs: remoteDoc.fields, projectHistory: remoteDoc.projectHistory, issues: remoteDoc.issues }, []), transport, fallbackUserId, fallbackDisplayName);
           if (bootstrapResult.status !== 'ok') return bootstrapResult;
@@ -1310,8 +1420,33 @@
             for (const p of discovered) {
               if (bridgedProjects.has(p.id)) continue;
               const isDefault = p.id === legacyDefaultProjectId;
+              // A brand new project's ENTIRE history can legitimately live
+              // only inside a snapshot blob (a bulk-adopted "+ New
+              // project" always pushes just one, never plain entries) --
+              // a scan of remoteRawEvents alone can never see that (same
+              // reason connect() itself has to resolve snapshots before
+              // calling discoverProjects, see its own comment). Without
+              // this, a viewer who was already connected when this
+              // project was created got the right id (once auto-switch
+              // was fixed) but its name/content stayed permanently stuck
+              // behind a generic fallback (live-reported, tracker
+              // f6b39bf0) -- reconcileIntoLocal's own later correction
+              // pass can't help either, since it re-derives from this
+              // same remoteRawEvents, which never had the content to find.
+              const manifest = core.findLatestSnapshotManifests(remoteRawEvents).get(p.id);
+              if (manifest) {
+                const resolved = await core.resolveSnapshotPayload(manifest, { downloadFn: transport.downloadSnapshotBlob });
+                if (resolved) {
+                  remoteRawEvents = remoteRawEvents.concat(resolved.items.map(item => ({ type: core.WIGWAG_MATRIX_ENTRY_TYPE, content: core.matrixEventContentFromEntry(item) })));
+                  lastSnapshotEntryCount.set(p.id, resolved.items.length);
+                  if (manifest.createdAt) lastSnapshotAt.set(p.id, manifest.createdAt);
+                }
+              }
               bridgedProjects.set(p.id, { name: p.label, includeUntagged: isDefault });
-              const remoteDoc = core.hydrateProjectFromMatrixTimeline(remoteRawEvents, { fieldDefs: core.defaultFieldDefs(), projectId: p.id, projectName: p.label, includeUntaggedEntries: isDefault });
+              // See reconcileIntoLocal's own comment on why the fallback
+              // is conditional -- core.defaultFieldDefs() only belongs to
+              // the room's legacy/untagged-entries default project.
+              const remoteDoc = core.hydrateProjectFromMatrixTimeline(remoteRawEvents, { fieldDefs: isDefault ? core.defaultFieldDefs() : MINIMAL_FALLBACK_FIELD_DEFS, projectId: p.id, projectName: p.label, includeUntaggedEntries: isDefault });
               for (const item of flattenEntries(remoteDoc)) knownEntryIds.add(item.entry.id);
               await bootstrapLocalStorage(p.id, p.label, docStorable({ fieldDefs: remoteDoc.fields, projectHistory: remoteDoc.projectHistory, issues: remoteDoc.issues }, []), transport, fallbackUserId, fallbackDisplayName);
               reconcileIntoLocal(p.id);

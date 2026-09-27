@@ -20,7 +20,7 @@ test.describe('GitHub repo sync', () => {
 
     await h.waitUntil(() => Promise.resolve(gh.pushCount >= 1));
     expect(gh.pushCount).toBe(1);
-    const pushed = Buffer.from(gh.pushes[0].content, 'base64').toString('utf8');
+    const pushed = gh.pushes[0];
     expect(pushed).toContain('"type":"fields"');
   });
 
@@ -40,7 +40,7 @@ test.describe('GitHub repo sync', () => {
     await page.reload({ waitUntil: 'networkidle' });
 
     await h.waitUntil(() => Promise.resolve(gh.pushCount >= 1));
-    const pushed = Buffer.from(gh.pushes[0].content, 'base64').toString('utf8');
+    const pushed = gh.pushes[0];
     const lines = pushed.trim().split('\n');
     const envelope = JSON.parse(lines[0]);
     expect(envelope.type).toBe('wigwag.export');
@@ -199,7 +199,7 @@ test.describe('GitHub repo sync', () => {
       await page.waitForTimeout(600);
       await h.waitUntil(() => Promise.resolve(gh.pushCount >= 1));
 
-      const pushed = Buffer.from(gh.pushes[gh.pushes.length - 1].content, 'base64').toString('utf8');
+      const pushed = gh.pushes[gh.pushes.length - 1];
       expect(pushed).toContain("Someone else's real project notes.");
     });
 
@@ -389,18 +389,16 @@ test.describe('GitHub repo sync', () => {
     await h.gotoTracker(page);
     await expect(footer).toHaveCount(0); // no repo configured yet -- nothing to show
 
-    // Slow the PUT down so the syncing (spinner) state is actually
-    // observable, not just a flash.
+    // Slow the final ref-update step down so the syncing (spinner) state
+    // is actually observable, not just a flash -- pushGithubFile's own
+    // multi-step Git Data API sequence (blob -> tree -> commit -> ref)
+    // stays "in flight" (app-level syncing status) until this last call
+    // resolves, same as the old single-PUT flow did.
     let resolvePut;
     const putGate = new Promise(r => { resolvePut = r; });
-    await page.route(`https://api.github.com/repos/${REPO}/contents/tracker.jsonl`, async (route) => {
-      if (route.request().method() === 'PUT') {
-        await putGate;
-        gh.pushCount++;
-        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ content: { sha: 'sha-1' } }) });
-        return;
-      }
-      await route.fulfill({ status: 404, contentType: 'application/json', body: '{}' });
+    await page.route(`https://api.github.com/repos/${REPO}/git/refs/heads/main`, async (route) => {
+      await putGate;
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ sha: 'sha-after-push-1' }) });
     });
 
     await h.setGithubRepoSync(page, { repo: REPO, token: 'ghp_faketoken' });

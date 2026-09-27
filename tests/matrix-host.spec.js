@@ -406,6 +406,55 @@ test.describe('wigwag-matrix-host.html: widget-embedded transport', () => {
     expect(titlePush.entry.value).toBe('Widget-imported issue');
   });
 
+  // Live-reported (Tom, tracker f6b39bf0): a real Element reply to
+  // org.matrix.msc4039.download_file carries the file as a genuine Blob,
+  // not a raw Uint8Array/ArrayBuffer -- `new Uint8Array(blob)` silently
+  // produced ZERO bytes (Blob has no numeric `.length` the constructor
+  // can read), which then failed the snapshot's own hash check and made
+  // a perfectly good snapshot look corrupted/absent. Every existing
+  // snapshot test decrypted the uploaded blob's bytes DIRECTLY (bypassing
+  // the real download_file round trip entirely), so this was invisible
+  // here until fake-widget-host.html's own mock reply was corrected to
+  // match real Element (a Blob, not a Uint8Array) -- this test drives a
+  // genuine SECOND, independent connect() (a real reconnect, new page,
+  // mediaStore wiped) that must resolve the snapshot via the real
+  // postMessage round trip to get the project's real name back at all.
+  test('a fresh reconnect through the widget transport can actually resolve a previously-uploaded snapshot (not just decrypt its bytes directly)', async ({ page }) => {
+    const ROOM_ID = '!widgetreconnect:example.org';
+    await h.gotoFakeWidgetHost(page, { roomId: ROOM_ID, roomName: 'Widget Reconnect Room', initialEntries: [] });
+    const widget = page.frameLocator('#widget');
+    await expect(widget.locator('#frame')).toBeVisible();
+    const frame = widget.frameLocator('#frame');
+    await expect(frame.locator('[data-testid=room-no-projects]')).toBeVisible();
+    await frame.locator('[data-testid=btn-create-first-room-project]').click();
+    await page.waitForTimeout(500);
+
+    const stateAfterCreate = await page.evaluate(() => window.__state);
+    const stateEvent = stateAfterCreate.sentStateEvents.find(e => e.type === 'dev.wigwag.project');
+    expect(stateEvent).toBeTruthy();
+    const manifest = stateAfterCreate.sentEntries.find(c => c.mxc);
+    expect(manifest).toBeTruthy();
+    const blob = stateAfterCreate.uploadedSnapshotBlobs.find(b => b.mxc === manifest.mxc);
+    expect(blob).toBeTruthy();
+
+    // A genuinely fresh page -- mediaStore, bridgedProjects, everything
+    // wiped -- seeded with exactly what the room would actually hold:
+    // the state event and the manifest as real timeline events, plus the
+    // uploaded blob available for a real download_file call to find.
+    await h.gotoFakeWidgetHost(page, {
+      roomId: ROOM_ID, roomName: 'Widget Reconnect Room',
+      initialEntries: [
+        { type: 'dev.wigwag.project', state_key: stateEvent.state_key, content: stateEvent.content },
+        { type: 'dev.wigwag.snapshot', content: manifest }
+      ],
+      seedMediaBlobs: [{ mxc: blob.mxc, bytes: Array.from(Object.values(blob.bytes)) }]
+    });
+    const widget2 = page.frameLocator('#widget');
+    await expect(widget2.locator('#frame')).toBeVisible();
+    const frame2 = widget2.frameLocator('#frame');
+    await expect(frame2.locator('[data-testid=tracker-name-title]')).toHaveText('Untitled Project 1');
+  });
+
   test('a remote entry arriving via read_events on a later poll is merged into the widget-embedded iframe live', async ({ page, browserName }) => {
     test.skip(browserName !== 'chromium', 'timer-dependent, one browser is enough to prove the mechanism');
     await h.gotoFakeWidgetHost(page, { roomId: '!widgetroom:example.org', roomName: 'Widget Room', initialEntries: seedLegacyEntries() });
@@ -709,6 +758,57 @@ test.describe('wigwag-matrix-host.html: multiple projects in one room', () => {
     await expect(frame.locator('[data-testid=row]')).toHaveCount(1);
     await expect(frame.locator('[data-testid=row]')).toContainText('In the named project');
   });
+
+  // Live-reported (Tom): two viewers disagreeing on a project's name.
+  // Root cause -- PROJECTS_KEY.milestones[].name (what the switcher
+  // actually renders) was only ever refreshed when a project was actively
+  // opened/switched to; a project sitting un-opened in the switcher kept
+  // whatever name it had at first discovery, forever, even after a real
+  // rename landed in the room's own signed history afterward.
+  // reconcileIntoLocal already re-derives every bridged project's real
+  // name from its merged history on every poll tick -- it just never used
+  // to reach the switcher's own local cache. This drives a rename arriving
+  // on a LATER poll, for a project this viewer never opens at all.
+  test('a project\'s rename that arrives on a later poll updates the switcher immediately, even if this viewer never opens that project', async ({ page }) => {
+    const state = h.mockMatrixClientApi(page, {
+      homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
+      initialEntries: [
+        entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'In the active project', sortKey: 1, origin: 'authored' } }), // untagged -- the legacy default, what this viewer opens
+        entryEvent({ issueId: 'i2', entry: { id: 'h2', field: 'title', value: 'In the other project', sortKey: 2, origin: 'authored' }, projectId: 'proj-other' }),
+      ]
+    });
+    await page.goto('/wigwag-matrix-host.html');
+    await page.locator('#homeserverUrl').fill(HOMESERVER);
+    await page.locator('#accessToken').fill('tok123');
+    await page.locator('#roomId').fill(ROOM_ID);
+    await page.locator('#connectBtn').click();
+    await expect(page.locator('#frame')).toBeVisible();
+    await page.waitForTimeout(300);
+
+    const frame = page.frameLocator('#frame');
+    await frame.locator('[data-testid=btn-switcher]').click();
+    const rows = frame.locator('[data-testid=switcher-project-row]');
+    await expect(rows.filter({ hasText: 'proj-other'.slice(-8) })).toHaveCount(1); // placeholder label, no real name yet
+    await frame.locator('[data-testid=btn-switcher]').click(); // close it again -- never opened proj-other
+
+    // Someone else renames proj-other -- arrives on this viewer's next
+    // poll, as a real signed project-scope entry, same as any other edit.
+    state.pendingEntries.push({
+      type: 'dev.wigwag.entry',
+      content: { v: 1, scope: 'project', projectId: 'proj-other', entry: { id: 'rn1', field: '__project_name__', value: 'Renamed By Someone Else', sortKey: 3, origin: 'authored' } }
+    });
+
+    await expect(async () => {
+      await frame.locator('[data-testid=btn-switcher]').click();
+      await expect(frame.locator('[data-testid=switcher-project-row]').filter({ hasText: 'Renamed By Someone Else' })).toHaveCount(1);
+      await frame.locator('[data-testid=btn-switcher]').click();
+    }).toPass({ timeout: 8000 }); // next 5s poll tick picks it up, no need to ever open the project
+
+    // The local switcher cache itself was actually updated, not just this
+    // one render -- reopening the switcher again later still shows it.
+    const projects = await page.evaluate(() => JSON.parse(window.__wigwagHostStorage.getItem('git_native_tracker_milestones_v1')));
+    expect(projects.milestones.find(m => m.id === 'proj-other').name).toBe('Renamed By Someone Else');
+  });
 });
 
 // Tracker f6b39bf0, live-reported rate-limit incident: project creation is
@@ -757,6 +857,236 @@ test.describe('wigwag-matrix-host.html: moderator-gated project creation', () =>
     // initial write, but must hold no rejected project).
     const projectsAfter = await page.evaluate(() => JSON.parse(window.__wigwagHostStorage.getItem('git_native_tracker_milestones_v1') || 'null'));
     expect((projectsAfter && projectsAfter.milestones) || []).toEqual([]);
+  });
+
+  // Live-reported (Tom, tracker f6b39bf0 follow-up): the empty-room screen
+  // only ever offered "+ New project" -- no way to receive a project
+  // someone sends you (paste or file), unlike the normal in-app "Receive"
+  // flow. Wired through the SAME handleApplyUpdateParsed used everywhere
+  // else: content with no matching local project id always lands via
+  // importParsedAsNewProject, which is exactly what happens here since
+  // the room has zero projects to match against.
+  test('a moderator can paste-receive a project from the empty-room screen, same underlying import path as the main app', async ({ page }) => {
+    h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: [] });
+    await page.goto('/wigwag-matrix-host.html');
+    await page.locator('#homeserverUrl').fill(HOMESERVER);
+    await page.locator('#accessToken').fill('tok123');
+    await page.locator('#roomId').fill(ROOM_ID);
+    await page.locator('#connectBtn').click();
+    const frame = page.frameLocator('#frame');
+    await expect(frame.locator('[data-testid=room-no-projects]')).toBeVisible();
+
+    await frame.locator('[data-testid=btn-receive-first-room-project]').click();
+    await expect(frame.locator('[data-testid=room-no-projects-receive-modal]')).toBeVisible();
+    const pastedJsonl = [
+      JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, id: 'received-proj-1', name: 'Received Project' }),
+      JSON.stringify({ type: 'issue', id: 'ri1', num: 1, fieldRefs: {}, values: { title: 'Received issue' }, comments: [], history: [] })
+    ].join('\n');
+    await frame.locator('[data-testid=room-no-projects-receive-textarea]').fill(pastedJsonl);
+    await frame.locator('[data-testid=btn-submit-room-no-projects-receive]').click();
+    // Goes straight to importParsedAsNewProject, not through
+    // handleApplyUpdateParsed's generic "brand new project?" confirm --
+    // with zero projects in the room there is no existing project a
+    // paste could plausibly be an update to, so that confirm would never
+    // be ambiguous here; skipping it is simpler and one less click.
+    await page.waitForTimeout(300);
+
+    await expect(frame.locator('[data-testid=room-no-projects]')).toBeHidden();
+    await expect(frame.locator('[data-testid=row]')).toContainText('Received issue');
+  });
+
+  // Live-reported (Tom): two accounts viewing the SAME room-mode project
+  // disagreed on its name -- one saw the real "Untitled Project 1", the
+  // other fell back to "Untitled" then "Project <id tail>". Root cause:
+  // createBlankProject only ever wrote the initial name to the local,
+  // unsynced PROJECTS_KEY cache -- never a real signed history entry,
+  // unlike every LATER rename. Fixed by having it append one, same as a
+  // rename does; verified here via a full reconnect (a fresh session
+  // discovering the project purely from the room's own signed history,
+  // never having created it locally itself -- the same shape as a
+  // second account).
+  test('a project created via "+ New project" has a real name a totally fresh session can derive, not just a local-only label', async ({ page }) => {
+    h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: [] });
+    await page.goto('/wigwag-matrix-host.html');
+    await page.locator('#homeserverUrl').fill(HOMESERVER);
+    await page.locator('#accessToken').fill('tok123');
+    await page.locator('#roomId').fill(ROOM_ID);
+    await page.locator('#connectBtn').click();
+    let frame = page.frameLocator('#frame');
+    await expect(frame.locator('[data-testid=room-no-projects]')).toBeVisible();
+    await frame.locator('[data-testid=btn-create-first-room-project]').click();
+    await page.waitForTimeout(300);
+    await expect(frame.locator('[data-testid=tracker-name-title]')).toHaveText('Untitled Project 1');
+    await page.waitForTimeout(800); // let the new name-history entry actually push to the room
+
+    // A totally fresh session, reconnecting from scratch -- has never
+    // created this project locally, only ever sees it via the room's own
+    // signed history (matching a second, independent account exactly).
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+    await page.locator('#homeserverUrl').fill(HOMESERVER);
+    await page.locator('#accessToken').fill('tok123');
+    await page.locator('#roomId').fill(ROOM_ID);
+    await page.locator('#connectBtn').click();
+    frame = page.frameLocator('#frame');
+    await expect(frame.locator('[data-testid=tracker-name-title]')).toHaveText('Untitled Project 1');
+  });
+
+  // Live-reported (Tom, tracker f6b39bf0), the follow-up once the id/
+  // auto-switch bug above was fixed: the right project now appears, but
+  // still under the wrong (fallback) name -- because a REAL "+ New
+  // project" always bulk-adopts by pushing its entire history as a
+  // single snapshot blob, never plain entries, and the mid-session
+  // discovery loop (unlike connect() itself) never resolves snapshots at
+  // all. A plain-entries-only project (the test above) could never have
+  // caught this.
+  test('a viewer already sitting on the empty-room screen resolves a newly-appeared project\'s snapshot-only name via the live poll, not stuck on a generic fallback', async ({ page, browserName }) => {
+    test.skip(browserName !== 'chromium', 'timer-dependent, one browser is enough to prove the mechanism');
+    const items = [
+      { scope: 'project', entry: { id: 'ph1', field: '__project_name__', value: 'Snapshot-Only Mid-Session Project', sortKey: 1, origin: 'authored' }, projectId: 'mid-session-snap-project' }
+    ];
+    const { manifestEvent, mediaBlob } = await snapshotEvent({ projectId: 'mid-session-snap-project', snapshotId: 'snap-mid-1', items, cutoffSortKey: 1, mxc: 'mxc://example.org/midsession1' });
+    const state = h.mockMatrixClientApi(page, {
+      homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
+      initialEntries: [], seedMediaBlobs: [mediaBlob]
+    });
+    await page.goto('/wigwag-matrix-host.html');
+    await page.locator('#homeserverUrl').fill(HOMESERVER);
+    await page.locator('#accessToken').fill('tok123');
+    await page.locator('#roomId').fill(ROOM_ID);
+    await page.locator('#connectBtn').click();
+    const frame = page.frameLocator('#frame');
+    await expect(frame.locator('[data-testid=room-no-projects]')).toBeVisible();
+
+    // A DIFFERENT, moderator account's "+ New project" -- the state
+    // event plus the one snapshot manifest that carries its ENTIRE
+    // history, exactly what a real bulk adopt sends.
+    state.pendingEntries.push(
+      { type: 'dev.wigwag.project', state_key: 'mid-session-snap-project', content: { v: 1, createdAt: new Date().toISOString(), createdBy: '@someone-else:example.org' } },
+      manifestEvent
+    );
+
+    await expect(frame.locator('[data-testid=room-no-projects]')).toBeHidden({ timeout: 8000 });
+    await expect(frame.locator('[data-testid=tracker-name-title]')).toHaveText('Snapshot-Only Mid-Session Project');
+  });
+
+  // Live-reported (Tom, tracker f6b39bf0): a viewer who was ALREADY
+  // connected -- sitting on the "no projects yet" screen -- when a
+  // moderator (a different account) created the room's first project
+  // saw it show up as "Untitled" with "no id" when opened, and it never
+  // recovered. Root cause: the PROJECTS_KEY storage-change handler only
+  // ever refreshed s.projects, by design never touching s.projectId
+  // (right call for Local Mode's cross-tab sync, where another tab
+  // creating a project should never steal this tab's focus). In Room
+  // Mode, a viewer with ZERO projects has nothing of its own to protect
+  // -- s.projectId stayed null forever, permanently hitting every "no
+  // matching project" fallback even once s.projects was no longer empty.
+  test('a viewer already sitting on the empty-room screen auto-switches into a project that appears via the live poll, not stuck on "Untitled" with no id', async ({ page, browserName }) => {
+    test.skip(browserName !== 'chromium', 'timer-dependent, one browser is enough to prove the mechanism');
+    const state = h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: [] });
+    await page.goto('/wigwag-matrix-host.html');
+    await page.locator('#homeserverUrl').fill(HOMESERVER);
+    await page.locator('#accessToken').fill('tok123');
+    await page.locator('#roomId').fill(ROOM_ID);
+    await page.locator('#connectBtn').click();
+    const frame = page.frameLocator('#frame');
+    await expect(frame.locator('[data-testid=room-no-projects]')).toBeVisible();
+
+    // A DIFFERENT, moderator account creates the room's first project
+    // while THIS viewer is already connected and sitting on the empty
+    // screen.
+    const otherProjectId = 'mid-session-first-project';
+    state.pendingEntries.push(
+      { type: 'dev.wigwag.project', state_key: otherProjectId, content: { v: 1, createdAt: new Date().toISOString(), createdBy: '@someone-else:example.org' } },
+      { type: 'dev.wigwag.entry', content: { v: 1, scope: 'project', projectId: otherProjectId, entry: { id: 'mp1', field: '__project_name__', value: "Someone Else's Project", sortKey: 1, origin: 'authored' } } }
+    );
+
+    await expect(frame.locator('[data-testid=room-no-projects]')).toBeHidden({ timeout: 8000 });
+    await expect(frame.locator('[data-testid=tracker-name-title]')).toHaveText("Someone Else's Project");
+
+    // The project-id-in-slide-over feature (also live-reported: "appears
+    // to have no id when opened") must show the REAL id, not an empty
+    // ref from a still-null projectId.
+    await frame.locator('[data-testid=btn-notes]').click();
+    await expect(frame.locator('[data-testid=notes-shortref]')).toContainText(otherProjectId.slice(0, 8));
+  });
+
+  // Targets the exact race Tom found live: the OLD fix appended the name
+  // entry via a SEPARATE, later write (appendProjectHistory, after
+  // switchProject) -- which only mattered if it landed before the room's
+  // adoption flow (moderator-gated state event, then an immediate initial
+  // snapshot of "whatever the doc looks like right now") got there first.
+  // Live evidence showed the real widget-transport round trip winning
+  // that race: the pushed snapshot's cutoffSortKey exactly matched the
+  // project's OWN creation timestamp, proving the name entry didn't
+  // exist in the doc yet when the snapshot was built. The fix bakes the
+  // name entry into the doc's FIRST write instead, so there's no second
+  // write left to race against -- checked here by inspecting the FIRST
+  // snapshot's own decrypted contents directly, not just the eventual
+  // state after a reconnect (which the earlier, still-racy fix already
+  // passed against this mock, since its own timing happened to favor
+  // the local write).
+  test('a project created via "+ New project" has its name baked into the FIRST snapshot pushed, not a separate later write', async ({ page }) => {
+    const state = h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: [] });
+    await page.goto('/wigwag-matrix-host.html');
+    await page.locator('#homeserverUrl').fill(HOMESERVER);
+    await page.locator('#accessToken').fill('tok123');
+    await page.locator('#roomId').fill(ROOM_ID);
+    await page.locator('#connectBtn').click();
+    const frame = page.frameLocator('#frame');
+    await expect(frame.locator('[data-testid=room-no-projects]')).toBeVisible();
+    await frame.locator('[data-testid=btn-create-first-room-project]').click();
+    await page.waitForTimeout(500);
+
+    expect(state.sentSnapshotManifests.length).toBe(1);
+    const manifest = state.sentSnapshotManifests[0];
+    const items = await decryptedSnapshotItems(state, manifest);
+    const namePush = items.find(i => i.entry.field === '__project_name__');
+    expect(namePush, 'the name entry must be in the FIRST snapshot, not a later separate send').toBeTruthy();
+    expect(namePush.entry.value).toBe('Untitled Project 1');
+  });
+
+  // Live-reported (Tom, tracker f6b39bf0): a project created via "+ New
+  // project" "sprouted" extra fields (Related/Type/Delivery Teams/
+  // Mitigation) it never actually had, within a poll tick or two of
+  // creation. Root cause: hydrateProjectFromMatrixTimeline's own
+  // fallbackFieldDefs isn't just "use this if nothing else exists" --
+  // backfillProjectHistory bakes a real, permanent history entry for
+  // EVERY field the fallback carries that the project's own real history
+  // doesn't happen to mention, regardless of how many real fields
+  // already exist. core.defaultFieldDefs() (the built-in demo-style rich
+  // set) was being passed as that fallback for every project, not just
+  // the room's genuinely-legacy untagged-entries default one.
+  test('a project created via "+ New project" never sprouts fields from the built-in default set it never actually had', async ({ page }) => {
+    h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: [] });
+    await page.goto('/wigwag-matrix-host.html');
+    await page.locator('#homeserverUrl').fill(HOMESERVER);
+    await page.locator('#accessToken').fill('tok123');
+    await page.locator('#roomId').fill(ROOM_ID);
+    await page.locator('#connectBtn').click();
+    const frame = page.frameLocator('#frame');
+    await expect(frame.locator('[data-testid=room-no-projects]')).toBeVisible();
+    await frame.locator('[data-testid=btn-create-first-room-project]').click();
+    await page.waitForTimeout(300);
+
+    const projectId = await page.evaluate(() =>
+      JSON.parse(window.__wigwagHostStorage.getItem('git_native_tracker_milestones_v1')).activeMilestoneId);
+    // Past at least one full poll tick (5s) -- reconcileIntoLocal's own
+    // re-hydration is exactly where the bug injected the extra fields.
+    await page.waitForTimeout(5500);
+
+    const doc = await page.evaluate((pid) =>
+      JSON.parse(window.__wigwagHostStorage.getItem('git_native_tracker_v1:' + pid)), projectId);
+    const fieldIds = Object.keys(doc.fieldDefs);
+    // core.defaultFieldDefs()'s own extra fields beyond what "+ New
+    // project" (blankProjectFieldDefs) actually starts with.
+    expect(fieldIds).not.toContain('linked'); // Related
+    expect(fieldIds).not.toContain('type'); // Type
+    expect(fieldIds).not.toContain('teams'); // Delivery Teams
+    expect(fieldIds).not.toContain('mitigation'); // Mitigation
+    // Its own real starter fields must still be there, untouched.
+    expect(fieldIds.some(id => doc.fieldDefs[id].label === 'Priority')).toBe(true);
+    expect(fieldIds.some(id => doc.fieldDefs[id].label === 'RAG')).toBe(true);
   });
 
   test('an existing room\'s legacy project (grandfathered, predates this feature) is discovered without needing a state event', async ({ page }) => {
@@ -1025,6 +1355,62 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
     expect(manifest.mxc).toBe(state.uploadedSnapshotBlobs[0].mxc);
     expect(manifest.encryption).toBeTruthy();
     expect(manifest.encryption.key).toBeTruthy(); // real key material, not squashed/plaintext
+  });
+
+  // Live-reported (Tom, tracker f6b39bf0 follow-up): the snapshot rework
+  // only ever covered a BRAND NEW project's one-time bulk adopt
+  // (adoptOneLocalProject -> pushSnapshotForProject); a large paste-merge
+  // import into a project that's already bridged went through the
+  // ordinary per-edit path (pushNewLocalEntries) instead, which had no
+  // size check at all -- reintroducing exactly the hundreds-of-individual-
+  // sends problem the snapshot mechanism exists to solve, just for a
+  // different trigger than the one originally tested above.
+  test('a large paste-merge import into a project that is ALREADY bridged sends a single snapshot, not hundreds of individual entries', async ({ page }) => {
+    const state = h.mockMatrixClientApi(page, {
+      homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
+      initialEntries: [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Room issue', sortKey: 1, origin: 'authored' } })]
+    });
+    await page.goto('/wigwag-matrix-host.html');
+    await page.locator('#homeserverUrl').fill(HOMESERVER);
+    await page.locator('#accessToken').fill('tok123');
+    await page.locator('#roomId').fill(ROOM_ID);
+    await page.locator('#connectBtn').click();
+    await expect(page.locator('#frame')).toBeVisible();
+    await page.waitForTimeout(300);
+
+    const existingProjectId = await page.evaluate(() =>
+      JSON.parse(window.__wigwagHostStorage.getItem('git_native_tracker_milestones_v1')).milestones[0].id);
+
+    const issueLines = [];
+    for (let i = 1; i <= 250; i++) {
+      issueLines.push(JSON.stringify({ type: 'issue', id: 'bi' + i, num: i + 1, fieldRefs: {}, values: { title: 'Bulk issue ' + i }, comments: [], history: [] }));
+    }
+    const pastedJsonl = [
+      JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, id: existingProjectId, name: 'Room issue project' }),
+      ...issueLines
+    ].join('\n');
+    const frame = page.frameLocator('#frame');
+    await frame.locator('[data-testid=btn-import-merge]').click();
+    await page.waitForTimeout(150);
+    const [fc] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      frame.locator('[data-testid=btn-paste-merge-open-file]').click(),
+    ]);
+    await fc.setFiles({ name: 'bulk-merge.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(pastedJsonl) });
+    // Pasting content whose declared project id matches one that ALREADY
+    // exists locally goes through the diff3 "Merge review" flow (distinct
+    // from the "confirm-dialog-modal" a genuinely new project's import
+    // shows), which is exactly the scenario this test needs -- merging
+    // INTO an already-bridged project, not creating a new one.
+    await expect(frame.locator('[data-testid=merge-card]')).toBeVisible();
+    await frame.locator('[data-testid=btn-merge-primary]').click();
+    await page.waitForTimeout(700);
+
+    expect(state.sentSnapshotManifests.length).toBe(1);
+    expect(state.uploadedSnapshotBlobs.length).toBe(1);
+    expect(state.sentEntries.length).toBeLessThan(10); // definitely not one per new issue
+    const manifest = state.sentSnapshotManifests[0];
+    expect(manifest.projectId).toBe(existingProjectId);
   });
 
   // Tracker f6b39bf0's cadence-floor follow-up: a quiet project that never
@@ -1437,6 +1823,103 @@ test.describe('wigwag-matrix-host.html: a locally-imported project is adopted in
 // bridge instance now holds its own private in-memory shim (this file's
 // own `localStorage` above), so there is structurally nothing left for a
 // second room to collide with, regardless of any registry.
+// Live-reported (Tom): cosmetic/metadata prefs (column order, sort, etc.)
+// are real, durable, per-browser localStorage keyed by projectId ALONE --
+// correct for Local Mode (one browser, many unrelated projects) but
+// surprising in Room Scoped Widget Mode, where a project id can
+// legitimately repeat across two different rooms (more so now that
+// Receive-a-project reuses an original id when there's no local
+// collision): opening "the same" project id in a different room
+// shouldn't inherit the first room's sort/column prefs. Fixed by
+// composing roomId into the storage key (storagePrefKey) whenever
+// ROOM_MODE_ROOM_ID is set.
+test.describe('wigwag-matrix-host.html: cosmetic prefs are scoped per room, not just per project', () => {
+  test('a sort preference set for a project id in one room does not apply to the same project id opened in a different room', async ({ page }) => {
+    const ROOM_A = '!roomA:example.org';
+    const ROOM_B = '!roomB:example.org';
+    const SHARED_PROJECT_ID = 'shared-proj-id';
+    // A real project always defines a field before using it (starterFieldHistory,
+    // same as createBlankProject) -- a bare value entry with no matching
+    // definition entry only ever worked before by accident, riding a
+    // fallback (core.defaultFieldDefs()) that's since been correctly
+    // scoped to the room's own legacy/untagged-entries default project
+    // only (tracker f6b39bf0).
+    const priorityFieldDef = {
+      type: 'dev.wigwag.entry',
+      content: { v: 1, scope: 'project', projectId: SHARED_PROJECT_ID, entry: { id: 'pdef1', field: 'priority', value: { label: 'Priority', type: 'select', options: [{ id: 'low', label: 'Low', color: 'green', emoji: '' }, { id: 'high', label: 'High', color: 'red', emoji: '' }] }, sortKey: 0, origin: 'authored' } }
+    };
+    h.mockMatrixClientApi(page, {
+      homeserverUrl: HOMESERVER, roomId: ROOM_A, roomName: 'Room A',
+      initialEntries: [
+        priorityFieldDef,
+        entryEvent({ issueId: 'a1', entry: { id: 'ha1', field: 'title', value: 'Room A issue', sortKey: 1, origin: 'authored' }, projectId: SHARED_PROJECT_ID }),
+        entryEvent({ issueId: 'a1', entry: { id: 'ha1b', field: 'priority', value: 'low', sortKey: 2, origin: 'authored' }, projectId: SHARED_PROJECT_ID })
+      ]
+    });
+    h.mockMatrixClientApi(page, {
+      homeserverUrl: HOMESERVER, roomId: ROOM_B, roomName: 'Room B',
+      initialEntries: [
+        priorityFieldDef,
+        entryEvent({ issueId: 'b1', entry: { id: 'hb1', field: 'title', value: 'Room B issue', sortKey: 1, origin: 'authored' }, projectId: SHARED_PROJECT_ID }),
+        entryEvent({ issueId: 'b1', entry: { id: 'hb1b', field: 'priority', value: 'high', sortKey: 2, origin: 'authored' }, projectId: SHARED_PROJECT_ID })
+      ]
+    });
+
+    const connectTo = async (roomId) => {
+      await page.locator('#homeserverUrl').fill(HOMESERVER);
+      await page.locator('#accessToken').fill('tok123');
+      await page.locator('#roomId').fill(roomId);
+      await page.locator('#connectBtn').click();
+      await expect(page.locator('#frame')).toBeVisible();
+      await page.waitForTimeout(300);
+    };
+
+    await page.goto('/wigwag-matrix-host.html');
+    await connectTo(ROOM_A);
+    const frameA = page.frameLocator('#frame');
+    // The header's own "Sort" icon only ever appears once a column IS the
+    // active sort (an indicator, not a toggle) -- the "..." menu's "Sort
+    // ascending" is the real trigger, same as h.sortByColumn's own Local
+    // Mode pattern. The header markup is duplicate-rendered (desktop +
+    // an offscreen/mobile variant), so .last() picks the real visible one.
+    await frameA.locator('[data-testid=col-header][data-col=priority]').last().locator('span', { hasText: '⋯' }).click();
+    await page.waitForTimeout(150);
+    await frameA.getByText('Sort ascending', { exact: true }).click();
+    await page.waitForTimeout(300);
+    // The header's own Sort-indicator span only renders while THIS column
+    // is the active sort (seg.col.isSorted) -- its presence, not any text
+    // content (sortArrow is computed but never actually rendered), is the
+    // real signal here.
+    await expect(frameA.locator('[data-testid=col-header][data-col=priority]').last().locator('span[title=Sort]')).toBeVisible();
+
+    // Real, unshimmed browser localStorage (this project-keyed cosmetic
+    // store was never room-mode content in the first place) -- same
+    // origin as the iframe, so directly readable from here.
+    const sortStoreAfterA = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_sort_v1') || '{}'));
+    expect(sortStoreAfterA[SHARED_PROJECT_ID]).toBeUndefined(); // never the bare, room-unaware key
+    expect(sortStoreAfterA[ROOM_A + ':' + SHARED_PROJECT_ID]).toEqual({ colId: 'priority', dir: 'asc' });
+
+    // Now open the SAME project id in a completely different room.
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+    await connectTo(ROOM_B);
+    const frameB = page.frameLocator('#frame');
+
+    // Room B's own view of this project id must show no sort applied --
+    // room A's preference must not have bled across.
+    await expect(frameB.locator('[data-testid=col-header][data-col=priority]').last().locator('span[title=Sort]')).toHaveCount(0);
+
+    const sortStoreAfterB = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_sort_v1') || '{}'));
+    // Room A's own entry survives untouched (durable, per-room). Room B
+    // gets its own separate, default-state entry under its own compound
+    // key (componentDidUpdate persists whatever the current sort is,
+    // unconditionally, on every update) -- the point is it's the DEFAULT,
+    // never room A's 'priority'/'asc'.
+    expect(sortStoreAfterB[ROOM_A + ':' + SHARED_PROJECT_ID]).toEqual({ colId: 'priority', dir: 'asc' });
+    expect(sortStoreAfterB[ROOM_B + ':' + SHARED_PROJECT_ID]).toEqual({ colId: null, dir: 'asc' });
+  });
+});
+
 test.describe('wigwag-matrix-host.html: a project adopted in one room never leaks into a different room', () => {
   test('room B never sees room A\'s locally-adopted project -- structurally impossible now that each room\'s bridge has its own private in-memory storage', async ({ page }) => {
     const ROOM_A = '!roomA:example.org';

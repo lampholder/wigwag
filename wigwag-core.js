@@ -2967,8 +2967,21 @@ function buildGithubCommitMessage(issueCount) {
 // poll GET (etag set -> a 304 comes back as 'not-modified', free against
 // rate limits). Never throws -- network/parse failures come back as
 // {status:'error'} for the caller to handle however fits that call site.
+//
+// Uses Accept: raw, not the default JSON+base64-wrapped response
+// buildGithubContentsHeaders builds -- confirmed live (tracker f6b39bf0):
+// GitHub's Contents API caps inline base64 content at 1MB; past that it
+// still replies 200 but with content:"" and encoding:"none", which read
+// as "this file is empty" everywhere downstream, silently. The raw
+// Accept header returns the file's real bytes directly regardless of
+// size (confirmed against a real 1MB+ file). The blob's own sha still
+// comes back for free, in the ETag header (GitHub documents the raw
+// Contents API's ETag as the blob sha, quoted) -- no second request
+// needed to recover it, and it's the exact same value the old
+// data.sha-from-JSON path used to return.
 async function pullGithubFile({ fetchImpl, repo, path, branch, token, etag }) {
-  const headers = buildGithubContentsHeaders(token, false);
+  const headers = { Accept: 'application/vnd.github.v3.raw' };
+  if (token) headers.Authorization = 'Bearer ' + token;
   if (etag) headers['If-None-Match'] = etag;
   let res;
   try {
@@ -2980,33 +2993,100 @@ async function pullGithubFile({ fetchImpl, repo, path, branch, token, etag }) {
   if (res.status === 404) return { status: 'not-found' };
   if (!res.ok) return { status: 'error', message: 'GitHub returned ' + res.status };
   const newEtag = res.headers.get('ETag') || null;
-  let data;
-  try { data = await res.json(); } catch (e) { return { status: 'error', message: 'Invalid response from GitHub' }; }
-  return { status: 'ok', text: textFromBase64(data.content), sha: data.sha, etag: newEtag };
+  const sha = newEtag ? newEtag.replace(/^W\//, '').replace(/^"|"$/g, '') : null;
+  let text;
+  try { text = await res.text(); } catch (e) { return { status: 'error', message: 'Invalid response from GitHub' }; }
+  return { status: 'ok', text, sha, etag: newEtag };
 }
-// sha, if given, makes this a conditional PUT (GitHub itself rejects with
-// 409/422 -- surfaced here as {status:'conflict'} -- if the file moved
-// under us; it's never silently overwritten). Omit sha to create a new
-// file.
+// sha, if given, makes this a conditional write (GitHub itself rejects
+// with {status:'conflict'} if the file's own blob moved under us; it's
+// never silently overwritten). Omit sha to create a new file.
+//
+// Rewritten onto the Git Data API (tracker f6b39bf0, live-reported): the
+// Contents API's PUT side (the old implementation) has the exact same
+// ~1MB cap as its GET side, with no raw-Accept-header equivalent for
+// writes -- past that size, landing a change needs the heavier but
+// uncapped blob -> tree -> commit -> ref sequence every git host's API
+// supports this way (GitHub's own blob-creation endpoint is good for
+// up to 100MB, comfortably past anything this file needs for a long
+// while). base_tree makes GitHub merge our one changed path into
+// everything else already in the tree automatically -- no need to fetch
+// or reconstruct the rest of it ourselves, even for a path nested in
+// subdirectories.
 async function pushGithubFile({ fetchImpl, repo, path, branch, token, text, sha, commitMessage, authorName, authorEmail }) {
-  const body = {
-    message: commitMessage,
-    content: base64FromText(text),
-    author: { name: authorName, email: authorEmail || 'unknown@example.invalid' }
+  const jsonHeaders = { Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' };
+  if (token) jsonHeaders.Authorization = 'Bearer ' + token;
+  const base = 'https://api.github.com/repos/' + repo;
+  const call = async (method, url, body) => {
+    let res;
+    try {
+      res = await fetchImpl(url, { method, headers: jsonHeaders, body: body ? JSON.stringify(body) : undefined });
+    } catch (e) {
+      return { ok: false, networkError: e.message };
+    }
+    let data = null;
+    try { data = await res.json(); } catch (e) { /* a successful ref update may have no body */ }
+    return { ok: res.ok, status: res.status, data };
   };
-  if (branch) body.branch = branch;
-  if (sha) body.sha = sha;
-  let res;
-  try {
-    res = await fetchImpl(buildGithubContentsUrl(repo, path, branch), { method: 'PUT', headers: buildGithubContentsHeaders(token, true), body: JSON.stringify(body) });
-  } catch (e) {
-    return { status: 'error', message: e.message };
+
+  let resolvedBranch = (branch || '').trim();
+  if (!resolvedBranch) {
+    const repoRes = await call('GET', base);
+    if (!repoRes.ok) return { status: 'error', message: repoRes.networkError || ('GitHub returned ' + repoRes.status) };
+    resolvedBranch = repoRes.data.default_branch;
   }
-  if (res.status === 409 || res.status === 422) return { status: 'conflict' };
-  if (!res.ok) return { status: 'error', message: 'GitHub returned ' + res.status };
-  let data;
-  try { data = await res.json(); } catch (e) { return { status: 'error', message: 'Invalid response from GitHub' }; }
-  return { status: 'ok', sha: data.content && data.content.sha };
+
+  // Where the branch currently points, and (if sha was given) whether
+  // this exact file's blob still matches what the caller last saw --
+  // checked BEFORE writing anything, so a real conflict is caught here
+  // rather than mid-way through creating objects nothing ends up
+  // pointing at. 404/409 here means a genuinely brand new repo/branch
+  // with zero commits yet -- GitHub's real signal for that case, not a
+  // failure to paper over -- handled below as the very first commit,
+  // with no parent and nothing to merge into.
+  const commitRes = await call('GET', base + '/commits/' + encodeURIComponent(resolvedBranch));
+  let parentCommitSha = null;
+  let baseTreeSha = null;
+  if (commitRes.ok) {
+    parentCommitSha = commitRes.data.sha;
+    baseTreeSha = commitRes.data.commit.tree.sha;
+    if (sha) {
+      const fileRes = await call('GET', buildGithubContentsUrl(repo, path, resolvedBranch));
+      if (fileRes.ok && fileRes.data && fileRes.data.sha !== sha) return { status: 'conflict' };
+      if (!fileRes.ok && fileRes.status !== 404) return { status: 'error', message: 'GitHub returned ' + fileRes.status };
+    }
+  } else if (commitRes.status !== 404 && commitRes.status !== 409) {
+    return { status: 'error', message: commitRes.networkError || ('GitHub returned ' + commitRes.status) };
+  }
+
+  const blobRes = await call('POST', base + '/git/blobs', { content: text, encoding: 'utf-8' });
+  if (!blobRes.ok) return { status: 'error', message: blobRes.networkError || ('GitHub returned ' + blobRes.status) };
+  const blobSha = blobRes.data.sha;
+
+  const treeBody = { tree: [{ path, mode: '100644', type: 'blob', sha: blobSha }] };
+  if (baseTreeSha) treeBody.base_tree = baseTreeSha;
+  const treeRes = await call('POST', base + '/git/trees', treeBody);
+  if (!treeRes.ok) return { status: 'error', message: treeRes.networkError || ('GitHub returned ' + treeRes.status) };
+
+  const commitBody = { message: commitMessage, tree: treeRes.data.sha, author: { name: authorName, email: authorEmail || 'unknown@example.invalid' } };
+  if (parentCommitSha) commitBody.parents = [parentCommitSha];
+  const newCommitRes = await call('POST', base + '/git/commits', commitBody);
+  if (!newCommitRes.ok) return { status: 'error', message: newCommitRes.networkError || ('GitHub returned ' + newCommitRes.status) };
+  const newCommitSha = newCommitRes.data.sha;
+
+  // Fast-forward only (no force) when a parent already exists -- GitHub
+  // itself rejects this with 409/422 if the branch moved since
+  // parentCommitSha was read above, the same real race the old Contents
+  // API's own conditional PUT guarded against, just at the ref level
+  // instead of a single file's. A genuinely new branch/repo (no parent)
+  // creates the ref outright instead of updating one that doesn't exist.
+  const refRes = parentCommitSha
+    ? await call('PATCH', base + '/git/refs/heads/' + encodeURIComponent(resolvedBranch), { sha: newCommitSha })
+    : await call('POST', base + '/git/refs', { ref: 'refs/heads/' + resolvedBranch, sha: newCommitSha });
+  if (refRes.status === 409 || refRes.status === 422) return { status: 'conflict' };
+  if (!refRes.ok) return { status: 'error', message: refRes.networkError || ('GitHub returned ' + refRes.status) };
+
+  return { status: 'ok', sha: blobSha };
 }
 // One request, with or without a token. GitHub returns 404 (not 403) for
 // a private repo a token can't see, same as for one that doesn't exist

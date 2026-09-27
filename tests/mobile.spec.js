@@ -30,11 +30,16 @@ test.describe('M1: list (resting)', () => {
   test('shows one breadcrumb tap target, search + overflow icons, the row list, and a FAB', async ({ page }) => {
     await expect(page.locator('[data-testid=identity-pill]')).toHaveCount(0); // desktop-only, not in the mobile tree
     await expect(page.locator('[data-testid=mobile-header]')).toBeVisible();
-    await expect(page.locator('[data-testid=mobile-crumb-switcher]')).toContainText('Personal');
+    // tracker #153 (45556022): the compact header rework moved identity
+    // out of the bar's own text (widget mode has no identity at all) into
+    // a small avatar-letter badge, restyled here to still carry that
+    // context at a glance without the width cost of the old "Personal /"
+    // text prefix.
+    await expect(page.locator('[data-testid=mobile-identity-badge]')).toHaveText('P');
     await expect(page.locator('[data-testid=mobile-crumb-switcher]')).toContainText('Delivery tracker');
     await expect(page.locator('[data-testid=btn-search]')).toBeVisible();
     await expect(page.locator('[data-testid=btn-overflow]')).toBeVisible();
-    await expect(page.locator('[data-testid=btn-share]')).toHaveCount(0); // moved into the overflow sheet
+    await expect(page.locator('[data-testid=btn-share]')).toHaveCount(0); // promoted to a direct toolbar icon (mobile-toolbar-send)
     await expect(page.locator('[data-testid=mobile-row]')).toHaveCount(9);
     await expect(page.locator('[data-testid=mobile-add-fab]')).toBeVisible();
   });
@@ -144,7 +149,7 @@ test.describe('M2: switcher sheet', () => {
     // Still open, nothing committed -- the breadcrumb hasn't changed --
     // but the projects section now previews Northwind's own projects.
     await expect(page.locator('[data-testid=mobile-sheet]')).toBeVisible();
-    await expect(page.locator('[data-testid=mobile-crumb-switcher]')).toContainText('Personal');
+    await expect(page.locator('[data-testid=mobile-identity-badge]')).toHaveText('P'); // still Personal -- preview only, nothing switched
     await expect(page.locator('[data-testid=mobile-sheet]')).toContainText('PROJECTS IN NORTHWIND');
     const rows = page.locator('[data-testid=mobile-project-row]');
     await expect(rows).toHaveCount(2);
@@ -154,7 +159,7 @@ test.describe('M2: switcher sheet', () => {
     await rows.filter({ hasText: 'Project B1' }).click();
     await page.waitForTimeout(400);
     await expect(page.locator('[data-testid=mobile-sheet]')).toHaveCount(0);
-    await expect(page.locator('[data-testid=mobile-crumb-switcher]')).toContainText('Northwind');
+    await expect(page.locator('[data-testid=mobile-identity-badge]')).toHaveText('N'); // switched to Northwind
     await expect(page.locator('[data-testid=mobile-crumb-switcher]')).toContainText('Project B1');
   });
 
@@ -228,7 +233,7 @@ test.describe('M2: switcher sheet', () => {
     await page.waitForTimeout(400);
     await expect(page.locator('[data-testid=mobile-add-identity-page]')).toHaveCount(0);
     await expect(page.locator('[data-testid=mobile-sheet]')).toHaveCount(0);
-    await expect(page.locator('[data-testid=mobile-crumb-switcher]')).toContainText('Acme Corp');
+    await expect(page.locator('[data-testid=mobile-identity-badge]')).toHaveText('A'); // switched to the new "Acme Corp" identity
   });
 
   test('Escape closes the sheet', async ({ page }) => {
@@ -243,19 +248,25 @@ test.describe('M2: switcher sheet', () => {
 test.describe('M3: overflow sheet', () => {
   test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
 
-  test('offers Share project / Apply update… / Import project… / Appearance / Settings / Project settings -- not the old refresh item', async ({ page }) => {
+  // tracker #153 (45556022): the compact header rework promoted Share,
+  // Apply update/Import project, and Project settings out of this "···"
+  // overflow into direct toolbar icons (Send / Receive / Project) --
+  // Receive's own popover still carries Apply update + Import project
+  // together (see M4 below), since those were always two distinct flows
+  // even before this. What's left in "···" is just Appearance + Settings.
+  test('promotes Share/Receive/Project settings to direct toolbar icons; "···" keeps only Appearance/Settings', async ({ page }) => {
+    await expect(page.locator('[data-testid=mobile-toolbar-send]')).toBeVisible();
+    await expect(page.locator('[data-testid=mobile-toolbar-receive]')).toBeVisible();
+    await expect(page.locator('[data-testid=mobile-toolbar-project]')).toBeVisible();
+
     await page.locator('[data-testid=btn-overflow]').click();
     await page.waitForTimeout(150);
-    await expect(page.locator('[data-testid=mobile-overflow-share]')).toBeVisible();
-    await expect(page.locator('[data-testid=mobile-overflow-apply-update]')).toBeVisible();
-    await expect(page.locator('[data-testid=mobile-overflow-import-project]')).toBeVisible();
     await expect(page.locator('[data-testid=appearance-wrap]')).toBeVisible();
     await expect(page.locator('[data-testid=mobile-overflow-settings]')).toBeVisible();
-    // Regression: "Project settings" was dropped in an earlier restructure
-    // with no mobile replacement, leaving the GitHub-sync/export/danger-
-    // zone settings totally unreachable on mobile -- re-added, now opening
-    // a real mobile page (see the "Project settings page" describe block).
-    await expect(page.locator('[data-testid=mobile-overflow-project-settings]')).toBeVisible();
+    await expect(page.locator('[data-testid=mobile-overflow-share]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=mobile-overflow-apply-update]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=mobile-overflow-import-project]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=mobile-overflow-project-settings]')).toHaveCount(0);
     await expect(page.locator('[data-testid=mobile-overflow-refresh]')).toHaveCount(0);
   });
 
@@ -292,9 +303,7 @@ test.describe('Project settings page (mobile)', () => {
   test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
 
   test('opening it shows GitHub sync fields and Danger Zone, bound to the same state the desktop panel uses', async ({ page }) => {
-    await page.locator('[data-testid=btn-overflow]').click();
-    await page.waitForTimeout(150);
-    await page.locator('[data-testid=mobile-overflow-project-settings]').click();
+    await page.locator('[data-testid=mobile-toolbar-project]').click();
     await page.waitForTimeout(300);
 
     await expect(page.locator('[data-testid=mobile-project-settings-page]')).toBeVisible();
@@ -311,9 +320,7 @@ test.describe('Project settings page (mobile)', () => {
   });
 
   test('setting a GitHub repo persists to the project doc, same field the desktop panel writes', async ({ page }) => {
-    await page.locator('[data-testid=btn-overflow]').click();
-    await page.waitForTimeout(150);
-    await page.locator('[data-testid=mobile-overflow-project-settings]').click();
+    await page.locator('[data-testid=mobile-toolbar-project]').click();
     await page.waitForTimeout(300);
 
     const repoInput = page.locator('[data-testid=mobile-settings-github-repo]');
@@ -326,9 +333,7 @@ test.describe('Project settings page (mobile)', () => {
   });
 
   test('the back button closes the page, and reopening still works', async ({ page }) => {
-    await page.locator('[data-testid=btn-overflow]').click();
-    await page.waitForTimeout(150);
-    await page.locator('[data-testid=mobile-overflow-project-settings]').click();
+    await page.locator('[data-testid=mobile-toolbar-project]').click();
     await page.waitForTimeout(300);
     await expect(page.locator('[data-testid=mobile-project-settings-page]')).toBeVisible();
 
@@ -336,9 +341,7 @@ test.describe('Project settings page (mobile)', () => {
     await page.waitForTimeout(400);
     await expect(page.locator('[data-testid=mobile-project-settings-page]')).toHaveCount(0);
 
-    await page.locator('[data-testid=btn-overflow]').click();
-    await page.waitForTimeout(150);
-    await page.locator('[data-testid=mobile-overflow-project-settings]').click();
+    await page.locator('[data-testid=mobile-toolbar-project]').click();
     await page.waitForTimeout(300);
     await expect(page.locator('[data-testid=mobile-project-settings-page]')).toBeVisible();
   });
@@ -348,7 +351,7 @@ test.describe('M4: paste sheet', () => {
   test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
 
   test('"Apply update…" opens a full-screen paste-merge sheet, Cancel closes it, Escape closes it too', async ({ page }) => {
-    await page.locator('[data-testid=btn-overflow]').click();
+    await page.locator('[data-testid=mobile-toolbar-receive]').click();
     await page.waitForTimeout(150);
     await page.locator('[data-testid=mobile-overflow-apply-update]').click();
     await page.waitForTimeout(300);
@@ -360,7 +363,7 @@ test.describe('M4: paste sheet', () => {
   });
 
   test('"Import project…" opens a full-screen paste-import sheet', async ({ page }) => {
-    await page.locator('[data-testid=btn-overflow]').click();
+    await page.locator('[data-testid=mobile-toolbar-receive]').click();
     await page.waitForTimeout(150);
     await page.locator('[data-testid=mobile-overflow-import-project]').click();
     await page.waitForTimeout(300);
@@ -374,7 +377,7 @@ test.describe('M4: paste sheet', () => {
       JSON.stringify({ type: 'issue', id: 'mobile-pasted-merge-1', num: 300, fieldRefs: {}, values: { title: 'Pasted-in via mobile merge sheet' }, comments: [], history: [] })
     ].join('\n');
 
-    await page.locator('[data-testid=btn-overflow]').click();
+    await page.locator('[data-testid=mobile-toolbar-receive]').click();
     await page.waitForTimeout(150);
     await page.locator('[data-testid=mobile-overflow-apply-update]').click();
     await page.waitForTimeout(300);
@@ -745,29 +748,33 @@ test.describe('Mobile header collapse', () => {
   // Tom's live feedback: "When we scroll down the id/project is replaced
   // with the icon and the word wigwag. This isn't helpful. Please leave
   // the id/project name. Switching to the smaller font when we scroll
-  // down IS good." The identity/project text must stay visible at all
-  // times -- only its font size (and the header's shadow/padding) should
-  // change on collapse.
-  test('collapses past the scroll threshold (shrinking, not hiding, the identity/project text) and expands back at the top', async ({ page }) => {
+  // down IS good." The project text must stay visible at all times --
+  // only its font size (and the header's shadow/padding) should change on
+  // collapse. tracker #153 (45556022): the compact header rework replaced
+  // the old "Personal / " text prefix with a fixed-size avatar-letter
+  // badge (identity context still visible, just not as shrinking text),
+  // so this test now checks the badge and project name via their own
+  // testids rather than firstElementChild/full-header text.
+  test('collapses past the scroll threshold (shrinking, not hiding, the project text) and expands back at the top', async ({ page }) => {
     const header = page.locator('[data-testid=mobile-header]');
-    await expect(header).toContainText('Personal');
-    await expect(header).toContainText('Delivery tracker');
-    const sizeBefore = await page.locator('[data-testid=mobile-crumb-switcher]').evaluate(el => getComputedStyle(el.firstElementChild).fontSize);
+    await expect(page.locator('[data-testid=mobile-identity-badge]')).toHaveText('P');
+    await expect(page.locator('[data-testid=mobile-project-name]')).toHaveText('Delivery tracker');
+    const sizeBefore = await page.locator('[data-testid=mobile-project-name]').evaluate(el => getComputedStyle(el).fontSize);
 
     await page.locator('[data-testid=mobile-row-list]').evaluate(el => el.scrollTo(0, 200));
     await page.waitForTimeout(250);
     // Still visible, just smaller -- never replaced by the app mark.
-    await expect(header).toContainText('Personal');
-    await expect(header).toContainText('Delivery tracker');
-    const sizeAfter = await page.locator('[data-testid=mobile-crumb-switcher]').evaluate(el => getComputedStyle(el.firstElementChild).fontSize);
+    await expect(page.locator('[data-testid=mobile-identity-badge]')).toHaveText('P');
+    await expect(page.locator('[data-testid=mobile-project-name]')).toHaveText('Delivery tracker');
+    const sizeAfter = await page.locator('[data-testid=mobile-project-name]').evaluate(el => getComputedStyle(el).fontSize);
     expect(parseFloat(sizeAfter)).toBeLessThan(parseFloat(sizeBefore));
     const shadow = await header.evaluate(el => getComputedStyle(el).boxShadow);
     expect(shadow).not.toBe('none');
 
     await page.locator('[data-testid=mobile-row-list]').evaluate(el => el.scrollTo(0, 0));
     await page.waitForTimeout(250);
-    await expect(header).toContainText('Personal');
-    const sizeRestored = await page.locator('[data-testid=mobile-crumb-switcher]').evaluate(el => getComputedStyle(el.firstElementChild).fontSize);
+    await expect(page.locator('[data-testid=mobile-identity-badge]')).toHaveText('P');
+    const sizeRestored = await page.locator('[data-testid=mobile-project-name]').evaluate(el => getComputedStyle(el).fontSize);
     expect(sizeRestored).toBe(sizeBefore);
   });
 
@@ -788,8 +795,10 @@ test.describe('Mobile header collapse', () => {
 test.describe('Mobile header breadcrumb: shared-with-you projects', () => {
   test('shows "Shared with you" (not the active identity) when the open project has no identityId', async ({ page }) => {
     await h.gotoTrackerWithSharedProject(page);
-    await expect(page.locator('[data-testid=mobile-header]')).toContainText('Shared with you');
-    await expect(page.locator('[data-testid=mobile-header]')).not.toContainText('Personal');
+    // tracker #153 (45556022): the badge derives its letter from the same
+    // switcherBreadcrumbIdentityLabel this test was originally guarding --
+    // 'S' for "Shared with you", never 'P' for the active identity.
+    await expect(page.locator('[data-testid=mobile-identity-badge]')).toHaveText('S');
   });
 });
 

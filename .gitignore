@@ -6,6 +6,13 @@ src-tauri/dist/
 src-tauri/gen/
 .DS_Store
 
+# Repo-root junk drawer (personal data exports, one-off design-handoff
+# zips already incorporated into the app, debug logs, the superseded
+# pre-wigwag.html prototype, etc.) -- working-directory clutter, never
+# meant to be checked in. See it locally if you need to dig something back
+# out; it isn't tracked.
+.junk/
+
 # This sandbox's own devcontainer config (allowed-domains.txt etc.) --
 # infrastructure for running Claude Code here, not part of the project.
 .devcontainer/

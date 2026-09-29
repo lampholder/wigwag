@@ -205,6 +205,37 @@ test.describe('Connect a remote -- finishing the connection', () => {
     await expect(page.locator('[data-testid=switcher-project-row]').filter({ hasText: 'Remote Wigwag Tracker' })).toBeVisible();
   });
 
+  // Live-reported (Tom, 2026-09-29): Connect Remote failed against this
+  // project's own real tracker ("That file isn't a valid tracker export")
+  // once tracker.jsonl crossed GitHub's ~1MB Contents-API inline-content
+  // cap -- fetchRemoteTrackerFile used the JSON+base64 response shape,
+  // which GitHub silently empties out past that size (content:'',
+  // encoding:'none') rather than erroring, so it "succeeded" with empty
+  // text. Fixed by delegating to the same pullGithubFile helper the
+  // ongoing GitHub Sync path already used correctly (Accept:
+  // application/vnd.github.v3.raw, no size cap at all).
+  // resp.omitInlineContent simulates GitHub's real large-file response
+  // for the JSON+base64 path specifically -- this test fails against the
+  // old code (which would get empty content back) and passes against the
+  // fixed code (which never asks for the JSON+base64 shape at all).
+  test('a tracker file too large for the Contents API\'s inline content still connects (real large-file GitHub response shape)', async ({ page }) => {
+    await h.gotoTracker(page);
+    await h.mockGithubRepoAccessApi(page, 'acme-corp', 'big-wigwag', { '': { status: 200 } });
+    const gh = h.mockGithubContentsApi(page, 'acme-corp/big-wigwag', 'tracker.jsonl');
+    gh.getResponses = [{ status: 200, sha: 'sha1', text: FULL_ACCESS_FIXTURE, omitInlineContent: true }];
+
+    await openConnectRemote(page);
+    await page.locator('[data-testid=connect-remote-address-input]').fill('acme-corp/big-wigwag');
+    await page.waitForTimeout(500);
+    await page.locator('[data-testid=connect-remote-connect-btn]').click();
+    await page.waitForTimeout(600);
+
+    await expect(page.locator('[data-testid=connect-remote-modal]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=connect-remote-error]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Remote Wigwag Tracker');
+    await expect(page.getByText('Remote issue one')).toBeVisible();
+  });
+
   test('public read-only: creates the project with no identity, in Shared with you', async ({ page }) => {
     await h.gotoTracker(page);
     await h.mockGithubRepoAccessApi(page, 'open-org', 'open-repo', { '': { status: 200 } });

@@ -557,7 +557,16 @@ function mockGithubContentsApi(page, repo, path = 'tracker.jsonl') {
     // this is the real GitHub API's own behavior, not just this mock's).
     const etag = '"' + resp.sha + '"';
     if (!wantsRaw) {
-      await route.fulfill({ status: 200, contentType: 'application/json', headers: { etag, 'access-control-expose-headers': 'ETag' }, body: JSON.stringify({ sha: resp.sha, content: Buffer.from(resp.text, 'utf8').toString('base64'), encoding: 'base64' }) });
+      // Real GitHub omits inline content entirely (content:'',
+      // encoding:'none') for a file over its ~1MB Contents API cap --
+      // resp.omitInlineContent simulates exactly that, for a test that
+      // needs to confirm a caller actually uses the uncapped raw-accept
+      // path (pullGithubFile) rather than this JSON+base64 one, which
+      // silently "succeeds" with empty text past that size in real life.
+      const body = resp.omitInlineContent
+        ? { sha: resp.sha, content: '', encoding: 'none' }
+        : { sha: resp.sha, content: Buffer.from(resp.text, 'utf8').toString('base64'), encoding: 'base64' };
+      await route.fulfill({ status: 200, contentType: 'application/json', headers: { etag, 'access-control-expose-headers': 'ETag' }, body: JSON.stringify(body) });
       return;
     }
     const ifNoneMatch = route.request().headers()['if-none-match'];

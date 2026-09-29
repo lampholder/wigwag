@@ -33,8 +33,6 @@ const path = require('path');
 
 const REPO_ROOT = __dirname;
 const DEFAULT_TRACKER_FILE = path.join(REPO_ROOT, 'wigwag_tracker');
-const DEFAULT_REPO_OWNER = 'lampholder';
-const DEFAULT_REPO_NAME = 'wigwag';
 const STATUS_FIELD_LABEL = 'Status';
 
 // Also reused by wigwag-file-store.js's CredentialStore -- exported so
@@ -46,6 +44,27 @@ function loadIdentity(identityPath) {
   const m = text.match(/\n(\{\s*"id":[\s\S]*?\n\})\n/);
   if (!m) throw new Error('Could not find the identity JSON block in ' + identityPath);
   return JSON.parse(m[1]);
+}
+
+// Live-caught bug (2026-09-29): repoOwner/repoName used to be separate
+// hardcoded constants (lampholder/wigwag) alongside this file's own
+// wigwag_tracker, which already carries the real project's location in
+// its own first-line `wigwag:` link -- when the live tracker moved to
+// lampholder/project-state, only wigwag_tracker's link got updated, and
+// every connect() kept silently probing the old, no-longer-real repo
+// (a real GitHub token can easily show "no write access" against a repo
+// it was never asked to touch, rather than an obviously-wrong error).
+// Deriving from the link itself removes the second, driftable copy
+// entirely -- there's nothing left to fall out of sync.
+function repoLocationFromTrackerLink(identityPath) {
+  const text = fs.readFileSync(identityPath, 'utf8');
+  const linkMatch = text.match(/wigwag:\/\S+/);
+  if (!linkMatch) return null;
+  let from;
+  try { from = new URL(linkMatch[0]).searchParams.get('from'); } catch (e) { return null; }
+  const m = from && from.match(/^github\.com\/([^/]+)\/([^/]+)$/);
+  if (!m) return null;
+  return { repoOwner: m[1], repoName: m[2] };
 }
 
 // A throwaway static file server -- same job as tests/static-server.js,
@@ -224,10 +243,14 @@ async function currentFieldValue(page, projectId, issueId, colId, fieldDefs) {
 }
 
 async function connect(opts = {}) {
-  const repoOwner = opts.repoOwner || DEFAULT_REPO_OWNER;
-  const repoName = opts.repoName || DEFAULT_REPO_NAME;
   const identityPath = opts.identityPath || DEFAULT_TRACKER_FILE;
   const identity = loadIdentity(identityPath);
+  const linkLocation = repoLocationFromTrackerLink(identityPath);
+  if (!opts.repoOwner && !opts.repoName && !linkLocation) {
+    throw new Error('Could not find a wigwag: link (with a github.com from= param) in ' + identityPath + ' to derive repoOwner/repoName from -- pass them explicitly instead.');
+  }
+  const repoOwner = opts.repoOwner || linkLocation.repoOwner;
+  const repoName = opts.repoName || linkLocation.repoName;
 
   let server = null;
   let baseUrl = opts.baseUrl || process.env.WIGWAG_URL;
@@ -237,25 +260,41 @@ async function connect(opts = {}) {
   }
 
   const browser = await chromium.launch();
-  const context = await browser.newContext({ baseURL: baseUrl });
-  const page = await context.newPage();
-  page.on('pageerror', e => console.error('page error:', e));
+  let page;
 
-  // Seed the identity BEFORE the app's own first render, so it's already
-  // active on boot -- skips the "Add identity..." dance every call, and
-  // (critically) means every signed entry uses the SAME keypair every
-  // time, not a fresh unrelated one.
-  await page.addInitScript((idy) => {
-    localStorage.setItem('git_native_tracker_identities_v1', JSON.stringify({
-      activeIdentityId: idy.id,
-      identities: [idy],
-      lastActiveProjectByIdentity: {}
-    }));
-  }, identity);
+  // Live-caught bug (2026-09-29): ensureConnected() throws loudly on a
+  // real access/connect failure (by design, see its own comment) -- but
+  // nothing closed the browser on that path, leaving a real Chromium
+  // process (and its open pipe to this one) running forever. Node's
+  // event loop never drains with that handle still open, so the whole
+  // CLI invocation hung indefinitely instead of exiting non-zero like
+  // main()'s own .catch() intended. Any failure between here and the
+  // normal return now closes everything before rethrowing.
+  try {
+    const context = await browser.newContext({ baseURL: baseUrl });
+    page = await context.newPage();
+    page.on('pageerror', e => console.error('page error:', e));
 
-  await page.goto('/wigwag.html', { waitUntil: 'load' });
-  await page.waitForTimeout(500);
-  await ensureConnected(page, repoOwner, repoName);
+    // Seed the identity BEFORE the app's own first render, so it's
+    // already active on boot -- skips the "Add identity..." dance every
+    // call, and (critically) means every signed entry uses the SAME
+    // keypair every time, not a fresh unrelated one.
+    await page.addInitScript((idy) => {
+      localStorage.setItem('git_native_tracker_identities_v1', JSON.stringify({
+        activeIdentityId: idy.id,
+        identities: [idy],
+        lastActiveProjectByIdentity: {}
+      }));
+    }, identity);
+
+    await page.goto('/wigwag.html', { waitUntil: 'load' });
+    await page.waitForTimeout(500);
+    await ensureConnected(page, repoOwner, repoName);
+  } catch (e) {
+    await browser.close();
+    if (server) server.close();
+    throw e;
+  }
 
   async function close() {
     await browser.close();

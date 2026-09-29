@@ -2501,6 +2501,76 @@ test('getMatrixRoomState: fetches current state in one call, no pagination, filt
   assert.equal((await core.getMatrixRoomState({ fetchImpl: forbiddenFetch, homeserverUrl: 'https://matrix.example.org', accessToken: 'tok', roomId: '!room:example.org' })).status, 'forbidden');
 });
 
+test('matrixStateEventContentFromLayoutProposal / layoutProposalFromMatrixStateEvent: round-trips a layout snapshot', () => {
+  const content = core.matrixStateEventContentFromLayoutProposal({
+    columnOrder: ['__title__', 'f1', 'f2'],
+    columnWidths: { f1: 200, f2: 140 },
+    hiddenFieldIds: ['f3'],
+    freezeColId: 'f1',
+    proposedBy: '@mod:example.org',
+    proposedAt: 1234,
+  });
+  const rawEvent = { type: 'work.wigwag.layout-proposal', state_key: '', content };
+  const proposal = core.layoutProposalFromMatrixStateEvent(rawEvent);
+  assert.deepEqual(proposal, {
+    columnOrder: ['__title__', 'f1', 'f2'],
+    columnWidths: { f1: 200, f2: 140 },
+    hiddenFieldIds: ['f3'],
+    freezeColId: 'f1',
+    proposedBy: '@mod:example.org',
+    proposedAt: 1234,
+  });
+});
+
+test('layoutProposalFromMatrixStateEvent: tolerant of a foreign event type, an empty/cleared content, and null', () => {
+  assert.equal(core.layoutProposalFromMatrixStateEvent(null), null);
+  assert.equal(core.layoutProposalFromMatrixStateEvent({ type: 'm.room.name', content: { name: 'x' } }), null);
+  assert.equal(core.layoutProposalFromMatrixStateEvent({ type: 'work.wigwag.layout-proposal', content: {} }), null);
+  assert.equal(core.layoutProposalFromMatrixStateEvent({ type: 'work.wigwag.layout-proposal', content: { columnOrder: [] } }), null);
+});
+
+test('sendMatrixLayoutProposal: PUTs to the state endpoint keyed by projectId, so two different projects in the same room never collide', async () => {
+  const urls = [];
+  const okFetch = async (url, init) => { urls.push(url); return { ok: true, status: 200, json: async () => ({ event_id: '$abc' }) }; };
+  const content = core.matrixStateEventContentFromLayoutProposal({ columnOrder: ['__title__'], proposedBy: '@mod:example.org', proposedAt: 1 });
+  await core.sendMatrixLayoutProposal({ fetchImpl: okFetch, homeserverUrl: 'https://matrix.example.org', accessToken: 'tok', roomId: '!room:example.org', projectId: 'proj-1', content });
+  await core.sendMatrixLayoutProposal({ fetchImpl: okFetch, homeserverUrl: 'https://matrix.example.org', accessToken: 'tok', roomId: '!room:example.org', projectId: 'proj-2', content });
+  assert.equal(urls.length, 2);
+  assert.match(urls[0], /\/state\/work\.wigwag\.layout-proposal\/proj-1$/);
+  assert.match(urls[1], /\/state\/work\.wigwag\.layout-proposal\/proj-2$/);
+
+  // A non-moderator's power level is enforced the same way as project
+  // creation -- a rejected write must come back distinctly, never
+  // silently look like it succeeded.
+  const forbiddenFetch = async () => ({ ok: false, status: 403 });
+  const rejected = await core.sendMatrixLayoutProposal({ fetchImpl: forbiddenFetch, homeserverUrl: 'https://matrix.example.org', accessToken: 'tok', roomId: '!room:example.org', projectId: 'proj-1', content });
+  assert.equal(rejected.status, 'forbidden');
+});
+
+test('layoutProposalProjectId: recognizes a real work.wigwag.layout-proposal state event by state_key, tolerant of anything else', () => {
+  assert.equal(core.layoutProposalProjectId({ type: 'work.wigwag.layout-proposal', state_key: 'proj-1' }), 'proj-1');
+  assert.equal(core.layoutProposalProjectId({ type: 'work.wigwag.layout-proposal', state_key: '' }), null);
+  assert.equal(core.layoutProposalProjectId({ type: 'work.wigwag.project', state_key: 'proj-1' }), null);
+  assert.equal(core.layoutProposalProjectId(null), null);
+});
+
+test('isModeratorForStateEvent: mirrors Matrix\'s own power-level rule, failing closed on anything missing or malformed', () => {
+  const type = 'work.wigwag.layout-proposal';
+  // Explicit per-user override beats users_default.
+  assert.equal(core.isModeratorForStateEvent({ users: { '@mod:x': 50 }, users_default: 0, state_default: 50 }, '@mod:x', type), true);
+  assert.equal(core.isModeratorForStateEvent({ users: { '@mod:x': 50 }, users_default: 0, state_default: 50 }, '@other:x', type), false);
+  // users_default alone is enough when it already clears the bar.
+  assert.equal(core.isModeratorForStateEvent({ users_default: 50, state_default: 50 }, '@anyone:x', type), true);
+  // A per-event-type override in `events` takes precedence over state_default.
+  assert.equal(core.isModeratorForStateEvent({ users_default: 30, state_default: 50, events: { [type]: 20 } }, '@anyone:x', type), true);
+  // No state_default and no per-event override -- Matrix's own spec
+  // default of 50 applies, so a users_default of 0 is not enough.
+  assert.equal(core.isModeratorForStateEvent({ users_default: 0 }, '@anyone:x', type), false);
+  // Fails closed: no power_levels event at all, or no userId known yet.
+  assert.equal(core.isModeratorForStateEvent(null, '@anyone:x', type), false);
+  assert.equal(core.isModeratorForStateEvent({ users_default: 100 }, null, type), false);
+});
+
 test('encryptSnapshotPayload / decryptSnapshotPayload: round-trips real bytes through real WebCrypto AES-CTR', async () => {
   const plaintext = new TextEncoder().encode(JSON.stringify([{ scope: 'issue', issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Round trip', sortKey: 1 } }]));
   const { ciphertext, encryption } = await core.encryptSnapshotPayload(plaintext);

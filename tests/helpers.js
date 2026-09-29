@@ -666,7 +666,19 @@ function mockGithubContentsApi(page, repo, path = 'tracker.jsonl') {
 // already existed before this test's own session") can actually resolve
 // against a real, already-known mxc -- see tests/matrix-host.spec.js's
 // own snapshotEvent() helper.
-function mockMatrixClientApi(page, { homeserverUrl, roomId, initialEntries = [], roomName, accessDenied = false, whoamiFails = false, messagesPageSize = null, projectCreationForbidden = false, messagesReturnsProjectStateEvents = true, rejectUploadTimes = 0, seedMediaBlobs = [] } = {}) {
+// `powerLevels` (content object, e.g. {users: {'@mod:x': 50}, users_default: 0,
+// state_default: 50}), when set, seeds a real m.room.power_levels state
+// event -- read via the same full /state fetch getProjectIndex already
+// uses, so isModeratorForStateEvent has something real to evaluate
+// against. Omit it to simulate a room with no power_levels event at all
+// (fails closed -- nobody is a moderator). `layoutProposalForbidden`
+// simulates a non-moderator's power level being too low for the
+// work.wigwag.layout-proposal state write (tracker #169/4f07e72b), same
+// shape as projectCreationForbidden above. `initialLayoutProposals`
+// ({[projectId]: content}) pre-seeds an already-live proposal per project,
+// discoverable via the same real current-state fetch as an already-live
+// work.wigwag.project event.
+function mockMatrixClientApi(page, { homeserverUrl, roomId, initialEntries = [], roomName, accessDenied = false, whoamiFails = false, messagesPageSize = null, projectCreationForbidden = false, messagesReturnsProjectStateEvents = true, rejectUploadTimes = 0, seedMediaBlobs = [], powerLevels = null, layoutProposalForbidden = false, initialLayoutProposals = {} } = {}) {
   const state = { sentEntries: [], messagesCallCount: 0, pendingEntries: [] };
   const base = homeserverUrl.replace(/\/$/, '');
   const roomPath = base + '/_matrix/client/v3/rooms/' + encodeURIComponent(roomId);
@@ -778,9 +790,29 @@ function mockMatrixClientApi(page, { homeserverUrl, roomId, initialEntries = [],
     if (messagesReturnsProjectStateEvents) state.pendingEntries.push({ type: 'work.wigwag.project', state_key: projectId, content });
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ event_id: '$projstate' + state.sentProjectStateEvents.length }) });
   });
+  // Layout proposal (tracker #169/4f07e72b) -- same PUT-to-state-key /
+  // reliable-current-state-fetch shape as work.wigwag.project just above,
+  // except state_key is the PROJECT id (a room can hold more than one --
+  // tracker #149), never a fixed room-wide key.
+  state.sentLayoutProposals = [];
+  const layoutProposalEventsByProjectId = new Map(Object.entries(initialLayoutProposals));
+  page.route(roomPath + '/state/work.wigwag.layout-proposal/*', async (route) => {
+    if (layoutProposalForbidden) { await route.fulfill({ status: 403, contentType: 'application/json', body: '{}' }); return; }
+    const url = new URL(route.request().url());
+    const projectId = decodeURIComponent(url.pathname.split('/').pop());
+    const content = JSON.parse(route.request().postData());
+    layoutProposalEventsByProjectId.set(projectId, content);
+    state.sentLayoutProposals.push({ projectId, content });
+    // Rides the ordinary /messages stream too -- a state write is also a
+    // timeline event in real Matrix, same as work.wigwag.project.
+    state.pendingEntries.push({ type: 'work.wigwag.layout-proposal', state_key: projectId, content });
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ event_id: '$layout' + state.sentLayoutProposals.length }) });
+  });
   page.route(roomPath + '/state', async (route) => {
     if (accessDenied) { await route.fulfill({ status: 403, contentType: 'application/json', body: '{}' }); return; }
     const events = [...projectStateEventsByKey.entries()].map(([projectId, content]) => ({ type: 'work.wigwag.project', state_key: projectId, content }));
+    events.push(...[...layoutProposalEventsByProjectId.entries()].map(([projectId, content]) => ({ type: 'work.wigwag.layout-proposal', state_key: projectId, content })));
+    if (powerLevels) events.push({ type: 'm.room.power_levels', state_key: '', content: powerLevels });
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(events) });
   });
 
@@ -807,8 +839,8 @@ function mockMatrixClientApi(page, { homeserverUrl, roomId, initialEntries = [],
 // Returns nothing to poll for state -- read `window.__state` on the
 // returned page directly (`page.evaluate(() => window.__state)`), and reach
 // the tracker UI itself via page.frameLocator('#widget').frameLocator('#frame').
-async function gotoFakeWidgetHost(page, { roomId, userId, displayName, roomName, initialEntries, rejectReadEventsTimes, dropReadEventsTimes, forbidStateEventType, rejectUploadTimes, seedMediaBlobs } = {}) {
-  await page.addInitScript((cfg) => { window.__fakeHostConfig = cfg; }, { roomId, userId, displayName, roomName, initialEntries, rejectReadEventsTimes, dropReadEventsTimes, forbidStateEventType, rejectUploadTimes, seedMediaBlobs });
+async function gotoFakeWidgetHost(page, { roomId, userId, displayName, roomName, initialEntries, rejectReadEventsTimes, dropReadEventsTimes, forbidStateEventType, rejectUploadTimes, seedMediaBlobs, powerLevels } = {}) {
+  await page.addInitScript((cfg) => { window.__fakeHostConfig = cfg; }, { roomId, userId, displayName, roomName, initialEntries, rejectReadEventsTimes, dropReadEventsTimes, forbidStateEventType, rejectUploadTimes, seedMediaBlobs, powerLevels });
   await page.goto('/tests/fixtures/fake-widget-host.html');
 }
 

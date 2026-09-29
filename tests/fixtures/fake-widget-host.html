@@ -32,13 +32,22 @@
     // so a second connect() resolving a snapshot uploaded by an earlier
     // session needs its blob handed back in explicitly. { mxc, bytes }
     // pairs; bytes as a plain array (JSON-serializable through addInitScript).
-    seedMediaBlobs: []
+    seedMediaBlobs: [],
+    // Tracker #169/4f07e72b: seeds a real m.room.power_levels state event
+    // (content object, e.g. {users: {'@fake-user:example.org': 50},
+    // users_default: 0, state_default: 50}) -- read via
+    // getPowerLevels()/isModeratorForStateEvent, same as the direct
+    // transport's own `powerLevels` mock option. Omit to simulate a room
+    // with no power_levels event at all (fails closed -- nobody is a
+    // moderator).
+    powerLevels: null
   }, window.__fakeHostConfig || {});
   let uploadRejectRemaining = cfg.rejectUploadTimes;
   let rejectReadEventsRemaining = cfg.rejectReadEventsTimes;
   let dropReadEventsRemaining = cfg.dropReadEventsTimes;
 
   window.__state = { sentEntries: [], sentStateEvents: [], pendingEntries: cfg.initialEntries.slice(), requestedCapabilities: null, supportedApiVersionsReply: null, uploadedSnapshotBlobs: [] };
+  if (cfg.powerLevels) window.__state.pendingEntries.push({ type: 'm.room.power_levels', state_key: '', content: cfg.powerLevels });
   const mediaStore = new Map(); // mxc -> Uint8Array
   for (const seed of (cfg.seedMediaBlobs || [])) mediaStore.set(seed.mxc, new Uint8Array(seed.bytes));
 

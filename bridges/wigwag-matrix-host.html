@@ -322,6 +322,46 @@
         const projectIds = result.events.map(core.projectIdFromMatrixStateEvent).filter(Boolean);
         return { status: 'ok', projectIds };
       },
+      // Layout proposal (tracker #169/4f07e72b): same current-state-read
+      // reliability reasoning as getProjectIndex above -- a proposal sent
+      // long before this viewer connects must still be found even in a
+      // chatty room, not just whatever a bounded timeline scan happens to
+      // reach. state_key is the PROJECT id (see WIGWAG_MATRIX_LAYOUT_PROPOSAL_TYPE's
+      // own comment in wigwag-core.js -- a room can hold more than one
+      // project, tracker #149), so this returns every currently-live one,
+      // keyed by project, same shape as getProjectIndex's own "every
+      // currently-live state_key" semantics.
+      async getLayoutProposals() {
+        const result = await core.getMatrixRoomState({ fetchImpl: fetch, homeserverUrl, accessToken, roomId });
+        if (result.status !== 'ok') return result;
+        const proposalsByProjectId = {};
+        for (const ev of result.events) {
+          const pid = core.layoutProposalProjectId(ev);
+          if (!pid) continue;
+          const proposal = core.layoutProposalFromMatrixStateEvent(ev);
+          if (proposal) proposalsByProjectId[pid] = proposal;
+        }
+        return { status: 'ok', proposalsByProjectId };
+      },
+      // Raw content only -- deciding "is THIS user a moderator" needs the
+      // bridge's own resolvedMatrixUserId, which the transport layer has
+      // no business knowing about. Room-wide, not per-project -- Matrix
+      // power levels are never scoped to a sub-part of a room.
+      async getPowerLevels() {
+        const result = await core.getMatrixRoomState({ fetchImpl: fetch, homeserverUrl, accessToken, roomId });
+        if (result.status !== 'ok') return result;
+        const ev = result.events.find(e => e && e.type === 'm.room.power_levels' && e.state_key === '');
+        return { status: 'ok', content: (ev && ev.content) || null };
+      },
+      // state_key is the target project's id -- a second send for the SAME
+      // project always overwrites the first ("newer replaces older" as a
+      // protocol property, not something this file has to reconcile), with
+      // zero interference between different projects sharing this room. A
+      // 'forbidden' result is Matrix's own power-level check doing its job
+      // (same precedent as createProject below) -- never silently swallowed.
+      async sendLayoutProposal(projectId, content) {
+        return core.sendMatrixLayoutProposal({ fetchImpl: fetch, homeserverUrl, accessToken, roomId, projectId, content });
+      },
       // A signed wigwag entry needs a non-empty identityEmail before
       // wigwag.html will commit it at all (requireIdentityEmail gates
       // every write behind an "enter your email" modal otherwise --
@@ -367,6 +407,12 @@
   // capabilities below, not the send.event/receive.event pair the other
   // types use.
   const WIDGET_PROJECT_STATE_TYPE = core.WIGWAG_MATRIX_PROJECT_STATE_TYPE;
+  // Layout proposal (tracker #169/4f07e72b) -- also a STATE event type,
+  // same capability shape as WIDGET_PROJECT_STATE_TYPE. m.room.power_levels
+  // needs only receive (this file never writes it) -- read-only,
+  // moderator-visibility-check purposes.
+  const WIDGET_LAYOUT_PROPOSAL_TYPE = core.WIGWAG_MATRIX_LAYOUT_PROPOSAL_TYPE;
+  const WIDGET_POWER_LEVELS_TYPE = 'm.room.power_levels';
   // The bare "read_events" action name doesn't exist in any shipped Widget
   // API driver -- confirmed live against real Element ("Unknown or
   // unsupported from-widget action: read_events"). Reading past timeline
@@ -419,6 +465,9 @@
       'org.matrix.msc2762.send.event:' + WIDGET_SNAPSHOT_TYPE,
       'org.matrix.msc2762.receive.state_event:' + WIDGET_PROJECT_STATE_TYPE,
       'org.matrix.msc2762.send.state_event:' + WIDGET_PROJECT_STATE_TYPE,
+      'org.matrix.msc2762.receive.state_event:' + WIDGET_LAYOUT_PROPOSAL_TYPE,
+      'org.matrix.msc2762.send.state_event:' + WIDGET_LAYOUT_PROPOSAL_TYPE,
+      'org.matrix.msc2762.receive.state_event:' + WIDGET_POWER_LEVELS_TYPE,
       'org.matrix.msc2762.timeline:' + roomId,
       // MSC4039 ("Access the Content repository with the Widget API") --
       // media-blob snapshots (tracker f6b39bf0's rate-limit fix) need the
@@ -605,6 +654,18 @@
             const projectResult = await postToHost(READ_EVENTS_ACTION, { type: WIDGET_PROJECT_STATE_TYPE, room_ids: [roomId], limit: WIDGET_PAGE_LIMIT, since: readCursor, state_key: true });
             events.push(...((projectResult && projectResult.events) || []));
           } catch (e) { console.warn('[wigwag-matrix-host] project-index read_events failed (non-fatal):', e.message); }
+          // Layout proposal / power levels (tracker #169/4f07e72b) -- same
+          // best-effort, ride-the-poll treatment as the project index just
+          // above, so a change made WHILE this session is already
+          // connected is picked up without a reconnect.
+          try {
+            const layoutResult = await postToHost(READ_EVENTS_ACTION, { type: WIDGET_LAYOUT_PROPOSAL_TYPE, room_ids: [roomId], limit: WIDGET_PAGE_LIMIT, since: readCursor, state_key: true });
+            events.push(...((layoutResult && layoutResult.events) || []));
+          } catch (e) { console.warn('[wigwag-matrix-host] layout-proposal read_events failed (non-fatal):', e.message); }
+          try {
+            const plResult = await postToHost(READ_EVENTS_ACTION, { type: WIDGET_POWER_LEVELS_TYPE, room_ids: [roomId], limit: WIDGET_PAGE_LIMIT, since: readCursor, state_key: true });
+            events.push(...((plResult && plResult.events) || []));
+          } catch (e) { console.warn('[wigwag-matrix-host] power-levels read_events failed (non-fatal):', e.message); }
           return { status: 'ok', events: dedupeNew(events) };
         } catch (e) {
           return { status: 'error', message: e.message };
@@ -730,6 +791,57 @@
           return { status: 'ok', projectIds: [...projectIds] };
         } catch (e) {
           return { status: 'error', message: e.message };
+        }
+      },
+      // Layout proposal (tracker #169/4f07e72b) -- same state_key:true
+      // wildcard read as getProjectIndex above (state_key is the PROJECT
+      // id, a room can hold more than one -- tracker #149), returning
+      // every currently-live proposal, keyed by project.
+      async getLayoutProposals() {
+        try {
+          const result = await postToHost(READ_EVENTS_ACTION, { type: WIDGET_LAYOUT_PROPOSAL_TYPE, room_ids: [roomId], limit: 2000, state_key: true });
+          const events = (result && result.events) || [];
+          const proposalsByProjectId = {};
+          for (const ev of events) {
+            const pid = core.layoutProposalProjectId(ev);
+            if (!pid) continue;
+            const proposal = core.layoutProposalFromMatrixStateEvent(ev);
+            if (proposal) proposalsByProjectId[pid] = proposal;
+          }
+          return { status: 'ok', proposalsByProjectId };
+        } catch (e) {
+          return { status: 'error', message: e.message };
+        }
+      },
+      // Room-wide, not per-project -- see the direct transport's own
+      // getPowerLevels comment. Filters the reply by real type/state_key
+      // explicitly (unlike getRoomName's own "just trust the last event"
+      // shortcut) -- a real Matrix read_events reply for a specific type
+      // never carries anything else, but this file's own test double
+      // (fake-widget-host.html) has historically returned its FULL
+      // pendingEntries queue regardless of the requested type, so trusting
+      // "whatever came back last" here would silently pick up an
+      // unrelated event.
+      async getPowerLevels() {
+        try {
+          const result = await postToHost(READ_EVENTS_ACTION, { type: WIDGET_POWER_LEVELS_TYPE, room_ids: [roomId], state_key: '', limit: 1 });
+          const events = (result && result.events) || [];
+          const matching = events.filter(e => e && e.type === WIDGET_POWER_LEVELS_TYPE);
+          const last = matching[matching.length - 1];
+          return { status: 'ok', content: (last && last.content) || null };
+        } catch (e) {
+          return { status: 'error', message: e.message };
+        }
+      },
+      // Same 'forbidden' coercion as createProject above -- Element
+      // reports a capability/power-level rejection as a rejected promise,
+      // not a distinct status. state_key is the target project's id.
+      async sendLayoutProposal(projectId, content) {
+        try {
+          await postToHost('send_event', { type: WIDGET_LAYOUT_PROPOSAL_TYPE, state_key: projectId, content });
+          return { status: 'ok' };
+        } catch (e) {
+          return { status: 'forbidden', message: e.message };
         }
       },
       async whoAmI(fallbackUserId) { return fallbackUserId || null; } // already known from the widget URL, no round-trip needed
@@ -954,6 +1066,38 @@
     function computeRemoteDocFor(projectId) {
       const { name: projectName, includeUntagged } = bridgedProjects.get(projectId);
       return core.hydrateProjectFromMatrixTimeline(remoteRawEvents, { fieldDefs: includeUntagged ? core.defaultFieldDefs() : MINIMAL_FALLBACK_FIELD_DEFS, projectId, projectName, includeUntaggedEntries: includeUntagged });
+    }
+    // Layout proposal / moderator status (tracker #169/4f07e72b): both
+    // derived fresh from remoteRawEvents on demand, the same "always
+    // current, no separate live-update bookkeeping" treatment
+    // discoverProjects already gives work.wigwag.project events -- "last
+    // one in arrival order wins" naturally matches Matrix's own
+    // one-value-per-(type,state_key) semantics, and dedupeNew (widget
+    // transport) / natural timeline ordering (direct transport) already
+    // keep remoteRawEvents from accumulating unbounded unchanged repeats.
+    function latestStateEventOfType(type, stateKey) {
+      let latest = null;
+      for (const ev of remoteRawEvents) {
+        if (ev && ev.type === type && (stateKey === undefined || ev.state_key === stateKey)) latest = ev;
+      }
+      return latest;
+    }
+    // Scoped by project id (state_key) -- a room can hold more than one
+    // wigwag project (tracker #149), and layout proposals must never
+    // cross-contaminate between them (see WIGWAG_MATRIX_LAYOUT_PROPOSAL_TYPE's
+    // own comment in wigwag-core.js).
+    function currentLayoutProposal(projectId) {
+      const ev = latestStateEventOfType(core.WIGWAG_MATRIX_LAYOUT_PROPOSAL_TYPE, projectId);
+      return ev ? core.layoutProposalFromMatrixStateEvent(ev) : null;
+    }
+    function currentLayoutProposalsByProjectId() {
+      return Object.fromEntries([...bridgedProjects.keys()].map(id => [id, currentLayoutProposal(id)]));
+    }
+    // Room-wide (state_key ''), not per-project -- Matrix power levels are
+    // never scoped to a sub-part of a room.
+    function currentIsModerator() {
+      const ev = latestStateEventOfType('m.room.power_levels', '');
+      return ev ? core.isModeratorForStateEvent(ev.content, resolvedMatrixUserId, core.WIGWAG_MATRIX_LAYOUT_PROPOSAL_TYPE) : false;
     }
     // Reconstructs a minimal, mergeable "doc" shape (projectHistory +
     // issues, each issue just {id, history, commentStreams}) from this
@@ -1536,7 +1680,14 @@
           // (roomId:projectId) rather than bleeding those prefs across
           // rooms that happen to share a project id. The iframe otherwise
           // has zero knowledge of which room it's in, by design.
-          roomId: roomId
+          roomId: roomId,
+          // Tracker #169/4f07e72b: a proposal sent (or a moderator status
+          // that applies) before this viewer even connected must still
+          // show up immediately -- these are real, current Matrix STATE,
+          // not something scoped to "while this session has been open".
+          // Keyed by project id since a room can hold more than one.
+          layoutProposals: currentLayoutProposalsByProjectId(),
+          isModerator: currentIsModerator()
         }, '*');
         return;
       }
@@ -1547,6 +1698,22 @@
       // mechanism needed.
       if (e.data.type === 'wigwag:retry-pending') {
         if (bridgedProjects.has(e.data.projectId)) pushNewLocalEntries(e.data.projectId, { forceRetryFailed: true });
+        return;
+      }
+      // Moderator-gated the same way project creation is (Matrix's own
+      // power-level check on the real send) -- a rejection surfaces via
+      // the same wigwag:room-write-rejected notice, never a silent drop.
+      if (e.data.type === 'wigwag:propose-layout') {
+        const content = core.matrixStateEventContentFromLayoutProposal(e.data.content || {});
+        transport.sendLayoutProposal(e.data.projectId, content).then(result => {
+          if (result.status === 'ok') return;
+          localStorage.postMessageToFrame({
+            type: 'wigwag:room-write-rejected',
+            reason: result.status === 'forbidden'
+              ? 'Only room moderators can propose a table layout.'
+              : ('Could not send the layout proposal (' + result.status + (result.message ? ': ' + result.message : '') + ').')
+          });
+        });
         return;
       }
       if (e.data.type !== 'wigwag:local-write') return;
@@ -1588,6 +1755,24 @@
         const indexResult = await transport.getProjectIndex();
         if (indexResult.status === 'ok') indexedProjectIds = indexResult.projectIds;
 
+        // Layout proposal / power levels (tracker #169/4f07e72b) -- same
+        // current-state-read reliability reasoning as the project index
+        // just above. Best-effort, wrapped as synthetic raw state events
+        // (matching projectStateEvents's own treatment below) so
+        // latestStateEventOfType's scan can treat them uniformly with
+        // whatever the ongoing poll later finds in the timeline.
+        let seededExtraStateEvents = [];
+        const layoutProposalsResult = await transport.getLayoutProposals();
+        if (layoutProposalsResult.status === 'ok' && layoutProposalsResult.proposalsByProjectId) {
+          for (const [pid, proposal] of Object.entries(layoutProposalsResult.proposalsByProjectId)) {
+            seededExtraStateEvents.push({ type: core.WIGWAG_MATRIX_LAYOUT_PROPOSAL_TYPE, state_key: pid, content: core.matrixStateEventContentFromLayoutProposal(proposal) });
+          }
+        }
+        const powerLevelsResult = await transport.getPowerLevels();
+        if (powerLevelsResult.status === 'ok' && powerLevelsResult.content) {
+          seededExtraStateEvents.push({ type: 'm.room.power_levels', state_key: '', content: powerLevelsResult.content });
+        }
+
         const initialPull = await transport.pullInitial();
         if (initialPull.status !== 'ok') return initialPull;
 
@@ -1628,7 +1813,7 @@
         // present in remoteRawEvents in their real shape, not decoded as
         // an entry.
         const projectStateEvents = initialPull.events.filter(ev => ev && ev.type === core.WIGWAG_MATRIX_PROJECT_STATE_TYPE);
-        remoteRawEvents = snapshotItems.concat(tailItems).map(item => ({ type: core.WIGWAG_MATRIX_ENTRY_TYPE, content: core.matrixEventContentFromEntry(item) })).concat(projectStateEvents);
+        remoteRawEvents = snapshotItems.concat(tailItems).map(item => ({ type: core.WIGWAG_MATRIX_ENTRY_TYPE, content: core.matrixEventContentFromEntry(item) })).concat(projectStateEvents).concat(seededExtraStateEvents);
         for (const [projectId, snap] of snapshotsByProject) {
           lastSnapshotEntryCount.set(projectId, snap.items.length);
           if (snap.createdAt) lastSnapshotAt.set(projectId, snap.createdAt);
@@ -1756,6 +1941,16 @@
               await bootstrapLocalStorage(p.id, p.label, docStorable({ fieldDefs: remoteDoc.fields, projectHistory: remoteDoc.projectHistory, issues: remoteDoc.issues }), transport, fallbackUserId, fallbackDisplayName);
               reconcileIntoLocal(p.id);
             }
+            // Tracker #169/4f07e72b: pushed unconditionally whenever
+            // something new arrived this tick (after any newly-discovered
+            // project above has already joined bridgedProjects), same
+            // "recompute fresh, let the iframe absorb a redundant-but-
+            // unchanged push cheaply" style as everything else here (no
+            // diffing against what was last sent) -- the iframe itself
+            // dedupes each proposal by its own identity to decide whether
+            // to (re)open that project's banner.
+            localStorage.postMessageToFrame({ type: 'wigwag:layout-proposals', proposalsByProjectId: currentLayoutProposalsByProjectId() });
+            localStorage.postMessageToFrame({ type: 'wigwag:moderator-status', isModerator: currentIsModerator() });
           }
         }, 5000);
 

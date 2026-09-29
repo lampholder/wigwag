@@ -1138,6 +1138,39 @@ because anything in this codebase still produces it. `storageNamespacePrefix()`/
 `STORAGE_NS` themselves (the wigwag-core.js/wigwag.html mechanism that
 namespacing depended on) have been removed entirely, not just superseded.
 
+**Layout proposal (tracker `#169`/`4f07e72b`, design handoff
+`table_layout.zip`): a second Matrix STATE event, `work.wigwag.layout-proposal`,
+one per project — `state_key` is the target **project** id, the same
+convention `work.wigwag.project` above already uses, deliberately *not* a
+single room-wide key, since a room can hold more than one project and
+their proposals must never collide.** A room moderator captures the
+current column set/order/widths/freeze point and sends it as this state
+event's content:
+
+```json
+{ "v": 1, "columnOrder": ["__title__", "priority", "__comments__"], "columnWidths": {"priority": 220}, "hiddenFieldIds": ["status"], "freezeColId": "priority", "proposedBy": "Alex", "proposedAt": 1738594440000 }
+```
+
+Moderator-gating rides the exact same mechanism as project creation:
+Matrix's own power-level check on the state write (`state_default`,
+typically 50) is the actual enforcement, client-side-mirrored (purely for
+UI discoverability — the toolbar icon is hidden entirely for a
+non-moderator, never merely disabled) by re-implementing that same rule
+against a `m.room.power_levels` state read (`isModeratorForStateEvent` in
+wigwag-core.js). "Only one proposal shown at a time, a newer one replaces
+an unaccepted older one outright" is a property of the protocol itself,
+not app logic: one state event holds exactly one value per `state_key`,
+so a second send for the same project is a plain overwrite. Every
+recipient (including the sender) sees a banner with a mini preview strip
+and Accept/Dismiss; **accepting is purely a local cosmetic-preference
+change** — it writes to the same per-device, per-room `COLUMN_WIDTHS_KEY`/
+`COLUMN_ORDER_KEY`/`HIDDEN_FIELDS_KEY` entries (see "Cosmetic, per-browser
+preferences" above) a manual drag-resize/reorder/hide/freeze already goes
+through. It never appends a project-history entry and is never
+exported/merged — a fresh export or a totally different viewer's own
+local layout is completely unaffected by anyone else's proposal, accepted
+or not.
+
 **Room snapshot: connect stops meaning "replay the whole timeline."**
 Tracker `f6b39bf0`/`#153`, `f1c7098f`/`#154`: without a snapshot, every
 connect (by every viewer, forever) replays a project's entire append-only

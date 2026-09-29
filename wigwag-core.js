@@ -3369,6 +3369,81 @@ function projectIdFromMatrixStateEvent(rawEvent) {
   if (typeof rawEvent.state_key !== 'string' || !rawEvent.state_key) return null;
   return rawEvent.state_key;
 }
+// Layout proposal (tracker #169/4f07e72b, design handoff table_layout.zip):
+// a Matrix STATE event, following the exact same precedent as
+// WIGWAG_MATRIX_PROJECT_STATE_TYPE above -- moderator-gating rides
+// Matrix's own power-level check on state-event sends (state_default,
+// typically 50). state_key is the PROJECT id (same convention
+// WIGWAG_MATRIX_PROJECT_STATE_TYPE already uses, NOT a single fixed key)
+// -- a room can hold more than one wigwag project (tracker #149), and a
+// fixed room-wide key would let two unrelated projects' proposals
+// collide/overwrite each other. Scoped this way, "only one proposal
+// shown at a time, a newer one replaces an unaccepted older one outright"
+// is still a property of the protocol itself PER PROJECT, with zero
+// cross-project interference -- sending a new one for the same project is
+// a plain overwrite, nothing the app has to reconcile. Applying an
+// accepted proposal is purely a LOCAL cosmetic change (column order/
+// widths/visibility/freeze point) -- it never appends to a project's
+// signed history and is never exported/merged, same as any other local
+// pref like columnWidths.
+const WIGWAG_MATRIX_LAYOUT_PROPOSAL_TYPE = 'work.wigwag.layout-proposal';
+function matrixStateEventContentFromLayoutProposal({ columnOrder, columnWidths, hiddenFieldIds, freezeColId, proposedBy, proposedAt }) {
+  return {
+    v: WIGWAG_MATRIX_EVENT_VERSION,
+    columnOrder: columnOrder || [],
+    columnWidths: columnWidths || {},
+    hiddenFieldIds: hiddenFieldIds || [],
+    freezeColId: freezeColId || null,
+    proposedBy: proposedBy || null,
+    proposedAt: proposedAt || null,
+  };
+}
+// Tolerant like projectIdFromMatrixStateEvent: returns null on a
+// malformed/foreign event or on empty content (Matrix has no "delete a
+// state event" primitive -- an empty content object, {}, is the closest
+// a client can send to mean "no active proposal", so an empty/missing
+// columnOrder is treated as null rather than a degenerate proposal).
+function layoutProposalFromMatrixStateEvent(rawEvent) {
+  if (!rawEvent || rawEvent.type !== WIGWAG_MATRIX_LAYOUT_PROPOSAL_TYPE) return null;
+  const content = rawEvent.content;
+  if (!content || typeof content !== 'object' || !Array.isArray(content.columnOrder) || !content.columnOrder.length) return null;
+  return {
+    columnOrder: content.columnOrder,
+    columnWidths: (content.columnWidths && typeof content.columnWidths === 'object') ? content.columnWidths : {},
+    hiddenFieldIds: Array.isArray(content.hiddenFieldIds) ? content.hiddenFieldIds : [],
+    freezeColId: content.freezeColId || null,
+    proposedBy: content.proposedBy || null,
+    proposedAt: content.proposedAt || null,
+  };
+}
+async function sendMatrixLayoutProposal({ fetchImpl, homeserverUrl, accessToken, roomId, projectId, content }) {
+  return putMatrixEvent({ fetchImpl, homeserverUrl, accessToken, roomId, eventType: WIGWAG_MATRIX_LAYOUT_PROPOSAL_TYPE, content, stateKey: projectId });
+}
+// Tolerant like projectIdFromMatrixStateEvent -- the project this
+// proposal belongs to is the state_key itself, same convention.
+function layoutProposalProjectId(rawEvent) {
+  if (!rawEvent || rawEvent.type !== WIGWAG_MATRIX_LAYOUT_PROPOSAL_TYPE) return null;
+  return (typeof rawEvent.state_key === 'string' && rawEvent.state_key) ? rawEvent.state_key : null;
+}
+// Matrix's own rule for "can this user send a state event of this type,"
+// reimplemented client-side purely to decide whether to SHOW the
+// btn-propose-layout icon at all (design handoff: hidden for non-
+// moderators entirely, not just disabled) -- actual enforcement is still
+// Matrix's real server-side power-level check on the send itself (same
+// belt-and-braces precedent as sendMatrixProjectStateEvent's 403
+// handling); this is a discoverability mirror of that rule, not a second
+// independent gate. Fails closed (not a moderator) on any missing or
+// malformed power_levels event/userId, matching Matrix's own spec
+// default of state_default=50 when the field is absent.
+function isModeratorForStateEvent(powerLevelsContent, userId, eventType) {
+  if (!powerLevelsContent || typeof powerLevelsContent !== 'object' || !userId) return false;
+  const usersDefault = typeof powerLevelsContent.users_default === 'number' ? powerLevelsContent.users_default : 0;
+  const userLevel = (powerLevelsContent.users && typeof powerLevelsContent.users[userId] === 'number') ? powerLevelsContent.users[userId] : usersDefault;
+  const required = (powerLevelsContent.events && typeof powerLevelsContent.events[eventType] === 'number')
+    ? powerLevelsContent.events[eventType]
+    : (typeof powerLevelsContent.state_default === 'number' ? powerLevelsContent.state_default : 50);
+  return userLevel >= required;
+}
 // Room snapshot (tracker f6b39bf0/#153, f1c7098f/#154): a repackaging of a
 // project's full history-so-far into fewer, more recent events, so a fresh
 // connect only needs the LATEST snapshot plus whatever's newer, not the
@@ -3868,6 +3943,7 @@ const WigwagCoreExports = {
   buildMergePreviewViewModel, buildMergeFieldTimeline, mergeRecordNeedsAttention, buildMergeFieldDiffLines, mergeSettledValueView, buildMergeIssueTimeline, resolveFieldValueView,
   WIGWAG_MATRIX_ENTRY_TYPE, WIGWAG_MATRIX_EVENT_VERSION, matrixEventContentFromEntry, entryFromMatrixEvent, hydrateProjectFromMatrixTimeline,
   WIGWAG_MATRIX_PROJECT_STATE_TYPE, matrixStateEventContentFromProjectCreation, projectIdFromMatrixStateEvent, sendMatrixProjectStateEvent, getMatrixRoomState,
+  WIGWAG_MATRIX_LAYOUT_PROPOSAL_TYPE, matrixStateEventContentFromLayoutProposal, layoutProposalFromMatrixStateEvent, layoutProposalProjectId, sendMatrixLayoutProposal, isModeratorForStateEvent,
   WIGWAG_MATRIX_SNAPSHOT_TYPE, encryptSnapshotPayload, decryptSnapshotPayload, matrixEventContentFromSnapshotManifest, snapshotManifestFromMatrixEvent, findLatestSnapshotManifests, resolveSnapshotPayload, decodeAllMatrixEntryItems, sendMatrixSnapshotManifest,
   resolveMatrixRoomAlias, fetchMatrixRoomEntries, sendMatrixEntry, probeMatrixRoomAccess,
   fetchWithMatrixRetry429, uploadMatrixMedia, downloadMatrixMedia, parseMxcUri

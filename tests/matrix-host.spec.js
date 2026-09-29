@@ -34,6 +34,19 @@ const core = require('../wigwag-core.js');
 const HOMESERVER = 'https://matrix.example.org';
 const ROOM_ID = '!room123:example.org';
 
+// Tracker #169/4f07e72b follow-up: shared power-levels fixtures for both
+// the layout-proposal icon and "+ New project"/"Receive a project"
+// (empty-room screen and switcher), all gated by the same real, live
+// isRoomModerator check now. whoami always resolves to
+// '@test-user:example.org' in mockMatrixClientApi (the direct transport);
+// the widget-embedded transport instead gets its user id straight from
+// the widget URL (fake-widget-host.html's own cfg.userId, which defaults
+// to '@fake-user:example.org') -- widget-transport tests that need
+// moderator power levels must key MODERATOR_LEVELS.users off whatever
+// userId they actually configured, not this constant's own key.
+const MODERATOR_LEVELS = { users: { '@test-user:example.org': 50 }, users_default: 0, state_default: 50 };
+const NON_MODERATOR_LEVELS = { users_default: 0, state_default: 50 };
+
 function entryEvent({ issueId, stream, entry, projectId }) {
   const content = { v: 1, scope: 'issue', issueId, stream: stream || null, entry };
   if (projectId) content.projectId = projectId;
@@ -602,7 +615,10 @@ test.describe('wigwag-matrix-host.html: widget-embedded transport', () => {
   // postMessage round trip to get the project's real name back at all.
   test('a fresh reconnect through the widget transport can actually resolve a previously-uploaded snapshot (not just decrypt its bytes directly)', async ({ page }) => {
     const ROOM_ID = '!widgetreconnect:example.org';
-    await h.gotoFakeWidgetHost(page, { roomId: ROOM_ID, roomName: 'Widget Reconnect Room', initialEntries: [] });
+    // Default fake-widget-host.html userId ('@fake-user:example.org') is
+    // the one that needs the power level -- this test's own moderator
+    // clicks "+ New project", now gated client-side too (#169/4f07e72b).
+    await h.gotoFakeWidgetHost(page, { roomId: ROOM_ID, roomName: 'Widget Reconnect Room', initialEntries: [], powerLevels: { users: { '@fake-user:example.org': 50 }, users_default: 0, state_default: 50 } });
     const widget = page.frameLocator('#widget');
     await expect(widget.locator('#frame')).toBeVisible();
     const frame = widget.frameLocator('#frame');
@@ -999,7 +1015,7 @@ test.describe('wigwag-matrix-host.html: multiple projects in one room', () => {
 // project the moment a room is empty.
 test.describe('wigwag-matrix-host.html: moderator-gated project creation', () => {
   test('a moderator\'s "+ New project" from the empty-room screen succeeds and shows the new project', async ({ page }) => {
-    h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: [] });
+    h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: [], powerLevels: MODERATOR_LEVELS });
     await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
@@ -1014,8 +1030,18 @@ test.describe('wigwag-matrix-host.html: moderator-gated project creation', () =>
     await expect(frame.locator('[data-testid=tracker-name-title]').first()).toBeVisible();
   });
 
-  test('a non-moderator\'s attempt to create the first project is rejected (403), rolled back locally, and shown as a real error -- never silently dropped', async ({ page }) => {
-    h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: [], projectCreationForbidden: true });
+  // Tracker #169/4f07e72b follow-up: the button itself is now hidden
+  // entirely for a real non-moderator (client-side isRoomModerator check),
+  // so this scenario is only reachable when the client-side check and the
+  // server's own power-level enforcement disagree -- e.g. a moderator
+  // demoted between page load and click. powerLevels: MODERATOR_LEVELS
+  // makes the button visible/clickable; projectCreationForbidden: true
+  // still forces the real write to be rejected server-side, exercising
+  // exactly the belt-and-braces path this test exists for: a rejected
+  // write must never look like it succeeded, regardless of what the
+  // client-side check believed.
+  test('a moderator (by client-side check) whose write is still rejected server-side is rolled back locally and shown a real error -- never silently dropped', async ({ page }) => {
+    h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: [], projectCreationForbidden: true, powerLevels: MODERATOR_LEVELS });
     await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
@@ -1048,7 +1074,7 @@ test.describe('wigwag-matrix-host.html: moderator-gated project creation', () =>
   // importParsedAsNewProject, which is exactly what happens here since
   // the room has zero projects to match against.
   test('a moderator can paste-receive a project from the empty-room screen, same underlying import path as the main app', async ({ page }) => {
-    h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: [] });
+    h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: [], powerLevels: MODERATOR_LEVELS });
     await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
@@ -1094,7 +1120,7 @@ test.describe('wigwag-matrix-host.html: moderator-gated project creation', () =>
   // building this fix, before it reached this test).
   test('a fresh bulk import via the snapshot path clears pending state immediately, with no follow-up resend', async ({ page }) => {
     await page.addInitScript(() => { window.__wigwagTestTracePendingUpdates = []; });
-    const state = h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: [] });
+    const state = h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: [], powerLevels: MODERATOR_LEVELS });
     await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
@@ -1143,7 +1169,7 @@ test.describe('wigwag-matrix-host.html: moderator-gated project creation', () =>
   // never having created it locally itself -- the same shape as a
   // second account).
   test('a project created via "+ New project" has a real name a totally fresh session can derive, not just a local-only label', async ({ page }) => {
-    h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: [] });
+    h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: [], powerLevels: MODERATOR_LEVELS });
     await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
@@ -1264,7 +1290,7 @@ test.describe('wigwag-matrix-host.html: moderator-gated project creation', () =>
   // passed against this mock, since its own timing happened to favor
   // the local write).
   test('a project created via "+ New project" has its name baked into the FIRST snapshot pushed, not a separate later write', async ({ page }) => {
-    const state = h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: [] });
+    const state = h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: [], powerLevels: MODERATOR_LEVELS });
     await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
@@ -1295,7 +1321,7 @@ test.describe('wigwag-matrix-host.html: moderator-gated project creation', () =>
   // set) was being passed as that fallback for every project, not just
   // the room's genuinely-legacy untagged-entries default one.
   test('a project created via "+ New project" never sprouts fields from the built-in default set it never actually had', async ({ page }) => {
-    h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: [] });
+    h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: [], powerLevels: MODERATOR_LEVELS });
     await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
@@ -1349,7 +1375,7 @@ test.describe('wigwag-matrix-host.html: moderator-gated project creation', () =>
     // project would be invisible; the real current-state fetch must be
     // what actually finds it.
     const state = h.mockMatrixClientApi(page, {
-      homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: [], messagesReturnsProjectStateEvents: false
+      homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: [], messagesReturnsProjectStateEvents: false, powerLevels: MODERATOR_LEVELS
     });
     await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
@@ -2307,5 +2333,257 @@ test.describe('wigwag-matrix-host.html: a project adopted in one room never leak
     const rows = frameB.locator('[data-testid=switcher-project-row]');
     const rowTexts = await rows.allInnerTexts();
     expect(rowTexts.some(t => t.includes('Room A Import'))).toBe(false);
+  });
+});
+
+// Tracker #169/4f07e72b, design handoff table_layout.zip: a moderator
+// captures the current column set/order/widths/freeze point and proposes
+// it to the room as a real Matrix STATE event (work.wigwag.layout-
+// proposal) -- moderator-gating rides Matrix's own power-level check
+// (isModeratorForStateEvent in wigwag-core.js), and state_key is the
+// PROJECT id (never a single fixed room-wide key), since a room can hold
+// more than one wigwag project (tracker #149) and proposals must never
+// cross-contaminate between them. Applying an accepted proposal is purely
+// a local cosmetic-pref change -- never a new signed history entry,
+// never exported/merged.
+test.describe('wigwag-matrix-host.html: moderator-proposed table layouts', () => {
+  const PROJ = 'layout-proj';
+
+  function fieldDefEntry(field, value, sortKey) {
+    return { type: 'work.wigwag.entry', content: { v: 1, scope: 'project', projectId: PROJ, entry: { id: 'def-' + field, field, value, sortKey, origin: 'authored' } } };
+  }
+  function seedProjectEntries() {
+    return [
+      fieldDefEntry('priority', { label: 'Priority', type: 'select', options: [{ id: 'low', label: 'Low', color: 'green', emoji: '' }, { id: 'high', label: 'High', color: 'red', emoji: '' }] }, 0),
+      fieldDefEntry('status', { label: 'Status', type: 'select', options: [{ id: 'open', label: 'Open', color: 'blue', emoji: '' }] }, 1),
+      entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Issue one', sortKey: 2, origin: 'authored' }, projectId: PROJ })
+    ];
+  }
+  async function connect(page, opts = {}) {
+    const state = h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: seedProjectEntries(), ...opts });
+    await page.goto('/bridges/wigwag-matrix-host.html');
+    await page.locator('#homeserverUrl').fill(HOMESERVER);
+    await page.locator('#accessToken').fill('tok123');
+    await page.locator('#roomId').fill(ROOM_ID);
+    await page.locator('#connectBtn').click();
+    await expect(page.locator('#frame')).toBeVisible();
+    await page.waitForTimeout(300);
+    return state;
+  }
+
+  test('the propose-layout icon is shown for a real moderator and entirely absent (not just disabled) for a non-moderator', async ({ page }) => {
+    await connect(page, { powerLevels: MODERATOR_LEVELS });
+    const frame = page.frameLocator('#frame');
+    await expect(frame.locator('[data-testid=btn-propose-layout]')).toBeVisible();
+  });
+
+  test('a non-moderator never sees the icon at all', async ({ page }) => {
+    await connect(page, { powerLevels: NON_MODERATOR_LEVELS });
+    const frame = page.frameLocator('#frame');
+    await expect(frame.locator('[data-testid=btn-propose-layout]')).toHaveCount(0);
+  });
+
+  test('a room with no power_levels event at all fails closed -- no moderator, no icon', async ({ page }) => {
+    await connect(page); // powerLevels omitted entirely
+    const frame = page.frameLocator('#frame');
+    await expect(frame.locator('[data-testid=btn-propose-layout]')).toHaveCount(0);
+  });
+
+  test('a moderator sending a layout proposal PUTs a real state event keyed by the project id, with a confirm step first', async ({ page }) => {
+    const state = await connect(page, { powerLevels: MODERATOR_LEVELS });
+    const frame = page.frameLocator('#frame');
+    await frame.locator('[data-testid=btn-propose-layout]').click();
+    await expect(frame.locator('[data-testid=propose-layout-confirm-popover]')).toBeVisible();
+    await frame.locator('[data-testid=btn-confirm-propose-layout]').click();
+    await page.waitForTimeout(200);
+
+    expect(state.sentLayoutProposals.length).toBe(1);
+    expect(state.sentLayoutProposals[0].projectId).toBe(PROJ);
+    const content = state.sentLayoutProposals[0].content;
+    expect(Array.isArray(content.columnOrder)).toBe(true);
+    expect(content.columnOrder.length).toBeGreaterThan(0);
+    expect(content.columnWidths).toBeTruthy();
+    // Never a signed, portable history entry -- purely a local cosmetic
+    // snapshot riding the state-event wire, nothing else changed.
+    expect(state.sentEntries.length).toBe(0);
+  });
+
+  test('a proposal already live when a recipient connects shows a banner with a preview and Accept/Dismiss, labeled with the sender', async ({ page }) => {
+    const proposalContent = core.matrixStateEventContentFromLayoutProposal({
+      columnOrder: ['__title__', 'priority', '__comments__'],
+      columnWidths: { priority: 222 },
+      hiddenFieldIds: ['status'],
+      freezeColId: 'priority',
+      proposedBy: 'Alex',
+      proposedAt: 555
+    });
+    await connect(page, { initialLayoutProposals: { [PROJ]: proposalContent } });
+    const frame = page.frameLocator('#frame');
+    await expect(frame.locator('[data-testid=layout-proposal-banner]')).toBeVisible();
+    await expect(frame.locator('[data-testid=layout-proposal-banner]')).toContainText('Alex');
+    await expect(frame.locator('[data-testid=layout-proposal-preview]').locator('div')).not.toHaveCount(0);
+    await expect(frame.locator('[data-testid=btn-accept-layout]')).toBeVisible();
+    await expect(frame.locator('[data-testid=btn-dismiss-layout]')).toBeVisible();
+  });
+
+  test('Accept applies the layout locally (order/widths/hidden fields/freeze) with zero new signed history and zero change to fieldDefs -- never exported/merged', async ({ page }) => {
+    const proposalContent = core.matrixStateEventContentFromLayoutProposal({
+      columnOrder: ['__title__', 'priority', '__comments__'],
+      columnWidths: { priority: 222 },
+      hiddenFieldIds: ['status'],
+      freezeColId: 'priority',
+      proposedBy: 'Alex',
+      proposedAt: 555
+    });
+    const state = await connect(page, { initialLayoutProposals: { [PROJ]: proposalContent } });
+    const frame = page.frameLocator('#frame');
+    await expect(frame.locator('[data-testid=layout-proposal-banner]')).toBeVisible();
+    // status is still visible before accepting -- the proposal hasn't
+    // been applied yet, just offered.
+    await expect(frame.locator('[data-testid=col-header][data-col="status"]')).not.toHaveCount(0);
+
+    await frame.locator('[data-testid=btn-accept-layout]').click();
+    await page.waitForTimeout(300);
+
+    await expect(frame.locator('[data-testid=layout-proposal-banner]')).toHaveCount(0);
+    await expect(frame.locator('[data-testid=col-header][data-col="status"]')).toHaveCount(0);
+    // freezeColId has no persistence key of its own (plain in-memory state,
+    // same as a manual "Freeze up to here") and the freeze-pill indicator
+    // is desktop-only chrome, never shown in widget mode -- but the actual
+    // sticky-column geometry it drives is computed independently of widget
+    // mode, so this is the real, mode-independent signal that freeze took.
+    await expect(frame.locator('[data-testid=col-header][data-col="priority"]').last()).toHaveCSS('position', 'sticky');
+
+    const widths = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_col_widths_v1') || '{}'));
+    expect(widths[ROOM_ID + ':' + PROJ].priority).toBe(222);
+    const hidden = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_hidden_fields_v1') || '{}'));
+    expect(hidden[ROOM_ID + ':' + PROJ]).toEqual(['status']);
+
+    // Nothing was ever sent to the room over this whole flow -- Accept is
+    // purely local, never a portable/signed change.
+    expect(state.sentEntries.length).toBe(0);
+    expect(state.sentProjectStateEvents.length).toBe(0);
+  });
+
+  test('Dismiss clears the banner without applying anything', async ({ page }) => {
+    const proposalContent = core.matrixStateEventContentFromLayoutProposal({
+      columnOrder: ['__title__', 'priority', '__comments__'],
+      columnWidths: { priority: 222 },
+      hiddenFieldIds: ['status'],
+      freezeColId: null,
+      proposedBy: 'Alex',
+      proposedAt: 555
+    });
+    await connect(page, { initialLayoutProposals: { [PROJ]: proposalContent } });
+    const frame = page.frameLocator('#frame');
+    await expect(frame.locator('[data-testid=layout-proposal-banner]')).toBeVisible();
+    await frame.locator('[data-testid=btn-dismiss-layout]').click();
+    await page.waitForTimeout(200);
+
+    await expect(frame.locator('[data-testid=layout-proposal-banner]')).toHaveCount(0);
+    // Never applied -- status is still visible, nothing was hidden.
+    await expect(frame.locator('[data-testid=col-header][data-col="status"]')).not.toHaveCount(0);
+  });
+
+  // The core protocol guarantee (WIGWAG_MATRIX_LAYOUT_PROPOSAL_TYPE's own
+  // comment in wigwag-core.js): state_key is the project id, so two
+  // projects sharing a room never see each other's proposals.
+  test('two different projects in the same room have fully independent proposals -- a proposal for one never shows on the other', async ({ page }) => {
+    const OTHER_PROJ = 'second-project';
+    const proposalForOtherProj = core.matrixStateEventContentFromLayoutProposal({
+      columnOrder: ['__title__', '__comments__'], proposedBy: 'Alex', proposedAt: 1
+    });
+    const entries = seedProjectEntries().concat([
+      { type: 'work.wigwag.entry', content: { v: 1, scope: 'project', projectId: OTHER_PROJ, entry: { id: 'other-def', field: 'title', value: { label: 'Issue', type: 'issue' }, sortKey: 0, origin: 'authored' } } },
+      entryEvent({ issueId: 'j1', entry: { id: 'hj1', field: 'title', value: 'Other project issue', sortKey: 1, origin: 'authored' }, projectId: OTHER_PROJ })
+    ]);
+    // Only OTHER_PROJ has a live proposal. Neither project is the room's
+    // legacy default (no untagged entries at all), so whichever opens
+    // first, both are already bootstrapped and listed in the switcher
+    // (same precedent as "a room with two explicitly-tagged projects
+    // bootstraps both immediately" above) -- switch to PROJ explicitly via
+    // its own switcher row and confirm it shows no banner at all.
+    await connect(page, { initialEntries: entries, initialLayoutProposals: { [OTHER_PROJ]: proposalForOtherProj } });
+    const frame = page.frameLocator('#frame');
+    await frame.locator('[data-testid=btn-switcher]').first().click();
+    await page.waitForTimeout(150);
+    await frame.locator('[data-testid=switcher-project-row]').filter({ hasText: PROJ.slice(-8) }).click();
+    await page.waitForTimeout(300);
+
+    await expect(frame.locator('[data-testid=layout-proposal-banner]')).toHaveCount(0);
+
+    // Switching to OTHER_PROJ, by contrast, does show its own banner.
+    await frame.locator('[data-testid=btn-switcher]').first().click();
+    await page.waitForTimeout(150);
+    await frame.locator('[data-testid=switcher-project-row]').filter({ hasText: OTHER_PROJ.slice(-8) }).click();
+    await page.waitForTimeout(300);
+    await expect(frame.locator('[data-testid=layout-proposal-banner]')).toBeVisible();
+  });
+});
+
+// Tracker #169/4f07e72b follow-up (Tom, live): now that isRoomModerator is
+// a real, live power-level check (built for the layout-proposal feature),
+// "+ New project" / "Receive a project" -- already moderator-gated
+// server-side via Matrix's own power-level check -- are hidden entirely
+// for a non-moderator too, in both places they appear: the empty-room
+// screen and the project switcher's "New project in..." row. Local Mode
+// (no ROOM_MODE_CAPABILITIES) is completely unaffected -- these are
+// Room-Mode-only surfaces to begin with.
+test.describe('wigwag-matrix-host.html: "+ New project" is hidden for a non-moderator too', () => {
+  test('the empty-room screen shows Create/Receive for a moderator, and only a plain hint for a non-moderator', async ({ page }) => {
+    h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: [], powerLevels: MODERATOR_LEVELS });
+    await page.goto('/bridges/wigwag-matrix-host.html');
+    await page.locator('#homeserverUrl').fill(HOMESERVER);
+    await page.locator('#accessToken').fill('tok123');
+    await page.locator('#roomId').fill(ROOM_ID);
+    await page.locator('#connectBtn').click();
+    const frame = page.frameLocator('#frame');
+    await expect(frame.locator('[data-testid=room-no-projects]')).toBeVisible();
+    await expect(frame.locator('[data-testid=btn-create-first-room-project]')).toBeVisible();
+    await expect(frame.locator('[data-testid=btn-receive-first-room-project]')).toBeVisible();
+  });
+
+  test('a non-moderator sees neither button, just a hint to ask a moderator', async ({ page }) => {
+    h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: [], powerLevels: NON_MODERATOR_LEVELS });
+    await page.goto('/bridges/wigwag-matrix-host.html');
+    await page.locator('#homeserverUrl').fill(HOMESERVER);
+    await page.locator('#accessToken').fill('tok123');
+    await page.locator('#roomId').fill(ROOM_ID);
+    await page.locator('#connectBtn').click();
+    const frame = page.frameLocator('#frame');
+    await expect(frame.locator('[data-testid=room-no-projects]')).toBeVisible();
+    await expect(frame.locator('[data-testid=btn-create-first-room-project]')).toHaveCount(0);
+    await expect(frame.locator('[data-testid=btn-receive-first-room-project]')).toHaveCount(0);
+    await expect(frame.locator('[data-testid=room-no-projects]')).toContainText('Ask a room moderator');
+  });
+
+  test('the switcher\'s "New project in..." row is hidden for a non-moderator', async ({ page }) => {
+    const entries = [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Existing issue', sortKey: 1, origin: 'authored' } })]; // untagged -- room already has a project
+    h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: entries, powerLevels: NON_MODERATOR_LEVELS });
+    await page.goto('/bridges/wigwag-matrix-host.html');
+    await page.locator('#homeserverUrl').fill(HOMESERVER);
+    await page.locator('#accessToken').fill('tok123');
+    await page.locator('#roomId').fill(ROOM_ID);
+    await page.locator('#connectBtn').click();
+    await expect(page.locator('#frame')).toBeVisible();
+    await page.waitForTimeout(300);
+    const frame = page.frameLocator('#frame');
+    await frame.locator('[data-testid=btn-switcher]').first().click();
+    await expect(frame.locator('[data-testid=btn-switcher-new-project]')).toHaveCount(0);
+  });
+
+  test('the switcher\'s "New project in..." row is shown for a real moderator', async ({ page }) => {
+    const entries = [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Existing issue', sortKey: 1, origin: 'authored' } })]; // untagged -- room already has a project
+    h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: entries, powerLevels: MODERATOR_LEVELS });
+    await page.goto('/bridges/wigwag-matrix-host.html');
+    await page.locator('#homeserverUrl').fill(HOMESERVER);
+    await page.locator('#accessToken').fill('tok123');
+    await page.locator('#roomId').fill(ROOM_ID);
+    await page.locator('#connectBtn').click();
+    await expect(page.locator('#frame')).toBeVisible();
+    await page.waitForTimeout(300);
+    const frame = page.frameLocator('#frame');
+    await frame.locator('[data-testid=btn-switcher]').first().click();
+    await expect(frame.locator('[data-testid=btn-switcher-new-project]')).toBeVisible();
   });
 });

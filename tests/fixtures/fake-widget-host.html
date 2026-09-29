@@ -19,7 +19,7 @@
     widgetId: 'test-widget-1', roomId: '!fakeroom:example.org', userId: '@fake-user:example.org',
     displayName: 'Fake User', roomName: '', initialEntries: [], rejectReadEventsTimes: 0, dropReadEventsTimes: 0,
     // Project index (tracker f6b39bf0) -- simulates a non-moderator's power
-    // level being too low for a dev.wigwag.project state send, same as the
+    // level being too low for a work.wigwag.project state send, same as the
     // direct transport's mocked 403.
     forbidStateEventType: null,
     // Media-blob snapshots (tracker f6b39bf0's rate-limit fix, MSC4039) --
@@ -43,7 +43,7 @@
   for (const seed of (cfg.seedMediaBlobs || [])) mediaStore.set(seed.mxc, new Uint8Array(seed.bytes));
 
   const iframe = document.getElementById('widget');
-  const url = new URL('../../wigwag-matrix-host.html', location.href);
+  const url = new URL('../../bridges/wigwag-matrix-host.html', location.href);
   url.searchParams.set('widgetId', cfg.widgetId);
   url.searchParams.set('matrix_room_id', cfg.roomId);
   url.searchParams.set('matrix_user_id', cfg.userId);

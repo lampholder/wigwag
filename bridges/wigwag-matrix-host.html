@@ -68,7 +68,7 @@
   needing a real Element smoke test before being trusted, not something
   this file's own test suite can certify by itself.
 -->
-<script src="wigwag-core.js"></script>
+<script src="../wigwag-core.js"></script>
 <style>
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; margin: 0; height: 100vh; overflow: hidden; }
   #setup { max-width: 480px; margin: 60px auto; padding: 0 20px; }
@@ -102,7 +102,18 @@
     <button id="connectBtn">Connect</button>
     <div id="status"></div>
   </div>
-  <iframe id="frame" src="about:blank"></iframe>
+  <!-- clipboard-write must be explicitly re-delegated at EVERY nesting
+       level (Permissions Policy doesn't propagate to a nested iframe on
+       its own) -- without this, wigwag.html's own "Copy to clipboard"
+       (navigator.clipboard.writeText, wrapped in a .catch(() => {}) that
+       swallows the rejection) silently fails inside a real Element widget
+       embed (Element's widget iframe -> this page's own iframe -> here),
+       while the UI still optimistically shows "Copied to clipboard"
+       regardless. Live-reported (Tom): "the send button is broken and
+       not working at all in widget mode" -- this is that bug. Harmless,
+       and not needed, for the standalone (direct-homeserver) transport,
+       which runs as a normal top-level-adjacent tab, not nested. -->
+  <iframe id="frame" src="about:blank" allow="clipboard-write"></iframe>
 
 <script>
 (function () {
@@ -268,10 +279,6 @@
         const txnId = 'wigwag-' + Date.now() + '-' + Math.random().toString(36).slice(2);
         return core.sendMatrixEntry({ fetchImpl: fetch, homeserverUrl, accessToken, roomId, content, txnId });
       },
-      async sendBatch(items) {
-        const txnId = 'wigwag-batch-' + Date.now() + '-' + Math.random().toString(36).slice(2);
-        return core.sendMatrixEntries({ fetchImpl: fetch, homeserverUrl, accessToken, roomId, content: core.matrixEventContentFromEntries(items), txnId });
-      },
       // Media-blob snapshot (tracker f6b39bf0's rate-limit fix, replacing
       // the old chunk-event set) -- one upload, real access token, plain
       // fetch. See core.uploadMatrixMedia's own comment for the endpoint
@@ -349,11 +356,6 @@
   // capability this file will ever need has to be declared here, not
   // discovered lazily.
   const WIDGET_EVENT_TYPE = core.WIGWAG_MATRIX_ENTRY_TYPE;
-  // Bulk-transport optimization (tracker #149) -- see
-  // matrixEventContentFromEntries in wigwag-core.js. Needs its own
-  // receive/send capability grant below, same as the single-entry type --
-  // Element gates read/send per event type, not per "wigwag in general".
-  const WIDGET_ENTRIES_TYPE = core.WIGWAG_MATRIX_ENTRIES_TYPE;
   // Room snapshot (tracker f6b39bf0/#153, f1c7098f/#154) -- see
   // WIGWAG_MATRIX_SNAPSHOT_TYPE's own comment in wigwag-core.js. Just the
   // one small manifest event now (media-blob snapshots, not chunking) --
@@ -413,8 +415,6 @@
     const WIDGET_CAPABILITIES = [
       'org.matrix.msc2762.receive.event:' + WIDGET_EVENT_TYPE,
       'org.matrix.msc2762.send.event:' + WIDGET_EVENT_TYPE,
-      'org.matrix.msc2762.receive.event:' + WIDGET_ENTRIES_TYPE,
-      'org.matrix.msc2762.send.event:' + WIDGET_ENTRIES_TYPE,
       'org.matrix.msc2762.receive.event:' + WIDGET_SNAPSHOT_TYPE,
       'org.matrix.msc2762.send.event:' + WIDGET_SNAPSHOT_TYPE,
       'org.matrix.msc2762.receive.state_event:' + WIDGET_PROJECT_STATE_TYPE,
@@ -590,18 +590,6 @@
           const result = await postToHost(READ_EVENTS_ACTION, { type: WIDGET_EVENT_TYPE, room_ids: [roomId], limit: WIDGET_PAGE_LIMIT, since: readCursor });
           const events = ((result && result.events) || []).slice();
           if (result && result.nextToken) readCursor = result.nextToken;
-          // Batch (bulk-transport) events are a separate event type --
-          // read_events filters by exactly one `type` per call (confirmed
-          // by the primary call above, no evidence an array is accepted),
-          // so this is a second, independent read. Best-effort: a host
-          // that hasn't granted the newer batch capability (or briefly
-          // errors) must never break ordinary single-entry sync, which is
-          // why this failure is swallowed rather than propagated.
-          try {
-            const batchResult = await postToHost(READ_EVENTS_ACTION, { type: WIDGET_ENTRIES_TYPE, room_ids: [roomId], limit: WIDGET_PAGE_LIMIT, since: readCursor });
-            events.push(...((batchResult && batchResult.events) || []));
-            if (batchResult && batchResult.nextToken) readCursor = batchResult.nextToken;
-          } catch (e) { console.warn('[wigwag-matrix-host] batch read_events failed (non-fatal):', e.message); }
           // Snapshot manifest events -- same best-effort treatment: a host
           // that hasn't granted this newer capability yet must never break
           // ordinary sync. Just the one small event now (media-blob
@@ -625,14 +613,6 @@
       async send(content) {
         try {
           await postToHost('send_event', { type: WIDGET_EVENT_TYPE, content });
-          return { status: 'ok' };
-        } catch (e) {
-          return { status: 'error', message: e.message };
-        }
-      },
-      async sendBatch(items) {
-        try {
-          await postToHost('send_event', { type: WIDGET_ENTRIES_TYPE, content: core.matrixEventContentFromEntries(items) });
           return { status: 'ok' };
         } catch (e) {
           return { status: 'error', message: e.message };
@@ -737,7 +717,7 @@
           const result = await postToHost(READ_EVENTS_ACTION, { type: WIDGET_PROJECT_STATE_TYPE, room_ids: [roomId], limit: 2000, state_key: true });
           const events = (result && result.events) || [];
           // Temporary diagnostic (live bug: only the newest of several real
-          // dev.wigwag.project state events surfaces in the switcher) --
+          // work.wigwag.project state events surfaces in the switcher) --
           // makes it a one-line copy/paste to see exactly what Element's
           // read_events actually handed back, instead of digging through
           // devtools' collapsed object tree.
@@ -758,15 +738,25 @@
 
   // ----- Shared bridge (transport-agnostic) ------------------------------
 
-  function docStorable(hydrated, hiddenFieldIds) {
+  // Live incident (2026-09-28): hiddenFieldIds used to be part of THIS
+  // doc's own shape (a `hiddenFieldIds` field alongside fieldDefs/issues),
+  // which is exactly the mistake that broke it in Room Scoped Widget Mode
+  // -- this whole doc lives under docKey(...), one of the keys the room-
+  // mode storage shim treats as in-memory-only "room content", wiped on
+  // every reload. hiddenFieldIds is a genuinely per-device cosmetic pref
+  // (which field a given viewer has chosen to hide), never room content,
+  // and now lives entirely in wigwag.html's own HIDDEN_FIELDS_KEY -- a
+  // real, unshimmed, per-device localStorage key this host page has no
+  // reason to know about or touch at all. See wigwag-core.js's own
+  // comment on HIDDEN_FIELDS_KEY for the full incident.
+  function docStorable(hydrated) {
     // Strips values/fieldRefs before persisting -- these are never
     // stored, only ever derived fresh (docs/FORMAT.md's "History is the
     // sole source of truth"), matching wigwag.html's own persist().
     return {
       fieldDefs: hydrated.fieldDefs,
       projectHistory: hydrated.projectHistory,
-      issues: hydrated.issues.map(({ values, fieldRefs, ...rest }) => rest),
-      hiddenFieldIds: hiddenFieldIds || []
+      issues: hydrated.issues.map(({ values, fieldRefs, ...rest }) => rest)
     };
   }
 
@@ -779,10 +769,10 @@
     // for the room's legacy/untagged-entries default project, not a
     // never-yet-bootstrapped project reached here as a defensive
     // fallback (normally bootstrapLocalStorage has already run first).
-    const doc = raw ? JSON.parse(raw) : { fieldDefs: MINIMAL_FALLBACK_FIELD_DEFS, projectHistory: [], issues: [], hiddenFieldIds: [] };
+    const doc = raw ? JSON.parse(raw) : { fieldDefs: MINIMAL_FALLBACK_FIELD_DEFS, projectHistory: [], issues: [] };
     const hydratedProject = core.hydrateProject(doc.fieldDefs, doc.projectHistory || []);
     const hydratedIssues = (doc.issues || []).map(iss => core.hydrateIssue(iss, hydratedProject.fieldDefs));
-    return { hiddenFieldIds: doc.hiddenFieldIds || [], fieldDefs: hydratedProject.fieldDefs, projectHistory: hydratedProject.projectHistory, issues: hydratedIssues };
+    return { fieldDefs: hydratedProject.fieldDefs, projectHistory: hydratedProject.projectHistory, issues: hydratedIssues };
   }
 
   // Flattens a hydrated doc's history/comment-stream entries back into
@@ -826,7 +816,7 @@
   // scanning a timeline that might have to reach arbitrarily far back.
   // Omitted (or empty) on ongoing/live calls (the bridgeTimer poll loop
   // below), which instead rely on this function's own timeline scan
-  // picking up dev.wigwag.project occurrences as they arrive naturally in
+  // picking up work.wigwag.project occurrences as they arrive naturally in
   // the poll -- see that event type's own comment in wigwag-core.js.
   function discoverProjects(rawEvents, legacyDefaultProjectId, legacyDefaultProjectName, indexedProjectIds) {
     const ids = new Set(indexedProjectIds || []);
@@ -843,9 +833,7 @@
         if (id) ids.add(id);
         continue;
       }
-      const decodedItems = (rawEvent && rawEvent.type === core.WIGWAG_MATRIX_ENTRIES_TYPE)
-        ? core.entriesFromMatrixEvent(rawEvent)
-        : [core.entryFromMatrixEvent(rawEvent)].filter(Boolean);
+      const decodedItems = [core.entryFromMatrixEvent(rawEvent)].filter(Boolean);
       for (const decoded of decodedItems) {
       if (decoded.projectId) ids.add(decoded.projectId);
       else sawUntagged = true;
@@ -858,7 +846,7 @@
     }
     // Backward compatibility (tracker f6b39bf0): a project already
     // evidenced by real timeline entries counts as existing regardless of
-    // whether a dev.wigwag.project state event names it -- every room
+    // whether a work.wigwag.project state event names it -- every room
     // using wigwag before this event type existed has projects with no
     // such event at all, and requiring one retroactively would silently
     // orphan them; only NEW projects go through the moderator gate. The
@@ -927,7 +915,16 @@
 
   function createMatrixBridge(transport, roomId, fallbackUserId, fallbackDisplayName) {
     let remoteRawEvents = [];
-    const knownEntryIds = new Set(); // entries already sent to, or received from, Matrix -- never re-sent either way
+    // Tracker #158: local-only "have I actually landed in the room yet"
+    // tracking for entries THIS device has sent -- purely in-memory, purely
+    // local (per Tom's own call: pending state is never broadcast to other
+    // room viewers). Map<projectId, Map<entryKey, { status: 'pending'|'failed', item }>>,
+    // entryKey = id + ' ' + sortKey -- the same dedupe key
+    // hydrateProjectFromMatrixTimeline already uses for the read side, so
+    // "has this been confirmed yet" reduces to a stateless membership
+    // check against the latest rehydrated room state (see
+    // clearConfirmedFromOutbox below), no separate ack protocol needed.
+    const pendingOutboxByProject = new Map();
     // Tracker #149: generalized from a single projectId to a discovered
     // SET -- widget mode has no local-only/private project concept (the
     // room IS the container, unlike Tauri/browser mode where identity is
@@ -944,6 +941,97 @@
     let resolvedDisplayName = null;
     let bridgeTimer = null;
 
+    function pendingEntryKey(entry) { return entry.id + ' ' + entry.sortKey; }
+    function pendingOutboxFor(projectId) {
+      if (!pendingOutboxByProject.has(projectId)) pendingOutboxByProject.set(projectId, new Map());
+      return pendingOutboxByProject.get(projectId);
+    }
+    // Shared by reconcileIntoLocal and pushNewLocalEntries -- both need
+    // "what does the room itself actually say right now", computed fresh
+    // from remoteRawEvents rather than any stale cache. isDefault mirrors
+    // reconcileIntoLocal's own includeUntagged reasoning: core.defaultFieldDefs()
+    // only belongs to the room's legacy/untagged-entries default project.
+    function computeRemoteDocFor(projectId) {
+      const { name: projectName, includeUntagged } = bridgedProjects.get(projectId);
+      return core.hydrateProjectFromMatrixTimeline(remoteRawEvents, { fieldDefs: includeUntagged ? core.defaultFieldDefs() : MINIMAL_FALLBACK_FIELD_DEFS, projectId, projectName, includeUntaggedEntries: includeUntagged });
+    }
+    // Reconstructs a minimal, mergeable "doc" shape (projectHistory +
+    // issues, each issue just {id, history, commentStreams}) from this
+    // device's own outbox -- the exact inverse of flattenEntries. This is
+    // the ONLY "local" input reconcileIntoLocal ever merges against now;
+    // see its own comment for why that matters.
+    function outboxAsPartialDoc(projectId) {
+      const outbox = pendingOutboxByProject.get(projectId);
+      const projectHistory = [];
+      const issuesById = new Map();
+      if (outbox) {
+        for (const { item } of outbox.values()) {
+          if (item.scope === 'project') { projectHistory.push(item.entry); continue; }
+          if (!issuesById.has(item.issueId)) issuesById.set(item.issueId, { id: item.issueId, history: [], commentStreams: {} });
+          const issue = issuesById.get(item.issueId);
+          if (item.stream) {
+            if (!issue.commentStreams[item.stream]) issue.commentStreams[item.stream] = [];
+            issue.commentStreams[item.stream].push(item.entry);
+          } else {
+            issue.history.push(item.entry);
+          }
+        }
+      }
+      return { projectHistory, issues: [...issuesById.values()] };
+    }
+    function sendPendingUpdate(projectId) {
+      const summary = computePendingSummary(projectId);
+      // Test-only trace hook (never set in production) -- records every
+      // summary this function ever computes, in order. A pending->confirmed
+      // transition can happen within a single synchronous pass (e.g. a
+      // snapshot's own success handling), too fast for a test to reliably
+      // catch via DOM polling alone -- this lets a test assert on the real
+      // SEQUENCE of states instead (e.g. "the very first summary listed
+      // everything pending, and every one after that was empty").
+      if (window.__wigwagTestTracePendingUpdates) window.__wigwagTestTracePendingUpdates.push(JSON.parse(JSON.stringify(summary)));
+      localStorage.postMessageToFrame({ type: 'wigwag:pending-update', projectId, summary });
+    }
+    // Reduces the raw per-entry outbox down to "the one thing worth
+    // showing per field" -- latest sortKey wins, matching every other
+    // latest-write-wins derivation in this codebase. Issue-scope and
+    // project-scope fields are kept separate since the iframe renders them
+    // in different places (grid/slide-over vs the project panel). Comment-
+    // stream entries (item.stream set) and entries with no field at all
+    // (e.g. a plain __deleted__ tombstone) are deliberately excluded --
+    // different append-only semantics, not covered by the pending/failed
+    // UI in this first pass.
+    function computePendingSummary(projectId) {
+      const outbox = pendingOutboxByProject.get(projectId);
+      const summary = { issues: {}, project: {} };
+      if (!outbox) return summary;
+      const latestByKey = new Map();
+      for (const { status, item } of outbox.values()) {
+        if (status === 'confirmed-via-snapshot') continue; // done -- kept in the outbox only to suppress a resend, never shown as pending/failed
+        if (!item.entry.field || item.stream) continue;
+        const key = item.scope === 'project' ? ('project:' + item.entry.field) : ('issue:' + item.issueId + ':' + item.entry.field);
+        const existing = latestByKey.get(key);
+        if (!existing || item.entry.sortKey > existing.sortKey) latestByKey.set(key, { sortKey: item.entry.sortKey, status, scope: item.scope, issueId: item.issueId, field: item.entry.field });
+      }
+      for (const v of latestByKey.values()) {
+        if (v.scope === 'project') summary.project[v.field] = v.status;
+        else { if (!summary.issues[v.issueId]) summary.issues[v.issueId] = {}; summary.issues[v.issueId][v.field] = v.status; }
+      }
+      return summary;
+    }
+    // Clears any outbox entry the freshly-rehydrated room state now
+    // actually contains -- called from reconcileIntoLocal, right after it
+    // recomputes remoteDoc, so confirmation is checked on every poll tick
+    // and every reconnect, not just right after a send.
+    function clearConfirmedFromOutbox(projectId, remoteDoc) {
+      const outbox = pendingOutboxByProject.get(projectId);
+      if (!outbox || !outbox.size) return;
+      const confirmedKeys = new Set(flattenEntries(remoteDoc).map(item => pendingEntryKey(item.entry)));
+      let changed = false;
+      for (const key of outbox.keys()) {
+        if (confirmedKeys.has(key)) { outbox.delete(key); changed = true; }
+      }
+      if (changed) sendPendingUpdate(projectId);
+    }
     function reconcileIntoLocal(projectId) {
       const { name: projectName, includeUntagged } = bridgedProjects.get(projectId);
       // includeUntagged is true only for the room's one legacy/default
@@ -964,18 +1052,38 @@
       // nothing else to go on) -- any other, modern, explicitly-created
       // project must only ever show fields it actually has real history
       // for.
-      const remoteDoc = core.hydrateProjectFromMatrixTimeline(remoteRawEvents, { fieldDefs: includeUntagged ? core.defaultFieldDefs() : MINIMAL_FALLBACK_FIELD_DEFS, projectId, projectName, includeUntaggedEntries: includeUntagged });
-      for (const item of flattenEntries(remoteDoc)) knownEntryIds.add(item.entry.id);
+      const remoteDoc = computeRemoteDocFor(projectId);
+      clearConfirmedFromOutbox(projectId, remoteDoc);
 
-      const current = readCurrentLocalDoc(projectId);
-      const fieldMerge = core.computeFieldDefsMerge(current.projectHistory, remoteDoc.fields, remoteDoc.projectHistory)
-        || { mergedProjectHistory: current.projectHistory, mergedFieldDefs: current.fieldDefs };
-      const issueMerge = core.computeIssueMerge(current.issues, remoteDoc.issues, fieldMerge.mergedFieldDefs, {});
+      // Tracker #158: this no longer merges against "whatever was
+      // previously written" (readCurrentLocalDoc) -- that was the actual
+      // root of the original resend-looks-like-new-content bug class (a
+      // rehydrate-triggered write could itself look like fresh local
+      // content on the very next pass, since there was no way to tell
+      // "content I derived from a merge" apart from "content a real edit
+      // produced"). The local doc is now a pure function of two
+      // independently-tracked, well-defined sources instead: the room's
+      // own confirmed history (remoteDoc) and this device's own outbox of
+      // genuinely-not-yet-confirmed edits (outboxAsPartialDoc) -- never
+      // "whatever happened to be sitting in storage before".
+      //
+      // remoteDoc is deliberately the merge's FIRST ("local", in
+      // computeIssueMerge's own terms) argument, not outboxDoc -- an issue
+      // that exists only on the "incoming" side gets a fresh, arbitrary
+      // num assigned, which is correct for a genuinely brand-new,
+      // not-yet-confirmed issue (a provisional position until it round-
+      // trips) but would be wrong for the overwhelming common case (an
+      // existing issue with no pending edit at all, i.e. absent from the
+      // outbox) if the arguments were reversed.
+      const outboxDoc = outboxAsPartialDoc(projectId);
+      const fieldMerge = core.computeFieldDefsMerge(remoteDoc.projectHistory, {}, outboxDoc.projectHistory)
+        || { mergedProjectHistory: remoteDoc.projectHistory, mergedFieldDefs: remoteDoc.fields };
+      const issueMerge = core.computeIssueMerge(remoteDoc.issues, outboxDoc.issues, fieldMerge.mergedFieldDefs, {});
       const mergedHydrated = {
         fieldDefs: fieldMerge.mergedFieldDefs, projectHistory: fieldMerge.mergedProjectHistory,
         issues: issueMerge.mergedIssues
       };
-      localStorage.setItem(docKey(projectId), JSON.stringify(docStorable(mergedHydrated, current.hiddenFieldIds)));
+      localStorage.setItem(docKey(projectId), JSON.stringify(docStorable(mergedHydrated)));
 
       // Keep the switcher's own display name current for EVERY bridged
       // project, not just whichever one is currently open -- tracker
@@ -991,7 +1099,7 @@
       // plain local write, not a state event: the name's authoritative
       // source stays the signed __project_name__ history entry (anyone
       // can rename, same as any other field edit) -- see the tracker
-      // comment thread for why mirroring it into dev.wigwag.project's
+      // comment thread for why mirroring it into work.wigwag.project's
       // state content was considered and rejected (Matrix's power-level
       // model can't distinguish creating a new state_key from updating an
       // existing one, so keeping a state-mirrored name fresh would need
@@ -1015,22 +1123,97 @@
     // succession (a "Created" entry, then a "Title set" entry, ...) --
     // each write fires its own storage event. Without this guard, two
     // overlapping calls for the SAME project could each compute their own
-    // toSend list from the same stale knownEntryIds snapshot before
-    // either finishes adding to it, and both send the same entry. Only
+    // toSend list from the same stale outbox snapshot before either
+    // finishes marking its own items pending, and both send the same
+    // entry. Only
     // one pass per project ever runs at a time; a call that arrives
     // mid-pass just asks for one more pass (re-reading local state fresh)
     // once the current one finishes, rather than starting a second
     // overlapping one. Different projects push fully independently.
+    // Narrower than "any legacy-backfill entry": backfillIssueHistoryFromValues
+    // and backfillProjectHistory's GENERAL case both synthesize an entry
+    // FROM a real, already-known value that came from somewhere else (an
+    // import/paste that supplied plain field values with no history) --
+    // that's genuine content only this device has, and skipping it would
+    // silently drop it from the room forever (live-diagnosed: the fix below
+    // used to exclude origin:'legacy-backfill' unconditionally, which
+    // broke bulk-adopt/paste-merge-import snapshot pushes -- real issue
+    // data was never reaching the room at all). The ONLY backfill entries
+    // safe to never send are project-scope created/updated -- the two
+    // fields ensureTimestampFieldDefs unconditionally guarantees on every
+    // hydrate path (see hydrateProjectFromMatrixTimeline/hydrateProject in
+    // wigwag-core.js), so their fixed id/value/sortKey needs no real copy
+    // anywhere: every reader, including one with zero prior local state,
+    // derives the exact same entry on its own.
+    function isUniversallyDerivedBackfillEntry(item) {
+      return item.scope === 'project' && item.entry.origin === 'legacy-backfill' && (item.entry.field === 'created' || item.entry.field === 'updated');
+    }
     const pushInFlight = new Set();
     const pushAgainRequested = new Set();
-    async function pushNewLocalEntries(projectId) {
+    // Tracker #158, a real infinite loop caught during live verification:
+    // persist() (wigwag.html) unconditionally calls localStorage.setItem
+    // on EVERY componentDidUpdate, for ANY state change whatsoever -- and
+    // the room-mode storage shim's own setItem unconditionally posts
+    // wigwag:local-write on every call, regardless of whether the actual
+    // document content changed. That means literally any re-render
+    // (including one caused by THIS FILE's own wigwag:pending-update
+    // message landing) triggers another pushNewLocalEntries pass. Before
+    // the pending-outbox existed this was silently wasteful but self-
+    // limiting (a failed send just sat there until a GENUINE new edit or
+    // poll came along); now, marking an entry 'failed' itself causes a
+    // state change in the iframe, which persists, which triggers another
+    // pass, which fails again, forever. A failed entry is therefore
+    // excluded from automatic retries here -- it only gets re-attempted by
+    // an explicit wigwag:retry-pending (or naturally, by a genuinely NEW
+    // edit to that same field, which gets its own fresh id/sortKey and so
+    // was never excluded in the first place).
+    async function pushNewLocalEntries(projectId, opts) {
+      const forceRetryFailed = !!(opts && opts.forceRetryFailed);
       if (pushInFlight.has(projectId)) { pushAgainRequested.add(projectId); return; }
       pushInFlight.add(projectId);
       try {
         do {
           pushAgainRequested.delete(projectId);
           const current = readCurrentLocalDoc(projectId);
-          const toSend = flattenEntries(current).filter(item => !knownEntryIds.has(item.entry.id));
+          // Live-reported (Tom, 2026-09-28): a legacy-backfill entry (e.g.
+          // the deterministic Created/Updated backfill -- see
+          // backfillProjectHistory in wigwag-core.js) got pushed to the
+          // room repeatedly ("loads of events"). Root cause (original
+          // fix): a mutable, purely in-memory knownEntryIds Set, reset
+          // whenever this page's own iframe remounts, could lose track of
+          // what it had already sent and resend it. Tracker #158 replaces
+          // that mutable cache entirely: "already confirmed" is now a
+          // stateless check against a freshly-computed remoteDoc (the
+          // room's own current history, always authoritative, never
+          // stale), and "already attempted, awaiting confirmation" is the
+          // pending-outbox's own job (it already exists for the UI -- see
+          // its own comment). Nothing left needs a separate mutable
+          // dedupe Set. The ORIGINAL fix for this exact entry class still
+          // applies independently: these two fields are fully
+          // deterministic and independently derivable by any reader, so
+          // they're excluded from ever being sent at all, further down.
+          const remoteDoc = computeRemoteDocFor(projectId);
+          const remoteKeys = new Set(flattenEntries(remoteDoc).map(item => pendingEntryKey(item.entry)));
+          const outbox = pendingOutboxFor(projectId);
+          const toSend = flattenEntries(current).filter(item => {
+            if (isUniversallyDerivedBackfillEntry(item)) return false;
+            const key = pendingEntryKey(item.entry);
+            if (remoteKeys.has(key)) return false; // the room already has this -- confirmed
+            const outboxEntry = outbox.get(key);
+            if (outboxEntry && outboxEntry.status === 'pending') return false; // already in flight
+            if (outboxEntry && outboxEntry.status === 'failed' && !forceRetryFailed) return false;
+            // 'confirmed-via-snapshot': see pushSnapshotForProjectUnlocked's
+            // own comment on why a snapshot's own items need a THIRD outbox
+            // status, distinct from simply deleting them -- deleting would
+            // make them indistinguishable from "never attempted" to this
+            // exact check (remoteKeys won't reflect them either, since
+            // nothing re-resolves a just-uploaded snapshot's own content
+            // back into remoteRawEvents for an already-bridged project),
+            // causing an immediate, separate resend of the very items a
+            // snapshot just successfully delivered.
+            if (outboxEntry && outboxEntry.status === 'confirmed-via-snapshot') return false;
+            return true;
+          });
           // A batch this large gets the same one-blob-plus-manifest
           // treatment as a fresh bulk adopt (tracker f6b39bf0), not
           // individual sends -- otherwise a paste-merge import into a
@@ -1038,17 +1221,27 @@
           // adopt, the only case this used to cover) reintroduces exactly
           // the hundreds-of-requests-at-once problem the snapshot
           // mechanism exists to avoid. pushSnapshotForProject always
-          // captures the FULL current doc and marks every entry id as
-          // known, so toSend's own items are correctly covered by it too.
-          if (toSend.length >= SNAPSHOT_ENTRY_THRESHOLD) {
+          // captures the FULL current doc and outbox-marks every entry,
+          // so toSend's own items are correctly covered by it too.
+          if (toSend.length >= SNAPSHOT_BURST_ENTRY_THRESHOLD) {
             await pushSnapshotForProject(projectId);
             continue;
           }
           for (const item of toSend) {
-            knownEntryIds.add(item.entry.id); // mark before sending -- a resend on failure is a harmless duplicate (deduped by entry id on read), a missed send from a race is not
+            outbox.set(pendingEntryKey(item.entry), { status: 'pending', item });
+            sendPendingUpdate(projectId);
             const content = core.matrixEventContentFromEntry({ ...item, projectId });
             const result = await transport.send(content);
-            if (result.status !== 'ok') { console.warn('[wigwag-matrix-host] failed to send entry', item.entry.id, result); knownEntryIds.delete(item.entry.id); }
+            if (result.status !== 'ok') {
+              console.warn('[wigwag-matrix-host] failed to send entry', item.entry.id, result);
+              // Kept in the outbox as 'failed', not removed -- the UI
+              // needs to actually SHOW this failed, not just quietly keep
+              // trying forever with no sign anything's wrong (and, per the
+              // comment on pushNewLocalEntries's own opts param, no longer
+              // auto-retried on the next unrelated local-write either).
+              outbox.set(pendingEntryKey(item.entry), { status: 'failed', item });
+              sendPendingUpdate(projectId);
+            }
           }
         } while (pushAgainRequested.has(projectId));
       } finally {
@@ -1077,24 +1270,89 @@
     // already cover, for a fresh adopt.
     const lastSnapshotEntryCount = new Map(); // projectId -> entry count as of its last snapshot
     const lastSnapshotAt = new Map(); // projectId -> wall-clock ms as of its last snapshot
-    const SNAPSHOT_ENTRY_THRESHOLD = 200; // same order of magnitude as the pagination page size this is meant to bound
+    // Two genuinely different concerns used to share one constant here --
+    // split apart live (Tom, 2026-09-29) once that conflation was spotted:
+    // SNAPSHOT_BURST_ENTRY_THRESHOLD bounds a single pending BATCH
+    // (toSend, below) about to go out as individual send_event calls --
+    // this one is a write-burst-safety limit, sized to survive a Matrix
+    // homeserver's default rate-limit burst allowance (Synapse's stock
+    // rc_message default is burst_count:10, refilling at 1/5s after that;
+    // deployments vary, but there's no automatic retry on an individual
+    // entry send that gets rate-limited -- it just lands in the outbox as
+    // 'failed', needing a manual Retry click -- so staying comfortably
+    // under a conservative default matters more here than chasing a
+    // bigger number). SNAPSHOT_STALENESS_ENTRY_THRESHOLD (below) is about
+    // bounding a fresh client's replay-page count for a project that
+    // accumulates entries slowly over time -- unrelated to burst-write
+    // safety, since those writes are naturally spaced out.
+    const SNAPSHOT_BURST_ENTRY_THRESHOLD = 10;
+    const SNAPSHOT_STALENESS_ENTRY_THRESHOLD = 200; // same order of magnitude as the pagination page size this is meant to bound
     // A quiet, rarely-edited project would otherwise never cross the
     // entry-count threshold above, accumulating an ever-larger
     // never-snapshotted tail over months -- this is a floor, not a
     // replacement: whichever of the two conditions is met first triggers a
     // fresh snapshot (see pushSnapshotIfDue below).
     const SNAPSHOT_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h
+    // Live-reported (Tom, 2026-09-28): a mass bulk-edit triggered a real,
+    // damaging duplicate -- two separate work.wigwag.snapshot manifests
+    // (distinct snapshotId/mxc/encryption key, same cutoffSortKey, ~1.6s
+    // apart) for what should have been ONE upload. Root cause: THREE
+    // independent call sites can each decide "this project needs a
+    // snapshot right now" -- pushNewLocalEntries's own threshold branch
+    // (fired mid-mass-edit, once toSend crossed SNAPSHOT_BURST_ENTRY_THRESHOLD),
+    // pushSnapshotIfDue's periodic age/count floor (the bridgeTimer's 5s
+    // tick, running independently), and adoptOneLocalProject's initial
+    // bulk-adopt push -- and NONE of them shared a lock with each other.
+    // pushNewLocalEntries has its OWN pushInFlight/pushAgainRequested
+    // guard, but that only serializes AGAINST ITSELF, not against these
+    // other two callers reaching pushSnapshotForProject directly and
+    // concurrently. lastSnapshotEntryCount/lastSnapshotAt are only updated
+    // AFTER a full upload+manifest round-trip succeeds, so two calls
+    // starting close together both see the same "due" condition and both
+    // start a genuinely separate upload before either one updates those
+    // trackers. Fixed the same way pushNewLocalEntries already protects
+    // itself: one lock, shared by every caller, keyed per project.
+    // Skipping (not queuing a retry) when already in flight is
+    // deliberate and safe here -- unlike an ordinary edit, which must
+    // never be silently dropped, a "should I snapshot now" check is a
+    // convenience threshold that's just as correctly satisfied by
+    // whichever concurrent call is already uploading; the next natural
+    // trigger (another edit, or the next 5s tick) re-evaluates the
+    // threshold/floor fresh regardless.
+    const snapshotInFlight = new Set();
     async function pushSnapshotForProject(projectId) {
+      if (snapshotInFlight.has(projectId)) return;
+      snapshotInFlight.add(projectId);
+      try {
+        await pushSnapshotForProjectUnlocked(projectId);
+      } finally {
+        snapshotInFlight.delete(projectId);
+      }
+    }
+    async function pushSnapshotForProjectUnlocked(projectId) {
       const current = readCurrentLocalDoc(projectId);
-      const items = flattenEntries(current).map(item => ({ ...item, projectId }));
+      // Same exclusion as pushNewLocalEntries's own -- see
+      // isUniversallyDerivedBackfillEntry's comment. Only the deterministic
+      // created/updated backfill never needs a real, sent copy anywhere;
+      // every OTHER legacy-backfill entry (a genuine imported/pasted value,
+      // or a custom field's schema) still carries real content only this
+      // device has, and must still go out.
+      const items = flattenEntries(current).filter(item => !isUniversallyDerivedBackfillEntry(item)).map(item => ({ ...item, projectId }));
       if (!items.length) return;
-      // Marked before sending, same reasoning as pushNewLocalEntries: a
-      // snapshot always includes EVERY entry regardless of knownEntryIds
+      // Marked pending in the outbox before sending, same reasoning as
+      // pushNewLocalEntries's own: a snapshot always includes EVERY entry
       // (it must be complete and self-sufficient on its own, unlike an
-      // incremental push) -- marking here just prevents a later
+      // incremental push) -- marking here prevents a later
       // pushNewLocalEntries/reconcile pass from treating these as
-      // still-unsent and pushing them again separately.
-      items.forEach(item => knownEntryIds.add(item.entry.id));
+      // still-unsent and pushing them again separately. Unlike a normal
+      // per-entry send, a snapshot failure just rolls the mark back
+      // entirely (removed, not 'failed') rather than showing a per-field
+      // failed indicator for potentially hundreds of entries at once --
+      // the next pushNewLocalEntries/pushSnapshotIfDue pass picks them up
+      // again naturally.
+      const outbox = pendingOutboxFor(projectId);
+      items.forEach(item => outbox.set(pendingEntryKey(item.entry), { status: 'pending', item }));
+      sendPendingUpdate(projectId);
       const cutoffSortKey = items.reduce((max, item) => Math.max(max, item.entry.sortKey || 0), 0);
       const snapshotId = crypto.randomUUID ? crypto.randomUUID() : ('snap-' + Date.now() + '-' + Math.random().toString(36).slice(2));
       const plaintextBytes = new TextEncoder().encode(JSON.stringify(items.map(item => core.matrixEventContentFromEntry(item))));
@@ -1102,7 +1360,8 @@
       const uploadResult = await transport.uploadSnapshotBlob(ciphertext);
       if (uploadResult.status !== 'ok') {
         console.warn('[wigwag-matrix-host] failed to upload snapshot blob for', projectId, uploadResult);
-        items.forEach(item => knownEntryIds.delete(item.entry.id)); // roll back the optimistic mark -- these were never actually sent
+        items.forEach(item => outbox.delete(pendingEntryKey(item.entry))); // roll back the optimistic mark -- these were never actually sent
+        sendPendingUpdate(projectId);
         return;
       }
       const manifestContent = core.matrixEventContentFromSnapshotManifest({ projectId, snapshotId, cutoffSortKey, mxc: uploadResult.mxc, size: ciphertext.length, encryption, createdAt: Date.now() });
@@ -1110,15 +1369,47 @@
       if (manifestResult.status === 'ok') {
         lastSnapshotEntryCount.set(projectId, items.length);
         lastSnapshotAt.set(projectId, manifestContent.createdAt);
+        // Live-reported (Tom, 2026-09-28): a fresh bulk import correctly
+        // sent exactly one snapshot, but every imported item stayed stuck
+        // showing 'pending' in the UI indefinitely. Root cause: the
+        // outbox's normal confirmation path (clearConfirmedFromOutbox,
+        // called from reconcileIntoLocal) only clears an entry once it
+        // sees it in a freshly-recomputed remoteDoc -- and remoteDoc is
+        // derived purely from remoteRawEvents, the room's plain
+        // work.wigwag.entry timeline. A snapshot's actual content lives in
+        // an encrypted media blob referenced by a work.wigwag.snapshot
+        // manifest event, which nothing re-resolves back into
+        // remoteRawEvents for an ALREADY-bridged project's own ongoing
+        // reconcile (that resolution only happens once, in connect()'s
+        // initial pull, or when a genuinely NEW project is discovered
+        // mid-session) -- so the generic confirmation path could never
+        // catch up within the same session; only a full reconnect (which
+        // re-runs that initial resolution from scratch) would ever clear
+        // these. But a successful snapshot upload+manifest send IS itself
+        // direct, complete proof these items are durably in the room --
+        // no need to wait for the indirect remoteDoc-membership check this
+        // one time. Confirm them immediately -- but marked as a distinct
+        // 'confirmed-via-snapshot' status, NOT deleted from the outbox:
+        // deleting would make these items indistinguishable from "never
+        // attempted" to the very next pushNewLocalEntries pass (remoteKeys
+        // won't reflect them either, per the comment above), causing an
+        // immediate, separate resend of the exact items this snapshot just
+        // successfully delivered -- confirmed live while testing this fix.
+        // See pendingEntryKey's own toSend-filter check and
+        // computePendingSummary's matching skip for the other two sides
+        // of this same convention.
+        items.forEach(item => outbox.set(pendingEntryKey(item.entry), { status: 'confirmed-via-snapshot', item }));
+        sendPendingUpdate(projectId);
       } else {
         // The blob itself is already uploaded and orphaned at this point
         // (harmless -- nothing references it, and cleaning up superseded/
         // orphaned blobs is explicitly out of scope for now, same as the
         // old chunk-event design never cleaned up superseded snapshots
-        // either). Rolling back knownEntryIds means a later retry starts
+        // either). Rolling back the outbox mark means a later retry starts
         // completely fresh (a new blob, a new manifest), not a half state.
         console.warn('[wigwag-matrix-host] failed to send snapshot manifest for', projectId, manifestResult);
-        items.forEach(item => knownEntryIds.delete(item.entry.id));
+        items.forEach(item => outbox.delete(pendingEntryKey(item.entry)));
+        sendPendingUpdate(projectId);
       }
     }
     // Checked from the live poll's own reconcile step (below) -- a snapshot
@@ -1146,7 +1437,7 @@
       // other test-introspection hook in this file (window.__wigwagHostStorage
       // etc).
       const maxAgeMs = (typeof window !== 'undefined' && typeof window.__wigwagSnapshotMaxAgeMsOverride === 'number') ? window.__wigwagSnapshotMaxAgeMsOverride : SNAPSHOT_MAX_AGE_MS;
-      if (sinceLastCount >= SNAPSHOT_ENTRY_THRESHOLD || sinceLastMs >= maxAgeMs) await pushSnapshotForProject(projectId);
+      if (sinceLastCount >= SNAPSHOT_STALENESS_ENTRY_THRESHOLD || sinceLastMs >= maxAgeMs) await pushSnapshotForProject(projectId);
     }
 
     // Adopts any project this browser holds locally that isn't bridged
@@ -1230,6 +1521,12 @@
           snapshot: localStorage.dumpAll(),
           matrixUserId: resolvedMatrixUserId,
           fallbackDisplayName: resolvedDisplayName,
+          // Replays whatever's still outstanding across a plain iframe
+          // reload (the host itself, and its in-memory outbox, survive
+          // that -- only the iframe's own render state resets), so a
+          // reloaded app doesn't briefly show "confirmed" for something
+          // still actually pending/failed.
+          pendingSummaries: Object.fromEntries([...bridgedProjects.keys()].map(id => [id, computePendingSummary(id)])),
           // Cosmetic/metadata prefs (column order, sort, etc.) are keyed
           // by projectId alone, real localStorage, no room-awareness --
           // predates Room Mode, built for Local Mode's "many unrelated
@@ -1241,6 +1538,15 @@
           // has zero knowledge of which room it's in, by design.
           roomId: roomId
         }, '*');
+        return;
+      }
+      // The iframe already has the failed entry sitting in its own local
+      // doc (nothing was ever rolled back on failure) -- re-running the
+      // normal send pass picks it up naturally via the same toSend
+      // computation any other edit would, no separate targeted-retry
+      // mechanism needed.
+      if (e.data.type === 'wigwag:retry-pending') {
+        if (bridgedProjects.has(e.data.projectId)) pushNewLocalEntries(e.data.projectId, { forceRetryFailed: true });
         return;
       }
       if (e.data.type !== 'wigwag:local-write') return;
@@ -1257,6 +1563,13 @@
     // more than one, a human needs to pick which one before anything
     // gets bootstrapped/shown -- start() used to do all of that in one
     // uninterruptible pass, assuming exactly one project always existed.
+    // Test-only hook (never called in production) -- lets a test invoke
+    // pushSnapshotForProject twice without awaiting either, to verify the
+    // snapshotInFlight lock deterministically rather than trying to time-
+    // align a real concurrent overlap via wall-clock delays. Same spirit
+    // as this file's other test-introspection hooks (window.__wigwagHostStorage
+    // etc).
+    if (typeof window !== 'undefined') window.__wigwagTestForcePushSnapshot = pushSnapshotForProject;
     return {
       // Connects and discovers what's there -- does NOT bootstrap or show
       // anything yet. Caller decides what to do with the discovered list
@@ -1285,7 +1598,7 @@
         // project's older raw entries entirely (both represent the exact
         // same signed history -- keeping both would double-count every
         // pre-cutoff entry). Snapshot items are re-wrapped as synthetic
-        // dev.wigwag.entry-shaped events so discoverProjects/
+        // work.wigwag.entry-shaped events so discoverProjects/
         // hydrateProjectFromMatrixTimeline need ZERO changes -- they can't
         // tell a snapshot-sourced entry from a directly-pulled one, by
         // design. A project with no (resolvable) snapshot behaves exactly
@@ -1308,7 +1621,7 @@
           return !snap || (item.entry.sortKey || 0) > snap.cutoffSortKey;
         });
         const snapshotItems = [].concat(...[...snapshotsByProject.values()].map(s => s.items));
-        // dev.wigwag.project state events are carried through separately
+        // work.wigwag.project state events are carried through separately
         // (re-wrapping loses them, since matrixEventContentFromEntry has
         // no concept of them) -- discoverProjects's own timeline-scan
         // branch (the grandfather-clause/live-discovery path) needs them
@@ -1361,12 +1674,8 @@
           const isDefault = p.id === deriveProjectId(roomId);
           bridgedProjects.set(p.id, { name: p.label, includeUntagged: isDefault });
 
-          // See reconcileIntoLocal's own comment on why the fallback is
-          // conditional -- core.defaultFieldDefs() only belongs to the
-          // room's legacy/untagged-entries default project.
-          const remoteDoc = core.hydrateProjectFromMatrixTimeline(remoteRawEvents, { fieldDefs: isDefault ? core.defaultFieldDefs() : MINIMAL_FALLBACK_FIELD_DEFS, projectId: p.id, projectName: p.label, includeUntaggedEntries: isDefault });
-          for (const item of flattenEntries(remoteDoc)) knownEntryIds.add(item.entry.id);
-          const bootstrapResult = await bootstrapLocalStorage(p.id, p.label, docStorable({ fieldDefs: remoteDoc.fields, projectHistory: remoteDoc.projectHistory, issues: remoteDoc.issues }, []), transport, fallbackUserId, fallbackDisplayName);
+          const remoteDoc = computeRemoteDocFor(p.id);
+          const bootstrapResult = await bootstrapLocalStorage(p.id, p.label, docStorable({ fieldDefs: remoteDoc.fields, projectHistory: remoteDoc.projectHistory, issues: remoteDoc.issues }), transport, fallbackUserId, fallbackDisplayName);
           if (bootstrapResult.status !== 'ok') return bootstrapResult;
           // A pre-existing local project at this same derived id may already
           // have entries the initial remote pull doesn't yet know about
@@ -1443,12 +1752,8 @@
                 }
               }
               bridgedProjects.set(p.id, { name: p.label, includeUntagged: isDefault });
-              // See reconcileIntoLocal's own comment on why the fallback
-              // is conditional -- core.defaultFieldDefs() only belongs to
-              // the room's legacy/untagged-entries default project.
-              const remoteDoc = core.hydrateProjectFromMatrixTimeline(remoteRawEvents, { fieldDefs: isDefault ? core.defaultFieldDefs() : MINIMAL_FALLBACK_FIELD_DEFS, projectId: p.id, projectName: p.label, includeUntaggedEntries: isDefault });
-              for (const item of flattenEntries(remoteDoc)) knownEntryIds.add(item.entry.id);
-              await bootstrapLocalStorage(p.id, p.label, docStorable({ fieldDefs: remoteDoc.fields, projectHistory: remoteDoc.projectHistory, issues: remoteDoc.issues }, []), transport, fallbackUserId, fallbackDisplayName);
+              const remoteDoc = computeRemoteDocFor(p.id);
+              await bootstrapLocalStorage(p.id, p.label, docStorable({ fieldDefs: remoteDoc.fields, projectHistory: remoteDoc.projectHistory, issues: remoteDoc.issues }), transport, fallbackUserId, fallbackDisplayName);
               reconcileIntoLocal(p.id);
             }
           }
@@ -1505,7 +1810,7 @@
     const frame = $('frame');
     frame.style.display = 'block';
     localStorage.attachFrame(frame);
-    frame.src = 'wigwag.html';
+    frame.src = '../wigwag.html';
   }
 
   // Shared by both transports once connect() has succeeded: bootstraps
@@ -1549,7 +1854,7 @@
         if (connectResult.status !== 'ok') {
           // Every widget-mode failure this early is plausibly the same root
           // cause: Element gates each requested capability (read/send
-          // dev.wigwag.entry) behind its own user-facing approval prompt,
+          // work.wigwag.entry) behind its own user-facing approval prompt,
           // shown once when the widget first loads -- a dismissed or
           // never-shown prompt looks like an ordinary protocol error
           // ("Cannot read room events of this type") with nothing in this

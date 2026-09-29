@@ -640,10 +640,10 @@ function mockGithubContentsApi(page, repo, path = 'tracker.jsonl') {
 // `accessDenied: true` to make every request 403, for testing the
 // no-access path without needing a second mocked room. `projectCreationForbidden`
 // simulates a non-moderator's power level being too low for the
-// dev.wigwag.project state write (tracker f6b39bf0) -- a real 403, same
+// work.wigwag.project state write (tracker f6b39bf0) -- a real 403, same
 // shape putMatrixEvent already treats as 'forbidden' for any other event
 // type. `messagesReturnsProjectStateEvents` (default true) controls
-// whether the /messages timeline mock includes dev.wigwag.project
+// whether the /messages timeline mock includes work.wigwag.project
 // occurrences alongside ordinary entries -- set to false to test that
 // getMatrixRoomState's real current-state fetch (not timeline scanning)
 // is what actually finds a project, independent of how much (or how
@@ -698,19 +698,9 @@ function mockMatrixClientApi(page, { homeserverUrl, roomId, initialEntries = [],
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ name: roomName }) });
   });
 
-  page.route(roomPath + '/send/dev.wigwag.entry/*', async (route) => {
+  page.route(roomPath + '/send/work.wigwag.entry/*', async (route) => {
     const content = JSON.parse(route.request().postData());
     state.sentEntries.push(content);
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ event_id: '$evt' + state.sentEntries.length }) });
-  });
-
-  // Bulk-transport optimization (tracker #149): a batch event carries
-  // several entries at once. Unpacked back into state.sentEntries as
-  // individual items so existing/new test assertions never need to know
-  // whether a given entry arrived via a single-entry or batch send.
-  page.route(roomPath + '/send/dev.wigwag.entries/*', async (route) => {
-    const content = JSON.parse(route.request().postData());
-    for (const item of (content.items || [])) state.sentEntries.push(item);
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ event_id: '$evt' + state.sentEntries.length }) });
   });
 
@@ -722,10 +712,10 @@ function mockMatrixClientApi(page, { homeserverUrl, roomId, initialEntries = [],
   // the next pull); the encrypted blob itself lives in a separate,
   // real-media-repo-shaped store, keyed by a generated mxc:// URI.
   state.sentSnapshotManifests = [];
-  page.route(roomPath + '/send/dev.wigwag.snapshot/*', async (route) => {
+  page.route(roomPath + '/send/work.wigwag.snapshot/*', async (route) => {
     const content = JSON.parse(route.request().postData());
     state.sentSnapshotManifests.push(content);
-    state.pendingEntries.push({ type: 'dev.wigwag.snapshot', content });
+    state.pendingEntries.push({ type: 'work.wigwag.snapshot', content });
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ event_id: '$snap' + state.sentSnapshotManifests.length }) });
   });
   // Media repo (tracker f6b39bf0's media-blob snapshot rework) -- upload
@@ -760,7 +750,7 @@ function mockMatrixClientApi(page, { homeserverUrl, roomId, initialEntries = [],
   });
 
   // Project index (tracker f6b39bf0, live-reported rate-limit incident) --
-  // a real Matrix STATE event: PUT to /state/dev.wigwag.project/{projectId}
+  // a real Matrix STATE event: PUT to /state/work.wigwag.project/{projectId}
   // (createProject), GET /state for the reliable, always-current fetch
   // (getProjectIndex) that discoverProjects unions with its own timeline
   // scan. A live-created one also rides the ordinary /messages stream
@@ -769,19 +759,19 @@ function mockMatrixClientApi(page, { homeserverUrl, roomId, initialEntries = [],
   // current-state fetch -- not timeline depth -- is what actually finds it.
   state.sentProjectStateEvents = [];
   const projectStateEventsByKey = new Map(); // projectId -> content
-  page.route(roomPath + '/state/dev.wigwag.project/*', async (route) => {
+  page.route(roomPath + '/state/work.wigwag.project/*', async (route) => {
     if (projectCreationForbidden) { await route.fulfill({ status: 403, contentType: 'application/json', body: '{}' }); return; }
     const url = new URL(route.request().url());
     const projectId = decodeURIComponent(url.pathname.split('/').pop());
     const content = JSON.parse(route.request().postData());
     projectStateEventsByKey.set(projectId, content);
     state.sentProjectStateEvents.push({ projectId, content });
-    if (messagesReturnsProjectStateEvents) state.pendingEntries.push({ type: 'dev.wigwag.project', state_key: projectId, content });
+    if (messagesReturnsProjectStateEvents) state.pendingEntries.push({ type: 'work.wigwag.project', state_key: projectId, content });
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ event_id: '$projstate' + state.sentProjectStateEvents.length }) });
   });
   page.route(roomPath + '/state', async (route) => {
     if (accessDenied) { await route.fulfill({ status: 403, contentType: 'application/json', body: '{}' }); return; }
-    const events = [...projectStateEventsByKey.entries()].map(([projectId, content]) => ({ type: 'dev.wigwag.project', state_key: projectId, content }));
+    const events = [...projectStateEventsByKey.entries()].map(([projectId, content]) => ({ type: 'work.wigwag.project', state_key: projectId, content }));
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(events) });
   });
 

@@ -595,10 +595,12 @@ test('computeFilterSuggestions: an unrecognized label offers no suggestions', ()
   assert.equal(core.computeFilterSuggestions('bogus:x', FILTER_FIELD_DEFS).mode, null);
 });
 
-test('computeFilterSuggestions: an empty box, or a token just closed with a trailing space, suggests every filterable field -- clicking in (or finishing a token) always has something to show', () => {
+test('computeFilterSuggestions: an empty box, or a token just closed with a trailing space, suggests every filterable field EXCEPT date/timestamp types -- clicking in (or finishing a token) always has something to show', () => {
   const emptyBox = core.computeFilterSuggestions('', FILTER_FIELD_DEFS);
   assert.equal(emptyBox.mode, 'field');
-  assert.deepEqual(emptyBox.items.map(i => i.label).sort(), ['Title', 'Status', 'Delivery teams', 'Due', 'Notes'].sort());
+  // 'Due' (type:'date') is deliberately absent -- see the dedicated
+  // date/timestamp-suppression test below for the full rationale.
+  assert.deepEqual(emptyBox.items.map(i => i.label).sort(), ['Title', 'Status', 'Delivery teams', 'Notes'].sort());
 
   const afterClosedToken = core.computeFilterSuggestions('status:done ', FILTER_FIELD_DEFS);
   assert.equal(afterClosedToken.mode, 'field');
@@ -608,6 +610,37 @@ test('computeFilterSuggestions: an empty box, or a token just closed with a trai
 test('computeFilterSuggestions: a text field offers no value suggestions (nothing enumerable), only field-name ones', () => {
   assert.equal(core.computeFilterSuggestions('notes:any', FILTER_FIELD_DEFS).mode, null);
   assert.deepEqual(core.computeFilterSuggestions('not', FILTER_FIELD_DEFS).items.map(i => i.label), ['Notes']);
+});
+
+// Tom's own call, live in chat: date and timestamp fields never get
+// suggested as a field name to filter by (a value-suggestion UX for them
+// is a real, deliberately deferred idea, not implemented yet) -- but a
+// manually-typed field:value token for one must keep working regardless,
+// since filterableFieldEntries (the shared list actually PARSING/APPLYING
+// a typed token) is untouched by this.
+test('computeFilterSuggestions: date and timestamp fields are excluded from field-name suggestions, but a manually-typed token for one still resolves value suggestions', () => {
+  const withTimestamp = { ...FILTER_FIELD_DEFS, created: { label: 'Created', type: 'timestamp' } };
+
+  const fieldSuggest = core.computeFilterSuggestions('', withTimestamp);
+  assert.ok(!fieldSuggest.items.some(i => i.label === 'Due'));
+  assert.ok(!fieldSuggest.items.some(i => i.label === 'Created'));
+  // Typing the exact label prefix for a date field also never suggests it.
+  assert.equal(core.computeFilterSuggestions('Du', withTimestamp).mode, null);
+  assert.equal(core.computeFilterSuggestions('Creat', withTimestamp).mode, null);
+
+  // A manually-typed, already-completed "Due:" token still resolves its
+  // existing value-suggestion UX (date presets) -- suppression is scoped
+  // to what gets SUGGESTED as a field name, not to filterableFieldEntries
+  // itself, which parseFilterQuery also depends on to actually apply a
+  // typed filter.
+  const dueValue = core.computeFilterSuggestions('Due:', withTimestamp);
+  assert.equal(dueValue.mode, 'value');
+  assert.ok(dueValue.items.length > 0);
+
+  // Created (timestamp) has no value-suggestion branch at all (no preset
+  // UX implemented for it yet) -- a manually-typed "Created:" resolves to
+  // no suggestions, not an error.
+  assert.equal(core.computeFilterSuggestions('Created:', withTimestamp).mode, null);
 });
 
 test('commitFilterSuggestion: a field suggestion leaves the colon open; a value suggestion closes the token with NO trailing space, quoting multi-word values', () => {
@@ -1264,9 +1297,10 @@ test('pushGithubFile: the file\'s blob moved since the caller\'s own sha -- a re
   assert.equal(fetchImpl.calls.length, 2); // never got as far as creating a blob
 });
 
-test('pushGithubFile: creating a brand new file (no sha) skips the conflict check entirely', async () => {
+test('pushGithubFile: creating a brand new file (no sha, and the file genuinely does not exist yet) proceeds without a conflict', async () => {
   const fetchImpl = fakeFetchTracking([
-    { status: 200, body: { sha: 'parent-commit', commit: { tree: { sha: 'parent-tree' } } } },
+    { status: 200, body: { sha: 'parent-commit', commit: { tree: { sha: 'parent-tree' } } } }, // GET .../commits/main
+    { status: 404 }, // GET .../contents/tracker.jsonl -- genuinely doesn't exist yet
     { status: 201, body: { sha: 'new-blob' } },
     { status: 201, body: { sha: 'new-tree' } },
     { status: 201, body: { sha: 'new-commit' } },
@@ -1274,30 +1308,56 @@ test('pushGithubFile: creating a brand new file (no sha) skips the conflict chec
   ]);
   const result = await core.pushGithubFile({ fetchImpl, repo: 'o/r', path: 'tracker.jsonl', branch: 'main', token: 't', text: 'x', commitMessage: 'msg', authorName: 'me' });
   assert.deepEqual(result, { status: 'ok', sha: 'new-blob' });
-  assert.equal(fetchImpl.calls.length, 5); // one fewer than the conflict-checked case -- no contents lookup
+  assert.equal(fetchImpl.calls.length, 6); // the existence check now always runs, even with no sha
+  assert.equal(fetchImpl.calls[1].url, 'https://api.github.com/repos/o/r/contents/tracker.jsonl?ref=main');
 });
 
-test('pushGithubFile: a genuinely empty branch (no commits yet) creates the very first commit, with no parent, and POSTs a new ref instead of PATCHing one', async () => {
+// Live incident (2026-09-28): a caller with NO sha at all (never
+// successfully pulled this exact file -- e.g. right after switching to a
+// newly-configured repo) used to skip the conflict check entirely and
+// fall straight through to an unconditional overwrite. This is the exact
+// scenario that silently clobbered a teammate's real, already-pushed
+// content with no error and no conflict reported. "Never seen this file"
+// must mean "go check first", not "assume it doesn't exist".
+test('pushGithubFile: no sha at all, but the file already exists -- a conflict, never a blind overwrite', async () => {
   const fetchImpl = fakeFetchTracking([
-    { status: 409, body: { message: 'Git Repository is empty.' } }, // GET .../commits/main
-    { status: 201, body: { sha: 'first-blob' } },
-    { status: 201, body: { sha: 'first-tree' } },
-    { status: 201, body: { sha: 'first-commit' } },
-    { status: 201, body: {} } // POST .../git/refs
+    { status: 200, body: { sha: 'parent-commit', commit: { tree: { sha: 'parent-tree' } } } }, // GET .../commits/main
+    { status: 200, body: { sha: 'someone-elses-sha' } } // GET .../contents -- the file exists; caller never pulled it
   ]);
   const result = await core.pushGithubFile({ fetchImpl, repo: 'o/r', path: 'tracker.jsonl', branch: 'main', token: 't', text: 'x', commitMessage: 'msg', authorName: 'me' });
+  assert.deepEqual(result, { status: 'conflict' });
+  assert.equal(fetchImpl.calls.length, 2); // never got as far as creating a blob -- no blind overwrite
+});
+
+test('pushGithubFile: a genuinely empty repo/branch (no commits yet) bootstraps via the Contents API PUT, not the Git Data API', async () => {
+  // Confirmed live against a real, brand-new GitHub repo (tracker
+  // f6b39bf0 follow-up): the Git Data API cannot create a repo's very
+  // first commit at all -- POST /git/blobs itself returns the same 409
+  // "Git Repository is empty." the /commits lookup does, since there's
+  // no base commit to hang any object off yet. The Contents API's PUT
+  // has no such restriction (it's how GitHub's own UI creates a repo's
+  // first file), so that's the real, necessary fallback for this one
+  // case -- every push after this one goes through the normal Git Data
+  // API path, uncapped.
+  const fetchImpl = fakeFetchTracking([
+    { status: 409, body: { message: 'Git Repository is empty.' } }, // GET .../commits/main
+    { status: 201, body: { content: { sha: 'first-blob' } } } // PUT .../contents/tracker.jsonl
+  ]);
+  const result = await core.pushGithubFile({ fetchImpl, repo: 'o/r', path: 'tracker.jsonl', branch: 'main', token: 't', text: 'x', commitMessage: 'msg', authorName: 'me', authorEmail: 'me@example.com' });
   assert.deepEqual(result, { status: 'ok', sha: 'first-blob' });
-  assert.equal(fetchImpl.calls[2].url, 'https://api.github.com/repos/o/r/git/trees');
-  assert.equal('base_tree' in fetchImpl.calls[2].body, false); // nothing to merge into
-  assert.equal('parents' in fetchImpl.calls[3].body, false); // no parent commit
-  assert.equal(fetchImpl.calls[4].method, 'POST'); // creating the ref, not updating one
-  assert.equal(fetchImpl.calls[4].url, 'https://api.github.com/repos/o/r/git/refs');
+  assert.equal(fetchImpl.calls.length, 2);
+  assert.equal(fetchImpl.calls[1].method, 'PUT');
+  assert.equal(fetchImpl.calls[1].url, 'https://api.github.com/repos/o/r/contents/tracker.jsonl');
+  assert.equal(fetchImpl.calls[1].body.message, 'msg');
+  assert.equal(fetchImpl.calls[1].body.branch, 'main');
+  assert.equal(Buffer.from(fetchImpl.calls[1].body.content, 'base64').toString('utf8'), 'x');
 });
 
 test('pushGithubFile: an empty branch name resolves the real default branch first', async () => {
   const fetchImpl = fakeFetchTracking([
     { status: 200, body: { default_branch: 'trunk' } }, // GET .../repos/o/r
     { status: 200, body: { sha: 'parent-commit', commit: { tree: { sha: 'parent-tree' } } } },
+    { status: 404 }, // GET .../contents -- no sha given, file genuinely doesn't exist yet
     { status: 201, body: { sha: 'new-blob' } },
     { status: 201, body: { sha: 'new-tree' } },
     { status: 201, body: { sha: 'new-commit' } },
@@ -1306,7 +1366,7 @@ test('pushGithubFile: an empty branch name resolves the real default branch firs
   const result = await core.pushGithubFile({ fetchImpl, repo: 'o/r', path: 'tracker.jsonl', branch: '', token: 't', text: 'x', commitMessage: 'msg', authorName: 'me' });
   assert.deepEqual(result, { status: 'ok', sha: 'new-blob' });
   assert.equal(fetchImpl.calls[1].url, 'https://api.github.com/repos/o/r/commits/trunk');
-  assert.equal(fetchImpl.calls[5].url, 'https://api.github.com/repos/o/r/git/refs/heads/trunk');
+  assert.equal(fetchImpl.calls[6].url, 'https://api.github.com/repos/o/r/git/refs/heads/trunk');
 });
 
 test('pushGithubFile: 409/422 on the final ref update (a real race after the conflict check passed) still maps to conflict, other failures are errors', async () => {
@@ -2240,6 +2300,23 @@ test('hydrateProjectFromMatrixTimeline: field definitions derive from project-sc
   assert.equal(result.fields.status.label, 'Workflow Status');
 });
 
+// Live-reported (Tom, 2026-09-28): the resend-race fix (wigwag-matrix-
+// host.html's pushNewLocalEntries no longer ever pushes a legacy-backfill
+// entry as a real event) is only safe because EVERY reader -- including a
+// fresh one with no access to any device's own local doc -- can still
+// derive created/updated on its own. That guarantee lives here.
+test('hydrateProjectFromMatrixTimeline: created/updated are backfilled even from a minimal fallback fieldDefs that never mentions them, and even with zero raw events for them', () => {
+  const rawEvents = [
+    core.matrixEventContentFromEntry ? { content: core.matrixEventContentFromEntry({ scope: 'issue', issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'An issue', sortKey: 1, origin: 'authored' } }) } : null
+  ].filter(Boolean);
+  const result = core.hydrateProjectFromMatrixTimeline(rawEvents, { fieldDefs: { title: { label: 'Title', type: 'issue' } }, projectId: 'p1' });
+  assert.equal(result.fields.created.type, 'timestamp');
+  assert.equal(result.fields.updated.type, 'timestamp');
+  const backfillIds = result.projectHistory.filter(h => h.origin === 'legacy-backfill').map(h => h.id);
+  assert.ok(backfillIds.includes('backfill-field-created'));
+  assert.ok(backfillIds.includes('backfill-field-updated'));
+});
+
 // Tracker #149: a room can hold more than one project's worth of
 // entries -- confirmed necessary live (importing an existing project
 // into a room must keep its own identity). Untagged (legacy) entries
@@ -2278,6 +2355,40 @@ test('hydrateProjectFromMatrixTimeline: explicitly-tagged entries only match hyd
   assert.equal(resultB.issues[0].values.title, 'In project B');
 });
 
+// Live-reported (Tom, 2026-09-28): a widget reconnect can resend an
+// already-committed entry (its own in-memory "already sent" tracking
+// resets on an iframe remount, racing a just-sent event's own homeserver
+// round-trip) -- seen concretely as a duplicated legacy-backfill
+// project-schema entry in a real room's timeline. The read-side fix is a
+// dedupe keyed on (id, sortKey) together, deliberately not id alone.
+test('hydrateProjectFromMatrixTimeline: an exact duplicate delivery of the same entry (same id AND sortKey) is dropped, not double-counted', () => {
+  const fieldDefs = { title: { label: 'Title', type: 'issue' } };
+  const backfillEntry = { id: 'backfill-field-updated', time: 'Aug 20, 4:10 PM', actor: 'system', email: '', text: 'Updated (backfilled from existing data)', field: 'updated', value: { label: 'Updated', type: 'timestamp' }, origin: 'legacy-backfill', sortKey: -4 };
+  const rawEvents = [
+    { content: core.matrixEventContentFromEntry({ scope: 'project', entry: backfillEntry, projectId: 'p1' }) },
+    // A resend: identical id, identical sortKey, identical content -- the
+    // exact shape a remount-triggered duplicate push produces.
+    { content: core.matrixEventContentFromEntry({ scope: 'project', entry: { ...backfillEntry }, projectId: 'p1' }) },
+  ];
+  const result = core.hydrateProjectFromMatrixTimeline(rawEvents, { fieldDefs, projectId: 'p1', projectName: 'P' });
+  const matches = result.projectHistory.filter(h => h.id === 'backfill-field-updated');
+  assert.equal(matches.length, 1);
+});
+
+test('hydrateProjectFromMatrixTimeline: a genuine edit/redaction -- same id, but a DIFFERENT sortKey for the new revision -- is never collapsed by the duplicate-entry dedupe', () => {
+  const rawEvents = [
+    // Same comment id, two real revisions: the original (now-redacted
+    // tombstone, keeping its OWN original sortKey per commitEditComment's
+    // own convention) and the edited live text (a fresh, later sortKey).
+    { content: core.matrixEventContentFromEntry({ scope: 'issue', issueId: 'i1', stream: 'comments', entry: { id: 'c1', author: 'tom', time: 't1', sortKey: 5, redacted: true, sigRedacted: 'abc' } }) },
+    { content: core.matrixEventContentFromEntry({ scope: 'issue', issueId: 'i1', stream: 'comments', entry: { id: 'c1', author: 'tom', time: 't2', text: 'edited text', sortKey: 9 } }) },
+  ];
+  const result = core.hydrateProjectFromMatrixTimeline(rawEvents, { fieldDefs: { title: { label: 'Title', type: 'issue' } }, projectId: 'p1' });
+  const comments = result.issues[0].commentStreams.comments;
+  assert.equal(comments.length, 2);
+  assert.equal(comments.filter(c => c.id === 'c1').length, 2);
+});
+
 test('fetchMatrixRoomEntries: filters to the wigwag entry type, paginates via `from`, and maps 403/404/network failure to distinct statuses', async () => {
   let lastUrl;
   const okFetch = async (url) => { lastUrl = url; return { ok: true, status: 200, json: async () => ({ chunk: [{ id: 'e1' }], end: 'tok2' }) }; };
@@ -2285,7 +2396,7 @@ test('fetchMatrixRoomEntries: filters to the wigwag entry type, paginates via `f
   assert.equal(okResult.status, 'ok');
   assert.deepEqual(okResult.events, [{ id: 'e1' }]);
   assert.equal(okResult.end, 'tok2');
-  assert.match(lastUrl, /filter=%7B%22types%22%3A%5B%22dev\.wigwag\.entry%22%2C%22dev\.wigwag\.entries%22%2C%22dev\.wigwag\.snapshot%22%2C%22dev\.wigwag\.project%22%5D%7D/);
+  assert.match(lastUrl, /filter=%7B%22types%22%3A%5B%22work\.wigwag\.entry%22%2C%22work\.wigwag\.snapshot%22%2C%22work\.wigwag\.project%22%5D%7D/);
   assert.match(lastUrl, /from=tok1/);
 
   const forbiddenFetch = async () => ({ ok: false, status: 403 });
@@ -2339,15 +2450,15 @@ test('sendMatrixEntry: gives up with a clear error after persistent 429s, never 
   assert.ok(/rate-limited/.test(result.message));
 });
 
-test('projectIdFromMatrixStateEvent: recognizes a real dev.wigwag.project state event by state_key, tolerant of anything else', () => {
-  assert.equal(core.projectIdFromMatrixStateEvent({ type: 'dev.wigwag.project', state_key: 'proj-1', content: core.matrixStateEventContentFromProjectCreation({ createdAt: 't', createdBy: '@a:b' }) }), 'proj-1');
-  assert.equal(core.projectIdFromMatrixStateEvent({ type: 'dev.wigwag.project', state_key: '' }), null);
+test('projectIdFromMatrixStateEvent: recognizes a real work.wigwag.project state event by state_key, tolerant of anything else', () => {
+  assert.equal(core.projectIdFromMatrixStateEvent({ type: 'work.wigwag.project', state_key: 'proj-1', content: core.matrixStateEventContentFromProjectCreation({ createdAt: 't', createdBy: '@a:b' }) }), 'proj-1');
+  assert.equal(core.projectIdFromMatrixStateEvent({ type: 'work.wigwag.project', state_key: '' }), null);
   assert.equal(core.projectIdFromMatrixStateEvent({ type: 'm.room.name', state_key: '' }), null);
   assert.equal(core.projectIdFromMatrixStateEvent(null), null);
 });
 
-test('entryFromMatrixEvent: a dev.wigwag.project state event is never mistaken for an ordinary entry (no scope field)', () => {
-  const stateEvent = { type: 'dev.wigwag.project', state_key: 'proj-1', content: core.matrixStateEventContentFromProjectCreation({ createdAt: 't', createdBy: '@a:b' }) };
+test('entryFromMatrixEvent: a work.wigwag.project state event is never mistaken for an ordinary entry (no scope field)', () => {
+  const stateEvent = { type: 'work.wigwag.project', state_key: 'proj-1', content: core.matrixStateEventContentFromProjectCreation({ createdAt: 't', createdBy: '@a:b' }) };
   assert.equal(core.entryFromMatrixEvent(stateEvent), null);
   assert.deepEqual(core.decodeAllMatrixEntryItems([stateEvent]), []);
 });
@@ -2359,7 +2470,7 @@ test('sendMatrixProjectStateEvent: PUTs to the state (not send/txn) endpoint, ke
   const result = await core.sendMatrixProjectStateEvent({ fetchImpl: okFetch, homeserverUrl: 'https://matrix.example.org', accessToken: 'tok', roomId: '!room:example.org', projectId: 'proj-1', content });
   assert.equal(result.status, 'ok');
   assert.equal(capturedMethod, 'PUT');
-  assert.match(capturedUrl, /\/state\/dev\.wigwag\.project\/proj-1$/);
+  assert.match(capturedUrl, /\/state\/work\.wigwag\.project\/proj-1$/);
   assert.deepEqual(capturedBody, content);
 
   // A non-moderator's power level is exactly what a real homeserver
@@ -2372,11 +2483,11 @@ test('sendMatrixProjectStateEvent: PUTs to the state (not send/txn) endpoint, ke
   assert.equal(rejected.status, 'forbidden');
 });
 
-test('getMatrixRoomState: fetches current state in one call, no pagination, filterable client-side for dev.wigwag.project', async () => {
+test('getMatrixRoomState: fetches current state in one call, no pagination, filterable client-side for work.wigwag.project', async () => {
   const stateEvents = [
     { type: 'm.room.name', state_key: '', content: { name: 'Bridge Room' } },
-    { type: 'dev.wigwag.project', state_key: 'proj-1', content: core.matrixStateEventContentFromProjectCreation({ createdAt: 't1', createdBy: '@mod:example.org' }) },
-    { type: 'dev.wigwag.project', state_key: 'proj-2', content: core.matrixStateEventContentFromProjectCreation({ createdAt: 't2', createdBy: '@mod:example.org' }) }
+    { type: 'work.wigwag.project', state_key: 'proj-1', content: core.matrixStateEventContentFromProjectCreation({ createdAt: 't1', createdBy: '@mod:example.org' }) },
+    { type: 'work.wigwag.project', state_key: 'proj-2', content: core.matrixStateEventContentFromProjectCreation({ createdAt: 't2', createdBy: '@mod:example.org' }) }
   ];
   let capturedUrl;
   const okFetch = async (url) => { capturedUrl = url; return { ok: true, status: 200, json: async () => stateEvents }; };
@@ -2388,45 +2499,6 @@ test('getMatrixRoomState: fetches current state in one call, no pagination, filt
 
   const forbiddenFetch = async () => ({ ok: false, status: 403 });
   assert.equal((await core.getMatrixRoomState({ fetchImpl: forbiddenFetch, homeserverUrl: 'https://matrix.example.org', accessToken: 'tok', roomId: '!room:example.org' })).status, 'forbidden');
-});
-
-test('matrixEventContentFromEntries / entriesFromMatrixEvent: round-trips several entries through one batch event', () => {
-  const items = [
-    { scope: 'project', entry: { id: 'p1', field: '__project_name__', value: 'Wigwag', sortKey: 1 } },
-    { scope: 'issue', issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'One', sortKey: 2 }, projectId: 'proj-1' },
-    { scope: 'issue', issueId: 'i2', stream: 'comments', entry: { id: 'c1', text: 'hi', sortKey: 3 }, projectId: 'proj-1' }
-  ];
-  const content = core.matrixEventContentFromEntries(items);
-  const decoded = core.entriesFromMatrixEvent({ type: 'dev.wigwag.entries', content });
-  assert.equal(decoded.length, 3);
-  assert.equal(decoded[0].scope, 'project');
-  assert.equal(decoded[0].entry.value, 'Wigwag');
-  assert.equal(decoded[1].issueId, 'i1');
-  assert.equal(decoded[1].projectId, 'proj-1');
-  assert.equal(decoded[2].stream, 'comments');
-});
-
-test('entriesFromMatrixEvent: tolerant of a malformed batch, and of one bad item inside an otherwise-good batch', () => {
-  assert.deepEqual(core.entriesFromMatrixEvent({ type: 'dev.wigwag.entries', content: null }), []);
-  assert.deepEqual(core.entriesFromMatrixEvent({ type: 'dev.wigwag.entries', content: { v: 1, items: 'not-an-array' } }), []);
-
-  const goodItem = core.matrixEventContentFromEntry({ scope: 'issue', issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'ok', sortKey: 1 } });
-  const content = { v: 1, items: [goodItem, { garbage: true }, null] };
-  const decoded = core.entriesFromMatrixEvent({ type: 'dev.wigwag.entries', content });
-  assert.equal(decoded.length, 1); // only the one well-formed item survives
-  assert.equal(decoded[0].entry.value, 'ok');
-});
-
-test('hydrateProjectFromMatrixTimeline: expands a batch (dev.wigwag.entries) event the same as individual dev.wigwag.entry events', () => {
-  const fieldDefs = { title: { label: 'Issue', type: 'text' } };
-  const batchContent = core.matrixEventContentFromEntries([
-    { scope: 'issue', issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'From a batch', sortKey: 1 } },
-    { scope: 'issue', issueId: 'i2', entry: { id: 'h2', field: 'title', value: 'Also from a batch', sortKey: 2 } }
-  ]);
-  const rawEvents = [{ type: 'dev.wigwag.entries', content: batchContent }];
-  const result = core.hydrateProjectFromMatrixTimeline(rawEvents, { fieldDefs, projectId: 'p1', includeUntaggedEntries: true });
-  assert.equal(result.issues.length, 2);
-  assert.deepEqual(result.issues.map(i => i.values.title).sort(), ['Also from a batch', 'From a batch']);
 });
 
 test('encryptSnapshotPayload / decryptSnapshotPayload: round-trips real bytes through real WebCrypto AES-CTR', async () => {
@@ -2456,18 +2528,18 @@ test('decryptSnapshotPayload: tolerant of missing key material, never throws', a
 test('matrixEventContentFromSnapshotManifest / snapshotManifestFromMatrixEvent: round-trips', () => {
   const encryption = { key: { kty: 'oct', k: 'x' }, iv: 'aXY=', hashes: { sha256: 'aGFzaA==' }, v: 'v2' };
   const content = core.matrixEventContentFromSnapshotManifest({ projectId: 'p1', snapshotId: 'snap-1', cutoffSortKey: 500, mxc: 'mxc://example.org/abc123', size: 4096, encryption, createdAt: 1700000000000 });
-  const decoded = core.snapshotManifestFromMatrixEvent({ type: 'dev.wigwag.snapshot', content });
+  const decoded = core.snapshotManifestFromMatrixEvent({ type: 'work.wigwag.snapshot', content });
   assert.deepEqual(decoded, { projectId: 'p1', snapshotId: 'snap-1', cutoffSortKey: 500, mxc: 'mxc://example.org/abc123', size: 4096, encryption, createdAt: 1700000000000 });
 });
 
 test('snapshotManifestFromMatrixEvent: tolerant of malformed/foreign events', () => {
-  assert.equal(core.snapshotManifestFromMatrixEvent({ type: 'dev.wigwag.snapshot', content: null }), null);
-  assert.equal(core.snapshotManifestFromMatrixEvent({ type: 'dev.wigwag.snapshot', content: { v: 1 } }), null); // missing snapshotId/projectId/mxc/encryption
+  assert.equal(core.snapshotManifestFromMatrixEvent({ type: 'work.wigwag.snapshot', content: null }), null);
+  assert.equal(core.snapshotManifestFromMatrixEvent({ type: 'work.wigwag.snapshot', content: { v: 1 } }), null); // missing snapshotId/projectId/mxc/encryption
   assert.equal(core.snapshotManifestFromMatrixEvent({ type: 'm.room.message', content: { body: 'hi' } }), null);
 });
 
 function fakeManifestEvent({ projectId, snapshotId, cutoffSortKey, mxc }) {
-  return { type: 'dev.wigwag.snapshot', content: core.matrixEventContentFromSnapshotManifest({ projectId, snapshotId, cutoffSortKey, mxc: mxc || ('mxc://example.org/' + snapshotId), size: 100, encryption: { key: { kty: 'oct', k: 'x' }, iv: 'aXY=', hashes: { sha256: 'aGFzaA==' }, v: 'v2' } }) };
+  return { type: 'work.wigwag.snapshot', content: core.matrixEventContentFromSnapshotManifest({ projectId, snapshotId, cutoffSortKey, mxc: mxc || ('mxc://example.org/' + snapshotId), size: 100, encryption: { key: { kty: 'oct', k: 'x' }, iv: 'aXY=', hashes: { sha256: 'aGFzaA==' }, v: 'v2' } }) };
 }
 
 test('findLatestSnapshotManifests: picks the highest-cutoffSortKey manifest per project, pure and synchronous', () => {
@@ -2511,40 +2583,22 @@ test('resolveSnapshotPayload: a failed download, a hash mismatch, or malformed J
   assert.equal(await core.resolveSnapshotPayload({ mxc: 'x', encryption: badJsonEncryption }, { downloadFn: async () => ({ status: 'ok', bytes: badJsonCiphertext }) }), null);
 });
 
-test('decodeAllMatrixEntryItems: flattens a mix of single and batch raw events into one array, skipping foreign/malformed ones', () => {
-  const single = { type: 'dev.wigwag.entry', content: core.matrixEventContentFromEntry({ scope: 'issue', issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Single', sortKey: 1 } }) };
-  const batch = { type: 'dev.wigwag.entries', content: core.matrixEventContentFromEntries([
-    { scope: 'issue', issueId: 'i2', entry: { id: 'h2', field: 'title', value: 'Batch A', sortKey: 2 } },
-    { scope: 'issue', issueId: 'i3', entry: { id: 'h3', field: 'title', value: 'Batch B', sortKey: 3 } }
-  ]) };
+test('decodeAllMatrixEntryItems: flattens a list of raw events into one array, skipping foreign/malformed ones', () => {
+  const first = { type: 'work.wigwag.entry', content: core.matrixEventContentFromEntry({ scope: 'issue', issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'First', sortKey: 1 } }) };
+  const second = { type: 'work.wigwag.entry', content: core.matrixEventContentFromEntry({ scope: 'issue', issueId: 'i2', entry: { id: 'h2', field: 'title', value: 'Second', sortKey: 2 } }) };
   const foreign = { type: 'm.room.message', content: { body: 'hi' } };
-  const items = core.decodeAllMatrixEntryItems([single, batch, foreign, null]);
-  assert.equal(items.length, 3);
-  assert.deepEqual(items.map(i => i.entry.value), ['Single', 'Batch A', 'Batch B']);
+  const items = core.decodeAllMatrixEntryItems([first, second, foreign, null]);
+  assert.equal(items.length, 2);
+  assert.deepEqual(items.map(i => i.entry.value), ['First', 'Second']);
 });
 
-test('sendMatrixEntries: PUTs to the batch-scoped send endpoint, retries on 429 the same as sendMatrixEntry', async () => {
-  const content = core.matrixEventContentFromEntries([{ scope: 'issue', issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'x', sortKey: 1 } }]);
-  let calls = 0;
-  const flakyFetch = async (url) => {
-    calls++;
-    assert.match(url, /\/send\/dev\.wigwag\.entries\//);
-    if (calls === 1) return { ok: false, status: 429, json: async () => ({ retry_after_ms: 1 }) };
-    return { ok: true, status: 200, json: async () => ({ event_id: '$batch1' }) };
-  };
-  const result = await core.sendMatrixEntries({ fetchImpl: flakyFetch, homeserverUrl: 'https://matrix.example.org', accessToken: 'tok', roomId: '!room:example.org', content, txnId: 'txn-batch' });
-  assert.equal(result.status, 'ok');
-  assert.equal(calls, 2);
-});
-
-test('fetchMatrixRoomEntries: filters to the single-entry, batch, snapshot manifest, AND project-state event types', async () => {
+test('fetchMatrixRoomEntries: filters to the single-entry, snapshot manifest, AND project-state event types', async () => {
   let lastUrl;
   const okFetch = async (url) => { lastUrl = url; return { ok: true, status: 200, json: async () => ({ chunk: [], end: null }) }; };
   await core.fetchMatrixRoomEntries({ fetchImpl: okFetch, homeserverUrl: 'https://matrix.example.org', accessToken: 'tok', roomId: '!room:example.org' });
-  assert.match(lastUrl, /dev\.wigwag\.entry%22/);
-  assert.match(lastUrl, /dev\.wigwag\.entries%22/);
-  assert.match(lastUrl, /dev\.wigwag\.snapshot%22/);
-  assert.match(lastUrl, /dev\.wigwag\.project%22/);
+  assert.match(lastUrl, /work\.wigwag\.entry%22/);
+  assert.match(lastUrl, /work\.wigwag\.snapshot%22/);
+  assert.match(lastUrl, /work\.wigwag\.project%22/);
 });
 
 test('storage keys carry no namespace prefix', () => {
@@ -2731,6 +2785,36 @@ test('deriveFieldDefs: the reserved PROJECT_NAME_FIELD_ID sentinel never surface
   assert.ok(fieldDefs.title);
 });
 
+test('effectiveFieldDefs: overlays a local binding onto a portable field def without mutating the input', () => {
+  const portable = { type: { label: 'Type', type: 'select', options: [] } };
+  const bindings = { type: { linkedSourceId: 'title', rule: "source.jira ? 'Bug' : 'Todo'", ruleRows: null, ruleFallback: null } };
+  const merged = core.effectiveFieldDefs(portable, bindings);
+  assert.equal(merged.type.rule, "source.jira ? 'Bug' : 'Todo'");
+  assert.equal(merged.type.linkedSourceId, 'title');
+  assert.equal(merged.type.label, 'Type'); // portable parts survive the overlay
+  assert.equal(portable.type.rule, undefined); // input untouched
+});
+
+test('effectiveFieldDefs: no bindings, or bindings for a field that no longer exists, returns the portable defs unchanged (same reference)', () => {
+  const portable = { title: { label: 'Issue', type: 'issue' } };
+  assert.equal(core.effectiveFieldDefs(portable, {}), portable);
+  assert.equal(core.effectiveFieldDefs(portable, null), portable);
+  assert.equal(core.effectiveFieldDefs(portable, { deletedField: { rule: 'x' } }), portable);
+});
+
+test('effectiveFieldDefs: an explicit "cleared" binding (all keys null) still wins over a legacy-embedded rule already in the portable def', () => {
+  // Simulates a field whose rule was embedded directly in history before
+  // the local-bindings split (deriveFieldDefs faithfully reconstructs it
+  // from that old entry) -- once the user explicitly clears the binding
+  // locally, the clear must suppress the legacy value, not fall through
+  // to it just because the local record's own fields are all null.
+  const portable = { type: { label: 'Type', type: 'select', rule: 'source.jira.status', linkedSourceId: 'title' } };
+  const bindings = { type: { linkedSourceId: null, rule: null, ruleRows: null, ruleFallback: null } };
+  const merged = core.effectiveFieldDefs(portable, bindings);
+  assert.equal(merged.type.rule, null);
+  assert.equal(merged.type.linkedSourceId, null);
+});
+
 test('hydrateProject: exposes projectName derived from history, null when no rename has ever happened', () => {
   const fieldDefs = { title: { type: 'issue' } };
   const hydratedNoName = core.hydrateProject(fieldDefs, []);
@@ -2744,7 +2828,7 @@ test('hydrateProject: exposes projectName derived from history, null when no ren
 
 test('hydrateProjectFromMatrixTimeline: a derived project name from a real history entry wins over the caller-supplied fallback', () => {
   const rawEvents = [
-    { type: 'dev.wigwag.entry', content: { v: 1, scope: 'project', entry: { id: 'e1', field: core.PROJECT_NAME_FIELD_ID, value: 'Room Project Renamed', sortKey: 1, time: '', actor: '', email: '' } } }
+    { type: 'work.wigwag.entry', content: { v: 1, scope: 'project', entry: { id: 'e1', field: core.PROJECT_NAME_FIELD_ID, value: 'Room Project Renamed', sortKey: 1, time: '', actor: '', email: '' } } }
   ];
   const result = core.hydrateProjectFromMatrixTimeline(rawEvents, { fieldDefs: {}, projectId: 'p1', projectName: 'Matrix room X (fallback)' });
   assert.equal(result.projectName, 'Room Project Renamed');

@@ -419,6 +419,37 @@ const COLUMN_ORDER_KEY = 'git_native_tracker_col_order_v1';
 // Column value filters: cosmetic-only, per-browser, per-project -- same
 // reasoning again. { [projectId]: { [colId]: [optionId, ...] } }.
 const COLUMN_FILTERS_KEY = 'git_native_tracker_col_filters_v1';
+// Which fields are hidden: cosmetic-only, per-browser, per-project -- same
+// reasoning/shape family as COLUMN_ORDER_KEY. { [projectId]: [colId, ...] }.
+// Live incident (2026-09-28): this used to live INSIDE the per-project doc
+// itself (part of what persist()/loadPersisted() read/wrote alongside
+// fieldDefs/issues), which is harmless in Local Mode (that whole doc is
+// real, persistent localStorage there) but actively broken in Room Scoped
+// Widget Mode -- docKey(...) is exactly one of the keys the room-mode
+// storage shim treats as "room content" (in-memory only, deliberately
+// wiped on every reload, see isRoomModeContentKey), while COLUMN_ORDER_KEY/
+// COLUMN_WIDTHS_KEY/SORT_KEY were always correctly excluded from that
+// shimming and so survived reloads. hiddenFieldIds was the one cosmetic
+// pref that accidentally rode along INSIDE the shimmed doc instead of
+// living in its own real key like every sibling pref -- live-reported as
+// "field order persists but field hiddenness doesn't" (column order IS
+// COLUMN_ORDER_KEY, already correct; hidden fields were the mismatched
+// one). Moving it to its own key here fixes that structurally, the same
+// way every other per-device cosmetic pref already works.
+const HIDDEN_FIELDS_KEY = 'git_native_tracker_hidden_fields_v1';
+// Bound-field rules (linkedSourceId/rule/ruleRows/ruleFallback): a rule
+// like `source.jira ? source.jira.status : 'Todo'` is only meaningful on
+// a device with that person's own Jira/Salesforce/GitHub-proxy bridge
+// configured -- it must never travel in the portable fieldDefs shape
+// (JSONL export, paste-merge, Matrix room sync all funnel through
+// projectHistory/deriveFieldDefs, so anything baked into a field def
+// there is "portable" whether intended or not). Per-browser, per-project,
+// per-field -- same reasoning/shape family as COLUMN_WIDTHS_KEY, and
+// deliberately never read by persist()/buildSourceText() either.
+// { [projectId]: { [colId]: { linkedSourceId, rule, ruleRows,
+// ruleFallback } } }. See effectiveFieldDefs() below for how this
+// overlays onto the portable fieldDefs at evaluation/render time only.
+const LOCAL_FIELD_BINDINGS_KEY = 'git_native_tracker_local_bindings_v1';
 // A synthetic filter-option id meaning "this field has no value" -- lives
 // in the same columnFilters[colId] array as real option ids, so
 // toggleColumnFilterValue/the checkbox markup need no special-casing at
@@ -647,7 +678,17 @@ function computeFilterSuggestions(query, fieldDefs) {
   const colonIdx = current.indexOf(':');
   if (colonIdx === -1) {
     const q = current.toLowerCase();
-    const items = entries.filter(({ def }) => def.label.toLowerCase().startsWith(q))
+    // Tom's own call, live in chat: date and timestamp fields (Created,
+    // Updated, any other date-typed field) never get suggested as a field
+    // name to filter by -- date has a real value-suggestion UX further
+    // down (preset ranges) but timestamp has none at all, and offering
+    // the field name either way just dead-ends into "you picked a field,
+    // now what". Deliberately not filtered out of filterableFieldEntries
+    // itself -- that shared list also drives actually PARSING/APPLYING a
+    // manually-typed field:value token, which must keep working
+    // regardless of what gets suggested.
+    const items = entries.filter(({ def }) => def.type === 'select' || def.type === 'multiselect' || def.type === 'text' || def.type === 'issue')
+      .filter(({ def }) => def.label.toLowerCase().startsWith(q))
       .map(({ colId, def }) => ({ kind: 'field', colId, label: def.label, negated }));
     return items.length ? { mode: 'field', colId: null, items } : none;
   }
@@ -1333,6 +1374,26 @@ function deriveFieldDefs(projectHistory) {
     fieldDefs.title = { ...fieldDefs.title, type: 'issue' };
   }
   return fieldDefs;
+}
+// Overlays a device's own local field bindings (see LOCAL_FIELD_BINDINGS_KEY
+// above) onto the portable fieldDefs deriveFieldDefs produced -- the one
+// merge point every evaluation/render call site should read through
+// instead of a raw fieldDefs, so `state.fieldDefs` itself can stay
+// strictly portable (what persist()/buildSourceText() write/export).
+// Local wins by PRESENCE of a record for that field, never by recency --
+// an inbound file's own legacy-embedded rule (pre-dating this split)
+// must never resurface over a field this device has already migrated
+// locally, no matter how new its own sortKey is. A field deleted since
+// its binding was recorded is simply skipped, not resurrected.
+function effectiveFieldDefs(fieldDefs, localFieldBindings) {
+  const bindings = localFieldBindings || {};
+  let out = fieldDefs;
+  for (const colId in bindings) {
+    if (!out[colId]) continue;
+    if (out === fieldDefs) out = { ...fieldDefs };
+    out[colId] = { ...out[colId], ...bindings[colId] };
+  }
+  return out;
 }
 // Migration safety net, mirroring backfillIssueHistoryFromValues: any
 // field currently in fieldDefs with zero project-history entries (older
@@ -3036,26 +3097,62 @@ async function pushGithubFile({ fetchImpl, repo, path, branch, token, text, sha,
     resolvedBranch = repoRes.data.default_branch;
   }
 
-  // Where the branch currently points, and (if sha was given) whether
-  // this exact file's blob still matches what the caller last saw --
-  // checked BEFORE writing anything, so a real conflict is caught here
-  // rather than mid-way through creating objects nothing ends up
-  // pointing at. 404/409 here means a genuinely brand new repo/branch
-  // with zero commits yet -- GitHub's real signal for that case, not a
-  // failure to paper over -- handled below as the very first commit,
-  // with no parent and nothing to merge into.
+  // Where the branch currently points, and whether this exact file's blob
+  // still matches what the caller last saw -- checked BEFORE writing
+  // anything, so a real conflict is caught here rather than mid-way
+  // through creating objects nothing ends up pointing at. 404/409 here
+  // means a genuinely brand new repo/branch with zero commits yet --
+  // GitHub's real signal for that case, not a failure to paper over --
+  // handled below as the very first commit, with no parent and nothing to
+  // merge into.
+  //
+  // This file-existence check runs UNCONDITIONALLY now, not just `if
+  // (sha)` -- a live incident (2026-09-28) confirmed a real, serious gap
+  // in the old `if (sha)` gating: a caller with no sha at all (never
+  // successfully pulled this exact file -- e.g. right after a user
+  // switches to a newly-configured repo, before anything has re-verified
+  // against it) skipped this check entirely and fell straight through to
+  // an unconditional overwrite of whatever tree currently exists at
+  // `path`. A push that landed with no sha silently clobbered real
+  // content another writer had put there moments earlier, with no
+  // conflict reported and no error surfaced -- "I've never seen this
+  // file" was being treated as "it doesn't exist", when it must mean "go
+  // check first". A missing sha is now treated exactly like a mismatched
+  // one: if the file exists, that's a conflict, full stop -- the caller
+  // needs to pull first, not assume.
   const commitRes = await call('GET', base + '/commits/' + encodeURIComponent(resolvedBranch));
   let parentCommitSha = null;
   let baseTreeSha = null;
   if (commitRes.ok) {
     parentCommitSha = commitRes.data.sha;
     baseTreeSha = commitRes.data.commit.tree.sha;
-    if (sha) {
-      const fileRes = await call('GET', buildGithubContentsUrl(repo, path, resolvedBranch));
-      if (fileRes.ok && fileRes.data && fileRes.data.sha !== sha) return { status: 'conflict' };
-      if (!fileRes.ok && fileRes.status !== 404) return { status: 'error', message: 'GitHub returned ' + fileRes.status };
+    const fileRes = await call('GET', buildGithubContentsUrl(repo, path, resolvedBranch));
+    if (fileRes.ok && fileRes.data) {
+      if (!sha || fileRes.data.sha !== sha) return { status: 'conflict' };
+    } else if (!fileRes.ok && fileRes.status !== 404) {
+      return { status: 'error', message: 'GitHub returned ' + fileRes.status };
     }
-  } else if (commitRes.status !== 404 && commitRes.status !== 409) {
+  } else if (commitRes.status === 404 || commitRes.status === 409) {
+    // A genuinely empty repo/branch (zero commits) can't be bootstrapped
+    // through the Git Data API at all -- confirmed live against a real,
+    // brand-new GitHub repo: POST /git/blobs itself returns 409 "Git
+    // Repository is empty." with no base commit to hang objects off of,
+    // not just the /commits lookup above. The Contents API's own PUT
+    // doesn't have this restriction (it's how GitHub's own UI creates a
+    // repo's first file) and is the documented way to create the very
+    // first commit; fall back to it for this one bootstrap case only.
+    // Ordinary 1MB inline-content limit applies here (unlikely to matter
+    // for a genuinely first commit) -- every push after this one goes
+    // through the normal Git Data API path below, uncapped.
+    // No branch on this URL -- unlike a GET's `?ref=`, the Contents API's
+    // PUT takes the target branch from the body's own `branch` field.
+    const bootstrapRes = await call('PUT', buildGithubContentsUrl(repo, path, null), {
+      message: commitMessage, content: base64FromText(text),
+      branch: resolvedBranch, committer: { name: authorName, email: authorEmail || 'unknown@example.invalid' }
+    });
+    if (!bootstrapRes.ok) return { status: 'error', message: bootstrapRes.networkError || ('GitHub returned ' + bootstrapRes.status) };
+    return { status: 'ok', sha: bootstrapRes.data.content.sha };
+  } else {
     return { status: 'error', message: commitRes.networkError || ('GitHub returned ' + commitRes.status) };
   }
 
@@ -3202,7 +3299,7 @@ function computeHeaderMeshTriangles(seed) {
 // deriveIssueValues/deriveFieldDefs already recompute everything fresh
 // from a flat list of entries, the same way parseJsonl's callers already
 // rely on for a .jsonl file.
-const WIGWAG_MATRIX_ENTRY_TYPE = 'dev.wigwag.entry';
+const WIGWAG_MATRIX_ENTRY_TYPE = 'work.wigwag.entry';
 const WIGWAG_MATRIX_EVENT_VERSION = 1;
 
 // Encodes one signed history/comment entry as a Matrix room event's
@@ -3239,33 +3336,6 @@ function entryFromMatrixEvent(rawEvent) {
     return { scope: content.scope, issueId: content.issueId || null, stream: content.stream || null, entry: content.entry, projectId: content.projectId || null };
   } catch (e) { return null; }
 }
-const WIGWAG_MATRIX_ENTRIES_TYPE = 'dev.wigwag.entries';
-// Bulk-transport optimization (tracker #149, live-reported): a one-time
-// bulk operation -- adopting a newly-imported project into a room, say --
-// sending one event per entry hit real homeserver rate limiting hard
-// enough to matter. Fewer, bigger requests sidesteps that at the source,
-// rather than only retrying through it (sendMatrixEntry's own
-// retry-with-backoff below still matters for this too, just less often).
-// Each item in `items` is exactly the per-entry content
-// matrixEventContentFromEntry already produces -- carried inside one
-// event's array instead of each being its own event. Never used for a
-// normal single incremental edit; one event per entry is already optimal
-// there (nothing to batch).
-function matrixEventContentFromEntries(items) {
-  return { v: WIGWAG_MATRIX_EVENT_VERSION, items: items.map(item => matrixEventContentFromEntry(item)) };
-}
-// Inverse of matrixEventContentFromEntries. Tolerant like
-// entryFromMatrixEvent: a malformed batch event, or one bad item inside an
-// otherwise-good batch, is skipped rather than throwing away (or crashing
-// on) the whole thing. Returns an array (possibly empty), not a single
-// item or null, since one batch event decodes to many entries.
-function entriesFromMatrixEvent(rawEvent) {
-  try {
-    const content = rawEvent && rawEvent.content;
-    if (!content || content.v !== WIGWAG_MATRIX_EVENT_VERSION || !Array.isArray(content.items)) return [];
-    return content.items.map(item => entryFromMatrixEvent({ content: item })).filter(Boolean);
-  } catch (e) { return []; }
-}
 // Project index (tracker f6b39bf0/#153, live-reported rate-limit incident):
 // a Matrix STATE event, not a timeline event -- deliberately the one
 // exception to this whole adapter's "no separate current-state event"
@@ -3286,7 +3356,7 @@ function entriesFromMatrixEvent(rawEvent) {
 // event type lives in discoverProjects (wigwag-matrix-host.html), not
 // here: a project already evidenced by real timeline entries is never
 // gated retroactively.
-const WIGWAG_MATRIX_PROJECT_STATE_TYPE = 'dev.wigwag.project';
+const WIGWAG_MATRIX_PROJECT_STATE_TYPE = 'work.wigwag.project';
 function matrixStateEventContentFromProjectCreation({ createdAt, createdBy }) {
   return { v: WIGWAG_MATRIX_EVENT_VERSION, createdAt: createdAt || null, createdBy: createdBy || null };
 }
@@ -3343,7 +3413,7 @@ function projectIdFromMatrixStateEvent(rawEvent) {
 // Megolm-encrypted room event like any other), so only a current room
 // member who can decrypt the manifest ever gets the key needed to decrypt
 // the blob.
-const WIGWAG_MATRIX_SNAPSHOT_TYPE = 'dev.wigwag.snapshot';
+const WIGWAG_MATRIX_SNAPSHOT_TYPE = 'work.wigwag.snapshot';
 // 64-bit counter within the 128-bit IV (the other 64 bits are the fixed
 // nonce half) -- the same split Matrix's own AES-CTR encrypted-media
 // convention uses.
@@ -3419,7 +3489,7 @@ function findLatestSnapshotManifests(rawEvents) {
 // org.matrix.msc4039.download_file) and must resolve to
 // `{status:'ok', bytes}` or an error shape; this never assumes which.
 // Returns `{items}` (the same {scope, issueId, stream, entry, projectId}
-// shape entryFromMatrixEvent/entriesFromMatrixEvent already produce) on
+// shape entryFromMatrixEvent already produces) on
 // full success, or null on ANY failure at all -- a failed download, a
 // hash/decrypt failure (see decryptSnapshotPayload), or malformed JSON
 // are all treated identically by the caller: this snapshot doesn't
@@ -3436,11 +3506,10 @@ async function resolveSnapshotPayload(manifest, { downloadFn }) {
     return { items };
   } catch (e) { return null; }
 }
-// Decodes a flat list of raw Matrix events (single dev.wigwag.entry OR
-// batch dev.wigwag.entries, any order, foreign/malformed events silently
-// skipped) into one flat array of {scope, issueId, stream, entry,
-// projectId} items -- the same shape entryFromMatrixEvent/
-// entriesFromMatrixEvent already produce, just uniformly flattened. Used
+// Decodes a flat list of raw Matrix events (work.wigwag.entry, any order,
+// foreign/malformed events silently skipped) into one flat array of
+// {scope, issueId, stream, entry, projectId} items -- the same shape
+// entryFromMatrixEvent already produces, just uniformly flattened. Used
 // wherever a caller needs to reason about individual entries directly
 // (e.g. filtering out ones a found snapshot already covers, see
 // createMatrixBridge's own connect() in wigwag-matrix-host.html) rather
@@ -3448,12 +3517,8 @@ async function resolveSnapshotPayload(manifest, { downloadFn }) {
 function decodeAllMatrixEntryItems(rawEvents) {
   const items = [];
   for (const rawEvent of (rawEvents || [])) {
-    if (rawEvent && rawEvent.type === WIGWAG_MATRIX_ENTRIES_TYPE) {
-      items.push(...entriesFromMatrixEvent(rawEvent));
-    } else {
-      const decoded = entryFromMatrixEvent(rawEvent);
-      if (decoded) items.push(decoded);
-    }
+    const decoded = entryFromMatrixEvent(rawEvent);
+    if (decoded) items.push(decoded);
   }
   return items;
 }
@@ -3501,17 +3566,34 @@ function hydrateProjectFromMatrixTimeline(rawEvents, opts) {
   const projectHistory = [];
   const issueHistoryById = new Map();
   const commentStreamsById = new Map();
+  // Live-reported (Tom, 2026-09-28): a widget reconnect (e.g. the host
+  // iframe remounting) can resend an already-committed entry -- its own
+  // in-memory "already sent" tracking is lost on remount, and a fresh
+  // room read can race a just-sent event's own homeserver round-trip, so
+  // the entry looks unsent again for a moment. Seen concretely with a
+  // legacy-backfill project-schema entry (deterministic id, content, and
+  // sortKey -- see backfillProjectHistory), appearing twice in the room's
+  // real timeline. Deduping here, on the read side, is the robust fix
+  // regardless of the exact resend cause: (id, sortKey) together, NOT id
+  // alone -- a genuine edit/redaction legitimately reuses the same id for
+  // its tombstone and its new live revision, distinguished only by a
+  // fresh sortKey (see e.g. wigwag.html's own commitEditComment, and
+  // patchSignature's identical (id, sortKey) matching convention). Two
+  // entries sharing both id AND sortKey can only be a duplicate delivery
+  // of the exact same revision, never two different real ones.
+  const seenEntryKeys = new Set();
+  const isDuplicateEntry = (entry) => {
+    const key = entry.id + ' ' + entry.sortKey;
+    if (seenEntryKeys.has(key)) return true;
+    seenEntryKeys.add(key);
+    return false;
+  };
   for (const rawEvent of (rawEvents || [])) {
-    // A batch event (bulk-transport optimization, tracker #149) expands
-    // into the same per-item shape a normal single-entry event decodes to
-    // -- everything below is blind to which shape an entry originally
-    // arrived as.
-    const decodedItems = (rawEvent && rawEvent.type === WIGWAG_MATRIX_ENTRIES_TYPE)
-      ? entriesFromMatrixEvent(rawEvent)
-      : [entryFromMatrixEvent(rawEvent)].filter(Boolean);
+    const decodedItems = [entryFromMatrixEvent(rawEvent)].filter(Boolean);
     for (const decoded of decodedItems) {
     const matchesThisProject = decoded.projectId ? decoded.projectId === projectId : includeUntagged;
     if (!matchesThisProject) continue;
+    if (isDuplicateEntry(decoded.entry)) continue;
     if (decoded.scope === 'project') { projectHistory.push(decoded.entry); continue; }
     const issueId = decoded.issueId;
     if (decoded.stream) {
@@ -3533,7 +3615,16 @@ function hydrateProjectFromMatrixTimeline(rawEvents, opts) {
   rawIssues.sort((a, b) => (earliestSortKey(a) - earliestSortKey(b)) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   rawIssues.forEach((issue, i) => { issue.num = i + 1; });
 
-  const ensuredFieldDefs = ensureCommentsFieldDef(fallbackFieldDefs || {});
+  // ensureTimestampFieldDefs matches hydrateProject's own unconditional
+  // guarantee (every project gets created/updated, same universal-field
+  // reasoning as ensureCommentsFieldDef right above it) -- without this,
+  // a room-history-only reader (no access to any device's own local doc)
+  // could never derive these two fields at all unless a REAL backfill
+  // entry for them happened to already exist in the room's raw timeline,
+  // which is exactly the assumption that made it unsafe to ever stop
+  // PUSHING those entries (see pushNewLocalEntries's own comment in
+  // wigwag-matrix-host.html) -- this closes that gap for good.
+  const ensuredFieldDefs = ensureTimestampFieldDefs(ensureCommentsFieldDef(fallbackFieldDefs || {}));
   const backfilledProjectHistory = backfillProjectHistory(ensuredFieldDefs, projectHistory);
   const fieldDefs = deriveFieldDefs(backfilledProjectHistory);
   const hydratedIssues = rawIssues.map(iss => hydrateIssue(iss, fieldDefs));
@@ -3577,7 +3668,7 @@ async function resolveMatrixRoomAlias({ fetchImpl, homeserverUrl, accessToken, a
 // own pullInitial in wigwag-matrix-host.html).
 async function fetchMatrixRoomEntries({ fetchImpl, homeserverUrl, accessToken, roomId, from, dir, limit }) {
   try {
-    // dev.wigwag.project (a state event) rides this same type-filtered
+    // work.wigwag.project (a state event) rides this same type-filtered
     // pull deliberately -- Matrix state events are also ordinary timeline
     // events at the position they were sent, so a project created WHILE
     // an already-connected viewer's poll is running is picked up here with
@@ -3585,7 +3676,7 @@ async function fetchMatrixRoomEntries({ fetchImpl, homeserverUrl, accessToken, r
     // reliable, order-independent discovery still comes from a real
     // current-state fetch (getMatrixRoomState), not from however far back
     // this pagination happens to reach.
-    const filter = encodeURIComponent(JSON.stringify({ types: [WIGWAG_MATRIX_ENTRY_TYPE, WIGWAG_MATRIX_ENTRIES_TYPE, WIGWAG_MATRIX_SNAPSHOT_TYPE, WIGWAG_MATRIX_PROJECT_STATE_TYPE] }));
+    const filter = encodeURIComponent(JSON.stringify({ types: [WIGWAG_MATRIX_ENTRY_TYPE, WIGWAG_MATRIX_SNAPSHOT_TYPE, WIGWAG_MATRIX_PROJECT_STATE_TYPE] }));
     let url = homeserverUrl.replace(/\/$/, '') + '/_matrix/client/v3/rooms/' + encodeURIComponent(roomId) + '/messages?dir=' + (dir || 'b') + '&filter=' + filter;
     if (from) url += '&from=' + encodeURIComponent(from);
     if (limit) url += '&limit=' + encodeURIComponent(limit);
@@ -3616,7 +3707,7 @@ async function fetchMatrixRoomEntries({ fetchImpl, homeserverUrl, accessToken, r
 // retry_after_ms when present, exponential backoff otherwise, same
 // txnId every attempt (a retried PUT is idempotent).
 const MATRIX_SEND_MAX_RETRIES = 6;
-// Shared by sendMatrixEntry, sendMatrixEntries, and (via an explicit
+// Shared by sendMatrixEntry and (via an explicit
 // stateKey) sendMatrixProjectStateEvent -- identical PUT-with-retry
 // mechanics regardless of event type/content shape, or whether this is a
 // timeline send (txnId-keyed) or a state write (state_key-keyed). A state
@@ -3667,14 +3758,6 @@ async function putMatrixEvent({ fetchImpl, homeserverUrl, accessToken, roomId, e
 async function sendMatrixEntry({ fetchImpl, homeserverUrl, accessToken, roomId, content, txnId }) {
   return putMatrixEvent({ fetchImpl, homeserverUrl, accessToken, roomId, eventType: WIGWAG_MATRIX_ENTRY_TYPE, content, txnId });
 }
-// Bulk-transport optimization (tracker #149) -- see
-// matrixEventContentFromEntries above. `content` is already the batch
-// shape (matrixEventContentFromEntries's own return value); this just
-// PUTs it as a dev.wigwag.entries event instead of dev.wigwag.entry,
-// reusing the exact same retry-on-429 mechanics.
-async function sendMatrixEntries({ fetchImpl, homeserverUrl, accessToken, roomId, content, txnId }) {
-  return putMatrixEvent({ fetchImpl, homeserverUrl, accessToken, roomId, eventType: WIGWAG_MATRIX_ENTRIES_TYPE, content, txnId });
-}
 // Same retry-on-429 mechanics, for the snapshot manifest event.
 async function sendMatrixSnapshotManifest({ fetchImpl, homeserverUrl, accessToken, roomId, content, txnId }) {
   return putMatrixEvent({ fetchImpl, homeserverUrl, accessToken, roomId, eventType: WIGWAG_MATRIX_SNAPSHOT_TYPE, content, txnId });
@@ -3693,7 +3776,7 @@ async function sendMatrixProjectStateEvent({ fetchImpl, homeserverUrl, accessTok
 // Current room state, in one call -- unlike /messages, this is never
 // paginated and never a function of how much unrelated history sits in
 // the room: it's always the complete, current answer. Used at connect
-// time to find every dev.wigwag.project state event reliably, regardless
+// time to find every work.wigwag.project state event reliably, regardless
 // of room chattiness (see that event type's own comment above).
 async function getMatrixRoomState({ fetchImpl, homeserverUrl, accessToken, roomId }) {
   try {
@@ -3772,7 +3855,7 @@ async function probeMatrixRoomAccess({ fetchImpl, homeserverUrl, accessToken, ro
 }
 
 const WigwagCoreExports = {
-  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, xlsxDateTimeSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, tokenizeFilterQuery, parseFilterQuery, issueMatchesFieldToken, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, COMMENT_READS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, formatNow, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, migrateLegacyComments, deriveFieldDefs, PROJECT_NAME_FIELD_ID, deriveProjectName, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, issueTimestampValue, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, MATRIX_USER_ID_RE, principalKind, identityPrincipal, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, evalRule, computeBoundValue, isFieldLocked, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, sortValue, computeSortSnapshot, issueCreatedAt,
+  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, xlsxDateTimeSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, tokenizeFilterQuery, parseFilterQuery, issueMatchesFieldToken, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, COMMENT_READS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, formatNow, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, migrateLegacyComments, deriveFieldDefs, effectiveFieldDefs, PROJECT_NAME_FIELD_ID, deriveProjectName, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, issueTimestampValue, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, MATRIX_USER_ID_RE, principalKind, identityPrincipal, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, evalRule, computeBoundValue, isFieldLocked, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, sortValue, computeSortSnapshot, issueCreatedAt,
   importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry,
   squashHistory, displayValueForHistory, buildSourceText, keyRegistryEncoder, rehydrateKeyRef, humanFileSize, parseJsonl, entryKey, commentKey, unionByKey, mergeCommentStreams, mergeIssuePair, computeIssueMerge, mergeHasRealChanges, computeFieldDefsMerge, computeDerivedChangeEntries,
   isPastedTextASingleUrl, wrapSelectionWithMarkdownLink,
@@ -3783,7 +3866,7 @@ const WigwagCoreExports = {
   MERGE_LOG_TYPE, MERGE_LOG_VERSION, mergeLogStorageKey, buildMergeRecord, buildMergeIssueSummary,
   patchMergeSummaryResultEntryId, fieldStillSafeToRevert, computeMergeRollbackEntries,
   buildMergePreviewViewModel, buildMergeFieldTimeline, mergeRecordNeedsAttention, buildMergeFieldDiffLines, mergeSettledValueView, buildMergeIssueTimeline, resolveFieldValueView,
-  WIGWAG_MATRIX_ENTRY_TYPE, WIGWAG_MATRIX_ENTRIES_TYPE, WIGWAG_MATRIX_EVENT_VERSION, matrixEventContentFromEntry, entryFromMatrixEvent, matrixEventContentFromEntries, entriesFromMatrixEvent, sendMatrixEntries, hydrateProjectFromMatrixTimeline,
+  WIGWAG_MATRIX_ENTRY_TYPE, WIGWAG_MATRIX_EVENT_VERSION, matrixEventContentFromEntry, entryFromMatrixEvent, hydrateProjectFromMatrixTimeline,
   WIGWAG_MATRIX_PROJECT_STATE_TYPE, matrixStateEventContentFromProjectCreation, projectIdFromMatrixStateEvent, sendMatrixProjectStateEvent, getMatrixRoomState,
   WIGWAG_MATRIX_SNAPSHOT_TYPE, encryptSnapshotPayload, decryptSnapshotPayload, matrixEventContentFromSnapshotManifest, snapshotManifestFromMatrixEvent, findLatestSnapshotManifests, resolveSnapshotPayload, decodeAllMatrixEntryItems, sendMatrixSnapshotManifest,
   resolveMatrixRoomAlias, fetchMatrixRoomEntries, sendMatrixEntry, probeMatrixRoomAccess,

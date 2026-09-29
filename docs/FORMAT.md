@@ -2,13 +2,14 @@
 
 > This document describes the format actually shipped by
 > `wigwag.html` — the single bundled app that is now
-> the real thing. `schema/tracker.schema.json` and `app/` are an earlier
-> prototype that explored a fuller lamport-clock event-sourcing design;
-> most of it (vector-clock-free pairwise merge, full-vs-squashed export)
-> carried over in spirit, but the concrete shapes below are what's actually
-> implemented, and the schema file predates both the identity/signing work
-> and the event-sourcing rework (see "History is the sole source of truth"
-> below) entirely. Treat this file, not that one, as current.
+> the real thing. An earlier prototype (a separate `schema/tracker.schema.json`
+> and multi-file `app/`) explored a fuller lamport-clock event-sourcing
+> design; most of it (vector-clock-free pairwise merge, full-vs-squashed
+> export) carried over in spirit, but the concrete shapes below are what's
+> actually implemented, and that old schema predated both the identity/
+> signing work and the event-sourcing rework (see "History is the sole
+> source of truth" below) entirely. It's been retired (repo-root `.junk/`,
+> untracked) rather than kept around half-relevant — this file is current.
 
 A tracker is a single `.jsonl` file: one JSON object per line,
 newline-delimited. No indentation-sensitive structure, so it diffs
@@ -613,6 +614,43 @@ below) — two independently computed values disagreeing isn't a human
 authorship overlap, it's just two computations that reconcile themselves
 the moment `applyLinkedRules` re-runs against the merged data.
 
+### A binding's rule is local-only — it never travels with the portable object
+
+`linkedSourceId`/`rule`/`ruleRows`/`ruleFallback` are **not** part of the
+portable `fieldDefs[colId]` shape that travels in `projectHistory`, JSONL
+export, paste-merge/import, or Matrix-room-scoped sync. Only `label`,
+`type`, `options`, and other rendering-relevant keys do. The rationale:
+a rule like `source.jira ? source.jira.status : 'Todo'` is only
+meaningful on a device with that person's own Jira/Salesforce/GitHub-proxy
+bridge configured — two different people (or a customer receiving a
+shared project) binding the same field to their own different systems
+must not clobber each other's binding.
+
+Binding data instead lives in its own localStorage key,
+`LOCAL_FIELD_BINDINGS_KEY` (`git_native_tracker_local_bindings_v1`),
+shaped `{ [projectId]: { [colId]: { linkedSourceId, rule, ruleRows,
+ruleFallback } } }` — per-device, per-project, per-field, deliberately
+outside every export/sync path (the same "never read by `persist()`/
+`buildSourceText()`" family as `COLUMN_WIDTHS_KEY`). `effectiveFieldDefs
+(fieldDefs, localFieldBindings)` overlays this local map onto the
+portable `fieldDefs` at evaluation/render time only — local wins by
+*presence* of a record for that field, never by recency, so an inbound
+file's legacy-embedded rule can never resurface over a field already
+migrated locally regardless of its `sortKey`.
+
+Editing a binding writes **only** to this local store — no
+`projectHistory` entry, since none of label/type/options changed. The
+resulting **computed value** is still logged as an ordinary
+`origin: "derived"` entry exactly as described above; only the rule
+itself stops being portable. One exception: if the field being edited
+still carries a *legacy* embedded rule (bound before this split existed,
+reconstructed by `deriveFieldDefs` from old history), the first local
+edit to it also writes one portable "cleanup" entry containing only the
+non-binding keys — this supersedes the old embedded rule in
+`deriveFieldDefs`'s latest-entry-wins reconstruction, so it stops leaking
+into future exports. A field that was never legacy-bound needs no such
+entry, and this only ever fires once per field.
+
 ## Identity and signing
 
 On first use, the app lazily generates an ECDSA P-256 keypair via WebCrypto
@@ -851,7 +889,7 @@ since an earlier version of this design was ("no changes to wigwag.html at
 all," via shared same-origin localStorage). That changed for a real
 reason: see below. Every wigwag history
 entry — issue-level, project-level, or a comment-stream entry — becomes
-one Matrix room (timeline) event of type `dev.wigwag.entry`:
+one Matrix room (timeline) event of type `work.wigwag.entry`:
 
 ```json
 {
@@ -891,7 +929,7 @@ a client sends should carry its real `projectId` going forward — omitting
 it is a legacy shape to keep *reading*, not one to keep *writing*.
 
 **Project index (tracker `f6b39bf0`, live-reported rate-limit incident):
-a Matrix STATE event, `dev.wigwag.project`, one per project
+a Matrix STATE event, `work.wigwag.project`, one per project
 (`state_key` is the project id itself, content carries no authoritative
 data — a project's name/fields/issues are still derived purely from its
 signed timeline entries, exactly as before).** Two independent reasons for
@@ -916,7 +954,7 @@ that — never a silently-synthesized default project the moment it's
 opened.
 
 **Backward compatibility.** Every room using wigwag before this event type
-existed has projects with no `dev.wigwag.project` state event at all —
+existed has projects with no `work.wigwag.project` state event at all —
 requiring one retroactively would silently orphan them. `discoverProjects`
 treats a project as existing if *either* a state event names it (the
 going-forward path) *or* it's already evidenced by real timeline entries
@@ -1145,14 +1183,14 @@ from ~60 room-event sends to ~2 (one media upload, one small manifest
 event), almost entirely avoiding the per-room event-send rate limiter this
 incident actually hit.
 
-- **`dev.wigwag.snapshot`** (manifest, one event, unchanged type):
+- **`work.wigwag.snapshot`** (manifest, one event, unchanged type):
   `{ v, projectId, snapshotId, cutoffSortKey, mxc, size, encryption }`.
   `cutoffSortKey` is the highest `sortKey` among included entries, so a
   "tail" pull afterward knows to fetch only entries newer than this.
   `mxc` is the uploaded blob's own `mxc://` URI; `encryption` is
   `{ key, iv, hashes: { sha256 }, v: "v2" }` — the same shape Element
   already uses for encrypted images/files in E2EE rooms (AES-CTR, a JWK
-  key, base64 iv/counter), not a bespoke format. `dev.wigwag.snapshot.chunk`
+  key, base64 iv/counter), not a bespoke format. `work.wigwag.snapshot.chunk`
   no longer exists.
 - The blob itself is the JSON-encoded array of `matrixEventContentFromEntry`
   outputs (exactly what a chunk's `items` used to hold, now all of them at
@@ -1177,7 +1215,7 @@ snapshot (or an unresolvable one) behaves exactly as it always has.
 latest manifest per project, resolves each (now a real per-project
 network round trip, unlike the old chunk-reassembly which came for free
 from already-pulled events), and re-wraps resolved items as synthetic
-`dev.wigwag.entry`-shaped events, combined with the "tail" — plain entries
+`work.wigwag.entry`-shaped events, combined with the "tail" — plain entries
 the pull also found, filtered to `sortKey > cutoffSortKey` for any project
 with a resolved snapshot. `discoverProjects`/`hydrateProjectFromMatrixTimeline`
 need **zero** changes for this — they can't tell a snapshot-sourced entry

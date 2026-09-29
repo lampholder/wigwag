@@ -6,6 +6,27 @@
 // Element/widget-embedded verification is Phase 3 and, per the plan,
 // can't be meaningfully automated here at all -- not attempted in this
 // file.
+//
+// Every [data-testid=tracker-name-title] / [data-testid=btn-switcher] /
+// [data-testid=btn-import-merge] query below uses .first() -- live-
+// diagnosed 2026-09-28 (tracker #153's 4a widget-body pass): right after a
+// fresh connect or project switch, an element gated by the isWidgetMode/
+// !isWidgetMode <sc-if> split briefly resolves to two DOM nodes (one still
+// showing literal unrendered "{{ ... }}" text) before settling to one a
+// few hundred ms later, tripping Playwright's strict-mode check if an
+// assertion lands in that window. Reproduces reliably in a tight polling
+// loop; which specific test/locator in a full run happens to land inside
+// the window varies -- btn-import-merge itself only actually flaked once,
+// in a full-suite run done while verifying tracker #156's follow-up fix,
+// but .first() is applied to every occurrence pre-emptively since the
+// underlying race is the same one already caught on the other two
+// testids. Root cause believed to be the template runtime failing to
+// atomically reconcile the isWidgetMode/!isWidgetMode branch switch on
+// first mount inside an iframe (a pre-existing hydration edge case made
+// newly visible once 4a made that branch's own DOM meaningfully bigger)
+// -- not fixable from application code; filed as tracker #157 (2aaea4e5)
+// for follow-up. .first() reliably resolves to the same element the DOM
+// settles on, confirmed via repeated live reproduction.
 const { test, expect } = require('@playwright/test');
 const h = require('./helpers');
 const core = require('../wigwag-core.js');
@@ -16,7 +37,7 @@ const ROOM_ID = '!room123:example.org';
 function entryEvent({ issueId, stream, entry, projectId }) {
   const content = { v: 1, scope: 'issue', issueId, stream: stream || null, entry };
   if (projectId) content.projectId = projectId;
-  return { type: 'dev.wigwag.entry', content };
+  return { type: 'work.wigwag.entry', content };
 }
 
 // A minimal, permanently-invisible legacy issue -- most pre-existing
@@ -47,7 +68,7 @@ function seedLegacyEntries() {
 test.describe('wigwag-matrix-host.html: connecting', () => {
   test('a successful connect to a genuinely empty room hides the setup form, shows the iframe, and shows "no projects yet" -- never a phantom default project (tracker f6b39bf0)', async ({ page }) => {
     h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'My Delivery Room', initialEntries: [] });
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
     await page.locator('#roomId').fill(ROOM_ID);
@@ -70,17 +91,17 @@ test.describe('wigwag-matrix-host.html: connecting', () => {
     h.mockMatrixClientApi(page, {
       homeserverUrl: HOMESERVER, roomId: ROOM_ID, initialEntries: [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Legacy issue', sortKey: 1, origin: 'authored' } })]
     }); // roomName omitted -> 404
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
     await page.locator('#roomId').fill(ROOM_ID);
     await page.locator('#connectBtn').click();
-    await expect(page.frameLocator('#frame').locator('[data-testid=tracker-name-title]')).toHaveText('Matrix room ' + ROOM_ID);
+    await expect(page.frameLocator('#frame').locator('[data-testid=tracker-name-title]').first()).toHaveText('Matrix room ' + ROOM_ID);
   });
 
   test('an account not joined to the room (403) surfaces a clear error and never shows the iframe', async ({ page }) => {
     h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, accessDenied: true });
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
     await page.locator('#roomId').fill(ROOM_ID);
@@ -92,7 +113,7 @@ test.describe('wigwag-matrix-host.html: connecting', () => {
 
   test('a token that can read/write the room but fails /account/whoami fails loudly instead of writing a placeholder identity', async ({ page }) => {
     h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, initialEntries: seedLegacyEntries(), whoamiFails: true });
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
     await page.locator('#roomId').fill(ROOM_ID);
@@ -105,7 +126,7 @@ test.describe('wigwag-matrix-host.html: connecting', () => {
 
   test('a #alias room id resolves to a real room id before connecting', async ({ page }) => {
     h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, initialEntries: seedLegacyEntries() });
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
     await page.locator('#roomId').fill('#my-alias:example.org');
@@ -121,7 +142,7 @@ test.describe('wigwag-matrix-host.html: connecting', () => {
         entryEvent({ issueId: 'i1', entry: { id: 'h2', field: 'status', value: 'todo', sortKey: 2, origin: 'authored' } }),
       ]
     });
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
     await page.locator('#roomId').fill(ROOM_ID);
@@ -139,7 +160,7 @@ test.describe('wigwag-matrix-host.html: the localStorage bridge', () => {
 
   async function connect(page, opts = {}) {
     const state = h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: seedLegacyEntries(), ...opts });
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
     await page.locator('#roomId').fill(ROOM_ID);
@@ -147,6 +168,52 @@ test.describe('wigwag-matrix-host.html: the localStorage bridge', () => {
     await expect(page.locator('#frame')).toBeVisible();
     return state;
   }
+
+  // Live-reported (Tom, 2026-09-28): a legacy-backfill entry (deterministic
+  // Created/Updated backfill) got pushed to the room repeatedly on
+  // reconnect ("loads of events"). Root-cause fix: these entries are now
+  // never pushed as real signed events at all, from any code path --
+  // they're fully derivable by any reader (see hydrateProjectFromMatrixTimeline's
+  // own unit test coverage in wigwag-core.test.js for the read-side half of
+  // this guarantee).
+  test('legacy-backfill entries (e.g. Created/Updated) are backfilled locally but never actually sent to the room, even across a real push cycle', async ({ page }) => {
+    const state = await connect(page);
+    const frame = page.frameLocator('#frame');
+    // seedLegacyEntries()'s one issue is immediately tombstoned
+    // (__deleted__) precisely so it never shows as a row -- see that
+    // function's own comment -- so the baseline here is 0, not 1.
+    await expect(frame.locator('[data-testid=row]')).toHaveCount(0);
+
+    // Confirm the backfill actually happened locally (created/updated
+    // exist and are populated) -- this isn't a test that just trivially
+    // passes because nothing triggered backfill in the first place.
+    // Project content lives only in the host's in-memory storage shim now
+    // (tracker f6b39bf0/#153), exposed for tests as window.__wigwagHostStorage
+    // -- real, unshimmed window.localStorage deliberately never sees it
+    // (see wigwag-matrix-host.html's own "In-memory storage shim" comment).
+    const doc = await page.evaluate(() => {
+      const store = window.__wigwagHostStorage;
+      const raw = Object.keys(store.dumpAll()).find(k => k.startsWith('git_native_tracker_v1:'));
+      return raw ? JSON.parse(store.getItem(raw)) : null;
+    });
+    expect(doc).toBeTruthy();
+    expect(doc.fieldDefs.created).toBeTruthy();
+    expect(doc.fieldDefs.updated).toBeTruthy();
+
+    // Trigger a real push cycle (any edit fires persist() -> storage-changed
+    // -> pushNewLocalEntries) and give it time to actually run.
+    await frame.locator('body').click();
+    await page.keyboard.down('Control');
+    await page.keyboard.press('Space');
+    await page.keyboard.up('Control');
+    await page.waitForTimeout(200);
+    await page.keyboard.type('Trigger a push cycle');
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(500);
+
+    const backfillSent = state.sentEntries.filter(c => c.entry.origin === 'legacy-backfill');
+    expect(backfillSent).toEqual([]);
+  });
 
   test('creating an issue inside the iframe sends its entries to the room', async ({ page }) => {
     const state = await connect(page);
@@ -180,6 +247,83 @@ test.describe('wigwag-matrix-host.html: the localStorage bridge', () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
+  // Tracker #158 (design handoff pending_and_failed.zip): pending/failed
+  // local-edit UI, end to end -- host outbox -> wigwag:pending-update ->
+  // iframe rendering, for both the grid cell and the slide-over field.
+  test('a local field edit shows as pending until confirmed, and as failed with a working Retry when the send errors', async ({ page }) => {
+    const state = await connect(page);
+    const frame = page.frameLocator('#frame');
+    await frame.locator('body').click();
+    await page.keyboard.down('Control');
+    await page.keyboard.press('Space');
+    await page.keyboard.up('Control');
+    await page.waitForTimeout(200);
+    await page.keyboard.type('Pending/failed test issue');
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(300);
+    await expect(frame.locator('[data-testid=row]')).toHaveCount(1);
+
+    const cell = frame.locator('[data-testid=field-cell][data-col=type]').first();
+    const dot = frame.locator('[data-testid=field-cell][data-col=type] [data-testid=pending-dot]');
+    await cell.click();
+    await page.waitForTimeout(150);
+    await cell.click();
+    await page.waitForTimeout(200);
+    await frame.locator('[data-testid=select-option]').nth(1).click();
+    await page.waitForTimeout(300);
+    await expect(dot).toBeVisible();
+
+    // Confirmed once the sent entry actually round-trips back through the
+    // room (the mock's send and poll endpoints are deliberately separate,
+    // same as every other test in this file that simulates "a remote
+    // entry arrived").
+    const firstSent = state.sentEntries[state.sentEntries.length - 1];
+    state.pendingEntries.push({ type: 'work.wigwag.entry', content: firstSent });
+    await expect(dot).toBeHidden({ timeout: 8000 });
+
+    // Now force the send itself to fail outright (not a 429 -- that has
+    // its own multi-second retry-with-backoff, a real and deliberate
+    // design choice for routine rate limiting, not what this is testing).
+    await page.route(new RegExp('^https://matrix\\.example\\.org/_matrix/client/v3/rooms/[^/]+/send/work\\.wigwag\\.entry/.*'), route =>
+      route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ errcode: 'M_UNKNOWN' }) }));
+    await cell.click();
+    await page.waitForTimeout(150);
+    await cell.click();
+    await page.waitForTimeout(200);
+    await frame.locator('[data-testid=select-option]').nth(2).click();
+    await page.waitForTimeout(500);
+    await expect(dot).toBeVisible();
+
+    await frame.locator('[data-testid=title-cell]').first().locator('span').first().click();
+    await page.waitForTimeout(300);
+    const caption = frame.locator('[data-testid=slideover-field][data-col=type] [data-testid=pending-caption]');
+    await expect(caption).toContainText('Failed to sync');
+    const retryBtn = frame.locator('[data-testid=slideover-field][data-col=type] [data-testid=pending-retry]');
+    await expect(retryBtn).toBeVisible();
+
+    // A real infinite loop was caught here during development: persist()
+    // unconditionally writes on every render, and the room-mode storage
+    // shim unconditionally posts wigwag:local-write on every write --
+    // marking an entry failed is itself a state change, which persists,
+    // which (without the fix) retried the same failed entry forever. This
+    // wait is deliberately generous specifically to catch a regression of
+    // that loop (it would still be spamming failed sends well past this
+    // point).
+    await page.waitForTimeout(1500);
+    const failedSendAttempts = state.sentEntries.length;
+    await page.waitForTimeout(1500);
+    expect(state.sentEntries.length).toBe(failedSendAttempts); // no automatic retry storm
+
+    // Retry: explicit, and only now does the send succeed again.
+    await page.unroute(new RegExp('^https://matrix\\.example\\.org/_matrix/client/v3/rooms/[^/]+/send/work\\.wigwag\\.entry/.*'));
+    await retryBtn.click();
+    await page.waitForTimeout(500);
+    await expect(caption).toContainText('Pending');
+    const retriedSent = state.sentEntries[state.sentEntries.length - 1];
+    state.pendingEntries.push({ type: 'work.wigwag.entry', content: retriedSent });
+    await expect(frame.locator('[data-testid=slideover-field][data-col=type] [data-testid=pending-dot]')).toBeHidden({ timeout: 8000 });
+  });
+
   test('a new remote entry arriving on a later poll is merged into the iframe live, without wiping local state', async ({ page, browserName }) => {
     test.skip(browserName !== 'chromium', 'timer-dependent, one browser is enough to prove the mechanism');
     const state = await connect(page);
@@ -204,19 +348,19 @@ test.describe('wigwag-matrix-host.html: the localStorage bridge', () => {
     test.skip(browserName !== 'chromium', 'timer-dependent, one browser is enough to prove the mechanism');
     const state = await connect(page);
     const frame = page.frameLocator('#frame');
-    await frame.locator('[data-testid=btn-switcher]').click();
+    await frame.locator('[data-testid=btn-switcher]').first().click();
     await expect(frame.locator('[data-testid=switcher-project-row]')).toHaveCount(1);
-    await frame.locator('[data-testid=btn-switcher]').click(); // close it again
+    await frame.locator('[data-testid=btn-switcher]').first().click(); // close it again
 
     state.pendingEntries.push(
-      { type: 'dev.wigwag.entry', content: { v: 1, scope: 'project', projectId: 'mid-session-import', entry: { id: 'mph1', field: '__project_name__', value: 'Imported Mid-Session', sortKey: 1, origin: 'authored' } } },
+      { type: 'work.wigwag.entry', content: { v: 1, scope: 'project', projectId: 'mid-session-import', entry: { id: 'mph1', field: '__project_name__', value: 'Imported Mid-Session', sortKey: 1, origin: 'authored' } } },
       entryEvent({ issueId: 'mi1', entry: { id: 'mh1', field: 'title', value: 'Mid-session issue', sortKey: 2, origin: 'authored' }, projectId: 'mid-session-import' })
     );
 
     await expect(async () => {
-      await frame.locator('[data-testid=btn-switcher]').click();
+      await frame.locator('[data-testid=btn-switcher]').first().click();
       await expect(frame.locator('[data-testid=switcher-project-row]')).toHaveCount(2);
-      await frame.locator('[data-testid=btn-switcher]').click();
+      await frame.locator('[data-testid=btn-switcher]').first().click();
     }).toPass({ timeout: 8000 }); // next 5s poll tick picks it up, no reconnect needed
   });
 
@@ -225,7 +369,7 @@ test.describe('wigwag-matrix-host.html: the localStorage bridge', () => {
     const milestonesKey = 'git_native_tracker_milestones_v1';
     const projectCountAfterFirst = await page.evaluate((key) => JSON.parse(window.__wigwagHostStorage.getItem(key)).milestones.length, milestonesKey);
 
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: seedLegacyEntries() });
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
@@ -235,6 +379,43 @@ test.describe('wigwag-matrix-host.html: the localStorage bridge', () => {
 
     const projectCountAfterSecond = await page.evaluate((key) => JSON.parse(window.__wigwagHostStorage.getItem(key)).milestones.length, milestonesKey);
     expect(projectCountAfterSecond).toBe(projectCountAfterFirst);
+  });
+
+  // Live-reported (Tom): hidden-field state didn't survive a reload in
+  // Room Scoped Widget Mode, even though column ORDER (a sibling cosmetic
+  // pref) did. Root cause: hiddenFieldIds used to be embedded INSIDE the
+  // per-project doc itself, which lives under docKey(...) -- exactly the
+  // key this mode's storage shim treats as in-memory-only "room content",
+  // wiped on every reconnect (see the REMOVED test's own comment just
+  // above for that same "no persistent local cache, ever" design point).
+  // columnOrder/columnWidths/sort have always lived in their own separate,
+  // real (unshimmed) localStorage keys, so they correctly survived --
+  // hiddenFieldIds was the one cosmetic pref that had accidentally ridden
+  // along inside the shimmed doc instead. Fixed by giving it its own real
+  // key (HIDDEN_FIELDS_KEY), same pattern as its siblings.
+  test('hidden-field state survives a full reconnect, unlike the room-content doc it used to live inside', async ({ page }) => {
+    const state = await connect(page);
+    const frame = page.frameLocator('#frame');
+    await expect(frame.locator('[data-testid=row]')).toHaveCount(0); // seedLegacyEntries' seed issue is tombstoned
+
+    await frame.locator('[data-testid=col-header][data-col="type"]').last().locator('span', { hasText: '⋯' }).click();
+    await page.waitForTimeout(200);
+    await frame.getByText('Hide field', { exact: true }).click();
+    await page.waitForTimeout(300);
+    await expect(frame.locator('[data-testid=col-header][data-col="type"]')).toHaveCount(0);
+
+    // A real reconnect -- full page navigation, exactly like the
+    // "reconnecting to the same room" test just above, not just a poll tick.
+    await page.goto('/bridges/wigwag-matrix-host.html');
+    h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: seedLegacyEntries() });
+    await page.locator('#homeserverUrl').fill(HOMESERVER);
+    await page.locator('#accessToken').fill('tok123');
+    await page.locator('#roomId').fill(ROOM_ID);
+    await page.locator('#connectBtn').click();
+    await expect(page.locator('#frame')).toBeVisible();
+
+    const frame2 = page.frameLocator('#frame');
+    await expect(frame2.locator('[data-testid=col-header][data-col="type"]')).toHaveCount(0);
   });
 
   // REMOVED (tracker f6b39bf0/#153, the storage-shim rework): this test's
@@ -264,7 +445,7 @@ test.describe('wigwag-matrix-host.html: the localStorage bridge', () => {
 test.describe('wigwag-matrix-host.html: Room Scoped Widget Mode never persists content locally', () => {
   test('after a full create/edit/comment session, the iframe\'s own real localStorage holds zero project/doc content', async ({ page }) => {
     const state = h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: seedLegacyEntries() });
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
     await page.locator('#roomId').fill(ROOM_ID);
@@ -317,7 +498,7 @@ test.describe('wigwag-matrix-host.html: widget-embedded transport', () => {
     const widget = page.frameLocator('#widget');
     await expect(widget.locator('#setup')).toBeHidden();
     await expect(widget.locator('#frame')).toBeVisible();
-    await expect(widget.frameLocator('#frame').locator('[data-testid=tracker-name-title]')).toHaveText('Widget Room');
+    await expect(widget.frameLocator('#frame').locator('[data-testid=tracker-name-title]').first()).toHaveText('Widget Room');
   });
 
   test('a widget with no $matrix_room_id in its URL surfaces a clear, VISIBLE error instead of a blank screen', async ({ page }) => {
@@ -378,7 +559,7 @@ test.describe('wigwag-matrix-host.html: widget-embedded transport', () => {
       JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, id: 'widget-snapshot-proj', name: 'Widget Snapshot Project' }),
       JSON.stringify({ type: 'issue', id: 'wsi1', num: 1, fieldRefs: {}, values: { title: 'Widget-imported issue' }, comments: [], history: [] })
     ].join('\n');
-    await frame.locator('[data-testid=btn-import-merge]').click();
+    await frame.locator('[data-testid=btn-import-merge]').first().click();
     await page.waitForTimeout(150);
     const [fc] = await Promise.all([
       page.waitForEvent('filechooser'),
@@ -430,7 +611,7 @@ test.describe('wigwag-matrix-host.html: widget-embedded transport', () => {
     await page.waitForTimeout(500);
 
     const stateAfterCreate = await page.evaluate(() => window.__state);
-    const stateEvent = stateAfterCreate.sentStateEvents.find(e => e.type === 'dev.wigwag.project');
+    const stateEvent = stateAfterCreate.sentStateEvents.find(e => e.type === 'work.wigwag.project');
     expect(stateEvent).toBeTruthy();
     const manifest = stateAfterCreate.sentEntries.find(c => c.mxc);
     expect(manifest).toBeTruthy();
@@ -444,15 +625,15 @@ test.describe('wigwag-matrix-host.html: widget-embedded transport', () => {
     await h.gotoFakeWidgetHost(page, {
       roomId: ROOM_ID, roomName: 'Widget Reconnect Room',
       initialEntries: [
-        { type: 'dev.wigwag.project', state_key: stateEvent.state_key, content: stateEvent.content },
-        { type: 'dev.wigwag.snapshot', content: manifest }
+        { type: 'work.wigwag.project', state_key: stateEvent.state_key, content: stateEvent.content },
+        { type: 'work.wigwag.snapshot', content: manifest }
       ],
       seedMediaBlobs: [{ mxc: blob.mxc, bytes: Array.from(Object.values(blob.bytes)) }]
     });
     const widget2 = page.frameLocator('#widget');
     await expect(widget2.locator('#frame')).toBeVisible();
     const frame2 = widget2.frameLocator('#frame');
-    await expect(frame2.locator('[data-testid=tracker-name-title]')).toHaveText('Untitled Project 1');
+    await expect(frame2.locator('[data-testid=tracker-name-title]').first()).toHaveText('Untitled Project 1');
   });
 
   test('a remote entry arriving via read_events on a later poll is merged into the widget-embedded iframe live', async ({ page, browserName }) => {
@@ -507,8 +688,8 @@ test.describe('wigwag-matrix-host.html: widget-embedded transport', () => {
     await expect(page.frameLocator('#widget').locator('#frame')).toBeVisible();
     const caps = await page.evaluate(() => window.__state.requestedCapabilities);
     expect(caps).toEqual(expect.arrayContaining([
-      'org.matrix.msc2762.receive.event:dev.wigwag.entry',
-      'org.matrix.msc2762.send.event:dev.wigwag.entry',
+      'org.matrix.msc2762.receive.event:work.wigwag.entry',
+      'org.matrix.msc2762.send.event:work.wigwag.entry',
       'org.matrix.msc2762.timeline:!widgetroom:example.org'
     ]));
   });
@@ -645,7 +826,7 @@ test.describe('wigwag-matrix-host.html: multiple projects in one room', () => {
       homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
       initialEntries: [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Untagged issue', sortKey: 1, origin: 'authored' } })] // no projectId at all
     });
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
     await page.locator('#roomId').fill(ROOM_ID);
@@ -667,7 +848,7 @@ test.describe('wigwag-matrix-host.html: multiple projects in one room', () => {
         entryEvent({ issueId: 'i2', entry: { id: 'h2', field: 'title', value: 'In project B', sortKey: 2, origin: 'authored' }, projectId: 'proj-b' }),
       ]
     });
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
     await page.locator('#roomId').fill(ROOM_ID);
@@ -679,7 +860,7 @@ test.describe('wigwag-matrix-host.html: multiple projects in one room', () => {
     // Neither project is the room's own legacy default (no untagged
     // entries exist) -- whichever opens first, both must already be
     // listed in the switcher, with no prompt ever shown.
-    await frame.locator('[data-testid=btn-switcher]').click();
+    await frame.locator('[data-testid=btn-switcher]').first().click();
     const rows = frame.locator('[data-testid=switcher-project-row]');
     await expect(rows).toHaveCount(2);
 
@@ -697,7 +878,7 @@ test.describe('wigwag-matrix-host.html: multiple projects in one room', () => {
         entryEvent({ issueId: 'i2', entry: { id: 'h2', field: 'title', value: 'In a real other project', sortKey: 2, origin: 'authored' }, projectId: 'proj-other' }),
       ]
     });
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
     await page.locator('#roomId').fill(ROOM_ID);
@@ -712,7 +893,7 @@ test.describe('wigwag-matrix-host.html: multiple projects in one room', () => {
 
     // The other, explicitly-tagged project is ALSO already bootstrapped
     // and switchable -- untagged entries must never leak into it.
-    await frame.locator('[data-testid=btn-switcher]').click();
+    await frame.locator('[data-testid=btn-switcher]').first().click();
     const rows = frame.locator('[data-testid=switcher-project-row]');
     await expect(rows).toHaveCount(2);
     await rows.filter({ hasText: 'proj-other'.slice(-8) }).click();
@@ -727,7 +908,7 @@ test.describe('wigwag-matrix-host.html: multiple projects in one room', () => {
   // history wins" mechanism a field definition already uses.
   test('a discovered project with its own rename entry shows its real name in the switcher, not a placeholder', async ({ page }) => {
     const namedProjectEntry = {
-      type: 'dev.wigwag.entry',
+      type: 'work.wigwag.entry',
       content: { v: 1, scope: 'project', projectId: 'proj-named', entry: { id: 'pn1', field: '__project_name__', value: 'Real Project Name', sortKey: 1, origin: 'authored' } }
     };
     h.mockMatrixClientApi(page, {
@@ -738,7 +919,7 @@ test.describe('wigwag-matrix-host.html: multiple projects in one room', () => {
         entryEvent({ issueId: 'i2', entry: { id: 'h2', field: 'title', value: 'In the unnamed project', sortKey: 3, origin: 'authored' }, projectId: 'proj-unnamed' }),
       ]
     });
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
     await page.locator('#roomId').fill(ROOM_ID);
@@ -747,7 +928,7 @@ test.describe('wigwag-matrix-host.html: multiple projects in one room', () => {
     await page.waitForTimeout(300);
 
     const frame = page.frameLocator('#frame');
-    await frame.locator('[data-testid=btn-switcher]').click();
+    await frame.locator('[data-testid=btn-switcher]').first().click();
     const rows = frame.locator('[data-testid=switcher-project-row]');
     await expect(rows).toHaveCount(2);
     await expect(rows.filter({ hasText: 'Real Project Name' })).toHaveCount(1);
@@ -777,7 +958,7 @@ test.describe('wigwag-matrix-host.html: multiple projects in one room', () => {
         entryEvent({ issueId: 'i2', entry: { id: 'h2', field: 'title', value: 'In the other project', sortKey: 2, origin: 'authored' }, projectId: 'proj-other' }),
       ]
     });
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
     await page.locator('#roomId').fill(ROOM_ID);
@@ -786,22 +967,22 @@ test.describe('wigwag-matrix-host.html: multiple projects in one room', () => {
     await page.waitForTimeout(300);
 
     const frame = page.frameLocator('#frame');
-    await frame.locator('[data-testid=btn-switcher]').click();
+    await frame.locator('[data-testid=btn-switcher]').first().click();
     const rows = frame.locator('[data-testid=switcher-project-row]');
     await expect(rows.filter({ hasText: 'proj-other'.slice(-8) })).toHaveCount(1); // placeholder label, no real name yet
-    await frame.locator('[data-testid=btn-switcher]').click(); // close it again -- never opened proj-other
+    await frame.locator('[data-testid=btn-switcher]').first().click(); // close it again -- never opened proj-other
 
     // Someone else renames proj-other -- arrives on this viewer's next
     // poll, as a real signed project-scope entry, same as any other edit.
     state.pendingEntries.push({
-      type: 'dev.wigwag.entry',
+      type: 'work.wigwag.entry',
       content: { v: 1, scope: 'project', projectId: 'proj-other', entry: { id: 'rn1', field: '__project_name__', value: 'Renamed By Someone Else', sortKey: 3, origin: 'authored' } }
     });
 
     await expect(async () => {
-      await frame.locator('[data-testid=btn-switcher]').click();
+      await frame.locator('[data-testid=btn-switcher]').first().click();
       await expect(frame.locator('[data-testid=switcher-project-row]').filter({ hasText: 'Renamed By Someone Else' })).toHaveCount(1);
-      await frame.locator('[data-testid=btn-switcher]').click();
+      await frame.locator('[data-testid=btn-switcher]').first().click();
     }).toPass({ timeout: 8000 }); // next 5s poll tick picks it up, no need to ever open the project
 
     // The local switcher cache itself was actually updated, not just this
@@ -812,14 +993,14 @@ test.describe('wigwag-matrix-host.html: multiple projects in one room', () => {
 });
 
 // Tracker f6b39bf0, live-reported rate-limit incident: project creation is
-// now a moderator-gated Matrix state event (dev.wigwag.project), not an
+// now a moderator-gated Matrix state event (work.wigwag.project), not an
 // unconditional local-then-bridged action. Room Scoped Widget Mode has a
 // real "no projects yet" state instead of always synthesizing a default
 // project the moment a room is empty.
 test.describe('wigwag-matrix-host.html: moderator-gated project creation', () => {
   test('a moderator\'s "+ New project" from the empty-room screen succeeds and shows the new project', async ({ page }) => {
     h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: [] });
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
     await page.locator('#roomId').fill(ROOM_ID);
@@ -830,12 +1011,12 @@ test.describe('wigwag-matrix-host.html: moderator-gated project creation', () =>
     await frame.locator('[data-testid=btn-create-first-room-project]').click();
     await page.waitForTimeout(300);
     await expect(frame.locator('[data-testid=room-no-projects]')).toBeHidden();
-    await expect(frame.locator('[data-testid=tracker-name-title]')).toBeVisible();
+    await expect(frame.locator('[data-testid=tracker-name-title]').first()).toBeVisible();
   });
 
   test('a non-moderator\'s attempt to create the first project is rejected (403), rolled back locally, and shown as a real error -- never silently dropped', async ({ page }) => {
     h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: [], projectCreationForbidden: true });
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
     await page.locator('#roomId').fill(ROOM_ID);
@@ -868,7 +1049,7 @@ test.describe('wigwag-matrix-host.html: moderator-gated project creation', () =>
   // the room has zero projects to match against.
   test('a moderator can paste-receive a project from the empty-room screen, same underlying import path as the main app', async ({ page }) => {
     h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: [] });
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
     await page.locator('#roomId').fill(ROOM_ID);
@@ -895,6 +1076,62 @@ test.describe('wigwag-matrix-host.html: moderator-gated project creation', () =>
     await expect(frame.locator('[data-testid=row]')).toContainText('Received issue');
   });
 
+  // Live-reported (Tom, 2026-09-28): a fresh bulk import correctly sent
+  // exactly one snapshot (the earlier duplicate-snapshot race fixed above),
+  // but every imported item stayed stuck showing 'pending' in the UI
+  // indefinitely. Root cause: the outbox's normal confirmation path
+  // (clearConfirmedFromOutbox) only clears an entry once it appears in a
+  // freshly-recomputed remoteDoc, which is derived purely from the room's
+  // plain work.wigwag.entry timeline -- a snapshot's actual content lives
+  // in an encrypted media blob nothing re-resolves back into that timeline
+  // for an already-bridged project's own ongoing reconcile, so the pending
+  // state could never clear within the same session. Fixed by having a
+  // successful snapshot upload directly confirm its own items -- but via a
+  // distinct 'confirmed-via-snapshot' outbox status, NOT by deleting them:
+  // deleting made them indistinguishable from "never attempted" to the
+  // very next send-decision check, causing an immediate, separate resend
+  // of the exact items the snapshot just delivered (caught live while
+  // building this fix, before it reached this test).
+  test('a fresh bulk import via the snapshot path clears pending state immediately, with no follow-up resend', async ({ page }) => {
+    await page.addInitScript(() => { window.__wigwagTestTracePendingUpdates = []; });
+    const state = h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: [] });
+    await page.goto('/bridges/wigwag-matrix-host.html');
+    await page.locator('#homeserverUrl').fill(HOMESERVER);
+    await page.locator('#accessToken').fill('tok123');
+    await page.locator('#roomId').fill(ROOM_ID);
+    await page.locator('#connectBtn').click();
+    const frame = page.frameLocator('#frame');
+    await expect(frame.locator('[data-testid=room-no-projects]')).toBeVisible();
+
+    await frame.locator('[data-testid=btn-receive-first-room-project]').click();
+    await expect(frame.locator('[data-testid=room-no-projects-receive-modal]')).toBeVisible();
+    const issueLines = [];
+    for (let i = 1; i <= 30; i++) {
+      issueLines.push(JSON.stringify({ type: 'issue', id: 'ri' + i, num: i, fieldRefs: {}, values: { title: 'Received issue ' + i, status: 'todo' }, comments: [], history: [] }));
+    }
+    const pastedJsonl = [
+      JSON.stringify({ type: 'fields', fields: {
+        title: { label: 'Issue', type: 'text' },
+        status: { label: 'Status', type: 'select', options: [{ id: 'todo', label: 'Todo', color: 'gray' }, { id: 'done', label: 'Done', color: 'green' }] }
+      }, id: 'received-proj-1', name: 'Received Project' }),
+      ...issueLines
+    ].join('\n');
+    await frame.locator('[data-testid=room-no-projects-receive-textarea]').fill(pastedJsonl);
+    await frame.locator('[data-testid=btn-submit-room-no-projects-receive]').click();
+    await expect(frame.locator('[data-testid=row]')).toHaveCount(30);
+    await page.waitForTimeout(3000); // long enough for a follow-up resend, if the bug regressed, to actually happen
+
+    const trace = await page.evaluate(() => window.__wigwagTestTracePendingUpdates);
+    expect(trace.length).toBeGreaterThan(0);
+    expect(Object.keys(trace[0].issues).length).toBeGreaterThan(0); // the import really did mark things pending first
+    const lastSummary = trace[trace.length - 1];
+    expect(lastSummary.issues).toEqual({});
+    expect(lastSummary.project).toEqual({});
+
+    expect(state.sentSnapshotManifests.length).toBe(1);
+    expect(state.sentEntries.length).toBe(0);
+  });
+
   // Live-reported (Tom): two accounts viewing the SAME room-mode project
   // disagreed on its name -- one saw the real "Untitled Project 1", the
   // other fell back to "Untitled" then "Project <id tail>". Root cause:
@@ -907,7 +1144,7 @@ test.describe('wigwag-matrix-host.html: moderator-gated project creation', () =>
   // second account).
   test('a project created via "+ New project" has a real name a totally fresh session can derive, not just a local-only label', async ({ page }) => {
     h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: [] });
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
     await page.locator('#roomId').fill(ROOM_ID);
@@ -916,7 +1153,7 @@ test.describe('wigwag-matrix-host.html: moderator-gated project creation', () =>
     await expect(frame.locator('[data-testid=room-no-projects]')).toBeVisible();
     await frame.locator('[data-testid=btn-create-first-room-project]').click();
     await page.waitForTimeout(300);
-    await expect(frame.locator('[data-testid=tracker-name-title]')).toHaveText('Untitled Project 1');
+    await expect(frame.locator('[data-testid=tracker-name-title]').first()).toHaveText('Untitled Project 1');
     await page.waitForTimeout(800); // let the new name-history entry actually push to the room
 
     // A totally fresh session, reconnecting from scratch -- has never
@@ -929,7 +1166,7 @@ test.describe('wigwag-matrix-host.html: moderator-gated project creation', () =>
     await page.locator('#roomId').fill(ROOM_ID);
     await page.locator('#connectBtn').click();
     frame = page.frameLocator('#frame');
-    await expect(frame.locator('[data-testid=tracker-name-title]')).toHaveText('Untitled Project 1');
+    await expect(frame.locator('[data-testid=tracker-name-title]').first()).toHaveText('Untitled Project 1');
   });
 
   // Live-reported (Tom, tracker f6b39bf0), the follow-up once the id/
@@ -950,7 +1187,7 @@ test.describe('wigwag-matrix-host.html: moderator-gated project creation', () =>
       homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
       initialEntries: [], seedMediaBlobs: [mediaBlob]
     });
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
     await page.locator('#roomId').fill(ROOM_ID);
@@ -962,12 +1199,12 @@ test.describe('wigwag-matrix-host.html: moderator-gated project creation', () =>
     // event plus the one snapshot manifest that carries its ENTIRE
     // history, exactly what a real bulk adopt sends.
     state.pendingEntries.push(
-      { type: 'dev.wigwag.project', state_key: 'mid-session-snap-project', content: { v: 1, createdAt: new Date().toISOString(), createdBy: '@someone-else:example.org' } },
+      { type: 'work.wigwag.project', state_key: 'mid-session-snap-project', content: { v: 1, createdAt: new Date().toISOString(), createdBy: '@someone-else:example.org' } },
       manifestEvent
     );
 
     await expect(frame.locator('[data-testid=room-no-projects]')).toBeHidden({ timeout: 8000 });
-    await expect(frame.locator('[data-testid=tracker-name-title]')).toHaveText('Snapshot-Only Mid-Session Project');
+    await expect(frame.locator('[data-testid=tracker-name-title]').first()).toHaveText('Snapshot-Only Mid-Session Project');
   });
 
   // Live-reported (Tom, tracker f6b39bf0): a viewer who was ALREADY
@@ -984,7 +1221,7 @@ test.describe('wigwag-matrix-host.html: moderator-gated project creation', () =>
   test('a viewer already sitting on the empty-room screen auto-switches into a project that appears via the live poll, not stuck on "Untitled" with no id', async ({ page, browserName }) => {
     test.skip(browserName !== 'chromium', 'timer-dependent, one browser is enough to prove the mechanism');
     const state = h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: [] });
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
     await page.locator('#roomId').fill(ROOM_ID);
@@ -997,12 +1234,12 @@ test.describe('wigwag-matrix-host.html: moderator-gated project creation', () =>
     // screen.
     const otherProjectId = 'mid-session-first-project';
     state.pendingEntries.push(
-      { type: 'dev.wigwag.project', state_key: otherProjectId, content: { v: 1, createdAt: new Date().toISOString(), createdBy: '@someone-else:example.org' } },
-      { type: 'dev.wigwag.entry', content: { v: 1, scope: 'project', projectId: otherProjectId, entry: { id: 'mp1', field: '__project_name__', value: "Someone Else's Project", sortKey: 1, origin: 'authored' } } }
+      { type: 'work.wigwag.project', state_key: otherProjectId, content: { v: 1, createdAt: new Date().toISOString(), createdBy: '@someone-else:example.org' } },
+      { type: 'work.wigwag.entry', content: { v: 1, scope: 'project', projectId: otherProjectId, entry: { id: 'mp1', field: '__project_name__', value: "Someone Else's Project", sortKey: 1, origin: 'authored' } } }
     );
 
     await expect(frame.locator('[data-testid=room-no-projects]')).toBeHidden({ timeout: 8000 });
-    await expect(frame.locator('[data-testid=tracker-name-title]')).toHaveText("Someone Else's Project");
+    await expect(frame.locator('[data-testid=tracker-name-title]').first()).toHaveText("Someone Else's Project");
 
     // The project-id-in-slide-over feature (also live-reported: "appears
     // to have no id when opened") must show the REAL id, not an empty
@@ -1028,7 +1265,7 @@ test.describe('wigwag-matrix-host.html: moderator-gated project creation', () =>
   // the local write).
   test('a project created via "+ New project" has its name baked into the FIRST snapshot pushed, not a separate later write', async ({ page }) => {
     const state = h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: [] });
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
     await page.locator('#roomId').fill(ROOM_ID);
@@ -1059,7 +1296,7 @@ test.describe('wigwag-matrix-host.html: moderator-gated project creation', () =>
   // the room's genuinely-legacy untagged-entries default one.
   test('a project created via "+ New project" never sprouts fields from the built-in default set it never actually had', async ({ page }) => {
     h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: [] });
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
     await page.locator('#roomId').fill(ROOM_ID);
@@ -1092,9 +1329,9 @@ test.describe('wigwag-matrix-host.html: moderator-gated project creation', () =>
   test('an existing room\'s legacy project (grandfathered, predates this feature) is discovered without needing a state event', async ({ page }) => {
     h.mockMatrixClientApi(page, {
       homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
-      initialEntries: [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Pre-existing issue', sortKey: 1, origin: 'authored' } })] // untagged, no dev.wigwag.project event anywhere
+      initialEntries: [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Pre-existing issue', sortKey: 1, origin: 'authored' } })] // untagged, no work.wigwag.project event anywhere
     });
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
     await page.locator('#roomId').fill(ROOM_ID);
@@ -1105,7 +1342,7 @@ test.describe('wigwag-matrix-host.html: moderator-gated project creation', () =>
   });
 
   test('the project index is found via a real current-state fetch, not by how far a timeline pull happens to reach', async ({ page }) => {
-    // messagesReturnsProjectStateEvents: false -- the dev.wigwag.project
+    // messagesReturnsProjectStateEvents: false -- the work.wigwag.project
     // event exists ONLY in room state (getMatrixRoomState), never in the
     // /messages timeline this test's connect() actually pulls from. If
     // discovery only ever scanned the timeline (the old mechanism), this
@@ -1114,7 +1351,7 @@ test.describe('wigwag-matrix-host.html: moderator-gated project creation', () =>
     const state = h.mockMatrixClientApi(page, {
       homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: [], messagesReturnsProjectStateEvents: false
     });
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
     await page.locator('#roomId').fill(ROOM_ID);
@@ -1149,7 +1386,7 @@ test.describe('wigwag-matrix-host.html: moderator-gated project creation', () =>
 test.describe('wigwag-matrix-host.html: connect pulls the FULL room history, not just one page', () => {
   test('an older project and a name entry that only exist in a later page are still discovered on connect', async ({ page }) => {
     const newProjectNameEntry = {
-      type: 'dev.wigwag.entry',
+      type: 'work.wigwag.entry',
       content: { v: 1, scope: 'project', projectId: 'new-project', entry: { id: 'nph1', field: '__project_name__', value: 'Freshly Imported', sortKey: 100, origin: 'authored' } }
     };
     const newProjectIssueEntry = entryEvent({ issueId: 'new1', entry: { id: 'nh1', field: 'title', value: 'New project issue', sortKey: 101, origin: 'authored' }, projectId: 'new-project' });
@@ -1164,7 +1401,7 @@ test.describe('wigwag-matrix-host.html: connect pulls the FULL room history, not
       messagesPageSize: 2
     });
 
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
     await page.locator('#roomId').fill(ROOM_ID);
@@ -1172,7 +1409,7 @@ test.describe('wigwag-matrix-host.html: connect pulls the FULL room history, not
     await expect(page.locator('#frame')).toBeVisible();
 
     const frame = page.frameLocator('#frame');
-    await frame.locator('[data-testid=btn-switcher]').click();
+    await frame.locator('[data-testid=btn-switcher]').first().click();
     const rows = frame.locator('[data-testid=switcher-project-row]');
     await expect(rows).toHaveCount(2); // both projects, not just the one dominating the most recent page
     await expect(rows.filter({ hasText: 'Freshly Imported' })).toHaveCount(1); // name resolved, not a placeholder
@@ -1212,7 +1449,7 @@ async function decryptedSnapshotItems(state, manifest) {
 async function snapshotEvent({ projectId, snapshotId, items, cutoffSortKey, mxc }) {
   const plaintext = new TextEncoder().encode(JSON.stringify(items.map(item => core.matrixEventContentFromEntry(item))));
   const { ciphertext, encryption } = await core.encryptSnapshotPayload(plaintext);
-  const manifestEvent = { type: 'dev.wigwag.snapshot', content: core.matrixEventContentFromSnapshotManifest({ projectId, snapshotId, cutoffSortKey, mxc, size: ciphertext.length, encryption }) };
+  const manifestEvent = { type: 'work.wigwag.snapshot', content: core.matrixEventContentFromSnapshotManifest({ projectId, snapshotId, cutoffSortKey, mxc, size: ciphertext.length, encryption }) };
   return { manifestEvent, mediaBlob: { mxc, bytes: ciphertext } };
 }
 
@@ -1228,7 +1465,7 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
       initialEntries: [manifestEvent], seedMediaBlobs: [mediaBlob]
     });
 
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
     await page.locator('#roomId').fill(ROOM_ID);
@@ -1236,7 +1473,7 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
     await expect(page.locator('#frame')).toBeVisible();
 
     const frame = page.frameLocator('#frame');
-    await frame.locator('[data-testid=btn-switcher]').click();
+    await frame.locator('[data-testid=btn-switcher]').first().click();
     await expect(frame.locator('[data-testid=switcher-project-row]').filter({ hasText: 'Snapshotted Project' })).toHaveCount(1);
     await frame.locator('[data-testid=switcher-project-row]').filter({ hasText: 'Snapshotted Project' }).click();
     await expect(frame.locator('[data-testid=row]')).toHaveCount(1);
@@ -1254,7 +1491,7 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
       initialEntries: [manifestEvent, tailEntry], seedMediaBlobs: [mediaBlob]
     });
 
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
     await page.locator('#roomId').fill(ROOM_ID);
@@ -1278,7 +1515,7 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
       initialEntries: [manifestEvent, plainEntry]
     });
 
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
     await page.locator('#roomId').fill(ROOM_ID);
@@ -1300,7 +1537,7 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
       initialEntries: [manifestEvent, plainEntry], seedMediaBlobs: [{ mxc: mediaBlob.mxc, bytes: tamperedBytes }]
     });
 
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
     await page.locator('#roomId').fill(ROOM_ID);
@@ -1317,7 +1554,7 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
       homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
       initialEntries: [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Room issue', sortKey: 1, origin: 'authored' } })]
     });
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
     await page.locator('#roomId').fill(ROOM_ID);
@@ -1337,7 +1574,7 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
       ...issueLines
     ].join('\n');
     const frame = page.frameLocator('#frame');
-    await frame.locator('[data-testid=btn-import-merge]').click();
+    await frame.locator('[data-testid=btn-import-merge]').first().click();
     await page.waitForTimeout(150);
     const [fc] = await Promise.all([
       page.waitForEvent('filechooser'),
@@ -1370,7 +1607,7 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
       homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
       initialEntries: [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Room issue', sortKey: 1, origin: 'authored' } })]
     });
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
     await page.locator('#roomId').fill(ROOM_ID);
@@ -1390,7 +1627,7 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
       ...issueLines
     ].join('\n');
     const frame = page.frameLocator('#frame');
-    await frame.locator('[data-testid=btn-import-merge]').click();
+    await frame.locator('[data-testid=btn-import-merge]').first().click();
     await page.waitForTimeout(150);
     const [fc] = await Promise.all([
       page.waitForEvent('filechooser'),
@@ -1414,7 +1651,7 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
   });
 
   // Tracker f6b39bf0's cadence-floor follow-up: a quiet project that never
-  // crosses SNAPSHOT_ENTRY_THRESHOLD (200) would otherwise never get
+  // crosses SNAPSHOT_STALENESS_ENTRY_THRESHOLD (200) would otherwise never get
   // snapshotted at all, accumulating an ever-larger tail over time.
   // Faking real wall-clock elapse across the real 24h floor isn't
   // practical here (Playwright's clock API virtualizes this file's own 5s
@@ -1429,7 +1666,7 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
       homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
       initialEntries: [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Quiet issue', sortKey: 1, origin: 'authored' } })] // one entry, nowhere near the 200-entry threshold, no pre-existing snapshot
     });
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
     await page.locator('#roomId').fill(ROOM_ID);
@@ -1451,13 +1688,99 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
     expect(state.sentSnapshotManifests[0].cutoffSortKey).toBe(1);
   });
 
+  // Live design discussion (Tom, 2026-09-29): SNAPSHOT_ENTRY_THRESHOLD
+  // (200) used to gate BOTH a single pending batch about to fire as
+  // individual send_event calls AND the slow-accumulating count since the
+  // last snapshot -- two different concerns (write-burst safety vs.
+  // bounding a fresh client's replay-page count) that happened to share
+  // one number. Split into SNAPSHOT_BURST_ENTRY_THRESHOLD (10, sized to a
+  // Matrix homeserver's typical default rate-limit burst allowance) and
+  // SNAPSHOT_STALENESS_ENTRY_THRESHOLD (kept at 200). This covers the
+  // burst path specifically: an ordinary bulk field-set on an
+  // ALREADY-bridged project (not an import/bulk-adopt, which always
+  // snapshots regardless of size) with a batch comfortably between the
+  // new burst threshold and the old 200 -- exactly the range that used to
+  // fire individual sends and would have collided with a real
+  // homeserver's rate limiter.
+  test('an ordinary bulk field-set past the burst threshold (but nowhere near 200) still collapses to one snapshot', async ({ page }) => {
+    const initialEntries = [];
+    for (let i = 1; i <= 15; i++) {
+      initialEntries.push(entryEvent({ issueId: 'bi' + i, entry: { id: 'h' + i, field: 'title', value: 'Bulk issue ' + i, sortKey: i, origin: 'authored' } }));
+    }
+    const state = h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries });
+    await page.goto('/bridges/wigwag-matrix-host.html');
+    await page.locator('#homeserverUrl').fill(HOMESERVER);
+    await page.locator('#accessToken').fill('tok123');
+    await page.locator('#roomId').fill(ROOM_ID);
+    await page.locator('#connectBtn').click();
+    const frame = page.frameLocator('#frame');
+    await expect(frame.locator('[data-testid=row]')).toHaveCount(15);
+
+    await frame.locator('[data-testid=header-select-checkbox]').click();
+    await frame.locator('[data-testid=widget-bulk-action-bar] [data-testid=bulk-set-field-btn]').click();
+    await frame.locator('[data-testid=bulk-field-row][data-col=type]').click({ timeout: 5000 });
+    await frame.locator('[data-testid=bulk-value-option]').first().click({ timeout: 5000 });
+    await page.waitForTimeout(700);
+
+    expect(state.sentSnapshotManifests.length).toBe(1);
+    expect(state.sentEntries.length).toBeLessThan(15); // not one send_event per issue
+  });
+
+  // Live-reported (Tom, 2026-09-28): a mass bulk-edit produced two
+  // DIFFERENT work.wigwag.snapshot manifests (distinct snapshotId/mxc/
+  // encryption key, same cutoffSortKey, ~1.6s apart) -- a genuine, damaging
+  // duplicate, not the deliberately-idempotent "two viewers independently
+  // cross the threshold around the same time" case this file's own
+  // comments already accept as harmless. Root cause: pushSnapshotForProject
+  // had no reentrancy guard of its own (unlike pushNewLocalEntries's
+  // pushInFlight/pushAgainRequested) -- THREE independent call sites
+  // (pushNewLocalEntries's own threshold branch, pushSnapshotIfDue's
+  // periodic floor check, and adoptOneLocalProject's initial bulk push)
+  // could each decide "this project needs a snapshot now" and start a
+  // fully separate upload before any of them updated
+  // lastSnapshotEntryCount/lastSnapshotAt. Verified via a test-only hook
+  // (window.__wigwagTestForcePushSnapshot) rather than trying to time-align
+  // a real concurrent overlap via wall-clock delays -- deterministic, and
+  // exercises the exact race (two calls for the same project, neither
+  // awaited before the other starts) directly.
+  test('two concurrent calls to push a snapshot for the same project never produce two uploads', async ({ page }) => {
+    const state = h.mockMatrixClientApi(page, {
+      homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
+      initialEntries: [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Room issue', sortKey: 1, origin: 'authored' } })]
+    });
+    await page.route('**/_matrix/media/v3/upload*', async (route) => {
+      await new Promise(r => setTimeout(r, 500)); // wide enough that both calls are definitely still racing when the second one checks the lock
+      await route.fallback();
+    });
+    await page.goto('/bridges/wigwag-matrix-host.html');
+    await page.locator('#homeserverUrl').fill(HOMESERVER);
+    await page.locator('#accessToken').fill('tok123');
+    await page.locator('#roomId').fill(ROOM_ID);
+    await page.locator('#connectBtn').click();
+    await expect(page.locator('#frame')).toBeVisible();
+    await page.waitForTimeout(300);
+
+    const projectId = await page.evaluate(() =>
+      JSON.parse(window.__wigwagHostStorage.getItem('git_native_tracker_milestones_v1')).milestones[0].id);
+
+    await page.evaluate((pid) => {
+      window.__wigwagRaceCall1 = window.__wigwagTestForcePushSnapshot(pid);
+      window.__wigwagRaceCall2 = window.__wigwagTestForcePushSnapshot(pid);
+    }, projectId);
+    await page.evaluate(() => Promise.all([window.__wigwagRaceCall1, window.__wigwagRaceCall2]));
+    await page.waitForTimeout(300);
+
+    expect(state.sentSnapshotManifests.length).toBe(1);
+    expect(state.uploadedSnapshotBlobs.length).toBe(1);
+  });
+
   test('a homeserver rejecting the upload (e.g. rate-limited) is retried, same shared retry mechanics as any other Matrix write', async ({ page }) => {
     const state = h.mockMatrixClientApi(page, {
       homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
       initialEntries: [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Room issue', sortKey: 1, origin: 'authored' } })],
       rejectUploadTimes: 2
     });
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
     await page.locator('#roomId').fill(ROOM_ID);
@@ -1478,7 +1801,7 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
       JSON.stringify({ type: 'issue', id: 'ii1', num: 1, fieldRefs: {}, values: { title: 'An issue' }, comments: [], history: [] })
     ].join('\n');
     const frame = page.frameLocator('#frame');
-    await frame.locator('[data-testid=btn-import-merge]').click();
+    await frame.locator('[data-testid=btn-import-merge]').first().click();
     await page.waitForTimeout(150);
     const [fc] = await Promise.all([
       page.waitForEvent('filechooser'),
@@ -1506,7 +1829,7 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
       homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
       initialEntries: [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Room issue', sortKey: 1, origin: 'authored' } })]
     });
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
     await page.locator('#roomId').fill(ROOM_ID);
@@ -1528,7 +1851,7 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
       JSON.stringify({ type: 'issue', id: 'ii1', num: 1, fieldRefs: {}, values: { title: 'Roundtrip issue' }, comments: [], history: [] })
     ].join('\n');
     const frame = page.frameLocator('#frame');
-    await frame.locator('[data-testid=btn-import-merge]').click();
+    await frame.locator('[data-testid=btn-import-merge]').first().click();
     await page.waitForTimeout(150);
     const [fc] = await Promise.all([
       page.waitForEvent('filechooser'),
@@ -1551,7 +1874,7 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
     await expect(page.locator('#frame')).toBeVisible();
 
     const frame2 = page.frameLocator('#frame');
-    await frame2.locator('[data-testid=btn-switcher]').click();
+    await frame2.locator('[data-testid=btn-switcher]').first().click();
     await expect(frame2.locator('[data-testid=switcher-project-row]').filter({ hasText: 'Roundtrip Project' })).toHaveCount(1);
     await frame2.locator('[data-testid=switcher-project-row]').filter({ hasText: 'Roundtrip Project' }).click();
     await expect(frame2.locator('[data-testid=row]')).toHaveCount(1);
@@ -1582,9 +1905,9 @@ function mockRealHomeserverReconnect(page, { entries, roomName }) {
   page.route(roomPath + '/state/m.room.name', async (route) => {
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ name: roomName }) });
   });
-  page.route(roomPath + '/send/dev.wigwag.entry/*', async (route) => {
+  page.route(roomPath + '/send/work.wigwag.entry/*', async (route) => {
     const content = JSON.parse(route.request().postData());
-    entries.push({ type: 'dev.wigwag.entry', content });
+    entries.push({ type: 'work.wigwag.entry', content });
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ event_id: '$evt' + entries.length }) });
   });
   page.route(base + '/_matrix/client/v3/account/whoami', async (route) => {
@@ -1606,7 +1929,7 @@ test.describe('wigwag-matrix-host.html: a deleted issue survives a real reconnec
       await page.waitForTimeout(300);
     };
 
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await connect();
 
     const frame = page.frameLocator('#frame');
@@ -1643,7 +1966,7 @@ test.describe('wigwag-matrix-host.html: a locally-imported project is adopted in
       homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
       initialEntries: [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Room issue', sortKey: 1, origin: 'authored' } })]
     });
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
     await page.locator('#accessToken').fill('tok123');
     await page.locator('#roomId').fill(ROOM_ID);
@@ -1667,7 +1990,7 @@ test.describe('wigwag-matrix-host.html: a locally-imported project is adopted in
       JSON.stringify({ type: 'issue', id: 'ii1', num: 1, fieldRefs: {}, values: { title: 'Imported issue' }, comments: [], history: [] })
     ].join('\n');
     const frame = page.frameLocator('#frame');
-    await frame.locator('[data-testid=btn-import-merge]').click();
+    await frame.locator('[data-testid=btn-import-merge]').first().click();
     await page.waitForTimeout(150);
     const [fc] = await Promise.all([
       page.waitForEvent('filechooser'),
@@ -1713,35 +2036,23 @@ test.describe('wigwag-matrix-host.html: a locally-imported project is adopted in
     await page.route(roomPath + '/state/m.room.name', async (route) => {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ name: 'Bridge Room' }) });
     });
-    await page.route(roomPath + '/send/dev.wigwag.entry/*', async (route) => {
+    await page.route(roomPath + '/send/work.wigwag.entry/*', async (route) => {
       const content = JSON.parse(route.request().postData());
-      entries.push({ type: 'dev.wigwag.entry', content });
+      entries.push({ type: 'work.wigwag.entry', content });
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ event_id: '$evt' + entries.length }) });
     });
-    // Bulk-adoption uses the batch event type (tracker #149) -- a newly
-    // imported project's whole history goes out as one dev.wigwag.entries
-    // send, not one dev.wigwag.entry per item. Without mocking this too,
-    // adoptLocalProjects's push silently fails against Playwright's
-    // default unhandled-route behavior and the import never actually
-    // reaches "the room".
-    await page.route(roomPath + '/send/dev.wigwag.entries/*', async (route) => {
+    // Bulk-adoption sends a snapshot -- without mocking this too, the
+    // import's push silently fails (no route -> a network error), so the
+    // imported project never actually reaches "the room" and the
+    // reconnect below only ever finds the room's original project.
+    await page.route(roomPath + '/send/work.wigwag.snapshot/*', async (route) => {
       const content = JSON.parse(route.request().postData());
-      for (const item of (content.items || [])) entries.push({ type: 'dev.wigwag.entry', content: item });
+      entries.push({ type: 'work.wigwag.snapshot', content });
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ event_id: '$evt' + entries.length }) });
     });
-    // Bulk-adoption now sends a snapshot directly (not the batch route
-    // above) -- without mocking these too, the import's push silently
-    // fails (no route -> a network error), so the imported project never
-    // actually reaches "the room" and the reconnect below only ever finds
-    // the room's original project.
-    await page.route(roomPath + '/send/dev.wigwag.snapshot/*', async (route) => {
+    await page.route(roomPath + '/send/work.wigwag.snapshot.chunk/*', async (route) => {
       const content = JSON.parse(route.request().postData());
-      entries.push({ type: 'dev.wigwag.snapshot', content });
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ event_id: '$evt' + entries.length }) });
-    });
-    await page.route(roomPath + '/send/dev.wigwag.snapshot.chunk/*', async (route) => {
-      const content = JSON.parse(route.request().postData());
-      entries.push({ type: 'dev.wigwag.snapshot.chunk', content });
+      entries.push({ type: 'work.wigwag.snapshot.chunk', content });
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ event_id: '$evt' + entries.length }) });
     });
     // Project index (tracker f6b39bf0): bulk-adopting the imported project
@@ -1751,16 +2062,16 @@ test.describe('wigwag-matrix-host.html: a locally-imported project is adopted in
     // is ever pushed, so the reconnect below would only ever find the
     // room's original project.
     const projectStateEventsByKey = new Map();
-    await page.route(roomPath + '/state/dev.wigwag.project/*', async (route) => {
+    await page.route(roomPath + '/state/work.wigwag.project/*', async (route) => {
       const url = new URL(route.request().url());
       const projectId = decodeURIComponent(url.pathname.split('/').pop());
       const content = JSON.parse(route.request().postData());
       projectStateEventsByKey.set(projectId, content);
-      entries.push({ type: 'dev.wigwag.project', state_key: projectId, content });
+      entries.push({ type: 'work.wigwag.project', state_key: projectId, content });
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ event_id: '$projstate' + projectStateEventsByKey.size }) });
     });
     await page.route(roomPath + '/state', async (route) => {
-      const events = [...projectStateEventsByKey.entries()].map(([projectId, content]) => ({ type: 'dev.wigwag.project', state_key: projectId, content }));
+      const events = [...projectStateEventsByKey.entries()].map(([projectId, content]) => ({ type: 'work.wigwag.project', state_key: projectId, content }));
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(events) });
     });
     await page.route(base + '/_matrix/client/v3/account/whoami', async (route) => {
@@ -1775,7 +2086,7 @@ test.describe('wigwag-matrix-host.html: a locally-imported project is adopted in
       await page.waitForTimeout(400);
     };
 
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await connect();
 
     // Real import UI (same pattern as the previous describe block) --
@@ -1787,7 +2098,7 @@ test.describe('wigwag-matrix-host.html: a locally-imported project is adopted in
       JSON.stringify({ type: 'issue', id: 'ii2', num: 1, fieldRefs: {}, values: { title: 'Second project issue' }, comments: [], history: [] })
     ].join('\n');
     const firstFrame = page.frameLocator('#frame');
-    await firstFrame.locator('[data-testid=btn-import-merge]').click();
+    await firstFrame.locator('[data-testid=btn-import-merge]').first().click();
     await page.waitForTimeout(150);
     const [fc] = await Promise.all([
       page.waitForEvent('filechooser'),
@@ -1806,7 +2117,7 @@ test.describe('wigwag-matrix-host.html: a locally-imported project is adopted in
     await connect();
 
     const frame = page.frameLocator('#frame');
-    await frame.locator('[data-testid=btn-switcher]').click();
+    await frame.locator('[data-testid=btn-switcher]').first().click();
     await expect(frame.locator('[data-testid=switcher-project-row]')).toHaveCount(2);
   });
 });
@@ -1845,7 +2156,7 @@ test.describe('wigwag-matrix-host.html: cosmetic prefs are scoped per room, not 
     // scoped to the room's own legacy/untagged-entries default project
     // only (tracker f6b39bf0).
     const priorityFieldDef = {
-      type: 'dev.wigwag.entry',
+      type: 'work.wigwag.entry',
       content: { v: 1, scope: 'project', projectId: SHARED_PROJECT_ID, entry: { id: 'pdef1', field: 'priority', value: { label: 'Priority', type: 'select', options: [{ id: 'low', label: 'Low', color: 'green', emoji: '' }, { id: 'high', label: 'High', color: 'red', emoji: '' }] }, sortKey: 0, origin: 'authored' } }
     };
     h.mockMatrixClientApi(page, {
@@ -1874,7 +2185,7 @@ test.describe('wigwag-matrix-host.html: cosmetic prefs are scoped per room, not 
       await page.waitForTimeout(300);
     };
 
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await connectTo(ROOM_A);
     const frameA = page.frameLocator('#frame');
     // The header's own "Sort" icon only ever appears once a column IS the
@@ -1948,7 +2259,7 @@ test.describe('wigwag-matrix-host.html: a project adopted in one room never leak
     // localStorage.setItem() from outside the app's own script can no
     // longer simulate this (see the earlier "locally-imported project"
     // describe block's own comment for why).
-    await page.goto('/wigwag-matrix-host.html');
+    await page.goto('/bridges/wigwag-matrix-host.html');
     await connectTo(ROOM_A);
     const importedId = 'room-a-imported-proj';
     const pastedJsonl = [
@@ -1956,7 +2267,7 @@ test.describe('wigwag-matrix-host.html: a project adopted in one room never leak
       JSON.stringify({ type: 'issue', id: 'iax', num: 1, fieldRefs: {}, values: { title: 'Room A\'s own imported issue' }, comments: [], history: [] })
     ].join('\n');
     const frameA = page.frameLocator('#frame');
-    await frameA.locator('[data-testid=btn-import-merge]').click();
+    await frameA.locator('[data-testid=btn-import-merge]').first().click();
     await page.waitForTimeout(150);
     const [fcA] = await Promise.all([
       page.waitForEvent('filechooser'),
@@ -1992,7 +2303,7 @@ test.describe('wigwag-matrix-host.html: a project adopted in one room never leak
 
     // Room B's own switcher must not list it either.
     const frameB = page.frameLocator('#frame');
-    await frameB.locator('[data-testid=btn-switcher]').click();
+    await frameB.locator('[data-testid=btn-switcher]').first().click();
     const rows = frameB.locator('[data-testid=switcher-project-row]');
     const rowTexts = await rows.allInnerTexts();
     expect(rowTexts.some(t => t.includes('Room A Import'))).toBe(false);

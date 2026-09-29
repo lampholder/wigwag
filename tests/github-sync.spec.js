@@ -15,13 +15,44 @@ test.describe('GitHub repo sync', () => {
     gh.getResponses = [{ status: 404 }];
 
     await h.gotoTracker(page);
+    // Setting the repo now connects immediately (see
+    // onGithubConnectionSettingChange) -- no reload needed to discover a
+    // brand new file doesn't exist yet and push it as the initial commit.
     await h.setGithubRepoSync(page, { repo: REPO, token: 'ghp_faketoken' });
-    await page.reload({ waitUntil: 'networkidle' });
-
     await h.waitUntil(() => Promise.resolve(gh.pushCount >= 1));
     expect(gh.pushCount).toBe(1);
     const pushed = gh.pushes[0];
     expect(pushed).toContain('"type":"fields"');
+  });
+
+  // Live incident (2026-09-28): switching the connected repo/token mid-
+  // session used to have NO side effect beyond updating the raw setting --
+  // no status reset, no reconnect. The sync indicator kept showing stale
+  // "Synced" from the OLD repo, and nothing was actually attempted against
+  // the new one until some UNRELATED content edit happened to trigger the
+  // next auto-push (which, by then, could carry a sha left over from the
+  // wrong repo -- see pushGithubFile's own conflict-check-gap fix for the
+  // data-loss half of this incident). This test is the direct regression
+  // check: switching repos ALONE, with no content edit at all, must
+  // reconnect and sync against the new target right away.
+  test('switching to a different repo mid-session reconnects and syncs against the new one immediately, with no content edit or reload needed', async ({ page }) => {
+    const REPO_B = 'acme/tracker-data-2';
+    const ghA = h.mockGithubContentsApi(page, REPO);
+    ghA.getResponses = [{ status: 404 }];
+    const ghB = h.mockGithubContentsApi(page, REPO_B);
+    ghB.getResponses = [{ status: 404 }];
+
+    await h.gotoTracker(page);
+    await h.setGithubRepoSync(page, { repo: REPO, token: 'ghp_faketoken' });
+    await h.waitUntil(() => Promise.resolve(ghA.pushCount >= 1));
+    expect(ghA.pushCount).toBe(1);
+
+    // Switch to a completely different repo -- deliberately no content
+    // edit, no reload, nothing else in between.
+    await h.setGithubRepoSync(page, { repo: REPO_B });
+    await h.waitUntil(() => Promise.resolve(ghB.pushCount >= 1));
+    expect(ghB.pushCount).toBe(1);
+    expect(ghA.pushCount).toBe(1); // the old repo is never touched again
   });
 
   // Tracker #133 (0b22b69e): a push now carries a real signed export
@@ -292,13 +323,13 @@ test.describe('GitHub repo sync', () => {
     const afterConnect = gh.pushCount;
 
     await h.clickFieldToEdit(page, 1, 'rag');
-    await page.locator('div[style*="z-index: 70"]').getByText('At risk').click();
+    await page.locator('div[style*="z-index: 75"]').getByText('At risk').click();
     await page.waitForTimeout(200);
     await h.clickFieldToEdit(page, 2, 'rag');
-    await page.locator('div[style*="z-index: 70"]').getByText('At risk').click();
+    await page.locator('div[style*="z-index: 75"]').getByText('At risk').click();
     await page.waitForTimeout(200);
     await h.clickFieldToEdit(page, 3, 'rag');
-    await page.locator('div[style*="z-index: 70"]').getByText('At risk').click();
+    await page.locator('div[style*="z-index: 75"]').getByText('At risk').click();
     await page.waitForTimeout(500); // past the (shrunk) push debounce
 
     expect(gh.pushCount).toBe(afterConnect + 1); // three edits, one push
@@ -360,7 +391,7 @@ test.describe('GitHub repo sync', () => {
 
     // Local independently changes the SAME field on the same issue.
     await h.clickFieldToEdit(page, 7, 'rag');
-    await page.locator('div[style*="z-index: 70"]').getByText('On track').click();
+    await page.locator('div[style*="z-index: 75"]').getByText('On track').click();
     await page.waitForTimeout(200);
 
     await page.reload({ waitUntil: 'networkidle' });
@@ -373,7 +404,7 @@ test.describe('GitHub repo sync', () => {
     // Auto-push is not paused by any of this -- the next edit pushes normally.
     const beforePush = gh.pushCount;
     await h.clickFieldToEdit(page, 4, 'rag');
-    await page.locator('div[style*="z-index: 70"]').getByText('Off track').click();
+    await page.locator('div[style*="z-index: 75"]').getByText('Off track').click();
     await page.waitForTimeout(500); // past the (shrunk) push debounce
     expect(gh.pushCount).toBeGreaterThan(beforePush);
   });

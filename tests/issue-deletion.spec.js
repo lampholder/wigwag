@@ -36,6 +36,32 @@ test.describe('Issue deletion: in-app confirm modal + tombstone', () => {
     await expect(page.locator('[data-testid=slideover]')).toHaveCount(0); // closes on delete
   });
 
+  // Live-reported (Tom, 2026-09-29): the confirm dialog's message text and
+  // Cancel button rendered in "some nasty serif font", while the red
+  // Confirm/Delete button looked fine. Root cause: confirm-dialog-overlay
+  // is not a descendant of the app's own font-family-declaring root (every
+  // ancestor up through <html> measured "Times New Roman", the browser's
+  // true UA default) -- merge-overlay/connect-remote-overlay already carry
+  // an explicit font-family for the exact same reason, confirm-dialog-
+  // overlay was just missing it. The Confirm button only looked right by
+  // coincidence: a <button> gets its own browser-default form-control
+  // font (measured as Arial) rather than inheriting body text, so it never
+  // fell through to the true serif default the way plain text did.
+  test('the confirm dialog message and Cancel use the app font, not the browser default serif', async ({ page }) => {
+    await page.locator('[data-testid=row]').first().locator('[data-testid=row-select-checkbox]').click();
+    await page.locator('[data-testid=bulk-action-bar] [data-testid=bulk-delete-btn]').click();
+    await expect(page.locator('[data-testid=confirm-dialog-modal]')).toBeVisible();
+
+    const fonts = await page.evaluate(() => ({
+      message: getComputedStyle(document.querySelector('[data-testid=confirm-dialog-modal] > div')).fontFamily,
+      cancel: getComputedStyle(document.querySelector('[data-testid=btn-confirm-dialog-cancel]')).fontFamily,
+    }));
+    expect(fonts.message).toContain('-apple-system');
+    expect(fonts.message).not.toContain('Times');
+    expect(fonts.cancel).toContain('-apple-system');
+    expect(fonts.cancel).not.toContain('Times');
+  });
+
   test('a deleted issue is a real tombstone -- kept in the persisted doc, not hard-removed', async ({ page }) => {
     await h.clickTitleToPeek(page, 1);
     await page.locator('[data-testid=slideover-delete-btn]').click();

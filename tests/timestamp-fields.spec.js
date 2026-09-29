@@ -100,4 +100,26 @@ test.describe('Created/Updated timestamp fields', () => {
     await expect(page.locator('[data-testid="bulk-field-row"][data-col="created"]')).toHaveCount(0);
     await expect(page.locator('[data-testid="bulk-field-row"][data-col="updated"]')).toHaveCount(0);
   });
+
+  // Live-reported (Tom): Created/Updated exposed a working-looking "Delete
+  // field" menu item that didn't actually do anything useful -- both are
+  // unconditionally guaranteed to exist on every hydrate
+  // (ensureTimestampFieldDefs), so "deleting" one just gets it silently
+  // resurrected on the very next hydrate. "Hide field" stays available --
+  // hiding is a real, working per-device display preference, and it's how
+  // these two fields start out in the first place.
+  test('has no "Delete field" menu option (Hide field is still there) -- a normal field keeps both', async ({ page }) => {
+    await h.gotoTracker(page);
+    await showHiddenField(page, 'Created');
+
+    await h.openColumnMenu(page, 'created');
+    await expect(page.getByText('Hide field', { exact: true })).toBeVisible();
+    await expect(page.getByText('Delete field', { exact: true })).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(150);
+
+    await h.openColumnMenu(page, 'rag');
+    await expect(page.getByText('Hide field', { exact: true })).toBeVisible();
+    await expect(page.getByText('Delete field', { exact: true })).toBeVisible();
+  });
 });

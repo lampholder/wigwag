@@ -107,6 +107,32 @@ test.describe('Filter bar: field:value autocomplete', () => {
     expect(bg).toBe(expectedBg);
   });
 
+  // Live-reported (Tom): arrowing down through the suggestion list could
+  // move the highlighted row below the panel's own visible area without
+  // the panel scrolling to follow -- the highlight effectively vanished
+  // off-screen. scrollIntoView({block:'nearest'}) only moves the panel
+  // when the active row is actually out of view.
+  test('arrowing down past the visible panel scrolls the active suggestion into view', async ({ page }) => {
+    const input = page.locator('[data-testid=filter-input]');
+    const panel = page.locator('[data-testid=filter-suggest-panel]');
+    await input.click();
+    await page.waitForTimeout(150);
+
+    const rowCount = await page.locator('[data-testid=filter-suggest-row]').count();
+    expect(rowCount).toBeGreaterThan(3); // enough fields that the panel's own max-height actually clips some
+
+    for (let i = 0; i < rowCount - 1; i++) {
+      await input.press('ArrowDown');
+    }
+    await page.waitForTimeout(100);
+
+    const activeRow = page.locator('[data-testid=filter-suggest-row][data-active="true"]');
+    const activeBox = await activeRow.boundingBox();
+    const panelBox = await panel.boundingBox();
+    expect(activeBox.y).toBeGreaterThanOrEqual(panelBox.y - 1);
+    expect(activeBox.y + activeBox.height).toBeLessThanOrEqual(panelBox.y + panelBox.height + 1);
+  });
+
   test('the panel sits a small (~3px), non-overlapping gap below the input\'s own visible border, not the bare input element', async ({ page }) => {
     const input = page.locator('[data-testid=filter-input]');
     const wrap = page.locator('[data-testid=filter-input-wrap]');
@@ -124,11 +150,12 @@ test.describe('Filter bar: field:value autocomplete', () => {
     await input.click();
     await page.waitForTimeout(150);
     const panel = page.locator('[data-testid=filter-suggest-panel]');
-    // The demo fixture has 9 filterable fields (7 of its own, plus the
-    // always-present Created/Updated timestamp fields, tracker #148) --
-    // comfortably more than the cap, so this also exercises the actual
-    // scroll (not just an untested style).
-    await expect(page.locator('[data-testid=filter-suggest-row]')).toHaveCount(9);
+    // The demo fixture has 7 filterable fields (Created/Updated, tracker
+    // #148's always-present timestamp fields, are deliberately excluded
+    // from field-name suggestions -- see computeFilterSuggestions's own
+    // comment) -- comfortably more than the cap, so this also exercises
+    // the actual scroll (not just an untested style).
+    await expect(page.locator('[data-testid=filter-suggest-row]')).toHaveCount(7);
     const info = await panel.evaluate(el => ({ clientHeight: el.clientHeight, scrollHeight: el.scrollHeight, overflowY: getComputedStyle(el).overflowY }));
     expect(info.overflowY).toBe('auto');
     expect(info.scrollHeight).toBeGreaterThan(info.clientHeight); // has more content than fits

@@ -187,7 +187,7 @@ test.describe('Two-click cell selection (GitHub Projects-style)', () => {
     const cell = h.fieldCell(page, 1, 'priority');
     await cell.click();
     await page.waitForTimeout(150);
-    expect(await page.locator('div[style*="z-index: 70"]').count()).toBe(0);
+    expect(await page.locator('div[style*="z-index: 75"]').count()).toBe(0);
     expect(await cell.evaluate(el => getComputedStyle(el).outlineStyle)).toBe('solid');
   });
 
@@ -1102,7 +1102,7 @@ test.describe('Select/multiselect popover flips above the field when there is no
     await page.waitForTimeout(150);
     await field.click();
     await page.waitForTimeout(200);
-    const popover = page.locator('div[style*="z-index: 70"]');
+    const popover = page.locator('div[style*="z-index: 75"]');
     const popoverBox = await popover.boundingBox();
     expect(Math.abs(popoverBox.x - fieldBox.x)).toBeLessThan(20); // exact alignment isn't the point -- ruling out the ~180px panel-offset drift is
   });
@@ -1445,14 +1445,14 @@ test.describe('A too-wide table scrolls on its own, not the whole page', () => {
 
   test('the header, add-item box, and "View source" link do not move when the table scrolls', async ({ page }) => {
     const header = await page.locator('text=Delivery tracker').boundingBox();
-    const addItem = await page.getByText('Control + Space').boundingBox();
+    const addItem = await page.getByText('Ctrl Space').boundingBox();
     const viewSource = await page.getByText('{ } View source').boundingBox();
 
     await page.locator('[data-testid=table-scroll-wrap]').evaluate(el => { el.scrollLeft = 400; });
     await page.waitForTimeout(150);
 
     expect(await page.locator('text=Delivery tracker').boundingBox()).toEqual(header);
-    expect(await page.getByText('Control + Space').boundingBox()).toEqual(addItem);
+    expect(await page.getByText('Ctrl Space').boundingBox()).toEqual(addItem);
     expect(await page.getByText('{ } View source').boundingBox()).toEqual(viewSource);
   });
 
@@ -1482,7 +1482,7 @@ test.describe('Keep "add an item" reachable: full-height flex shell', () => {
     // above it.
     const lastRow = page.locator('[data-testid=row]').last();
     const rowBox = await lastRow.boundingBox();
-    const addItemBox = await page.getByText('Control + Space').boundingBox();
+    const addItemBox = await page.getByText('Ctrl Space').boundingBox();
     expect(addItemBox.y - (rowBox.y + rowBox.height)).toBeLessThan(60);
   });
 
@@ -1560,7 +1560,7 @@ test.describe('Keep "add an item" reachable: full-height flex shell', () => {
     await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
     await page.waitForTimeout(400);
 
-    await expect(page.getByText('Control + Space')).toBeVisible();
+    await expect(page.getByText('Ctrl Space')).toBeVisible();
     await expect(page.getByText('{ } View source')).toBeVisible();
     const wrap = page.locator('[data-testid=table-scroll-wrap]');
     const scrollable = await wrap.evaluate(el => el.scrollHeight > el.clientHeight);
@@ -1691,7 +1691,11 @@ test.describe('Keep "add an item" reachable: full-height flex shell', () => {
   // boundary signal instead of a hard divider line.
   test('the filter bar and the add-item box have no divider line against the table pane', async ({ page }) => {
     await expect(page.locator('[data-testid=filter-input]').locator('xpath=../..')).toHaveCSS('border-bottom-width', '0px');
-    await expect(page.getByText('Control + Space').locator('xpath=../../..')).toHaveCSS('border-top-width', '0px');
+    // One extra ancestor level vs. before: {{ addItemShortcutHint }} is an
+    // interpolated binding (unlike the old static "Control + Space" text),
+    // and this templating engine auto-wraps interpolated values in their
+    // own <span> for reactivity tracking.
+    await expect(page.getByText('Ctrl Space').locator('xpath=../../../..')).toHaveCSS('border-top-width', '0px');
   });
 
   test('after adding an item, the box stays open and focused (not collapsed back to the Control+Space hint), so several adds in a row need no mouse', async ({ page }) => {
@@ -1803,7 +1807,7 @@ test.describe('Editing the sorted-by column does not reorder the row', () => {
     await expect(h.fieldCell(page, 1, 'rag')).toContainText('On track'); // i1: first green
 
     await h.clickFieldToEdit(page, 1, 'rag');
-    await page.locator('div[style*="z-index: 70"]').getByText('Off track').click();
+    await page.locator('div[style*="z-index: 75"]').getByText('Off track').click();
     await expect(h.fieldCell(page, 1, 'rag')).toContainText('Off track'); // still position 1, new value shown
 
     await page.waitForTimeout(2000); // no timer to expire -- still position 1
@@ -1811,7 +1815,7 @@ test.describe('Editing the sorted-by column does not reorder the row', () => {
 
     // A second edit, on a different row, doesn't move anything either.
     await h.clickFieldToEdit(page, 2, 'rag');
-    await page.locator('div[style*="z-index: 70"]').getByText('Off track').click();
+    await page.locator('div[style*="z-index: 75"]').getByText('Off track').click();
     await page.waitForTimeout(300);
     await expect(h.fieldCell(page, 1, 'rag')).toContainText('Off track');
     await expect(h.fieldCell(page, 2, 'rag')).toContainText('Off track');
@@ -1820,7 +1824,7 @@ test.describe('Editing the sorted-by column does not reorder the row', () => {
   test('explicitly changing the sort direction applies the real order immediately', async ({ page }) => {
     await h.sortByColumn(page, 'rag', 'ascending');
     await h.clickFieldToEdit(page, 1, 'rag');
-    await page.locator('div[style*="z-index: 70"]').getByText('Off track').click();
+    await page.locator('div[style*="z-index: 75"]').getByText('Off track').click();
     await expect(h.fieldCell(page, 1, 'rag')).toContainText('Off track'); // still frozen in place
 
     // Descending order puts unset RAG values first, not the just-edited
@@ -1867,7 +1871,7 @@ test.describe('Editing the sorted-by column does not reorder the row', () => {
   test('a page reload recomputes the row order fresh (the freeze is transient, not persisted)', async ({ page }) => {
     await h.sortByColumn(page, 'rag', 'ascending');
     await h.clickFieldToEdit(page, 1, 'rag'); // i1: On track -> Off track
-    await page.locator('div[style*="z-index: 70"]').getByText('Off track').click();
+    await page.locator('div[style*="z-index: 75"]').getByText('Off track').click();
     await expect(h.fieldCell(page, 1, 'rag')).toContainText('Off track');
 
     await page.reload({ waitUntil: 'networkidle' });
@@ -1895,7 +1899,7 @@ test.describe('Editing the sorted-by column does not reorder the row', () => {
 
     const titlesBefore = await page.locator('[data-testid=title-cell]').allTextContents();
     await h.clickFieldToEdit(page, 1, 'rag');
-    await page.locator('div[style*="z-index: 70"]').getByText('Off track').click();
+    await page.locator('div[style*="z-index: 75"]').getByText('Off track').click();
     await page.waitForTimeout(300);
 
     const titlesAfter = await page.locator('[data-testid=title-cell]').allTextContents();
@@ -2143,7 +2147,7 @@ test.describe('Column value filters', () => {
     await expect(page.locator('[data-testid=row]')).toHaveCount(3);
 
     await h.clickFieldToEdit(page, 2, 'rag');
-    await page.locator('div[style*="z-index: 70"]').getByText('Off track').click(); // red -- no longer matches "At risk"
+    await page.locator('div[style*="z-index: 75"]').getByText('Off track').click(); // red -- no longer matches "At risk"
     await page.waitForTimeout(200);
     await expect(page.locator('[data-testid=row]')).toHaveCount(3); // still visible, sticky
 
@@ -2433,6 +2437,32 @@ test.describe('Column order', () => {
 
     const order = await page.locator('[data-testid=col-header]').evaluateAll(els => els.map(e => e.dataset.col));
     expect(order[order.length - 1]).toBe('mitigation'); // last in the default sequence
+  });
+
+  // Live-reported (Tom): hidden-field state didn't survive a reload, even
+  // though column ORDER (a sibling cosmetic pref) did. Root cause:
+  // hiddenFieldIds used to be embedded INSIDE the per-project doc itself
+  // (part of what persist()/loadPersisted() read/wrote), unlike
+  // columnOrder/columnWidths/sort, which have always lived in their own
+  // separate, real localStorage keys (COLUMN_ORDER_KEY etc). That
+  // distinction is invisible in plain Local Mode (the whole doc is real,
+  // persistent localStorage here too) -- this is really a Room Scoped
+  // Widget Mode bug (see matrix-host.spec.js's own coverage, where the
+  // doc lives in an in-memory-only shim wiped on every reload) -- but the
+  // fix moved hiddenFieldIds into its own HIDDEN_FIELDS_KEY regardless of
+  // mode, so it's worth a plain-reload regression check here too.
+  test('hidden-field state survives a full page reload', async ({ page }) => {
+    await h.openColumnMenu(page, 'mitigation');
+    await page.getByText('Hide field', { exact: true }).click();
+    await page.waitForTimeout(150);
+    await expect(h.colHeader(page, 'mitigation')).toHaveCount(0);
+
+    await page.reload();
+    await page.waitForTimeout(300);
+    await expect(h.colHeader(page, 'mitigation')).toHaveCount(0);
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    expect(doc.hiddenFieldIds).toBeUndefined(); // no longer part of the doc at all
   });
 
   // Regression: the slide-over built its own field list straight from
@@ -2956,6 +2986,28 @@ test.describe('Share menu restructure', () => {
     // finish resetting it.
     await page.locator('[data-testid=btn-export]').click();
     await expect(page.locator('[data-testid=copy-to-clipboard-label]')).toHaveText('Copy to clipboard');
+  });
+
+  // Live-reported (Tom): the Send button's copy still didn't work inside a
+  // real embedded widget host even after granting clipboard-write at the
+  // one level wigwag controls (wigwag-matrix-host.html's own nested
+  // iframe) -- the remaining, out-of-wigwag's-control suspect is Element's
+  // OWN iframe wrapping the widget, which wigwag has no way to add an
+  // `allow` attribute to. document.execCommand('copy') is a real,
+  // necessary fallback for exactly this class of host, not redundant
+  // belt-and-braces. Can't reproduce the real permission gap here
+  // (Playwright's headless Chromium grants clipboard access permissively
+  // regardless of the real iframe chain -- the same limitation that made
+  // the original clipboard-write gap invisible to automated tests) -- this
+  // simulates the failure directly by forcing navigator.clipboard.writeText
+  // to reject, and confirms the fallback still gets real content copied.
+  test('falls back to document.execCommand("copy") when navigator.clipboard.writeText rejects, and still shows the real success state', async ({ page }) => {
+    await page.evaluate(() => {
+      navigator.clipboard.writeText = () => Promise.reject(new Error('NotAllowedError: simulated denial'));
+    });
+    await page.locator('[data-testid=btn-export]').click();
+    await page.locator('[data-testid=btn-copy-to-clipboard]').click();
+    await expect(page.locator('[data-testid=copy-to-clipboard-label]')).toHaveText('Copied to clipboard');
   });
 
   test('"Save as interactive HTML..." still triggers the real HTML export, unchanged, just relabeled and relocated', async ({ page }) => {

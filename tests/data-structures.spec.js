@@ -85,10 +85,10 @@ test.describe('JSONL export/import', () => {
   test('a squashed export keeps only the latest per-field entry live, but tombstones the ones it drops -- narrative/comment entries are untouched', async ({ page }) => {
     // Generate two RAG edits on row 1 so there's an intermediate entry to squash away.
     await h.clickFieldToEdit(page, 1, 'rag');
-    await page.locator('div[style*="z-index: 70"]').getByText('At risk').click();
+    await page.locator('div[style*="z-index: 75"]').getByText('At risk').click();
     await page.waitForTimeout(150);
     await h.clickFieldToEdit(page, 1, 'rag');
-    await page.locator('div[style*="z-index: 70"]').getByText('Off track').click();
+    await page.locator('div[style*="z-index: 75"]').getByText('Off track').click();
     await page.waitForTimeout(150);
 
     await page.locator('[data-testid=btn-export]').click();
@@ -830,7 +830,7 @@ test.describe('Merge: union history, auto-resolve, lightweight notice', () => {
 
     // Local side changes RAG on row 7.
     await h.clickFieldToEdit(page, 7, 'rag');
-    await page.locator('div[style*="z-index: 70"]').getByText('On track').click();
+    await page.locator('div[style*="z-index: 75"]').getByText('On track').click();
     await page.waitForTimeout(200);
 
     // Incoming side independently changes the same field from the same
@@ -926,7 +926,7 @@ test.describe('Merge: union history, auto-resolve, lightweight notice', () => {
     // same field -- both still land (union + latest-wins), just alongside
     // the schema change, not gated behind it.
     await h.clickFieldToEdit(page, 7, 'rag');
-    await page.locator('div[style*="z-index: 70"]').getByText('On track').click();
+    await page.locator('div[style*="z-index: 75"]').getByText('On track').click();
     await page.waitForTimeout(200);
     const i7 = baseline.find(l => l.type === 'issue' && l.id === 'i7');
     i7.history.push({ id: 'ext_h_severity', time: 'Aug 3', actor: 'jordan', email: 'jordan@example.com', text: 'RAG set to At risk', field: 'rag', value: 'amber', origin: 'authored', sortKey: Date.now() + 999999, sig: null, pubKey: null });

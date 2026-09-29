@@ -10,7 +10,7 @@
 // Design, in short: this polls the SAME tracker.jsonl a subscribed
 // device's project already syncs with (same GitHub Contents API, same
 // parseJsonl/textMentionsEmail logic wigwag.html itself uses --
-// require('./wigwag-core.js'), not a reimplementation). For every
+// require('../wigwag-core.js'), not a reimplementation). For every
 // subscriber it sends a real Web Push message (via the `web-push` npm
 // package) for: (a) any new comment that mentions their email anywhere,
 // on any issue, and (b) any new comment or field-change history entry on
@@ -55,7 +55,7 @@ const path = require('path');
 const { ProxyAgent, setGlobalDispatcher } = require('undici');
 const webpush = require('web-push');
 const { HOST, secretFor, requireSecret } = require('./proxy-shared');
-const core = require('./wigwag-core.js');
+const core = require('../wigwag-core.js');
 
 // Node's built-in fetch does NOT honor HTTP_PROXY/HTTPS_PROXY on its own --
 // without this, the GitHub polling below fails outright on any network

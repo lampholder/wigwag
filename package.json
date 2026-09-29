@@ -4,18 +4,17 @@
   "description": "A GitHub-Projects-style tracker that isn't siloed: the data is a single plain-text file you can put in git, email, or drop in a shared folder, and the viewer is a static HTML/JS app with no server and no build step.",
   "main": "index.js",
   "directories": {
-    "doc": "docs",
-    "example": "example"
+    "doc": "docs"
   },
   "scripts": {
     "test": "playwright test",
     "serve": "node serve.js",
-    "jira-proxy": "node jira-proxy.js",
-    "salesforce-proxy": "node salesforce-proxy.js",
-    "github-oauth-proxy": "node github-oauth-proxy.js",
-    "github-data-proxy": "node github-data-proxy.js",
-    "google-drive-proxy": "node google-drive-proxy.js",
-    "push-relay": "node push-relay.js",
+    "jira-proxy": "node bridges/jira-proxy.js",
+    "salesforce-proxy": "node bridges/salesforce-proxy.js",
+    "github-oauth-proxy": "node bridges/github-oauth-proxy.js",
+    "github-data-proxy": "node bridges/github-data-proxy.js",
+    "google-drive-proxy": "node bridges/google-drive-proxy.js",
+    "push-relay": "node bridges/push-relay.js",
     "tauri": "tauri"
   },
   "keywords": [],

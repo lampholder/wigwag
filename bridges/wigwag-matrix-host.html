@@ -234,6 +234,7 @@
   // API calls via the wigwag-core.js helpers built in Phase 1.
   function createDirectTransport({ homeserverUrl, accessToken, roomId }) {
     let syncCursor = null;
+    let cachedDeviceId = null; // populated by whoAmI() below, the only call that round-trips to learn it
     return {
       async probeAccess() {
         return core.probeMatrixRoomAccess({ fetchImpl: fetch, homeserverUrl, accessToken, roomId });
@@ -353,6 +354,18 @@
         const ev = result.events.find(e => e && e.type === 'm.room.power_levels' && e.state_key === '');
         return { status: 'ok', content: (ev && ev.content) || null };
       },
+      // Live-reported (Tom, 2026-09-29): a real room's own creator had an
+      // EMPTY power_levels.users map -- newer Matrix room versions track
+      // creator privilege separately from power_levels entirely, via
+      // m.room.create's own `sender` (always present, every room
+      // version) -- see isModeratorForStateEvent's own comment in
+      // wigwag-core.js for the full story.
+      async getRoomCreator() {
+        const result = await core.getMatrixRoomState({ fetchImpl: fetch, homeserverUrl, accessToken, roomId });
+        if (result.status !== 'ok') return result;
+        const ev = result.events.find(e => e && e.type === 'm.room.create' && e.state_key === '');
+        return { status: 'ok', sender: (ev && ev.sender) || null };
+      },
       // state_key is the target project's id -- a second send for the SAME
       // project always overwrites the first ("newer replaces older" as a
       // protocol property, not something this file has to reconcile), with
@@ -375,9 +388,16 @@
           const res = await fetch(homeserverUrl.replace(/\/$/, '') + '/_matrix/client/v3/account/whoami', { headers: { Authorization: 'Bearer ' + accessToken } });
           if (!res.ok) return null;
           const data = await res.json();
+          // /account/whoami also carries device_id for a real, non-guest
+          // access token (same response, no extra round trip) -- the real,
+          // stable per-device id a layout-proposal's self-exclusion check
+          // actually wants (tracker #169/4f07e72b follow-up), rather than
+          // one this file would otherwise have to invent and persist itself.
+          cachedDeviceId = data.device_id || null;
           return data.user_id || null;
         } catch (e) { return null; }
-      }
+      },
+      getDeviceId() { return cachedDeviceId; } // only meaningful after whoAmI() has resolved at least once
     };
   }
 
@@ -413,6 +433,9 @@
   // moderator-visibility-check purposes.
   const WIDGET_LAYOUT_PROPOSAL_TYPE = core.WIGWAG_MATRIX_LAYOUT_PROPOSAL_TYPE;
   const WIDGET_POWER_LEVELS_TYPE = 'm.room.power_levels';
+  // Live-reported (Tom, 2026-09-29): needed alongside power_levels itself
+  // -- see isModeratorForStateEvent's own comment in wigwag-core.js.
+  const WIDGET_ROOM_CREATE_TYPE = 'm.room.create';
   // The bare "read_events" action name doesn't exist in any shipped Widget
   // API driver -- confirmed live against real Element ("Unknown or
   // unsupported from-widget action: read_events"). Reading past timeline
@@ -441,16 +464,50 @@
     // these template variables into the widget's own registered URL
     // before ever loading it -- no round-trip needed to learn who's
     // viewing or which room this is, unlike the standalone form.
+    // MSC3819 ("Allow widgets to read the client's device ID") -- already
+    // listed in SUPPORTED_WIDGET_API_VERSIONS above but never actually
+    // wired up until now (tracker #169/4f07e72b follow-up: a layout
+    // proposal's self-exclusion check needs a real, stable per-device id,
+    // not one this file invents and persists itself -- Tom's own call,
+    // preferring the client's real device id over a locally-generated
+    // one). Guarded against a literal, un-substituted "$..." token for a
+    // client that doesn't actually support this template variable despite
+    // it being in the requested capabilities list.
+    const rawDeviceId = params.get('org.matrix.msc3819.device_id');
     return {
       widgetId,
       roomId: params.get('matrix_room_id') || params.get('roomId'),
       userId: params.get('matrix_user_id') || params.get('userId'),
-      displayName: params.get('matrix_display_name') || params.get('displayName')
+      displayName: params.get('matrix_display_name') || params.get('displayName'),
+      deviceId: (rawDeviceId && !rawDeviceId.startsWith('$')) ? rawDeviceId : null
     };
   }
 
-  function createWidgetTransport({ widgetId, roomId }) {
+  function createWidgetTransport({ widgetId, roomId, deviceId }) {
     let seq = 0;
+    // Live-reported (Tom, 2026-09-30): read_events' "current state" read
+    // for a state-keyed custom type (state_key: true) was observed to
+    // return the SAME stale content indefinitely in real Element, even
+    // 60+ seconds and multiple poll ticks after a confirmed, successful
+    // PUT -- while Element's own toWidget update_state push (which DOES
+    // carry the fresh content) was arriving the whole time and simply
+    // being acked empty (see the comment where toWidget is handled below).
+    // This callback lets the bridge react to that push directly instead
+    // of relying solely on the apparently-unreliable poll-based re-read.
+    let pushedStateUpdateCallback = null;
+    // Live-reported (Tom, 2026-10-02): "is there no push mechanism for
+    // ordinary events, do we really have to keep polling read_events?" --
+    // MSC2762's receive.event:TYPE capability (already requested below,
+    // needed just to read via read_events at all) entitles a widget to
+    // the SAME kind of toWidget push as update_state, just for ordinary
+    // timeline events instead of state events: a toWidget request with
+    // action 'send_event' carrying the newly-arrived event, mirroring the
+    // name of the widget's own fromWidget 'send_event' action in the
+    // opposite direction. This has NEVER been tried against real Element
+    // before today (unlike update_state, now proven live multiple times)
+    // -- Tom's explicit call to wire it up and disable the corresponding
+    // poll anyway, rather than keep both running "just in case".
+    let pushedTimelineEventCallback = null;
     const pending = new Map(); // requestId -> {resolve, reject}
     // A THIRD, separate capability gates read_events entirely, on top of
     // the per-event-type receive/send ones above -- confirmed live:
@@ -468,6 +525,36 @@
       'org.matrix.msc2762.receive.state_event:' + WIDGET_LAYOUT_PROPOSAL_TYPE,
       'org.matrix.msc2762.send.state_event:' + WIDGET_LAYOUT_PROPOSAL_TYPE,
       'org.matrix.msc2762.receive.state_event:' + WIDGET_POWER_LEVELS_TYPE,
+      'org.matrix.msc2762.receive.state_event:' + WIDGET_ROOM_CREATE_TYPE,
+      // Live-reported (Tom, 2026-10-02): a fresh reload STILL didn't pick
+      // up a genuinely new layout proposal -- confirming the deeper
+      // problem isn't timing, it's that read_events' WILDCARD
+      // "current state" read (state_key: true -- the shape this type and
+      // the project index genuinely need, since their state_key varies
+      // and the whole point is discovering an unknown set) can come back
+      // stale while still reporting status:'ok', so no amount of
+      // client-side retrying ever catches it (a retry only helps a
+      // REJECTED read, which looks nothing like this). Does NOT extend to
+      // power_levels/room_create just above -- both have a single FIXED
+      // state_key known in advance, nothing to wildcard-discover, and no
+      // live evidence that shape ever goes stale the same way (see
+      // getPowerLevels/getRoomCreator's own comment for the narrower,
+      // actually-confirmed bug those two had instead). receive.event:TYPE
+      // requested ALONGSIDE the existing receive.state_event:TYPE (not
+      // instead of it -- sending still needs the state capability, and
+      // MSC2762 doesn't appear to treat these as mutually exclusive)
+      // unlocks the SAME plain, since-cursor timeline read already proven
+      // reliable for WIDGET_EVENT_TYPE -- a state event is still an
+      // ordinary timeline event with its own state_key intact, so it
+      // rides pullMore's own full backfill the exact same way. See
+      // pullMore's own comment for where this is actually used.
+      'org.matrix.msc2762.receive.event:' + WIDGET_LAYOUT_PROPOSAL_TYPE,
+      // Live-reported (Tom, 2026-10-03): same wildcard-discovery reasoning
+      // as layout-proposal just above -- project ids aren't known in
+      // advance either. This was the one type deliberately left polling
+      // every 5s (out of scope at the time of the first pass), and turned
+      // out to be the bulk of the remaining read_events console noise.
+      'org.matrix.msc2762.receive.event:' + WIDGET_PROJECT_STATE_TYPE,
       'org.matrix.msc2762.timeline:' + roomId,
       // MSC4039 ("Access the Content repository with the Widget API") --
       // media-blob snapshots (tracker f6b39bf0's rate-limit fix) need the
@@ -542,11 +629,48 @@
         let response = {};
         if (msg.action === 'capabilities') response = { capabilities: WIDGET_CAPABILITIES };
         else if (msg.action === 'supported_api_versions') response = { supported_versions: SUPPORTED_API_VERSIONS };
+        else if (msg.action === 'update_state' && pushedStateUpdateCallback) {
+          // Temporary diagnostic (live bug, tracker #169/4f07e72b follow-up):
+          // confirming the REAL shape Element sends here before trusting any
+          // particular parse of it.
+          console.log('[wigwag-widget] update_state push data:', JSON.stringify(msg.data));
+          try { pushedStateUpdateCallback(msg.data); } catch (e) { console.warn('[wigwag-widget] pushedStateUpdateCallback failed:', e); }
+        }
+        else if (msg.action === 'send_event' && pushedTimelineEventCallback) {
+          // Temporary diagnostic (never verified against real Element
+          // before today, unlike update_state) -- same reasoning as that
+          // one's own now-removed version: confirm the REAL shape before
+          // trusting any particular parse of it.
+          console.log('[wigwag-widget] send_event push data:', JSON.stringify(msg.data));
+          // Best-effort shape parsing, same dual-shape tolerance as
+          // update_state's own parsing (data.type/content directly, OR
+          // nested under data.event) -- genuinely unknown which one real
+          // Element uses here until this is actually tried live.
+          const pushedEvent = (msg.data && msg.data.type) ? msg.data : (msg.data && msg.data.event) || null;
+          if (pushedEvent && pushedEvent.type) {
+            // Same entry-id dedup discipline as every read_events result
+            // already goes through (dedupeNew, defined below) -- a push
+            // arriving for something the initial connect-time backfill
+            // ALSO already saw (a race at connect) must not be processed
+            // twice.
+            const fresh = dedupeNew([pushedEvent]);
+            if (fresh.length) {
+              try { pushedTimelineEventCallback(fresh[0]); } catch (e) { console.warn('[wigwag-widget] pushedTimelineEventCallback failed:', e); }
+            }
+          }
+        }
         window.parent.postMessage(Object.assign({}, msg, { response }), '*');
       }
     });
 
     let readCursor = undefined; // passed as a hint if the host supports pagination; harmless if it doesn't
+    // Deliberately a SEPARATE flag from readCursor, not "readCursor still
+    // undefined" -- a genuinely empty room never gets a nextToken back on
+    // its first call (nothing to page through), which would leave
+    // readCursor stuck at undefined forever and make every later tick
+    // misidentify itself as "still the first call" too, permanently
+    // defeating pullMore's own push-vs-poll gating below.
+    let hasDoneInitialTimelinePull = false;
     // MSC2876 has no confirmed continuation-token guarantee across real
     // hosts -- rather than trust `since`/`nextToken` round-tripping
     // correctly, dedupe on the entry's own id so a host that just replays
@@ -636,36 +760,77 @@
           // needs a room snapshot mechanism (tracker f1c7098f), not a
           // bigger number here.
           const WIDGET_PAGE_LIMIT = 2000;
-          const result = await postToHost(READ_EVENTS_ACTION, { type: WIDGET_EVENT_TYPE, room_ids: [roomId], limit: WIDGET_PAGE_LIMIT, since: readCursor });
-          const events = ((result && result.events) || []).slice();
-          if (result && result.nextToken) readCursor = result.nextToken;
-          // Snapshot manifest events -- same best-effort treatment: a host
-          // that hasn't granted this newer capability yet must never break
-          // ordinary sync. Just the one small event now (media-blob
-          // snapshots, not chunking) -- no separate chunk-type read.
-          try {
-            const snapResult = await postToHost(READ_EVENTS_ACTION, { type: WIDGET_SNAPSHOT_TYPE, room_ids: [roomId], limit: WIDGET_PAGE_LIMIT, since: readCursor });
-            events.push(...((snapResult && snapResult.events) || []));
-          } catch (e) { console.warn('[wigwag-matrix-host] snapshot read_events failed (non-fatal):', e.message); }
-          // A project created by a moderator WHILE this session is already
-          // connected rides this same live poll -- same best-effort
-          // treatment as the other types above.
-          try {
-            const projectResult = await postToHost(READ_EVENTS_ACTION, { type: WIDGET_PROJECT_STATE_TYPE, room_ids: [roomId], limit: WIDGET_PAGE_LIMIT, since: readCursor, state_key: true });
-            events.push(...((projectResult && projectResult.events) || []));
-          } catch (e) { console.warn('[wigwag-matrix-host] project-index read_events failed (non-fatal):', e.message); }
-          // Layout proposal / power levels (tracker #169/4f07e72b) -- same
-          // best-effort, ride-the-poll treatment as the project index just
-          // above, so a change made WHILE this session is already
-          // connected is picked up without a reconnect.
-          try {
-            const layoutResult = await postToHost(READ_EVENTS_ACTION, { type: WIDGET_LAYOUT_PROPOSAL_TYPE, room_ids: [roomId], limit: WIDGET_PAGE_LIMIT, since: readCursor, state_key: true });
-            events.push(...((layoutResult && layoutResult.events) || []));
-          } catch (e) { console.warn('[wigwag-matrix-host] layout-proposal read_events failed (non-fatal):', e.message); }
-          try {
-            const plResult = await postToHost(READ_EVENTS_ACTION, { type: WIDGET_POWER_LEVELS_TYPE, room_ids: [roomId], limit: WIDGET_PAGE_LIMIT, since: readCursor, state_key: true });
-            events.push(...((plResult && plResult.events) || []));
-          } catch (e) { console.warn('[wigwag-matrix-host] power-levels read_events failed (non-fatal):', e.message); }
+          const events = [];
+          // Live-reported (Tom, 2026-10-02): "is there no push mechanism
+          // for ordinary events?" -- there is (see pushedTimelineEventCallback's
+          // own comment above), so these two reads now only happen on the
+          // FIRST call (readCursor still undefined -- pullInitial's own
+          // full, retried backfill), never on a later tick once push has
+          // taken over. Push only ever reports a NEW event as it happens;
+          // it can't report the history that already existed before this
+          // connection, so the one-time backfill here is still required
+          // regardless of push -- only the ONGOING per-5s-tick re-read is
+          // gone. `!pushedTimelineEventCallback` is a defensive fallback,
+          // not expected to ever be true in real operation (registration
+          // happens at bridge-construction time, before connect() ever
+          // calls pullInitial() -> this), in case something ever calls
+          // pullMore() on a raw transport that was never wrapped in
+          // createMatrixBridge at all.
+          if (!hasDoneInitialTimelinePull || !pushedTimelineEventCallback) {
+            const result = await postToHost(READ_EVENTS_ACTION, { type: WIDGET_EVENT_TYPE, room_ids: [roomId], limit: WIDGET_PAGE_LIMIT, since: readCursor });
+            events.push(...((result && result.events) || []));
+            if (result && result.nextToken) readCursor = result.nextToken;
+            hasDoneInitialTimelinePull = true;
+            // Snapshot manifest events -- same best-effort treatment: a host
+            // that hasn't granted this newer capability yet must never break
+            // ordinary sync. Just the one small event now (media-blob
+            // snapshots, not chunking) -- no separate chunk-type read.
+            try {
+              const snapResult = await postToHost(READ_EVENTS_ACTION, { type: WIDGET_SNAPSHOT_TYPE, room_ids: [roomId], limit: WIDGET_PAGE_LIMIT, since: readCursor });
+              events.push(...((snapResult && snapResult.events) || []));
+            } catch (e) { console.warn('[wigwag-matrix-host] snapshot read_events failed (non-fatal):', e.message); }
+            // Layout proposal (tracker #169/4f07e72b) -- Live-reported
+            // (Tom, 2026-10-02): a fresh RELOAD still didn't pick up a
+            // genuinely new layout proposal, proving the problem was
+            // never timing -- read_events' WILDCARD "current state" read
+            // (state_key: true, the shape this type needs since its
+            // state_key varies per project) can come back stale while
+            // still reporting status:'ok', so no amount of client-side
+            // retrying at connect ever catches it. Root fix: read the
+            // exact same proven-reliable way as WIDGET_EVENT_TYPE just
+            // above -- a plain, since-cursor timeline read, NOT a
+            // "current state" one -- requiring the matching
+            // receive.event:TYPE capability requested alongside the
+            // existing receive.state_event:TYPE (see WIDGET_CAPABILITIES'
+            // own comment). power_levels/room_create do NOT belong here
+            // (2026-10-03 correction) -- both have a single fixed
+            // state_key, nothing to wildcard-discover, and no evidence
+            // that shape ever goes stale; they're found via
+            // getPowerLevels()/getRoomCreator()'s own dedicated,
+            // retried fetch instead (see connect()'s own comment).
+            try {
+              const layoutResult = await postToHost(READ_EVENTS_ACTION, { type: WIDGET_LAYOUT_PROPOSAL_TYPE, room_ids: [roomId], limit: WIDGET_PAGE_LIMIT, since: readCursor });
+              events.push(...((layoutResult && layoutResult.events) || []));
+            } catch (e) { console.warn('[wigwag-matrix-host] layout-proposal read_events failed (non-fatal):', e.message); }
+            // Project index -- Live-reported (Tom, 2026-10-03): the one
+            // type deliberately left on this 5s poll when the three above
+            // were fixed, since it wasn't part of that bug report; turned
+            // out to be the bulk of the remaining read_events console
+            // noise. Same fix, same reasoning: a plain since-cursor
+            // timeline read here for the one-time backfill (requires the
+            // matching receive.event:TYPE capability, see
+            // WIDGET_CAPABILITIES' own comment), no more state_key:true
+            // "current state" read on a timer. A project created WHILE
+            // this session is already connected now arrives via push
+            // instead (onPushedTimelineEvent routes WIDGET_PROJECT_STATE_TYPE
+            // to processNewRemoteEvents, same as entries/snapshots, since
+            // discovering a brand new project needs that function's own
+            // bootstrap logic, not just an append -- see its own comment).
+            try {
+              const projectResult = await postToHost(READ_EVENTS_ACTION, { type: WIDGET_PROJECT_STATE_TYPE, room_ids: [roomId], limit: WIDGET_PAGE_LIMIT, since: readCursor });
+              events.push(...((projectResult && projectResult.events) || []));
+            } catch (e) { console.warn('[wigwag-matrix-host] project-index read_events failed (non-fatal):', e.message); }
+          }
           return { status: 'ok', events: dedupeNew(events) };
         } catch (e) {
           return { status: 'error', message: e.message };
@@ -756,72 +921,34 @@
           return { status: 'forbidden', message: e.message };
         }
       },
-      // Same read_events mechanism as every other type this transport
-      // reads (getRoomName above included) -- NOT the direct transport's
-      // real always-current getMatrixRoomState, but genuinely reliable
-      // regardless: confirmed live (tracker f6b39bf0) that Element's
-      // ClientWidgetApi routes a read_events request into its STATE-read
-      // path (real per-state_key current state, no timeline-depth
-      // limitation) only when `state_key` is present at all in the
-      // request; omitting it entirely -- as this used to -- makes Element
-      // treat it as an ordinary TIMELINE read instead, which then gets
-      // rejected outright ("Cannot read room events of this type") since
-      // this widget was only ever granted a receive.state_event capability
-      // for this type, not receive.event. `state_key: true` is the
-      // documented wildcard sentinel for "every state_key of this type",
-      // as opposed to a specific key string like getRoomName's `''`.
-      // Genuinely returns every currently-live state_key this way -- not
-      // "latest occurrence per key by arrival order" as previously
-      // (wrongly) assumed here.
-      async getProjectIndex() {
-        try {
-          const result = await postToHost(READ_EVENTS_ACTION, { type: WIDGET_PROJECT_STATE_TYPE, room_ids: [roomId], limit: 2000, state_key: true });
-          const events = (result && result.events) || [];
-          // Temporary diagnostic (live bug: only the newest of several real
-          // work.wigwag.project state events surfaces in the switcher) --
-          // makes it a one-line copy/paste to see exactly what Element's
-          // read_events actually handed back, instead of digging through
-          // devtools' collapsed object tree.
-          console.log('[wigwag-widget] getProjectIndex raw events:', events.length, JSON.stringify(events.map(ev => ({ state_key: ev && ev.state_key, content: ev && ev.content }))));
-          const projectIds = new Set();
-          for (const ev of events) {
-            const id = core.projectIdFromMatrixStateEvent(ev);
-            if (id) projectIds.add(id);
-          }
-          return { status: 'ok', projectIds: [...projectIds] };
-        } catch (e) {
-          return { status: 'error', message: e.message };
-        }
-      },
-      // Layout proposal (tracker #169/4f07e72b) -- same state_key:true
-      // wildcard read as getProjectIndex above (state_key is the PROJECT
-      // id, a room can hold more than one -- tracker #149), returning
-      // every currently-live proposal, keyed by project.
-      async getLayoutProposals() {
-        try {
-          const result = await postToHost(READ_EVENTS_ACTION, { type: WIDGET_LAYOUT_PROPOSAL_TYPE, room_ids: [roomId], limit: 2000, state_key: true });
-          const events = (result && result.events) || [];
-          const proposalsByProjectId = {};
-          for (const ev of events) {
-            const pid = core.layoutProposalProjectId(ev);
-            if (!pid) continue;
-            const proposal = core.layoutProposalFromMatrixStateEvent(ev);
-            if (proposal) proposalsByProjectId[pid] = proposal;
-          }
-          return { status: 'ok', proposalsByProjectId };
-        } catch (e) {
-          return { status: 'error', message: e.message };
-        }
-      },
-      // Room-wide, not per-project -- see the direct transport's own
-      // getPowerLevels comment. Filters the reply by real type/state_key
-      // explicitly (unlike getRoomName's own "just trust the last event"
-      // shortcut) -- a real Matrix read_events reply for a specific type
-      // never carries anything else, but this file's own test double
-      // (fake-widget-host.html) has historically returned its FULL
-      // pendingEntries queue regardless of the requested type, so trusting
-      // "whatever came back last" here would silently pick up an
-      // unrelated event.
+      // Project index / layout proposal (tracker f6b39bf0, #169/4f07e72b):
+      // both genuinely need a WILDCARD "every currently-live state_key of
+      // this type" read (state_key: true) -- the state_key varies per
+      // project, and the whole point is discovering a set that isn't
+      // known in advance. That specific wildcard shape is the one
+      // confirmed live (2026-10-02) to come back stale while still
+      // reporting status:'ok', not the fixed-key reads just below -- see
+      // pullMore's own comment. No fix exists for the wildcard shape
+      // itself, so both types are instead found the exact same reliable
+      // way as ordinary entries: a plain, since-cursor timeline read in
+      // pullMore()'s one-time backfill, requiring the matching
+      // receive.event:TYPE capability requested alongside the existing
+      // receive.state_event:TYPE (see WIDGET_CAPABILITIES' own comment).
+      //
+      // Power levels / room creator, below, are a DIFFERENT shape
+      // entirely and were wrongly swept into that same "convert to
+      // backfill" fix for a few hours on 2026-10-03 before Tom pointed
+      // out the obvious hole in the reasoning: both have a single FIXED
+      // state_key ('') known in advance -- there is no discovery problem
+      // to solve, so there was never a wildcard read here to begin with,
+      // and no live evidence was ever gathered that THIS shape goes
+      // stale the way the wildcard one does. The real, actually-confirmed
+      // bug for these two was narrower: a ONE-SHOT connect-time fetch
+      // with no retry losing a transient capability-approval race (see
+      // connect()'s own comment) -- fixed by retrying, not by changing
+      // the read shape. Restored to a dedicated fixed-key current-state
+      // fetch here, same as the direct transport already uses via a real
+      // homeserver /state read.
       async getPowerLevels() {
         try {
           const result = await postToHost(READ_EVENTS_ACTION, { type: WIDGET_POWER_LEVELS_TYPE, room_ids: [roomId], state_key: '', limit: 1 });
@@ -829,6 +956,20 @@
           const matching = events.filter(e => e && e.type === WIDGET_POWER_LEVELS_TYPE);
           const last = matching[matching.length - 1];
           return { status: 'ok', content: (last && last.content) || null };
+        } catch (e) {
+          return { status: 'error', message: e.message };
+        }
+      },
+      // Live-reported (Tom, 2026-09-29) -- see the direct transport's own
+      // getRoomCreator comment. Confirmed live against real Element: the
+      // read_events reply does carry the raw event's own `sender` field.
+      async getRoomCreator() {
+        try {
+          const result = await postToHost(READ_EVENTS_ACTION, { type: WIDGET_ROOM_CREATE_TYPE, room_ids: [roomId], state_key: '', limit: 1 });
+          const events = (result && result.events) || [];
+          const matching = events.filter(e => e && e.type === WIDGET_ROOM_CREATE_TYPE);
+          const last = matching[matching.length - 1];
+          return { status: 'ok', sender: (last && last.sender) || null };
         } catch (e) {
           return { status: 'error', message: e.message };
         }
@@ -844,7 +985,10 @@
           return { status: 'forbidden', message: e.message };
         }
       },
-      async whoAmI(fallbackUserId) { return fallbackUserId || null; } // already known from the widget URL, no round-trip needed
+      async whoAmI(fallbackUserId) { return fallbackUserId || null; }, // already known from the widget URL, no round-trip needed
+      getDeviceId() { return deviceId || null; }, // MSC3819 URL template var, already known, no round-trip needed either
+      onStateUpdate(cb) { pushedStateUpdateCallback = cb; },
+      onTimelineEvent(cb) { pushedTimelineEventCallback = cb; }
     };
   }
 
@@ -1025,7 +1169,7 @@
     return { status: 'ok', matrixUserId };
   }
 
-  function createMatrixBridge(transport, roomId, fallbackUserId, fallbackDisplayName) {
+  function createMatrixBridge(transport, roomId, fallbackUserId, fallbackDisplayName, fallbackDeviceId) {
     let remoteRawEvents = [];
     // Tracker #158: local-only "have I actually landed in the room yet"
     // tracking for entries THIS device has sent -- purely in-memory, purely
@@ -1051,7 +1195,18 @@
     // more.
     let resolvedMatrixUserId = null;
     let resolvedDisplayName = null;
+    // Tracker #169/4f07e72b follow-up: the real Matrix device id (widget:
+    // MSC3819 URL template var; direct: /account/whoami's own device_id),
+    // handed to the iframe in wigwag:hello-ack the same way matrixUserId
+    // is -- a layout proposal's self-exclusion check uses this instead of
+    // inventing and persisting its own id, per Tom's explicit call.
+    let resolvedMatrixDeviceId = null;
     let bridgeTimer = null;
+    // Live-reported (Tom, 2026-09-29) -- see isModeratorForStateEvent's
+    // own comment in wigwag-core.js. Fetched once in connect() (the
+    // creator never changes for a room's lifetime, unlike power levels or
+    // a layout proposal -- no need to re-poll it).
+    let roomCreatorSender = null;
 
     function pendingEntryKey(entry) { return entry.id + ' ' + entry.sortKey; }
     function pendingOutboxFor(projectId) {
@@ -1086,19 +1241,207 @@
     // wigwag project (tracker #149), and layout proposals must never
     // cross-contaminate between them (see WIGWAG_MATRIX_LAYOUT_PROPOSAL_TYPE's
     // own comment in wigwag-core.js).
+    //
+    // Live-reported (Tom, 2026-10-02): confirmed real Element's read_events
+    // "current state" read for this type can hand back a long-stale
+    // snapshot -- not just on an ongoing poll tick (the never-regress
+    // guard below already covers that), but on a FRESH CONNECT too, where
+    // there's no already-known fresher value yet to compare against at
+    // all. Rather than guess at how OLD is too old (a real behavioral
+    // assumption, and the wrong lever to pull), this only accepts a
+    // well-formed proposal -- one that actually carries the sending
+    // device's id. Every proposal built by sendLayoutProposal going
+    // forward always has one (the real Matrix device id, or the local
+    // fallback when a client doesn't surface one) -- it's never empty.
+    // Every stale event seen from this room so far happens to predate
+    // that field entirely, so this quietly (and permanently, not just
+    // "for now") excludes exactly the malformed leftovers causing this,
+    // without excluding anything a current client could ever actually send.
     function currentLayoutProposal(projectId) {
       const ev = latestStateEventOfType(core.WIGWAG_MATRIX_LAYOUT_PROPOSAL_TYPE, projectId);
-      return ev ? core.layoutProposalFromMatrixStateEvent(ev) : null;
+      if (!ev) return null;
+      const proposal = core.layoutProposalFromMatrixStateEvent(ev);
+      if (!proposal || !proposal.proposedByDeviceId) return null;
+      return proposal;
     }
     function currentLayoutProposalsByProjectId() {
       return Object.fromEntries([...bridgedProjects.keys()].map(id => [id, currentLayoutProposal(id)]));
     }
     // Room-wide (state_key ''), not per-project -- Matrix power levels are
-    // never scoped to a sub-part of a room.
+    // never scoped to a sub-part of a room. Passes ev's content through
+    // even when ev is missing (null) -- isModeratorForStateEvent still
+    // correctly grants the room creator access with no power_levels event
+    // at all, so this must never short-circuit to false before that check
+    // runs (live-reported, tracker #169/4f07e72b follow-up).
     function currentIsModerator() {
       const ev = latestStateEventOfType('m.room.power_levels', '');
-      return ev ? core.isModeratorForStateEvent(ev.content, resolvedMatrixUserId, core.WIGWAG_MATRIX_LAYOUT_PROPOSAL_TYPE) : false;
+      const result = core.isModeratorForStateEvent(ev ? ev.content : null, resolvedMatrixUserId, core.WIGWAG_MATRIX_LAYOUT_PROPOSAL_TYPE, roomCreatorSender);
+      return result;
     }
+    // Extracted (tracker #169/4f07e72b follow-up, 2026-10-02) from what
+    // used to be inline in the bridgeTimer tick below, so a live-PUSHED
+    // event (onPushedTimelineEvent, see its own comment) goes through the
+    // EXACT same discover/reconcile/snapshot-resolution pipeline as a
+    // polled one, rather than a hand-duplicated (and likely subtly wrong)
+    // second copy of this logic -- this has already absorbed several
+    // separate live bug fixes over this feature's own history and isn't
+    // safe to re-derive by hand. Returns whether a brand new project was
+    // discovered (changes what currentLayoutProposalsByProjectId()
+    // iterates over) -- callers decide for themselves whether that's
+    // reason enough to push wigwag:layout-proposals to the iframe.
+    async function processNewRemoteEvents(newEvents) {
+      if (!newEvents.length) return false;
+      let discoveredNewProject = false;
+      remoteRawEvents = remoteRawEvents.concat(newEvents);
+      for (const id of bridgedProjects.keys()) reconcileIntoLocal(id);
+      // Live-reported (Tom, tracker f6b39bf0): a project that first
+      // appears in the room AFTER this viewer already connected (someone
+      // else's import, mid-session) was invisible here until a full
+      // reconnect -- the loop above only ever reconciles projects it
+      // ALREADY knows about. "Everyone who can see the widget in the room
+      // sees the same state" (the whole point of Room Scoped Widget Mode)
+      // requires discovering genuinely new ones too, not just refreshing
+      // known ones. Mirrors openAll's own per-project bootstrap, just
+      // triggered reactively instead of once at connect.
+      const legacyDefaultProjectId = deriveProjectId(roomId);
+      const discovered = discoverProjects(remoteRawEvents, legacyDefaultProjectId, '');
+      for (const p of discovered) {
+        if (bridgedProjects.has(p.id)) continue;
+        discoveredNewProject = true;
+        const isDefault = p.id === legacyDefaultProjectId;
+        // A brand new project's ENTIRE history can legitimately live only
+        // inside a snapshot blob (a bulk-adopted "+ New project" always
+        // pushes just one, never plain entries) -- a scan of
+        // remoteRawEvents alone can never see that (same reason
+        // connect() itself has to resolve snapshots before calling
+        // discoverProjects, see its own comment). Without this, a viewer
+        // who was already connected when this project was created got
+        // the right id (once auto-switch was fixed) but its name/content
+        // stayed permanently stuck behind a generic fallback
+        // (live-reported, tracker f6b39bf0) -- reconcileIntoLocal's own
+        // later correction pass can't help either, since it re-derives
+        // from this same remoteRawEvents, which never had the content to
+        // find.
+        const manifest = core.findLatestSnapshotManifests(remoteRawEvents).get(p.id);
+        if (manifest) {
+          const resolved = await core.resolveSnapshotPayload(manifest, { downloadFn: transport.downloadSnapshotBlob });
+          if (resolved) {
+            remoteRawEvents = remoteRawEvents.concat(resolved.items.map(item => ({ type: core.WIGWAG_MATRIX_ENTRY_TYPE, content: core.matrixEventContentFromEntry(item) })));
+            lastSnapshotEntryCount.set(p.id, resolved.items.length);
+            if (manifest.createdAt) lastSnapshotAt.set(p.id, manifest.createdAt);
+          }
+        }
+        bridgedProjects.set(p.id, { name: p.label, includeUntagged: isDefault });
+        const remoteDoc = computeRemoteDocFor(p.id);
+        await bootstrapLocalStorage(p.id, p.label, docStorable({ fieldDefs: remoteDoc.fields, projectHistory: remoteDoc.projectHistory, issues: remoteDoc.issues }), transport, fallbackUserId, fallbackDisplayName);
+        reconcileIntoLocal(p.id);
+      }
+      return discoveredNewProject;
+    }
+    // Live-reported (Tom, 2026-10-02): "is there no push mechanism for
+    // ordinary events, do we really have to keep polling read_events?" --
+    // there is (see createWidgetTransport's own pushedTimelineEventCallback
+    // comment) -- this reacts to it exactly like onPushedStateUpdate
+    // reacts to a state-event push, just funneled through
+    // processNewRemoteEvents above instead of a direct append, since an
+    // ordinary entry/snapshot event can legitimately be the first sign of
+    // a brand new project nobody's bridged yet (rare, but the poll-based
+    // path already handles it -- a push-delivered one must too). Never
+    // verified against real Element before today -- Tom's explicit call
+    // to try it, with the corresponding poll removed (see pullMore's own
+    // comment) rather than kept as a safety net.
+    async function onPushedTimelineEvent(rawEvent) {
+      if (!rawEvent || typeof rawEvent !== 'object' || !rawEvent.type) return;
+      // Live-reported (Tom, 2026-10-02): a live layout-proposal change
+      // stopped arriving as soon as receive.event:TYPE was ALSO requested
+      // for it (alongside the existing receive.state_event:TYPE, added
+      // for the reliable backfill read -- see WIDGET_CAPABILITIES' own
+      // comment), even though ordinary entries kept pushing through fine
+      // the whole time. Only explanation: Element can switch which
+      // toWidget push action it uses for a given type (send_event vs
+      // update_state) once a widget ALSO holds the matching
+      // receive.event capability -- NOT additive, a replacement, at
+      // least for this type. State-shaped (not a discoverable-project
+      // candidate the way entries/snapshots are), so routed to
+      // onPushedStateUpdate instead of processNewRemoteEvents -- a raw
+      // timeline event already carries type/state_key/content as flat
+      // top-level properties, exactly the shape onPushedStateUpdate's own
+      // parsing already accepts. power_levels/m.room.create do NOT need
+      // this routing (2026-10-03 correction) -- neither was ever given
+      // the receive.event capability (see WIDGET_CAPABILITIES' own
+      // comment on why that fix was specific to the wildcard-discovery
+      // types), so Element has no reason to ever push either via
+      // send_event; both still arrive the ordinary way, via
+      // update_state, which onPushedStateUpdate already handles
+      // unconditionally regardless of how it was invoked.
+      if (rawEvent.type === core.WIGWAG_MATRIX_LAYOUT_PROPOSAL_TYPE) {
+        onPushedStateUpdate(rawEvent);
+        return;
+      }
+      // work.wigwag.project (tracker #169/4f07e72b, 2026-10-03) is ALSO
+      // state-shaped, but deliberately NOT routed to onPushedStateUpdate
+      // like the three above -- a brand new project needs real discovery
+      // (discoverProjects + bootstrapLocalStorage), not just an append to
+      // remoteRawEvents, so it goes through processNewRemoteEvents below
+      // exactly like entries/snapshots do, same reason a new project
+      // arriving via the poll already needed that function rather than a
+      // plain concat.
+      if (rawEvent.type !== core.WIGWAG_MATRIX_ENTRY_TYPE && rawEvent.type !== core.WIGWAG_MATRIX_SNAPSHOT_TYPE && rawEvent.type !== core.WIGWAG_MATRIX_PROJECT_STATE_TYPE) return;
+      const discoveredNewProject = await processNewRemoteEvents([rawEvent]);
+      if (discoveredNewProject) {
+        localStorage.postMessageToFrame({ type: 'wigwag:layout-proposals', proposalsByProjectId: currentLayoutProposalsByProjectId() });
+      }
+    }
+    if (typeof transport.onTimelineEvent === 'function') transport.onTimelineEvent(onPushedTimelineEvent);
+    // Live-reported (Tom, 2026-09-30): the widget transport's read_events
+    // "current state" read (state_key: true) was observed returning the
+    // SAME stale content indefinitely in real Element -- 60+ seconds and
+    // several poll ticks after a confirmed, successful PUT -- while
+    // Element's own toWidget update_state push (which DOES carry the
+    // fresh content) kept arriving the whole time, just never acted on.
+    // Reacts to that push directly instead of trusting the apparently-
+    // unreliable poll re-read for this event. Best-effort shape parsing
+    // (a handful of plausible toWidget update_state payload shapes tried
+    // in order) since this wasn't verified against real Element before
+    // today -- logged raw above so a wrong guess here is diagnosable
+    // immediately rather than silently doing nothing.
+    async function onPushedStateUpdate(data) {
+      if (!data || typeof data !== 'object') return;
+      const type = data.type || (data.event && data.event.type);
+      const stateKey = ('state_key' in data) ? data.state_key : (data.event && data.event.state_key);
+      const content = data.content || (data.event && data.event.content);
+      if (!type || stateKey === undefined || !content) return;
+      // work.wigwag.project (2026-10-03): unlike the other state-shaped
+      // types this function handles, a project needs real discovery
+      // (discoverProjects + bootstrapLocalStorage) when it's a brand new
+      // one, not just an append -- same reasoning as
+      // onPushedTimelineEvent's own project-state branch. Hedged here
+      // TOO (not just in that send_event handler) because the live-
+      // confirmed Element behavior this session found for layout-proposal
+      // -- switching from update_state to send_event once a type ALSO
+      // gets a receive.event capability -- isn't guaranteed to hold
+      // identically for every type; if Element instead keeps pushing
+      // work.wigwag.project via update_state, this still works.
+      if (type === core.WIGWAG_MATRIX_PROJECT_STATE_TYPE) {
+        await processNewRemoteEvents([{ type, state_key: stateKey, content }]);
+        localStorage.postMessageToFrame({ type: 'wigwag:layout-proposals', proposalsByProjectId: currentLayoutProposalsByProjectId() });
+        return;
+      }
+      const existing = latestStateEventOfType(type, stateKey);
+      if (existing && JSON.stringify(existing.content) === JSON.stringify(content)) return; // genuinely unchanged
+      // Same never-regress guard as the polling re-check below, for
+      // symmetry/defense-in-depth -- a push SHOULD always be fresh, but
+      // refusing to go backward on proposedAt costs nothing if it ever
+      // arrives out of order against a poll result for some reason.
+      if (type === core.WIGWAG_MATRIX_LAYOUT_PROPOSAL_TYPE && existing && (existing.content.proposedAt || 0) > (content.proposedAt || 0)) return;
+      remoteRawEvents = remoteRawEvents.concat([{ type, state_key: stateKey, content }]);
+      if (type === core.WIGWAG_MATRIX_LAYOUT_PROPOSAL_TYPE) {
+        localStorage.postMessageToFrame({ type: 'wigwag:layout-proposals', proposalsByProjectId: currentLayoutProposalsByProjectId() });
+      } else if (type === 'm.room.power_levels') {
+        localStorage.postMessageToFrame({ type: 'wigwag:moderator-status', isModerator: currentIsModerator() });
+      }
+    }
+    if (typeof transport.onStateUpdate === 'function') transport.onStateUpdate(onPushedStateUpdate);
     // Reconstructs a minimal, mergeable "doc" shape (projectHistory +
     // issues, each issue just {id, history, commentStreams}) from this
     // device's own outbox -- the exact inverse of flattenEntries. This is
@@ -1665,6 +2008,7 @@
           snapshot: localStorage.dumpAll(),
           matrixUserId: resolvedMatrixUserId,
           fallbackDisplayName: resolvedDisplayName,
+          matrixDeviceId: resolvedMatrixDeviceId,
           // Replays whatever's still outstanding across a plain iframe
           // reload (the host itself, and its in-memory outbox, survive
           // that -- only the iframe's own render state resets), so a
@@ -1703,6 +2047,12 @@
       // Moderator-gated the same way project creation is (Matrix's own
       // power-level check on the real send) -- a rejection surfaces via
       // the same wigwag:room-write-rejected notice, never a silent drop.
+      // On the widget transport, 'forbidden' is a best-guess coercion of
+      // ANY rejected send_event (Element reports a capability rejection
+      // the same way as a real power-level one -- see sendLayoutProposal's
+      // own comment), so it's not reliably a real moderator rejection --
+      // appending the underlying message (when there is one) gives a real
+      // signal to tell the two apart instead of always blaming moderators.
       if (e.data.type === 'wigwag:propose-layout') {
         const content = core.matrixStateEventContentFromLayoutProposal(e.data.content || {});
         transport.sendLayoutProposal(e.data.projectId, content).then(result => {
@@ -1710,7 +2060,7 @@
           localStorage.postMessageToFrame({
             type: 'wigwag:room-write-rejected',
             reason: result.status === 'forbidden'
-              ? 'Only room moderators can propose a table layout.'
+              ? ('Only room moderators can propose a table layout.' + (result.message ? ' (' + result.message + ')' : ''))
               : ('Could not send the layout proposal (' + result.status + (result.message ? ': ' + result.message : '') + ').')
           });
         });
@@ -1751,27 +2101,58 @@
         // effort: a transport error here must not block connecting
         // altogether -- discoverProjects's own timeline-scan/grandfather-
         // clause fallback still runs regardless below.
+        //
+        // DIRECT transport only (2026-10-03, same reasoning/precedent as
+        // layout-proposal/power-levels/room-create above): the widget
+        // transport's own pullMore() now backfills work.wigwag.project via
+        // the same reliable since-cursor timeline read (see its own
+        // comment), which discoverProjects's unconditional scan of
+        // remoteRawEvents already picks up below -- calling this
+        // DEDICATED current-state fetch for the widget transport too
+        // would be redundant at best, and at worst risk a stale result
+        // winning (same array-order "last wins" hazard already documented
+        // for the other three types). The direct transport still needs
+        // its own dedicated /state read here -- same unresolved gap as
+        // those three: its own full-timeline pull has no guarantee of
+        // reaching a project created long before this reconnect.
         let indexedProjectIds = [];
-        const indexResult = await transport.getProjectIndex();
-        if (indexResult.status === 'ok') indexedProjectIds = indexResult.projectIds;
+        if (typeof transport.onStateUpdate !== 'function') {
+          const indexResult = await transport.getProjectIndex();
+          if (indexResult.status === 'ok') indexedProjectIds = indexResult.projectIds;
+        }
 
-        // Layout proposal / power levels (tracker #169/4f07e72b) -- same
-        // current-state-read reliability reasoning as the project index
-        // just above. Best-effort, wrapped as synthetic raw state events
-        // (matching projectStateEvents's own treatment below) so
-        // latestStateEventOfType's scan can treat them uniformly with
-        // whatever the ongoing poll later finds in the timeline.
-        let seededExtraStateEvents = [];
-        const layoutProposalsResult = await transport.getLayoutProposals();
-        if (layoutProposalsResult.status === 'ok' && layoutProposalsResult.proposalsByProjectId) {
-          for (const [pid, proposal] of Object.entries(layoutProposalsResult.proposalsByProjectId)) {
-            seededExtraStateEvents.push({ type: core.WIGWAG_MATRIX_LAYOUT_PROPOSAL_TYPE, state_key: pid, content: core.matrixStateEventContentFromLayoutProposal(proposal) });
-          }
+        // Live-reported (Tom, 2026-09-29) -- see isModeratorForStateEvent's
+        // own comment in wigwag-core.js. Best-effort like the reads above:
+        // a transport error here must not block connecting altogether,
+        // and currentIsModerator() already treats a null roomCreatorSender
+        // as "no creator override available" rather than a crash.
+        //
+        // BOTH transports get this read (2026-10-03 correction -- this
+        // was briefly gated to direct-only for a few hours under the
+        // mistaken belief that room-create needed the same "convert to
+        // backfill" fix as layout-proposal; it doesn't, see
+        // getRoomCreator's own comment for why that reasoning didn't
+        // actually apply here). But only the WIDGET transport gets a
+        // RETRY CASCADE -- its confirmed failure mode was a one-shot
+        // fetch losing a transient capability-approval race, specific to
+        // the postMessage handshake widgets go through. The direct
+        // transport's plain HTTP GET has no equivalent race (it either
+        // succeeds or fails outright) and never needed a retry before
+        // tonight -- adding one unconditionally here briefly turned every
+        // ordinary connect() on a room with no power_levels/room_create
+        // mock configured into a guaranteed multi-second stall (confirmed
+        // live as a real regression), the same bug class already caught
+        // and fixed once for the test fixture defaults earlier tonight,
+        // just reappearing from the opposite direction. An empty delay
+        // list collapses the loop to exactly one attempt.
+        const ROOM_CREATOR_CONNECT_RETRY_DELAYS_MS = (typeof transport.onStateUpdate === 'function') ? [500, 1000, 1500] : [];
+        let roomCreatorResult = { status: 'error', sender: null };
+        for (let attempt = 0; ; attempt++) {
+          roomCreatorResult = await transport.getRoomCreator();
+          if ((roomCreatorResult.status === 'ok' && roomCreatorResult.sender) || attempt >= ROOM_CREATOR_CONNECT_RETRY_DELAYS_MS.length) break;
+          await new Promise(resolve => setTimeout(resolve, ROOM_CREATOR_CONNECT_RETRY_DELAYS_MS[attempt]));
         }
-        const powerLevelsResult = await transport.getPowerLevels();
-        if (powerLevelsResult.status === 'ok' && powerLevelsResult.content) {
-          seededExtraStateEvents.push({ type: 'm.room.power_levels', state_key: '', content: powerLevelsResult.content });
-        }
+        if (roomCreatorResult.status === 'ok' && roomCreatorResult.sender) roomCreatorSender = roomCreatorResult.sender;
 
         const initialPull = await transport.pullInitial();
         if (initialPull.status !== 'ok') return initialPull;
@@ -1813,7 +2194,68 @@
         // present in remoteRawEvents in their real shape, not decoded as
         // an entry.
         const projectStateEvents = initialPull.events.filter(ev => ev && ev.type === core.WIGWAG_MATRIX_PROJECT_STATE_TYPE);
-        remoteRawEvents = snapshotItems.concat(tailItems).map(item => ({ type: core.WIGWAG_MATRIX_ENTRY_TYPE, content: core.matrixEventContentFromEntry(item) })).concat(projectStateEvents).concat(seededExtraStateEvents);
+        // Layout proposal (tracker #169/4f07e72b) -- Live-reported (Tom,
+        // 2026-10-02): even a fresh RELOAD didn't pick up a genuinely new
+        // layout proposal -- the WILDCARD "current state" read
+        // (state_key:true, needed because a proposal's state_key is the
+        // project id, unknown in advance) can come back stale while still
+        // reporting status:'ok', which no amount of retrying a few
+        // hundred ms apart will ever catch. Root fix: also requested with
+        // receive.event:TYPE (see WIDGET_CAPABILITIES' own comment),
+        // unlocking the exact same proven-reliable plain timeline read as
+        // ordinary entries, which pullMore()'s one-time backfill now
+        // includes. This is the ONLY source for the WIDGET transport, for
+        // state that predates this connection AND state sent during it.
+        // power_levels/room_create do NOT belong in this filter
+        // (2026-10-03 correction) -- see getPowerLevels'/getRoomCreator's
+        // own comment for why a fixed-state_key read never had this
+        // problem and didn't need the same fix.
+        const layoutAndPowerLevelEvents = initialPull.events.filter(ev => ev && ev.type === core.WIGWAG_MATRIX_LAYOUT_PROPOSAL_TYPE);
+        let seededExtraStateEvents = [];
+        // Layout proposal, DIRECT transport only: its own dedicated
+        // /state read is still needed for a proposal that PRE-DATES this
+        // connection -- confirmed live by an earlier regression that its
+        // mock (and plausibly a real homeserver's paginated /messages
+        // too) doesn't guarantee surfacing one through the timeline
+        // alone. A proposal SENT during the direct transport's own
+        // session already rides its full unfiltered timeline pull
+        // regardless. The widget transport gets this entirely from
+        // layoutAndPowerLevelEvents above -- calling this dedicated fetch
+        // for it too would risk a stale wildcard read getting concat'd in
+        // AFTER the reliable one and incorrectly winning
+        // (latestStateEventOfType takes the LAST matching array entry,
+        // not the freshest by timestamp).
+        if (typeof transport.onStateUpdate !== 'function') {
+          const layoutProposalsResult = await transport.getLayoutProposals();
+          if (layoutProposalsResult.status === 'ok' && layoutProposalsResult.proposalsByProjectId) {
+            for (const [pid, proposal] of Object.entries(layoutProposalsResult.proposalsByProjectId)) {
+              seededExtraStateEvents.push({ type: core.WIGWAG_MATRIX_LAYOUT_PROPOSAL_TYPE, state_key: pid, content: core.matrixStateEventContentFromLayoutProposal(proposal) });
+            }
+          }
+        }
+        // Power levels -- BOTH transports get this read (2026-10-03
+        // correction, same story as getRoomCreator above): a single fixed
+        // state_key, no wildcard-discovery problem, no confirmed
+        // staleness -- the real bug was a one-shot no-retry fetch losing
+        // a transient capability-approval race on the widget transport,
+        // fixed by retrying the SAME dedicated read rather than switching
+        // its shape. Retry cascade gated to the widget transport only,
+        // same reasoning and same live-confirmed regression as
+        // getRoomCreator's own retry just above -- a room with no
+        // power_levels configured on the direct transport's mock is a
+        // real, common, FAST "ok, content: null" answer, not a failure
+        // worth paying a multi-second cascade to retry.
+        const POWER_LEVELS_CONNECT_RETRY_DELAYS_MS = (typeof transport.onStateUpdate === 'function') ? [500, 1000, 1500] : [];
+        let powerLevelsResult = { status: 'error', content: null };
+        for (let attempt = 0; ; attempt++) {
+          powerLevelsResult = await transport.getPowerLevels();
+          if ((powerLevelsResult.status === 'ok' && powerLevelsResult.content) || attempt >= POWER_LEVELS_CONNECT_RETRY_DELAYS_MS.length) break;
+          await new Promise(resolve => setTimeout(resolve, POWER_LEVELS_CONNECT_RETRY_DELAYS_MS[attempt]));
+        }
+        if (powerLevelsResult.status === 'ok' && powerLevelsResult.content) {
+          seededExtraStateEvents.push({ type: 'm.room.power_levels', state_key: '', content: powerLevelsResult.content });
+        }
+        remoteRawEvents = snapshotItems.concat(tailItems).map(item => ({ type: core.WIGWAG_MATRIX_ENTRY_TYPE, content: core.matrixEventContentFromEntry(item) })).concat(projectStateEvents).concat(layoutAndPowerLevelEvents).concat(seededExtraStateEvents);
         for (const [projectId, snap] of snapshotsByProject) {
           lastSnapshotEntryCount.set(projectId, snap.items.length);
           if (snap.createdAt) lastSnapshotAt.set(projectId, snap.createdAt);
@@ -1855,6 +2297,7 @@
         resolvedMatrixUserId = await transport.whoAmI(fallbackUserId);
         if (!resolvedMatrixUserId) return { status: 'no-identity', message: 'Could not determine this session\'s Matrix user id.' };
         resolvedDisplayName = fallbackDisplayName;
+        resolvedMatrixDeviceId = (transport.getDeviceId && transport.getDeviceId()) || fallbackDeviceId || null;
         for (const p of projects) {
           const isDefault = p.id === deriveProjectId(roomId);
           bridgedProjects.set(p.id, { name: p.label, includeUntagged: isDefault });
@@ -1896,60 +2339,111 @@
           // the "found new events" branch below) meant a truly quiet
           // project's age never got checked at all.
           for (const id of bridgedProjects.keys()) await pushSnapshotIfDue(id);
-          if (result.events.length) {
-            remoteRawEvents = remoteRawEvents.concat(result.events);
-            for (const id of bridgedProjects.keys()) reconcileIntoLocal(id);
-            // Live-reported (Tom, tracker f6b39bf0): a project that first
-            // appears in the room AFTER this viewer already connected
-            // (someone else's import, mid-session) was invisible here
-            // until a full reconnect -- the loop above only ever
-            // reconciles projects it ALREADY knows about. "Everyone who
-            // can see the widget in the room sees the same state" (the
-            // whole point of Room Scoped Widget Mode) requires
-            // discovering genuinely new ones too, not just refreshing
-            // known ones. Mirrors openAll's own per-project bootstrap,
-            // just triggered reactively instead of once at connect.
-            const legacyDefaultProjectId = deriveProjectId(roomId);
-            const discovered = discoverProjects(remoteRawEvents, legacyDefaultProjectId, '');
-            for (const p of discovered) {
-              if (bridgedProjects.has(p.id)) continue;
-              const isDefault = p.id === legacyDefaultProjectId;
-              // A brand new project's ENTIRE history can legitimately live
-              // only inside a snapshot blob (a bulk-adopted "+ New
-              // project" always pushes just one, never plain entries) --
-              // a scan of remoteRawEvents alone can never see that (same
-              // reason connect() itself has to resolve snapshots before
-              // calling discoverProjects, see its own comment). Without
-              // this, a viewer who was already connected when this
-              // project was created got the right id (once auto-switch
-              // was fixed) but its name/content stayed permanently stuck
-              // behind a generic fallback (live-reported, tracker
-              // f6b39bf0) -- reconcileIntoLocal's own later correction
-              // pass can't help either, since it re-derives from this
-              // same remoteRawEvents, which never had the content to find.
-              const manifest = core.findLatestSnapshotManifests(remoteRawEvents).get(p.id);
-              if (manifest) {
-                const resolved = await core.resolveSnapshotPayload(manifest, { downloadFn: transport.downloadSnapshotBlob });
-                if (resolved) {
-                  remoteRawEvents = remoteRawEvents.concat(resolved.items.map(item => ({ type: core.WIGWAG_MATRIX_ENTRY_TYPE, content: core.matrixEventContentFromEntry(item) })));
-                  lastSnapshotEntryCount.set(p.id, resolved.items.length);
-                  if (manifest.createdAt) lastSnapshotAt.set(p.id, manifest.createdAt);
+          // Live-reported (Tom, 2026-10-02): "still looks pretty polly" --
+          // the layout-proposal/power-levels NETWORK reads were removed
+          // for the widget transport, but the two postMessageToFrame calls
+          // at the end of this tick kept firing (and recomputing their
+          // payload, incl. a now-removed diagnostic console.log) on EVERY
+          // tick regardless of whether moderator status or any proposal
+          // could possibly have changed -- the exact kind of unconditional
+          // busywork this whole effort was meant to eliminate, just
+          // without a network call attached. These two flags track
+          // whether anything THIS tick could actually have changed either
+          // one; the two pushes at the bottom of this function now only
+          // fire when their own flag is true.
+          let layoutProposalsMightHaveChanged = await processNewRemoteEvents(result.events);
+          let moderatorMightHaveChanged = false;
+          // Live-reported (Tom, 2026-10-02): this used to unconditionally
+          // re-fetch layout-proposals/power-levels here every tick (see the
+          // now-removed comment this replaces, preserved in git history),
+          // for two reasons: (a) "switch room and back" in a real Matrix
+          // client doesn't reliably force a fresh handshake with an
+          // already-alive iframe, so something had to independently
+          // converge it on the truth; (b) the DIRECT transport has no push
+          // mechanism at all -- its pullMore() pulls the room's plain
+          // timeline, which power_levels never rides (see the connect-time
+          // seed block's own comment) -- so a re-fetch was the ONLY way it
+          // ever discovers an externally-changed power_levels post-connect.
+          // Reason (a) no longer applies to the WIDGET transport: it has a
+          // real push channel for exactly this (onStateUpdate/
+          // onPushedStateUpdate below, registered once the widget has the
+          // receive.state_event:TYPE capability for a type -- already
+          // granted for both layout-proposal and power_levels, and already
+          // proven live for layout-proposal pushes). Tom's explicit call
+          // (2026-10-02): try relying on push alone for the widget
+          // transport and see if it holds up without this poll, rather
+          // than keeping both indefinitely. Reason (b) still fully applies
+          // to the direct transport, which has no push channel of any
+          // kind -- gated on transport.onStateUpdate's presence, the same
+          // signal already used below to decide whether to register the
+          // push callback at all, so this and that registration can never
+          // disagree about which transport they're describing.
+          if (typeof transport.onStateUpdate !== 'function') {
+            const layoutProposalsResult = await transport.getLayoutProposals();
+            if (layoutProposalsResult.status === 'ok' && layoutProposalsResult.proposalsByProjectId) {
+              for (const [pid, proposal] of Object.entries(layoutProposalsResult.proposalsByProjectId)) {
+                const content = core.matrixStateEventContentFromLayoutProposal(proposal);
+                const existing = latestStateEventOfType(core.WIGWAG_MATRIX_LAYOUT_PROPOSAL_TYPE, pid);
+                // Never regress to an older proposal than one already known
+                // (from an earlier poll) -- belt and braces, costs nothing.
+                if (existing && (existing.content.proposedAt || 0) > (content.proposedAt || 0)) continue;
+                if (!existing || JSON.stringify(existing.content) !== JSON.stringify(content)) {
+                  remoteRawEvents = remoteRawEvents.concat([{ type: core.WIGWAG_MATRIX_LAYOUT_PROPOSAL_TYPE, state_key: pid, content }]);
+                  layoutProposalsMightHaveChanged = true;
                 }
               }
-              bridgedProjects.set(p.id, { name: p.label, includeUntagged: isDefault });
-              const remoteDoc = computeRemoteDocFor(p.id);
-              await bootstrapLocalStorage(p.id, p.label, docStorable({ fieldDefs: remoteDoc.fields, projectHistory: remoteDoc.projectHistory, issues: remoteDoc.issues }), transport, fallbackUserId, fallbackDisplayName);
-              reconcileIntoLocal(p.id);
             }
-            // Tracker #169/4f07e72b: pushed unconditionally whenever
-            // something new arrived this tick (after any newly-discovered
-            // project above has already joined bridgedProjects), same
-            // "recompute fresh, let the iframe absorb a redundant-but-
-            // unchanged push cheaply" style as everything else here (no
-            // diffing against what was last sent) -- the iframe itself
-            // dedupes each proposal by its own identity to decide whether
-            // to (re)open that project's banner.
+            const powerLevelsResult = await transport.getPowerLevels();
+            if (powerLevelsResult.status === 'ok' && powerLevelsResult.content) {
+              const existingPL = latestStateEventOfType('m.room.power_levels', '');
+              if (!existingPL || JSON.stringify(existingPL.content) !== JSON.stringify(powerLevelsResult.content)) {
+                remoteRawEvents = remoteRawEvents.concat([{ type: 'm.room.power_levels', state_key: '', content: powerLevelsResult.content }]);
+                moderatorMightHaveChanged = true;
+              }
+            }
+          }
+          // Live-reported (Tom, 2026-10-02): the room creator's own
+          // moderator access depends on roomCreatorSender, which connect()
+          // resolves via transport.getRoomCreator() exactly ONCE, with no
+          // retry -- unlike every other read here, which gets a fresh
+          // chance every 5s tick. Confirmed live via a now-removed
+          // temporary diagnostic log on currentIsModerator: powerLevelsContent
+          // correctly populated (benefiting from this same per-tick
+          // recheck) while roomCreatorSender stayed null for the room
+          // creator's entire session -- that one-shot connect-time call
+          // lost the exact
+          // same capability-approval race pullInitial's own retry loop
+          // exists to absorb (see its comment), and with no second
+          // attempt, there was nothing to self-heal it. Retried here every
+          // tick, same as layout proposals/power levels above, until it
+          // resolves -- once a real sender is found it never needs
+          // checking again (room creation is immutable), so this becomes
+          // a no-op from then on.
+          if (!roomCreatorSender) {
+            const roomCreatorResult = await transport.getRoomCreator();
+            if (roomCreatorResult.status === 'ok' && roomCreatorResult.sender) { roomCreatorSender = roomCreatorResult.sender; moderatorMightHaveChanged = true; }
+          }
+          // Power levels, WIDGET transport backstop (2026-10-03, symmetric
+          // with room-creator just above): the connect-time retry is
+          // bounded and could still exhaust without success. The direct
+          // transport already gets a continuous per-tick recheck further
+          // up (gated to it specifically); the widget transport doesn't,
+          // on the theory that its connect-time fetch is reliable enough
+          // not to need one -- but if that bounded retry ever does
+          // exhaust, there would otherwise be nothing left to self-heal
+          // it. Keeps trying here every tick until a value is found, then
+          // becomes a no-op forever.
+          if (typeof transport.onStateUpdate === 'function' && !latestStateEventOfType('m.room.power_levels', '')) {
+            const powerLevelsResult = await transport.getPowerLevels();
+            if (powerLevelsResult.status === 'ok' && powerLevelsResult.content) {
+              remoteRawEvents = remoteRawEvents.concat([{ type: 'm.room.power_levels', state_key: '', content: powerLevelsResult.content }]);
+              moderatorMightHaveChanged = true;
+            }
+          }
+          if (layoutProposalsMightHaveChanged) {
             localStorage.postMessageToFrame({ type: 'wigwag:layout-proposals', proposalsByProjectId: currentLayoutProposalsByProjectId() });
+          }
+          if (moderatorMightHaveChanged) {
             localStorage.postMessageToFrame({ type: 'wigwag:moderator-status', isModerator: currentIsModerator() });
           }
         }, 5000);
@@ -2044,7 +2538,7 @@
       setStatus('This widget was not registered with a $matrix_room_id in its URL -- cannot tell which room to use.', 'error');
     } else {
       const transport = createWidgetTransport(widgetContext);
-      const bridge = createMatrixBridge(transport, widgetContext.roomId, widgetContext.userId, widgetContext.displayName);
+      const bridge = createMatrixBridge(transport, widgetContext.roomId, widgetContext.userId, widgetContext.displayName, widgetContext.deviceId);
       bridge.connect().then(async (connectResult) => {
         if (connectResult.status !== 'ok') {
           // Every widget-mode failure this early is plausibly the same root

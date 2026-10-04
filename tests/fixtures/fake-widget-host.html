@@ -37,10 +37,30 @@
     // (content object, e.g. {users: {'@fake-user:example.org': 50},
     // users_default: 0, state_default: 50}) -- read via
     // getPowerLevels()/isModeratorForStateEvent, same as the direct
-    // transport's own `powerLevels` mock option. Omit to simulate a room
-    // with no power_levels event at all (fails closed -- nobody is a
-    // moderator).
-    powerLevels: null
+    // transport's own `powerLevels` mock option. Pass `powerLevels: null`
+    // explicitly (Object.assign overrides the default below the same as
+    // any other field) to simulate a room with no power_levels event at
+    // all -- real Matrix ALWAYS has exactly one (set at room creation), so
+    // getPowerLevels()'s own connect-time retry (tracker #169/4f07e72b,
+    // 2026-10-02) correctly treats an empty result as a failed read worth
+    // retrying; defaulting to null here (as this used to) made every
+    // ordinary test -- not just the ones about moderation -- pay that
+    // retry's full multi-second cascade on every connect, confirmed live
+    // as a real regression. The default below is deliberately a
+    // NON-moderator-granting shape (empty users map), so tests that don't
+    // care about moderation see no behavior change, just no more wasted
+    // retry time.
+    powerLevels: { ban: 50, events: {}, events_default: 0, invite: 0, kick: 50, redact: 50, state_default: 50, users: {}, users_default: 0 },
+    // Live-reported (Tom, 2026-09-29): an MXID -- seeds a real
+    // m.room.create event with that sender, read via getRoomCreator().
+    // Same story as `powerLevels` above -- see isModeratorForStateEvent's
+    // own comment in wigwag-core.js for why this exists independently of
+    // power_levels content. Same retry-cascade regression and same fix:
+    // real Matrix always has exactly one m.room.create event, so this
+    // defaults to a synthetic sender that won't match any test's own
+    // connecting user id (preventing an accidental, unintended
+    // creator-fallback moderator grant) rather than to "no event at all".
+    roomCreator: '@__fixture_default_creator__:example.org'
   }, window.__fakeHostConfig || {});
   let uploadRejectRemaining = cfg.rejectUploadTimes;
   let rejectReadEventsRemaining = cfg.rejectReadEventsTimes;
@@ -48,6 +68,7 @@
 
   window.__state = { sentEntries: [], sentStateEvents: [], pendingEntries: cfg.initialEntries.slice(), requestedCapabilities: null, supportedApiVersionsReply: null, uploadedSnapshotBlobs: [] };
   if (cfg.powerLevels) window.__state.pendingEntries.push({ type: 'm.room.power_levels', state_key: '', content: cfg.powerLevels });
+  if (cfg.roomCreator) window.__state.pendingEntries.push({ type: 'm.room.create', state_key: '', sender: cfg.roomCreator, content: { creator: cfg.roomCreator } });
   const mediaStore = new Map(); // mxc -> Uint8Array
   for (const seed of (cfg.seedMediaBlobs || [])) mediaStore.set(seed.mxc, new Uint8Array(seed.bytes));
 

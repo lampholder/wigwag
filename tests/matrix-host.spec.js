@@ -411,7 +411,7 @@ test.describe('wigwag-matrix-host.html: the localStorage bridge', () => {
     const frame = page.frameLocator('#frame');
     await expect(frame.locator('[data-testid=row]')).toHaveCount(0); // seedLegacyEntries' seed issue is tombstoned
 
-    await frame.locator('[data-testid=col-header][data-col="type"]').last().locator('span', { hasText: '⋯' }).click();
+    await frame.locator('[data-testid=col-header][data-col="type"]').last().locator('[data-testid=col-menu-trigger]').click();
     await page.waitForTimeout(200);
     await frame.getByText('Hide field', { exact: true }).click();
     await page.waitForTimeout(300);
@@ -652,17 +652,336 @@ test.describe('wigwag-matrix-host.html: widget-embedded transport', () => {
     await expect(frame2.locator('[data-testid=tracker-name-title]').first()).toHaveText('Untitled Project 1');
   });
 
-  test('a remote entry arriving via read_events on a later poll is merged into the widget-embedded iframe live', async ({ page, browserName }) => {
+  // Live-reported (Tom, 2026-09-29): the actual bug report came from the
+  // real widget-embedded (Element) path -- his room's own creator had a
+  // genuinely EMPTY power_levels.users map. See the analogous direct-
+  // transport test in "moderator-proposed table layouts" for the full
+  // story and isModeratorForStateEvent's own comment in wigwag-core.js.
+  test('the room creator sees the propose-layout icon through the widget-embedded transport too, even with an EMPTY power_levels.users map', async ({ page }) => {
+    const realWorldPowerLevels = { ban: 50, events: {}, events_default: 0, invite: 0, kick: 50, redact: 50, state_default: 50, users: {}, users_default: 0 };
+    await h.gotoFakeWidgetHost(page, {
+      roomId: '!widgetcreator:example.org', roomName: 'Widget Creator Room',
+      initialEntries: [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Existing issue', sortKey: 1, origin: 'authored' } })], // untagged -- room already has a project
+      powerLevels: realWorldPowerLevels, roomCreator: '@fake-user:example.org' // default widget userId -- see gotoFakeWidgetHost's own default
+    });
+    const frame = page.frameLocator('#widget').frameLocator('#frame');
+    await expect(frame.locator('[data-testid=btn-propose-layout]')).toBeVisible();
+  });
+
+  // Live-reported (Tom, 2026-09-30): real Element's read_events "current
+  // state" read for work.wigwag.layout-proposal (state_key: true) was
+  // observed returning the SAME stale content indefinitely -- 60+ seconds
+  // and many poll ticks after a confirmed, successful send -- even though
+  // Element's own toWidget update_state push (carrying the fresh content)
+  // kept arriving the whole time. The host now reacts to that push
+  // directly instead of trusting the apparently-unreliable poll re-read.
+  // This simulates exactly that push, bypassing read_events/polling
+  // entirely, to prove the host updates immediately when it arrives.
+  test('a toWidget update_state push for a layout proposal updates the banner immediately, with no poll tick and no read_events round trip', async ({ page }) => {
+    const roomId = '!pushupdate:example.org';
+    await h.gotoFakeWidgetHost(page, {
+      roomId, roomName: 'Push Update Room',
+      initialEntries: [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Existing issue', sortKey: 1, origin: 'authored' } })],
+      powerLevels: { users: { '@fake-user:example.org': 100 }, users_default: 0, state_default: 50 } // default widget userId -- see gotoFakeWidgetHost's own default
+    });
+    const frame = page.frameLocator('#widget').frameLocator('#frame');
+    await expect(frame.locator('[data-testid=row]')).toHaveCount(1);
+    await expect(frame.locator('[data-testid=layout-proposal-banner]')).toHaveCount(0);
+
+    // Same derivation wigwag-matrix-host.html's own deriveProjectId(roomId) uses.
+    const projectId = (() => {
+      let h = 0;
+      for (const c of roomId) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+      return 'matrix-' + h.toString(16).padStart(8, '0');
+    })();
+    const content = core.matrixStateEventContentFromLayoutProposal({
+      columnOrder: ['__title__', 'priority'], columnWidths: { priority: 150 },
+      proposedBy: 'Alex', proposedByMatrixUserId: '@alex:example.org', proposedByDeviceId: 'alex-device',
+      proposedAt: Date.now()
+    });
+    await page.evaluate(({ widgetId, content, stateKey }) => {
+      document.querySelector('#widget').contentWindow.postMessage({
+        api: 'toWidget', widgetId, requestId: 'test-push-1', action: 'update_state',
+        data: { type: 'work.wigwag.layout-proposal', state_key: stateKey, content }
+      }, '*');
+    }, { widgetId: 'test-widget-1', content, stateKey: projectId }); // 'test-widget-1' is gotoFakeWidgetHost's own default widgetId
+
+    await expect(frame.locator('[data-testid=layout-proposal-banner]')).toBeVisible({ timeout: 2000 }); // well under one 5s poll tick
+    await expect(frame.locator('[data-testid=layout-proposal-banner]')).toContainText('Alex');
+  });
+
+  // Live-reported (Tom, 2026-10-02): even with the update_state push above
+  // working, a fresh proposal still "never made it through" -- because the
+  // SAME unconditional 5s poll re-check (kept, deliberately, for the
+  // "switch room and back" catch-up case the direct push can't cover) was
+  // STILL calling the confirmed-unreliable read_events read on every tick,
+  // and when that came back with OLD content, it unconditionally
+  // overwrote the fresh one the push had just delivered -- so the push fix
+  // alone wasn't enough; the poll re-check itself had to stop being able
+  // to regress. This reproduces exactly that sequence: an old, pre-
+  // existing (no device-id fields at all, same as a real room's leftover
+  // event from before that schema existed) proposal that read_events keeps
+  // returning forever, a fresh push arriving on top of it, then a real
+  // poll tick that would have reverted it pre-fix.
+  test('a fresh pushed proposal survives a later poll tick that re-reads old, stale content for the same project', async ({ page, browserName }) => {
     test.skip(browserName !== 'chromium', 'timer-dependent, one browser is enough to prove the mechanism');
+    const roomId = '!regresspoll:example.org';
+    const projectId = (() => {
+      let h = 0;
+      for (const c of roomId) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+      return 'matrix-' + h.toString(16).padStart(8, '0');
+    })();
+    // Well-formed (has a device id) but genuinely older -- this test is
+    // specifically about the TIMESTAMP never-regress guard, not the
+    // separate well-formedness filter below, so it must not incidentally
+    // pass just because the stale content would also get filtered out for
+    // being malformed.
+    const staleContent = core.matrixStateEventContentFromLayoutProposal({
+      columnOrder: ['__title__'], proposedBy: 'OldSender', proposedByMatrixUserId: '@oldsender:example.org',
+      proposedByDeviceId: 'old-device', proposedAt: 1000
+    });
+    await h.gotoFakeWidgetHost(page, {
+      roomId, roomName: 'Regression Poll Room',
+      initialEntries: [
+        entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Existing issue', sortKey: 1, origin: 'authored' } }),
+        { type: 'work.wigwag.layout-proposal', state_key: projectId, content: staleContent } // sits in pendingEntries forever -- nothing ever sends a newer one through send_event
+      ],
+      powerLevels: { users: { '@fake-user:example.org': 100 }, users_default: 0, state_default: 50 }
+    });
+    const frame = page.frameLocator('#widget').frameLocator('#frame');
+    await expect(frame.locator('[data-testid=layout-proposal-banner]')).toContainText('OldSender');
+
+    const freshContent = core.matrixStateEventContentFromLayoutProposal({
+      columnOrder: ['__title__', 'priority'], columnWidths: { priority: 150 },
+      proposedBy: 'Alex', proposedByMatrixUserId: '@alex:example.org', proposedByDeviceId: 'alex-device', proposedAt: Date.now()
+    });
+    await page.evaluate(({ content, stateKey }) => {
+      document.querySelector('#widget').contentWindow.postMessage({
+        api: 'toWidget', widgetId: 'test-widget-1', requestId: 'push-fresh', action: 'update_state',
+        data: { type: 'work.wigwag.layout-proposal', state_key: stateKey, content }
+      }, '*');
+    }, { content: freshContent, stateKey: projectId });
+    await expect(frame.locator('[data-testid=layout-proposal-banner]')).toContainText('Alex');
+
+    // Past a real poll tick, where read_events answers with the SAME old
+    // content again (pendingEntries never changed) -- pre-fix, this is
+    // exactly where it would have reverted back to "OldSender".
+    await page.waitForTimeout(6000);
+    await expect(frame.locator('[data-testid=layout-proposal-banner]')).toContainText('Alex');
+  });
+
+  // Live-reported (Tom, 2026-10-02): the timestamp never-regress guard
+  // above only stops a stale read_events answer from overwriting a value
+  // ALREADY known to be fresher -- it does nothing on a genuinely FRESH
+  // CONNECT, where there's no fresher cached value yet to compare against
+  // at all, so a long-stale read_events snapshot (confirmed real: days
+  // old) was still the very first thing a new connection would see.
+  // currentLayoutProposal now only accepts a proposal that actually
+  // carries proposedByDeviceId -- every real proposal has one going
+  // forward (the exact shape Tom pasted from his own room's stale event
+  // has neither that nor proposedByMatrixUserId, confirming it predates
+  // the field entirely), which quietly and permanently excludes exactly
+  // this kind of leftover without an age-based behavioral assumption.
+  test('a malformed proposal with no originating device id is never shown, even on a fresh connect with nothing else to compare against', async ({ page }) => {
+    const roomId = '!malformedproposal:example.org';
+    const projectId = (() => {
+      let h = 0;
+      for (const c of roomId) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+      return 'matrix-' + h.toString(16).padStart(8, '0');
+    })();
+    const malformedContent = core.matrixStateEventContentFromLayoutProposal({
+      columnOrder: ['__title__'], proposedBy: 'toml', proposedAt: 1790723040836 // no proposedByDeviceId/proposedByMatrixUserId at all
+    });
+    await h.gotoFakeWidgetHost(page, {
+      roomId, roomName: 'Malformed Proposal Room',
+      initialEntries: [
+        entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Existing issue', sortKey: 1, origin: 'authored' } }),
+        { type: 'work.wigwag.layout-proposal', state_key: projectId, content: malformedContent }
+      ],
+      powerLevels: { users: { '@fake-user:example.org': 100 }, users_default: 0, state_default: 50 }
+    });
+    const frame = page.frameLocator('#widget').frameLocator('#frame');
+    await expect(frame.locator('[data-testid=row]')).toHaveCount(1);
+    await expect(frame.locator('[data-testid=layout-proposal-banner]')).toHaveCount(0);
+
+    // A well-formed fresh one for the SAME project still works normally.
+    const wellFormedContent = core.matrixStateEventContentFromLayoutProposal({
+      columnOrder: ['__title__', 'priority'], columnWidths: { priority: 150 },
+      proposedBy: 'Alex', proposedByMatrixUserId: '@alex:example.org', proposedByDeviceId: 'alex-device', proposedAt: Date.now()
+    });
+    await page.evaluate(({ content, stateKey }) => {
+      document.querySelector('#widget').contentWindow.postMessage({
+        api: 'toWidget', widgetId: 'test-widget-1', requestId: 'push-wellformed', action: 'update_state',
+        data: { type: 'work.wigwag.layout-proposal', state_key: stateKey, content }
+      }, '*');
+    }, { content: wellFormedContent, stateKey: projectId });
+    await expect(frame.locator('[data-testid=layout-proposal-banner]')).toContainText('Alex');
+  });
+
+  // Live-reported (Tom, 2026-10-02): "sending a layout now works! But...
+  // layouts sent whilst the widget is closed aren't discovered when the
+  // widget is opened later." Unlike the push tests above (which simulate
+  // an update already arriving while this widget instance stays alive),
+  // this is the "closed, then reopened" case: the proposal exists in the
+  // room BEFORE this widget ever connects, so there is no push to react
+  // to at all -- discovery has to happen through the connect-time pull
+  // itself. Root cause: that pull used to seed layout-proposal/power-
+  // levels state via a separate state_key:true "current state" read
+  // (transport.getLayoutProposals/getPowerLevels), the same read shape
+  // confirmed unreliable against real Element elsewhere in this file; it's
+  // now folded into the ordinary pullInitial() timeline read instead (see
+  // pullMore's own comment on WIDGET_LAYOUT_PROPOSAL_TYPE), exactly
+  // mirroring how a pre-existing issue entry is already discovered on
+  // connect with no push involved either.
+  test('a well-formed layout proposal already sitting in the room before this widget instance ever connects is discovered right away, with no push and no poll tick needed', async ({ page }) => {
+    const roomId = '!predatesconnect:example.org';
+    const projectId = (() => {
+      let h = 0;
+      for (const c of roomId) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+      return 'matrix-' + h.toString(16).padStart(8, '0');
+    })();
+    const content = core.matrixStateEventContentFromLayoutProposal({
+      columnOrder: ['__title__', 'priority'], columnWidths: { priority: 150 },
+      proposedBy: 'Alex', proposedByMatrixUserId: '@alex:example.org', proposedByDeviceId: 'alex-device',
+      proposedAt: Date.now()
+    });
+    await h.gotoFakeWidgetHost(page, {
+      roomId, roomName: 'Predates Connect Room',
+      initialEntries: [
+        entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Existing issue', sortKey: 1, origin: 'authored' } }),
+        { type: 'work.wigwag.layout-proposal', state_key: projectId, content }
+      ],
+      powerLevels: { users: { '@fake-user:example.org': 100 }, users_default: 0, state_default: 50 }
+    });
+    const frame = page.frameLocator('#widget').frameLocator('#frame');
+    await expect(frame.locator('[data-testid=row]')).toHaveCount(1);
+    await expect(frame.locator('[data-testid=layout-proposal-banner]')).toBeVisible();
+    await expect(frame.locator('[data-testid=layout-proposal-banner]')).toContainText('Alex');
+  });
+
+  // Live-reported (Tom, 2026-10-02): "is there no push mechanism for
+  // ordinary events, do we really have to keep polling read_events?" --
+  // there is: MSC2762's receive.event:TYPE capability (already granted,
+  // needed just to read via read_events at all) entitles a toWidget push
+  // (action 'send_event', mirroring the widget's own fromWidget action of
+  // the same name) whenever a new matching event arrives, exactly like
+  // update_state does for state events. Never verified against real
+  // Element before today, unlike update_state -- Tom's explicit call to
+  // wire it up and remove the corresponding per-tick poll for this type on
+  // the widget transport (see pullMore's own comment) rather than keep
+  // both. Posts the push directly, deliberately WITHOUT also seeding
+  // pendingEntries -- the fixture's own read_events handler doesn't
+  // actually filter by requested type (see its own comment), so an entry
+  // sitting in pendingEntries would eventually leak through the
+  // still-running project-index poll regardless of whether THIS new push
+  // path works at all, which would make this test pass for the wrong
+  // reason. Asserting well under one 5s tick is what actually rules that
+  // out (same precedent as the update_state push test above).
+  test('a toWidget send_event push for an ordinary entry is merged into the widget-embedded iframe live, with no poll tick involved', async ({ page }) => {
     await h.gotoFakeWidgetHost(page, { roomId: '!widgetroom:example.org', roomName: 'Widget Room', initialEntries: seedLegacyEntries() });
     const frame = page.frameLocator('#widget').frameLocator('#frame');
     await expect(frame.locator('[data-testid=row]')).toHaveCount(0);
 
-    await page.evaluate((event) => { window.__state.pendingEntries.push(event); },
-      entryEvent({ issueId: 'wi-remote', entry: { id: 'whr1', field: 'title', value: 'Created from Element', sortKey: 1, origin: 'authored' } }));
-    await expect(frame.locator('[data-testid=row]')).toHaveCount(1, { timeout: 8000 });
+    const pushedEvent = entryEvent({ issueId: 'wi-remote', entry: { id: 'whr1', field: 'title', value: 'Created from Element', sortKey: 1, origin: 'authored' } });
+    await page.evaluate(({ widgetId, pushedEvent }) => {
+      document.querySelector('#widget').contentWindow.postMessage({
+        api: 'toWidget', widgetId, requestId: 'test-push-entry-1', action: 'send_event', data: pushedEvent
+      }, '*');
+    }, { widgetId: 'test-widget-1', pushedEvent }); // 'test-widget-1' is gotoFakeWidgetHost's own default widgetId
+
+    await expect(frame.locator('[data-testid=row]')).toHaveCount(1, { timeout: 2000 }); // well under one 5s poll tick
     await expect(frame.locator('[data-testid=row]')).toContainText('Created from Element');
   });
+
+  // Live-reported (Tom, 2026-10-02): adding receive.event:TYPE for
+  // layout-proposal/power-levels/room-create (the fix for a fresh reload
+  // not picking up a new proposal, see pullMore's own comment) had a side
+  // effect confirmed live: a layout proposal that used to arrive as a
+  // toWidget update_state push stopped arriving that way and started
+  // arriving as a toWidget send_event push instead -- NOT additively,
+  // Element appears to pick ONE push action per type, and granting the
+  // event capability alongside the state_event one changed which it
+  // picked for this type. onPushedTimelineEvent (the send_event handler)
+  // now routes state-shaped types to onPushedStateUpdate instead of
+  // silently dropping them (it only used to act on entries/snapshots).
+  // This simulates exactly that -- a layout proposal delivered via
+  // send_event, NOT update_state -- to prove that routing actually works,
+  // isolated the same way the dedicated entry push test above is.
+  test('a toWidget send_event push CARRYING a layout proposal (not update_state) still updates the banner immediately', async ({ page }) => {
+    const roomId = '!pushsendevent:example.org';
+    await h.gotoFakeWidgetHost(page, {
+      roomId, roomName: 'Push Send Event Room',
+      initialEntries: [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Existing issue', sortKey: 1, origin: 'authored' } })],
+      powerLevels: { users: { '@fake-user:example.org': 100 }, users_default: 0, state_default: 50 }
+    });
+    const frame = page.frameLocator('#widget').frameLocator('#frame');
+    await expect(frame.locator('[data-testid=row]')).toHaveCount(1);
+    await expect(frame.locator('[data-testid=layout-proposal-banner]')).toHaveCount(0);
+
+    const projectId = (() => {
+      let h = 0;
+      for (const c of roomId) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+      return 'matrix-' + h.toString(16).padStart(8, '0');
+    })();
+    const content = core.matrixStateEventContentFromLayoutProposal({
+      columnOrder: ['__title__', 'priority'], columnWidths: { priority: 150 },
+      proposedBy: 'Alex', proposedByMatrixUserId: '@alex:example.org', proposedByDeviceId: 'alex-device',
+      proposedAt: Date.now()
+    });
+    await page.evaluate(({ widgetId, content, stateKey }) => {
+      document.querySelector('#widget').contentWindow.postMessage({
+        api: 'toWidget', widgetId, requestId: 'test-push-sendevent-1', action: 'send_event',
+        data: { type: 'work.wigwag.layout-proposal', state_key: stateKey, content }
+      }, '*');
+    }, { widgetId: 'test-widget-1', content, stateKey: projectId });
+
+    await expect(frame.locator('[data-testid=layout-proposal-banner]')).toBeVisible({ timeout: 2000 }); // well under one 5s poll tick
+    await expect(frame.locator('[data-testid=layout-proposal-banner]')).toContainText('Alex');
+  });
+
+  // Live-reported (Tom, 2026-10-03): the project-index poll was the last
+  // type still running every 5s on a timer (deliberately out of scope
+  // when the three above were fixed); converted the same way once that
+  // turned out to be the bulk of the remaining read_events console noise
+  // -- see pullMore's own comment. A brand new project announced via
+  // work.wigwag.project needs real discovery (discoverProjects +
+  // bootstrapLocalStorage), not just an append, which is why
+  // onPushedTimelineEvent routes this type to processNewRemoteEvents
+  // (same as entries/snapshots) rather than onPushedStateUpdate's plain
+  // append (used for layout-proposal/power-levels/room-create, which are
+  // just status data with nothing to discover).
+  test('a toWidget send_event push announcing a brand new project discovers and bootstraps it live, no reconnect needed', async ({ page }) => {
+    await h.gotoFakeWidgetHost(page, { roomId: '!widgetroom:example.org', roomName: 'Widget Room', initialEntries: seedLegacyEntries() });
+    const frame = page.frameLocator('#widget').frameLocator('#frame');
+    await frame.locator('[data-testid=btn-switcher]').first().click();
+    await expect(frame.locator('[data-testid=switcher-project-row]')).toHaveCount(1);
+    await frame.locator('[data-testid=btn-switcher]').first().click(); // close it again
+
+    const content = core.matrixStateEventContentFromProjectCreation({ createdAt: new Date().toISOString(), createdBy: '@alex:example.org' });
+    await page.evaluate(({ widgetId, content }) => {
+      document.querySelector('#widget').contentWindow.postMessage({
+        api: 'toWidget', widgetId, requestId: 'test-push-project-1', action: 'send_event',
+        data: { type: 'work.wigwag.project', state_key: 'pushed-new-project', content }
+      }, '*');
+    }, { widgetId: 'test-widget-1', content });
+
+    await expect(async () => {
+      await frame.locator('[data-testid=btn-switcher]').first().click();
+      await expect(frame.locator('[data-testid=switcher-project-row]')).toHaveCount(2, { timeout: 500 });
+      await frame.locator('[data-testid=btn-switcher]').first().click();
+    }).toPass({ timeout: 2000 }); // well under one 5s poll tick
+  });
+
+  // REMOVED (2026-10-03): this used to pass via an accidental fixture
+  // leak -- a plain pendingEntries.push() with no real push message, only
+  // ever picked up because the project-index poll was still running every
+  // 5s and the fixture's own read_events handler doesn't filter by
+  // requested type at all. Now that project-index is ALSO push-only (see
+  // pullMore's own comment), there is genuinely nothing left running on a
+  // timer for the widget transport to leak through -- the dedicated
+  // "toWidget send_event push for an ordinary entry" test above already
+  // covers the real, intended mechanism; this one would need to be
+  // rewritten into a duplicate of it rather than deleted-and-missed.
 
   test('a transient capability-not-yet-approved rejection on the very first read is retried, not treated as a permanent failure', async ({ page }) => {
     // Regression for a real race confirmed live: Element only grants a
@@ -2219,7 +2538,7 @@ test.describe('wigwag-matrix-host.html: cosmetic prefs are scoped per room, not 
     // ascending" is the real trigger, same as h.sortByColumn's own Local
     // Mode pattern. The header markup is duplicate-rendered (desktop +
     // an offscreen/mobile variant), so .last() picks the real visible one.
-    await frameA.locator('[data-testid=col-header][data-col=priority]').last().locator('span', { hasText: '⋯' }).click();
+    await frameA.locator('[data-testid=col-header][data-col=priority]').last().locator('[data-testid=col-menu-trigger]').click();
     await page.waitForTimeout(150);
     await frameA.getByText('Sort ascending', { exact: true }).click();
     await page.waitForTimeout(300);
@@ -2227,7 +2546,7 @@ test.describe('wigwag-matrix-host.html: cosmetic prefs are scoped per room, not 
     // is the active sort (seg.col.isSorted) -- its presence, not any text
     // content (sortArrow is computed but never actually rendered), is the
     // real signal here.
-    await expect(frameA.locator('[data-testid=col-header][data-col=priority]').last().locator('span[title=Sort]')).toBeVisible();
+    await expect(frameA.locator('[data-testid=col-header][data-col=priority]').last().locator('[data-testid=col-menu-trigger][title=Sorted]')).toBeVisible();
 
     // Real, unshimmed browser localStorage (this project-keyed cosmetic
     // store was never room-mode content in the first place) -- same
@@ -2244,7 +2563,7 @@ test.describe('wigwag-matrix-host.html: cosmetic prefs are scoped per room, not 
 
     // Room B's own view of this project id must show no sort applied --
     // room A's preference must not have bled across.
-    await expect(frameB.locator('[data-testid=col-header][data-col=priority]').last().locator('span[title=Sort]')).toHaveCount(0);
+    await expect(frameB.locator('[data-testid=col-header][data-col=priority]').last().locator('[data-testid=col-menu-trigger][title=Sorted]')).toHaveCount(0);
 
     const sortStoreAfterB = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_sort_v1') || '{}'));
     // Room A's own entry survives untouched (durable, per-room). Room B
@@ -2389,6 +2708,30 @@ test.describe('wigwag-matrix-host.html: moderator-proposed table layouts', () =>
     await expect(frame.locator('[data-testid=btn-propose-layout]')).toHaveCount(0);
   });
 
+  // Live-reported (Tom, 2026-09-29): a real room's own creator had an
+  // EMPTY power_levels.users map ("users": {}) -- confirmed via the raw
+  // event content -- so the plain power-levels check alone wrongly said
+  // he wasn't a moderator at all. Newer Matrix room versions track
+  // creator privilege separately from power_levels entirely (via
+  // m.room.create's own sender) -- see isModeratorForStateEvent's own
+  // comment in wigwag-core.js for the full story. This is the exact
+  // real-world shape that broke: an explicit, otherwise-locked-down
+  // power_levels event (state_default: 50, everything else set) with a
+  // genuinely empty users map.
+  test('the room creator sees the icon even with a genuinely EMPTY power_levels.users map', async ({ page }) => {
+    const realWorldPowerLevels = { ban: 50, events: {}, events_default: 0, invite: 0, kick: 50, redact: 50, state_default: 50, users: {}, users_default: 0 };
+    await connect(page, { powerLevels: realWorldPowerLevels, roomCreator: '@test-user:example.org' });
+    const frame = page.frameLocator('#frame');
+    await expect(frame.locator('[data-testid=btn-propose-layout]')).toBeVisible();
+  });
+
+  test('the SAME empty-users power_levels, but for a DIFFERENT (non-creator) user, correctly stays hidden', async ({ page }) => {
+    const realWorldPowerLevels = { ban: 50, events: {}, events_default: 0, invite: 0, kick: 50, redact: 50, state_default: 50, users: {}, users_default: 0 };
+    await connect(page, { powerLevels: realWorldPowerLevels, roomCreator: '@someone-else:example.org' });
+    const frame = page.frameLocator('#frame');
+    await expect(frame.locator('[data-testid=btn-propose-layout]')).toHaveCount(0);
+  });
+
   test('a moderator sending a layout proposal PUTs a real state event keyed by the project id, with a confirm step first', async ({ page }) => {
     const state = await connect(page, { powerLevels: MODERATOR_LEVELS });
     const frame = page.frameLocator('#frame');
@@ -2408,6 +2751,34 @@ test.describe('wigwag-matrix-host.html: moderator-proposed table layouts', () =>
     expect(state.sentEntries.length).toBe(0);
   });
 
+  // Live question (Tom, 2026-09-30): "I don't think it includes column
+  // widths - could it?" It already does (buildLayoutProposalSnapshot reads
+  // s.columnWidths directly) -- the one real gap was coverage: every
+  // existing test only checked the APPLY side (a pre-seeded columnWidths
+  // value lands correctly on Accept) or asserted the SEND side's content
+  // merely has a columnWidths key at all, never that a column the sender
+  // actually just resized carries its new width into what gets sent.
+  test('resizing a column just before proposing carries the new width into what gets sent, not a stale/default one', async ({ page }) => {
+    const state = await connect(page, { powerLevels: MODERATOR_LEVELS });
+    const frame = page.frameLocator('#frame');
+
+    const handle = frame.locator('[data-testid=col-header][data-col=priority]').last().locator('[data-testid=col-resize-handle]');
+    const box = await handle.boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 + 77, box.y + box.height / 2, { steps: 10 });
+    await page.mouse.up();
+    await page.waitForTimeout(150);
+    const resizedWidth = Math.round((await frame.locator('[data-testid=col-header][data-col=priority]').last().boundingBox()).width);
+
+    await frame.locator('[data-testid=btn-propose-layout]').click();
+    await frame.locator('[data-testid=btn-confirm-propose-layout]').click();
+    await page.waitForTimeout(200);
+
+    const content = state.sentLayoutProposals[0].content;
+    expect(content.columnWidths.priority).toBe(resizedWidth);
+  });
+
   test('a proposal already live when a recipient connects shows a banner with a preview and Accept/Dismiss, labeled with the sender', async ({ page }) => {
     const proposalContent = core.matrixStateEventContentFromLayoutProposal({
       columnOrder: ['__title__', 'priority', '__comments__'],
@@ -2415,15 +2786,122 @@ test.describe('wigwag-matrix-host.html: moderator-proposed table layouts', () =>
       hiddenFieldIds: ['status'],
       freezeColId: 'priority',
       proposedBy: 'Alex',
+      proposedByMatrixUserId: '@alex:example.org',
+      proposedByDeviceId: 'alex-device',
       proposedAt: 555
     });
     await connect(page, { initialLayoutProposals: { [PROJ]: proposalContent } });
     const frame = page.frameLocator('#frame');
     await expect(frame.locator('[data-testid=layout-proposal-banner]')).toBeVisible();
     await expect(frame.locator('[data-testid=layout-proposal-banner]')).toContainText('Alex');
-    await expect(frame.locator('[data-testid=layout-proposal-preview]').locator('div')).not.toHaveCount(0);
+    await expect(frame.locator('[data-testid=layout-proposal-preview]').locator('span')).not.toHaveCount(0);
     await expect(frame.locator('[data-testid=btn-accept-layout]')).toBeVisible();
     await expect(frame.locator('[data-testid=btn-dismiss-layout]')).toBeVisible();
+  });
+
+  // Live-reported (Tom, 2026-09-30): "I still get notified/prompted to
+  // accept my own push." Root cause: the ONLY thing suppressing a sender's
+  // own proposal was an ephemeral in-memory marker set at send time
+  // (_handledLayoutProposalKeyByProject), wiped by any iframe reload --
+  // after which the room's own (genuine, durable) state event re-arrives
+  // on the very next poll and looks brand new again, including to its own
+  // sender.
+  //
+  // Live follow-up (same day): matching on the Matrix ACCOUNT alone
+  // over-suppresses a real, useful case -- pushing a layout from one
+  // device under an account should still show up when that same account
+  // opens the room on a DIFFERENT device (a genuine cross-device push).
+  // proposedByDeviceId is what the self-check actually keys on --
+  // proposedByMatrixUserId is kept only as descriptive metadata. Prefers
+  // the REAL Matrix device id (direct transport: /account/whoami's own
+  // device_id; widget transport: MSC3819) when the client supplies one
+  // (Tom's explicit follow-up call, see the tests further below) -- this
+  // block's mockMatrixClientApi default omits device_id, so these three
+  // tests specifically exercise the locally-generated fallback path (a
+  // random id generated once per browser/device, real unshimmed
+  // localStorage so it survives reloads), used when the client doesn't.
+  test('a proposal already live at connect time, authored by THIS device\'s own id, never shows a banner -- even with no prior session memory of sending it', async ({ page }) => {
+    // Connect once with no proposal at all, purely to mint+persist this
+    // "device"'s own real device id (real localStorage, survives reload).
+    await connect(page);
+    const myDeviceId = await page.frameLocator('#frame').locator('body').evaluate(() => localStorage.getItem('git_native_tracker_device_id_v1'));
+    expect(myDeviceId).toBeTruthy();
+
+    const ownProposal = core.matrixStateEventContentFromLayoutProposal({
+      columnOrder: ['__title__', 'priority', '__comments__'],
+      proposedBy: 'Me (a previous session)',
+      proposedByMatrixUserId: '@test-user:example.org', // the default connecting user, see connect()
+      proposedByDeviceId: myDeviceId,
+      proposedAt: 555
+    });
+    // connect() navigates again (page.goto), the same reset-of-session-
+    // memory a real reload produces, while real localStorage (incl. the
+    // device id just minted above) survives it.
+    await connect(page, { initialLayoutProposals: { [PROJ]: ownProposal } });
+    const frame = page.frameLocator('#frame');
+    await expect(frame.locator('[data-testid=layout-proposal-banner]')).toHaveCount(0);
+  });
+
+  test('...but the SAME account pushing from a DIFFERENT device still shows a banner (a genuine cross-device push, not suppressed)', async ({ page }) => {
+    const sameAccountOtherDevice = core.matrixStateEventContentFromLayoutProposal({
+      columnOrder: ['__title__', 'priority', '__comments__'],
+      proposedBy: 'Me (my other device)',
+      proposedByMatrixUserId: '@test-user:example.org', // same account as the connecting viewer
+      proposedByDeviceId: 'some-other-device-id', // but a different device
+      proposedAt: 555
+    });
+    await connect(page, { initialLayoutProposals: { [PROJ]: sameAccountOtherDevice } });
+    const frame = page.frameLocator('#frame');
+    await expect(frame.locator('[data-testid=layout-proposal-banner]')).toBeVisible();
+  });
+
+  test('...and a proposal from a different account entirely still shows normally too (negative control)', async ({ page }) => {
+    const othersProposal = core.matrixStateEventContentFromLayoutProposal({
+      columnOrder: ['__title__', 'priority', '__comments__'],
+      proposedBy: 'Alex',
+      proposedByMatrixUserId: '@alex:example.org',
+      proposedByDeviceId: 'alex-device-id',
+      proposedAt: 555
+    });
+    await connect(page, { initialLayoutProposals: { [PROJ]: othersProposal } });
+    const frame = page.frameLocator('#frame');
+    await expect(frame.locator('[data-testid=layout-proposal-banner]')).toBeVisible();
+  });
+
+  // Tom's explicit follow-up call: prefer the real Matrix device id
+  // (direct transport: /account/whoami's own device_id) over inventing
+  // and persisting one locally, whenever the client actually supplies it.
+  test('when the homeserver supplies a real device_id, it is used directly -- the locally-generated fallback id is never even created', async ({ page }) => {
+    await connect(page, { whoamiDeviceId: 'REAL_DEVICE_ABC' });
+    const frame = page.frameLocator('#frame');
+    const identities = await frame.locator('body').evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_identities_v1') || 'null'));
+    const identity = identities.identities.find(i => i.id === identities.activeIdentityId);
+    expect(identity.matrixDeviceId).toBe('REAL_DEVICE_ABC');
+    const fallbackId = await frame.locator('body').evaluate(() => localStorage.getItem('git_native_tracker_device_id_v1'));
+    expect(fallbackId).toBeFalsy();
+  });
+
+  test('sending with a real device_id present: the proposal carries that real id, not a generated one, and the sender still never sees its own push', async ({ page }) => {
+    const state = await connect(page, { powerLevels: MODERATOR_LEVELS, whoamiDeviceId: 'REAL_DEVICE_ABC' });
+    const frame = page.frameLocator('#frame');
+    await frame.locator('[data-testid=btn-propose-layout]').click();
+    await frame.locator('[data-testid=btn-confirm-propose-layout]').click();
+    await page.waitForTimeout(200);
+    expect(state.sentLayoutProposals[0].content.proposedByDeviceId).toBe('REAL_DEVICE_ABC');
+    await expect(frame.locator('[data-testid=layout-proposal-banner]')).toHaveCount(0);
+  });
+
+  test('a proposal already live, authored under a DIFFERENT real device_id on the SAME account, still shows a banner (real-id cross-device push)', async ({ page }) => {
+    const sameAccountOtherRealDevice = core.matrixStateEventContentFromLayoutProposal({
+      columnOrder: ['__title__', 'priority', '__comments__'],
+      proposedBy: 'Me (my other device)',
+      proposedByMatrixUserId: '@test-user:example.org',
+      proposedByDeviceId: 'REAL_DEVICE_XYZ', // a different real device id, same account
+      proposedAt: 555
+    });
+    await connect(page, { whoamiDeviceId: 'REAL_DEVICE_ABC', initialLayoutProposals: { [PROJ]: sameAccountOtherRealDevice } });
+    const frame = page.frameLocator('#frame');
+    await expect(frame.locator('[data-testid=layout-proposal-banner]')).toBeVisible();
   });
 
   test('Accept applies the layout locally (order/widths/hidden fields/freeze) with zero new signed history and zero change to fieldDefs -- never exported/merged', async ({ page }) => {
@@ -2433,6 +2911,8 @@ test.describe('wigwag-matrix-host.html: moderator-proposed table layouts', () =>
       hiddenFieldIds: ['status'],
       freezeColId: 'priority',
       proposedBy: 'Alex',
+      proposedByMatrixUserId: '@alex:example.org',
+      proposedByDeviceId: 'alex-device',
       proposedAt: 555
     });
     const state = await connect(page, { initialLayoutProposals: { [PROJ]: proposalContent } });
@@ -2472,6 +2952,8 @@ test.describe('wigwag-matrix-host.html: moderator-proposed table layouts', () =>
       hiddenFieldIds: ['status'],
       freezeColId: null,
       proposedBy: 'Alex',
+      proposedByMatrixUserId: '@alex:example.org',
+      proposedByDeviceId: 'alex-device',
       proposedAt: 555
     });
     await connect(page, { initialLayoutProposals: { [PROJ]: proposalContent } });
@@ -2491,7 +2973,7 @@ test.describe('wigwag-matrix-host.html: moderator-proposed table layouts', () =>
   test('two different projects in the same room have fully independent proposals -- a proposal for one never shows on the other', async ({ page }) => {
     const OTHER_PROJ = 'second-project';
     const proposalForOtherProj = core.matrixStateEventContentFromLayoutProposal({
-      columnOrder: ['__title__', '__comments__'], proposedBy: 'Alex', proposedAt: 1
+      columnOrder: ['__title__', '__comments__'], proposedBy: 'Alex', proposedByMatrixUserId: '@alex:example.org', proposedByDeviceId: 'alex-device', proposedAt: 1
     });
     const entries = seedProjectEntries().concat([
       { type: 'work.wigwag.entry', content: { v: 1, scope: 'project', projectId: OTHER_PROJ, entry: { id: 'other-def', field: 'title', value: { label: 'Issue', type: 'issue' }, sortKey: 0, origin: 'authored' } } },
@@ -2555,6 +3037,24 @@ test.describe('wigwag-matrix-host.html: "+ New project" is hidden for a non-mode
     await expect(frame.locator('[data-testid=btn-create-first-room-project]')).toHaveCount(0);
     await expect(frame.locator('[data-testid=btn-receive-first-room-project]')).toHaveCount(0);
     await expect(frame.locator('[data-testid=room-no-projects]')).toContainText('Ask a room moderator');
+  });
+
+  // Live-reported (Tom, 2026-09-29) -- see the analogous test in
+  // "moderator-proposed table layouts" for the full story: a room's own
+  // creator can have a genuinely EMPTY power_levels.users map, and must
+  // still see Create/Receive via the m.room.create-sender fallback.
+  test('the room creator sees Create/Receive even with a genuinely EMPTY power_levels.users map', async ({ page }) => {
+    const realWorldPowerLevels = { ban: 50, events: {}, events_default: 0, invite: 0, kick: 50, redact: 50, state_default: 50, users: {}, users_default: 0 };
+    h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: [], powerLevels: realWorldPowerLevels, roomCreator: '@test-user:example.org' });
+    await page.goto('/bridges/wigwag-matrix-host.html');
+    await page.locator('#homeserverUrl').fill(HOMESERVER);
+    await page.locator('#accessToken').fill('tok123');
+    await page.locator('#roomId').fill(ROOM_ID);
+    await page.locator('#connectBtn').click();
+    const frame = page.frameLocator('#frame');
+    await expect(frame.locator('[data-testid=room-no-projects]')).toBeVisible();
+    await expect(frame.locator('[data-testid=btn-create-first-room-project]')).toBeVisible();
+    await expect(frame.locator('[data-testid=btn-receive-first-room-project]')).toBeVisible();
   });
 
   test('the switcher\'s "New project in..." row is hidden for a non-moderator', async ({ page }) => {

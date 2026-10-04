@@ -677,8 +677,22 @@ function mockGithubContentsApi(page, repo, path = 'tracker.jsonl') {
 // shape as projectCreationForbidden above. `initialLayoutProposals`
 // ({[projectId]: content}) pre-seeds an already-live proposal per project,
 // discoverable via the same real current-state fetch as an already-live
-// work.wigwag.project event.
-function mockMatrixClientApi(page, { homeserverUrl, roomId, initialEntries = [], roomName, accessDenied = false, whoamiFails = false, messagesPageSize = null, projectCreationForbidden = false, messagesReturnsProjectStateEvents = true, rejectUploadTimes = 0, seedMediaBlobs = [], powerLevels = null, layoutProposalForbidden = false, initialLayoutProposals = {} } = {}) {
+// work.wigwag.project event. `roomCreator` (an MXID string) seeds a real
+// m.room.create event with that `sender` -- live-reported (Tom,
+// 2026-09-29): a real room's own creator had an EMPTY power_levels.users
+// map, so isModeratorForStateEvent needs this to grant them access
+// independently of power_levels content (see its own comment in
+// wigwag-core.js). Defaults to a synthetic sender (not null/no event) --
+// real Matrix always has exactly one m.room.create event, so
+// getRoomCreator()'s own connect-time retry (tracker #169/4f07e72b,
+// 2026-10-02) correctly treats an empty result as a failed read worth
+// retrying; defaulting to "no event" here made every ordinary test (not
+// just moderation ones) pay that retry's full multi-second cascade,
+// confirmed live as a real regression. The synthetic default deliberately
+// never matches any test's own connecting user id, so it grants no
+// accidental creator-fallback moderator status -- pass `roomCreator: null`
+// explicitly for a test that genuinely wants to simulate no creator found.
+function mockMatrixClientApi(page, { homeserverUrl, roomId, initialEntries = [], roomName, accessDenied = false, whoamiFails = false, messagesPageSize = null, projectCreationForbidden = false, messagesReturnsProjectStateEvents = true, rejectUploadTimes = 0, seedMediaBlobs = [], powerLevels = null, layoutProposalForbidden = false, initialLayoutProposals = {}, roomCreator = '@__fixture_default_creator__:example.org', whoamiDeviceId = null } = {}) {
   const state = { sentEntries: [], messagesCallCount: 0, pendingEntries: [] };
   const base = homeserverUrl.replace(/\/$/, '');
   const roomPath = base + '/_matrix/client/v3/rooms/' + encodeURIComponent(roomId);
@@ -813,6 +827,7 @@ function mockMatrixClientApi(page, { homeserverUrl, roomId, initialEntries = [],
     const events = [...projectStateEventsByKey.entries()].map(([projectId, content]) => ({ type: 'work.wigwag.project', state_key: projectId, content }));
     events.push(...[...layoutProposalEventsByProjectId.entries()].map(([projectId, content]) => ({ type: 'work.wigwag.layout-proposal', state_key: projectId, content })));
     if (powerLevels) events.push({ type: 'm.room.power_levels', state_key: '', content: powerLevels });
+    if (roomCreator) events.push({ type: 'm.room.create', state_key: '', sender: roomCreator, content: { creator: roomCreator } });
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(events) });
   });
 
@@ -826,7 +841,14 @@ function mockMatrixClientApi(page, { homeserverUrl, roomId, initialEntries = [],
   // "resolvable-room, unresolvable-identity" path on its own.
   page.route(base + '/_matrix/client/v3/account/whoami', async (route) => {
     if (accessDenied || whoamiFails) { await route.fulfill({ status: 401, contentType: 'application/json', body: '{}' }); return; }
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ user_id: '@test-user:example.org' }) });
+    const body = { user_id: '@test-user:example.org' };
+    // Real device_id (tracker #169/4f07e72b follow-up): the direct/PAT
+    // transport's own source of the real Matrix device id, used instead
+    // of a locally-generated one for a layout proposal's self-exclusion
+    // check. Omitted by default so existing tests keep exercising the
+    // locally-generated fallback path unchanged.
+    if (whoamiDeviceId) body.device_id = whoamiDeviceId;
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
   });
 
   return state;
@@ -839,8 +861,8 @@ function mockMatrixClientApi(page, { homeserverUrl, roomId, initialEntries = [],
 // Returns nothing to poll for state -- read `window.__state` on the
 // returned page directly (`page.evaluate(() => window.__state)`), and reach
 // the tracker UI itself via page.frameLocator('#widget').frameLocator('#frame').
-async function gotoFakeWidgetHost(page, { roomId, userId, displayName, roomName, initialEntries, rejectReadEventsTimes, dropReadEventsTimes, forbidStateEventType, rejectUploadTimes, seedMediaBlobs, powerLevels } = {}) {
-  await page.addInitScript((cfg) => { window.__fakeHostConfig = cfg; }, { roomId, userId, displayName, roomName, initialEntries, rejectReadEventsTimes, dropReadEventsTimes, forbidStateEventType, rejectUploadTimes, seedMediaBlobs, powerLevels });
+async function gotoFakeWidgetHost(page, { roomId, userId, displayName, roomName, initialEntries, rejectReadEventsTimes, dropReadEventsTimes, forbidStateEventType, rejectUploadTimes, seedMediaBlobs, powerLevels, roomCreator } = {}) {
+  await page.addInitScript((cfg) => { window.__fakeHostConfig = cfg; }, { roomId, userId, displayName, roomName, initialEntries, rejectReadEventsTimes, dropReadEventsTimes, forbidStateEventType, rejectUploadTimes, seedMediaBlobs, powerLevels, roomCreator });
   await page.goto('/tests/fixtures/fake-widget-host.html');
 }
 
@@ -931,7 +953,7 @@ async function waitForTitleResolved(page, num) {
 }
 
 async function openColumnMenu(page, colId) {
-  await colHeader(page, colId).locator('span', { hasText: '⋯' }).click();
+  await colHeader(page, colId).locator('[data-testid=col-menu-trigger]').click();
   await page.waitForTimeout(150);
   return page.locator('[data-testid=field-editor], .row-menu, div').first(); // caller usually queries by text after this
 }

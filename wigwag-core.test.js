@@ -2518,8 +2518,24 @@ test('matrixStateEventContentFromLayoutProposal / layoutProposalFromMatrixStateE
     hiddenFieldIds: ['f3'],
     freezeColId: 'f1',
     proposedBy: '@mod:example.org',
+    proposedByMatrixUserId: null,
+    proposedByDeviceId: null,
     proposedAt: 1234,
   });
+});
+
+test('matrixStateEventContentFromLayoutProposal / layoutProposalFromMatrixStateEvent: round-trips proposedByMatrixUserId and proposedByDeviceId (the account vs. device distinction behind cross-device pushes)', () => {
+  const content = core.matrixStateEventContentFromLayoutProposal({
+    columnOrder: ['__title__', 'f1'],
+    proposedBy: 'Alex',
+    proposedByMatrixUserId: '@alex:example.org',
+    proposedByDeviceId: 'device-123',
+    proposedAt: 99,
+  });
+  const proposal = core.layoutProposalFromMatrixStateEvent({ type: 'work.wigwag.layout-proposal', state_key: '', content });
+  assert.equal(proposal.proposedBy, 'Alex');
+  assert.equal(proposal.proposedByMatrixUserId, '@alex:example.org');
+  assert.equal(proposal.proposedByDeviceId, 'device-123');
 });
 
 test('layoutProposalFromMatrixStateEvent: tolerant of a foreign event type, an empty/cleared content, and null', () => {
@@ -2569,6 +2585,27 @@ test('isModeratorForStateEvent: mirrors Matrix\'s own power-level rule, failing 
   // Fails closed: no power_levels event at all, or no userId known yet.
   assert.equal(core.isModeratorForStateEvent(null, '@anyone:x', type), false);
   assert.equal(core.isModeratorForStateEvent({ users_default: 100 }, null, type), false);
+});
+
+// Live-reported (Tom, 2026-09-29): a real room's own creator had an EMPTY
+// power_levels.users map -- newer Matrix room versions track creator
+// privilege separately from power_levels entirely (via m.room.create's
+// own sender), so a real homeserver grants the creator write access
+// regardless of what power_levels.users says. This client-side mirror
+// must match that, via an explicit optional roomCreatorSender param.
+test('isModeratorForStateEvent: the room creator is always a moderator, even with an EMPTY power_levels.users map', () => {
+  const type = 'work.wigwag.layout-proposal';
+  const emptyUsersPowerLevels = { ban: 50, events: {}, events_default: 0, invite: 0, kick: 50, redact: 50, state_default: 50, users: {}, users_default: 0 };
+  assert.equal(core.isModeratorForStateEvent(emptyUsersPowerLevels, '@tom:lant.uk', type, '@tom:lant.uk'), true);
+  // A different, ordinary member in that same room is still correctly not
+  // a moderator -- creator privilege is per-user, not a global bypass.
+  assert.equal(core.isModeratorForStateEvent(emptyUsersPowerLevels, '@other:lant.uk', type, '@tom:lant.uk'), false);
+  // Omitting roomCreatorSender (callers/tests that don't have it yet)
+  // degrades cleanly to the plain power-levels-only check.
+  assert.equal(core.isModeratorForStateEvent(emptyUsersPowerLevels, '@tom:lant.uk', type), false);
+  // A real explicit power-levels entry still works fine alongside a
+  // (different) creator -- the two checks are independent, either wins.
+  assert.equal(core.isModeratorForStateEvent({ users: { '@mod:x': 50 }, users_default: 0, state_default: 50 }, '@mod:x', type, '@someone-else:x'), true);
 });
 
 test('encryptSnapshotPayload / decryptSnapshotPayload: round-trips real bytes through real WebCrypto AES-CTR', async () => {
@@ -3032,4 +3069,87 @@ test('renderMarkdown: a real email address is completely unaffected by the MXID 
 test('renderMarkdown: an MXID at the end of a sentence does not swallow the trailing period', () => {
   const html = core.renderMarkdown('It was @tom:lant.uk.');
   assert.match(html, /Matrix ID @tom:lant\.uk"/); // pill covers exactly the id, not "lant.uk."
+});
+
+// Design handoff (tracker #170/17836b9f, narrower_columns.zip): responsive
+// column header/cell compression as a column is resized narrower.
+test('computeHeaderCompression: full label at full width, unchanged padding', () => {
+  const r = core.computeHeaderCompression('Priority', 160);
+  assert.equal(r.label, 'Priority');
+  assert.equal(r.fullLabel, 'Priority');
+  assert.equal(r.headerPadding, '9px 12px');
+  assert.equal(r.compactIndicator, false);
+  assert.equal(r.showIcon, true);
+  assert.equal(r.iconOpacity, 1);
+});
+
+test('computeHeaderCompression: below 100px, a multi-word label collapses to initials', () => {
+  const r = core.computeHeaderCompression('Delivery Teams', 90);
+  assert.equal(r.label, 'DT');
+  assert.equal(r.fullLabel, 'Delivery Teams');
+});
+
+test('computeHeaderCompression: a single-word label has no initials to collapse to -- stays full text even under 100px', () => {
+  const r = core.computeHeaderCompression('Priority', 90);
+  assert.equal(r.label, 'Priority');
+});
+
+test('computeHeaderCompression: an already-all-caps label is its own short form -- never acronymized further', () => {
+  const r = core.computeHeaderCompression('RAG', 80);
+  assert.equal(r.label, 'RAG');
+});
+
+test('computeHeaderCompression: initials are capped at 3 letters and casing is left as-authored', () => {
+  const r = core.computeHeaderCompression('one two three four', 50);
+  assert.equal(r.label, 'ott'); // lowercase as-authored, capped at 3 initials
+});
+
+test('computeHeaderCompression: header padding pinches from 12px to 6px below 90px, matching cellPaddingForWidth\'s own threshold', () => {
+  assert.equal(core.computeHeaderCompression('Priority', 90).headerPadding, '9px 12px'); // 90 itself is NOT below 90
+  assert.equal(core.computeHeaderCompression('Priority', 89).headerPadding, '9px 6px');
+});
+
+test('computeHeaderCompression: below combinedFitWidth-6, the icon trigger folds away and the label becomes the click target', () => {
+  // "Priority" -> not acronymizable (single word) -> combinedFitWidth uses
+  // the full label's own length capped at 4: badgeLen = min(8,4) = 4,
+  // acronymPx = 32, combinedFitWidth = 32+21+4+24 = 81, fold point = 75.
+  const wide = core.computeHeaderCompression('Priority', 76);
+  assert.equal(wide.compactIndicator, false);
+  const narrow = core.computeHeaderCompression('Priority', 74);
+  assert.equal(narrow.compactIndicator, true);
+});
+
+test('computeHeaderCompression: icon opacity fades over exactly a 6px window trailing the fold point, with its reserved box shrinking in lockstep', () => {
+  // Same "Priority" geometry as above: combinedFitWidth = 81, fold point
+  // (combinedFitWidth-6) = 75 -- full opacity AT combinedFitWidth itself,
+  // fully faded by the fold point 6px further in.
+  const atCombinedFitWidth = core.computeHeaderCompression('Priority', 81);
+  assert.equal(atCombinedFitWidth.iconOpacity, 1);
+  assert.equal(atCombinedFitWidth.showIcon, true);
+  const halfFaded = core.computeHeaderCompression('Priority', 78);
+  assert.equal(halfFaded.iconOpacity, 0.5);
+  assert.equal(Math.round(halfFaded.iconOpacity * 21), halfFaded.iconBoxWidth);
+  const atFoldPoint = core.computeHeaderCompression('Priority', 75);
+  assert.equal(atFoldPoint.iconOpacity, 0);
+  assert.equal(atFoldPoint.showIcon, false); // fully faded, not shown at all
+  assert.equal(atFoldPoint.iconBoxWidth, 0);
+  assert.equal(atFoldPoint.compactIndicator, false); // one pixel above the compact switchover still
+});
+
+test('cellPaddingForWidth: pinches from 12px to 6px horizontal below 90px, vertical always 7px -- shared by field and title cells alike', () => {
+  assert.equal(core.cellPaddingForWidth(160), '7px 12px');
+  assert.equal(core.cellPaddingForWidth(90), '7px 12px'); // 90 itself is NOT below 90
+  assert.equal(core.cellPaddingForWidth(89), '7px 6px');
+  assert.equal(core.cellPaddingForWidth(null), '7px 12px'); // no width known yet -- full padding, not a crash
+});
+
+test('computeAffordanceFade: dropdown caret / lock glyph fade 0->1 over exactly a 100px->110px window, reserved space shrinking in lockstep', () => {
+  assert.deepEqual(core.computeAffordanceFade(160), { opacity: 1, width: 8, gap: 6 });
+  assert.deepEqual(core.computeAffordanceFade(100), { opacity: 0, width: 0, gap: 0 });
+  assert.deepEqual(core.computeAffordanceFade(110), { opacity: 1, width: 8, gap: 6 });
+  const half = core.computeAffordanceFade(105);
+  assert.equal(half.opacity, 0.5);
+  assert.equal(half.width, 4);
+  assert.equal(half.gap, 3);
+  assert.deepEqual(core.computeAffordanceFade(null), { opacity: 1, width: 8, gap: 6 }); // no width known yet -- fully shown, not a crash
 });

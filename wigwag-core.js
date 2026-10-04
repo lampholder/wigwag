@@ -437,6 +437,17 @@ const COLUMN_FILTERS_KEY = 'git_native_tracker_col_filters_v1';
 // one). Moving it to its own key here fixes that structurally, the same
 // way every other per-device cosmetic pref already works.
 const HIDDEN_FIELDS_KEY = 'git_native_tracker_hidden_fields_v1';
+// A random id generated once per browser/device and never changed after
+// (tracker #169/4f07e72b follow-up) -- lets a layout-proposal sender
+// recognize "I sent this, from THIS device" without conflating it with
+// "sent under my account from any device." The two are genuinely
+// different: the same person proposing a layout from their desktop and
+// then opening the room on their phone should still SEE that proposal on
+// the phone (a real, useful cross-device push), but the desktop that
+// actually sent it should never re-prompt itself, reload or not. Matching
+// on the Matrix user id alone (the original fix) over-suppressed the
+// first case; matching on this instead is per-device, not per-account.
+const LAYOUT_PROPOSAL_DEVICE_ID_KEY = 'git_native_tracker_device_id_v1';
 // Bound-field rules (linkedSourceId/rule/ruleRows/ruleFallback): a rule
 // like `source.jira ? source.jira.status : 'Todo'` is only meaningful on
 // a device with that person's own Jira/Salesforce/GitHub-proxy bridge
@@ -3286,6 +3297,64 @@ function computeHeaderMeshTriangles(seed) {
   return { width, height, triangles };
 }
 
+// Design handoff (tracker #170/17836b9f, narrower_columns.zip): as a
+// column is resized narrower, its header degrades in stages rather than
+// just truncating -- pure function of (label, width) so the exact
+// thresholds are unit-testable directly, same precedent as
+// computeHeaderMeshTriangles above.
+//
+// Stage 1 (width >= 100): full label.
+// Stage 2 (width < 100): label collapses to initials (first letter of
+// each word, cased as-authored, capped at 3 letters) -- a single-word
+// label, or one that's already all-caps, has no natural initials and is
+// exempt (still ellipsis-truncated as normal, never further mangled).
+// Stage 3 (width < combinedFitWidth - 6): the separate sort/filter icon
+// trigger folds away entirely and the label itself becomes the click
+// target. combinedFitWidth is sized off the (already-capped) initials'
+// length, not the raw label, so a long single-word label that fell back
+// to its full text doesn't blow the threshold out to its own length --
+// it's still going to ellipsis in the badge regardless.
+//
+// The icon's opacity fades over a 6px window TRAILING (not leading) the
+// stage-3 threshold: full opacity right up to combinedFitWidth-6, fully
+// faded 6px further in. Its reserved layout box shrinks in lockstep with
+// the fade (iconBoxWidth/iconBoxMarginLeft), not just at the very end --
+// otherwise the label has less room than its final width throughout the
+// fade, producing a visible truncate-then-untruncate flash.
+function computeHeaderCompression(label, width) {
+  const labelWords = label.trim().split(/\s+/);
+  const isAlreadyAcronym = label === label.toUpperCase() && /[A-Z]/.test(label);
+  const canAcronym = labelWords.length > 1 && !isAlreadyAcronym;
+  const initials = canAcronym ? labelWords.map(w => w[0]).join('').slice(0, 3) : label;
+  const badgeLen = Math.min(initials.length, 4);
+  const acronymPx = badgeLen * 8;
+  const combinedFitWidth = acronymPx + 21 /* icon box */ + 4 /* flex gap */ + 24 /* 12px padding each side */;
+  const displayLabel = width < 100 ? initials : label;
+  const compactIndicator = width < combinedFitWidth - 6;
+  const iconOpacity = Math.min(1, Math.max(0, (width - (combinedFitWidth - 6)) / 6));
+  const showIcon = width > combinedFitWidth - 6;
+  const iconBoxWidth = Math.round(iconOpacity * 21);
+  const iconBoxMarginLeft = Math.round((iconOpacity - 1) * 4);
+  const headerPadding = width < 90 ? '9px 6px' : '9px 12px';
+  return { label: displayLabel, fullLabel: label, headerPadding, compactIndicator, iconOpacity, showIcon, iconBoxWidth, iconBoxMarginLeft };
+}
+// Shared by every field body cell AND the title body cell (design handoff
+// narrower_columns.zip) -- same 90px threshold computeHeaderCompression's
+// own headerPadding uses, so a column's header and its cells always
+// pinch their padding together, never independently.
+function cellPaddingForWidth(width) {
+  return (width != null && width < 90) ? '7px 6px' : '7px 12px';
+}
+// Dropdown caret (select/multiselect) and the bound-field lock glyph fade
+// out together with the width that would otherwise show them, over a
+// 100px->110px window -- their reserved width/gap shrink in lockstep with
+// the fade (not just at the end) so the value content reclaims that space
+// immediately rather than only after a fixed cutoff.
+function computeAffordanceFade(width) {
+  const opacity = width == null ? 1 : Math.max(0, Math.min(1, (width - 100) / 10));
+  return { opacity, width: Math.round(opacity * 8), gap: Math.round(opacity * 6) };
+}
+
 // --- Matrix backend adapter -------------------------------------------
 // Consumed by wigwag-matrix-host.html (a separate, non-bundled file --
 // see the "wigwag as a Matrix widget" plan), never by wigwag.html itself.
@@ -3387,7 +3456,23 @@ function projectIdFromMatrixStateEvent(rawEvent) {
 // signed history and is never exported/merged, same as any other local
 // pref like columnWidths.
 const WIGWAG_MATRIX_LAYOUT_PROPOSAL_TYPE = 'work.wigwag.layout-proposal';
-function matrixStateEventContentFromLayoutProposal({ columnOrder, columnWidths, hiddenFieldIds, freezeColId, proposedBy, proposedAt }) {
+// proposedByMatrixUserId / proposedByDeviceId (added alongside the
+// original proposedBy label, live bug: a reload wipes the sender's own
+// in-memory "already handled" marker, so the sender's own proposal
+// reappears to them as if new on the very next poll) -- proposedBy is a
+// free-text display label (cosmetic, not unique), so it can't safely be
+// used to detect "is this MY OWN proposal" across a reload.
+//
+// Live follow-up (Tom, 2026-09-30): matching on proposedByMatrixUserId
+// alone over-suppresses a real, useful case -- proposing a layout from
+// one device under an account, then opening the same room on a DIFFERENT
+// device under the SAME account, should still show the proposal there
+// (a genuine cross-device push), not suppress it just because the
+// account matches. proposedByDeviceId (a random id generated once per
+// browser/device, LAYOUT_PROPOSAL_DEVICE_ID_KEY) is what the self-check
+// actually uses -- the account id is kept only as descriptive metadata,
+// not for suppression.
+function matrixStateEventContentFromLayoutProposal({ columnOrder, columnWidths, hiddenFieldIds, freezeColId, proposedBy, proposedByMatrixUserId, proposedByDeviceId, proposedAt }) {
   return {
     v: WIGWAG_MATRIX_EVENT_VERSION,
     columnOrder: columnOrder || [],
@@ -3395,6 +3480,8 @@ function matrixStateEventContentFromLayoutProposal({ columnOrder, columnWidths, 
     hiddenFieldIds: hiddenFieldIds || [],
     freezeColId: freezeColId || null,
     proposedBy: proposedBy || null,
+    proposedByMatrixUserId: proposedByMatrixUserId || null,
+    proposedByDeviceId: proposedByDeviceId || null,
     proposedAt: proposedAt || null,
   };
 }
@@ -3413,6 +3500,8 @@ function layoutProposalFromMatrixStateEvent(rawEvent) {
     hiddenFieldIds: Array.isArray(content.hiddenFieldIds) ? content.hiddenFieldIds : [],
     freezeColId: content.freezeColId || null,
     proposedBy: content.proposedBy || null,
+    proposedByMatrixUserId: content.proposedByMatrixUserId || null,
+    proposedByDeviceId: content.proposedByDeviceId || null,
     proposedAt: content.proposedAt || null,
   };
 }
@@ -3435,8 +3524,25 @@ function layoutProposalProjectId(rawEvent) {
 // independent gate. Fails closed (not a moderator) on any missing or
 // malformed power_levels event/userId, matching Matrix's own spec
 // default of state_default=50 when the field is absent.
-function isModeratorForStateEvent(powerLevelsContent, userId, eventType) {
-  if (!powerLevelsContent || typeof powerLevelsContent !== 'object' || !userId) return false;
+//
+// Live-reported (Tom, 2026-09-29): a real room's own creator/owner had an
+// EMPTY power_levels.users map (`"users": {}`) -- confirmed via the
+// event's own raw content -- so this function, reading only that map,
+// fell back to users_default (0) and wrongly said he wasn't a moderator
+// at all. Root cause: newer Matrix room versions treat "room creator" as
+// a privilege separate from the power_levels event entirely (the
+// creator's authority comes from having sent m.room.create, not from
+// being listed in m.room.power_levels) -- a real homeserver already
+// grants the creator this regardless of what power_levels.users says, so
+// this client-side mirror must too, or it disagrees with the server it's
+// supposed to be predicting. roomCreatorSender (the m.room.create event's
+// own `sender` -- always present, in every room version) is optional so
+// existing callers/tests that don't have it yet degrade to the plain
+// power-levels-only check, not a hard requirement.
+function isModeratorForStateEvent(powerLevelsContent, userId, eventType, roomCreatorSender) {
+  if (!userId) return false;
+  if (roomCreatorSender && userId === roomCreatorSender) return true;
+  if (!powerLevelsContent || typeof powerLevelsContent !== 'object') return false;
   const usersDefault = typeof powerLevelsContent.users_default === 'number' ? powerLevelsContent.users_default : 0;
   const userLevel = (powerLevelsContent.users && typeof powerLevelsContent.users[userId] === 'number') ? powerLevelsContent.users[userId] : usersDefault;
   const required = (powerLevelsContent.events && typeof powerLevelsContent.events[eventType] === 'number')
@@ -3930,11 +4036,12 @@ async function probeMatrixRoomAccess({ fetchImpl, homeserverUrl, accessToken, ro
 }
 
 const WigwagCoreExports = {
-  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, xlsxDateTimeSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, tokenizeFilterQuery, parseFilterQuery, issueMatchesFieldToken, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, COMMENT_READS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, formatNow, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, migrateLegacyComments, deriveFieldDefs, effectiveFieldDefs, PROJECT_NAME_FIELD_ID, deriveProjectName, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, issueTimestampValue, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, MATRIX_USER_ID_RE, principalKind, identityPrincipal, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, evalRule, computeBoundValue, isFieldLocked, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, sortValue, computeSortSnapshot, issueCreatedAt,
+  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, xlsxDateTimeSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LAYOUT_PROPOSAL_DEVICE_ID_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, tokenizeFilterQuery, parseFilterQuery, issueMatchesFieldToken, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, COMMENT_READS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, formatNow, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, migrateLegacyComments, deriveFieldDefs, effectiveFieldDefs, PROJECT_NAME_FIELD_ID, deriveProjectName, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, issueTimestampValue, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, MATRIX_USER_ID_RE, principalKind, identityPrincipal, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, evalRule, computeBoundValue, isFieldLocked, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, sortValue, computeSortSnapshot, issueCreatedAt,
   importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry,
   squashHistory, displayValueForHistory, buildSourceText, keyRegistryEncoder, rehydrateKeyRef, humanFileSize, parseJsonl, entryKey, commentKey, unionByKey, mergeCommentStreams, mergeIssuePair, computeIssueMerge, mergeHasRealChanges, computeFieldDefsMerge, computeDerivedChangeEntries,
   isPastedTextASingleUrl, wrapSelectionWithMarkdownLink,
   buildGithubContentsUrl, buildGithubContentsHeaders, buildGithubCommitMessage, pullGithubFile, pushGithubFile, probeGithubRepoAccess, computeHeaderMeshTriangles, columnFilterIsActive, localISODate, dateFilterPresetRanges,
+  computeHeaderCompression, cellPaddingForWidth, computeAffordanceFade,
   WIGWAG_EXPORT_TYPE, WIGWAG_EXPORT_VERSION, canonicalRecordsText, computeContentSha256Hex, fingerprintPublicKey, buildExportEnvelope, parseExportEnvelope, verifyExportEnvelope,
   EXPORT_TRUST_KEY, lookupSenderTrust, classifySenderTrust, rememberSenderTrust, classifyExportProvenance,
   diff3Merge, formatDateLabel, provenanceMarkerSuffix, conflictMarkerLines, hasUnresolvedMergeMarkers, computeMergeProseEntries,

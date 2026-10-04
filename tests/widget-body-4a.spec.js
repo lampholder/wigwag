@@ -17,7 +17,7 @@ function entryEvent({ issueId, stream, entry, projectId }) {
 // a FrameLocator doesn't have) -- this is the same two lines, scoped to a
 // frame instead.
 async function openColumnMenuInFrame(frame, colId) {
-  await frame.locator(`[data-testid=col-header][data-col="${colId}"]`).last().locator('span', { hasText: '⋯' }).click();
+  await frame.locator(`[data-testid=col-header][data-col="${colId}"]`).last().locator('[data-testid=col-menu-trigger]').click();
 }
 
 function seedIssues(titles) {

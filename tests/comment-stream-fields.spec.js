@@ -232,7 +232,7 @@ test.describe('Comment stream fields', () => {
     await page.locator('[data-testid=comment-stream-popover-post-btn]').click();
     await page.waitForTimeout(300);
 
-    await page.locator('[data-testid=col-header]').filter({ hasText: 'Update' }).locator('span', { hasText: '⋯' }).click();
+    await page.locator('[data-testid=col-header]').filter({ hasText: 'Update' }).locator('[data-testid=col-menu-trigger]').click();
     await page.waitForTimeout(150);
     const wrapItem = page.locator('[data-testid=col-wrap-toggle]');
     await expect(wrapItem).toBeVisible();

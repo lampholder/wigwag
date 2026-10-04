@@ -15,7 +15,7 @@ test.describe('Clicking off a menu/popover closes it', () => {
   test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
 
   test('column "..." menu', async ({ page }) => {
-    await h.colHeader(page, 'rag').locator('span', { hasText: '⋯' }).click();
+    await h.colHeader(page, 'rag').locator('[data-testid=col-menu-trigger]').click();
     await expect(page.getByText('Sort ascending', { exact: true })).toBeVisible();
     await page.mouse.click(700, 700);
     await expect(page.getByText('Sort ascending', { exact: true })).toHaveCount(0);
@@ -1769,26 +1769,26 @@ test.describe('Clearing an active sort', () => {
   // reading storage directly.
   test('clicking "Sort ascending" again while already ascending clears the sort', async ({ page }) => {
     await h.sortByColumn(page, 'rag', 'ascending');
-    await expect(h.colHeader(page, 'rag').locator('[title="Sort"]')).toBeVisible();
+    await expect(h.colHeader(page, 'rag').locator('[title="Sorted"]')).toBeVisible();
 
-    await h.colHeader(page, 'rag').locator('span', { hasText: '⋯' }).click();
+    await h.colHeader(page, 'rag').locator('[data-testid=col-menu-trigger]').click();
     await page.waitForTimeout(150);
     await page.getByText('Sort ascending', { exact: true }).click();
     await page.waitForTimeout(150);
 
-    await expect(h.colHeader(page, 'rag').locator('[title="Sort"]')).toHaveCount(0);
+    await expect(h.colHeader(page, 'rag').locator('[title="Sorted"]')).toHaveCount(0);
   });
 
   test('clicking "Sort descending" again while already descending clears the sort', async ({ page }) => {
     await h.sortByColumn(page, 'priority', 'descending');
-    await expect(h.colHeader(page, 'priority').locator('[title="Sort"]')).toBeVisible();
+    await expect(h.colHeader(page, 'priority').locator('[title="Sorted"]')).toBeVisible();
 
-    await h.colHeader(page, 'priority').locator('span', { hasText: '⋯' }).click();
+    await h.colHeader(page, 'priority').locator('[data-testid=col-menu-trigger]').click();
     await page.waitForTimeout(150);
     await page.getByText('Sort descending', { exact: true }).click();
     await page.waitForTimeout(150);
 
-    await expect(h.colHeader(page, 'priority').locator('[title="Sort"]')).toHaveCount(0);
+    await expect(h.colHeader(page, 'priority').locator('[title="Sorted"]')).toHaveCount(0);
   });
 });
 
@@ -1917,27 +1917,27 @@ test.describe('Sort persistence', () => {
 
   test('a sort persists across reload', async ({ page }) => {
     await h.sortByColumn(page, 'rag', 'ascending');
-    await expect(h.colHeader(page, 'rag').locator('[title="Sort"]')).toBeVisible();
+    await expect(h.colHeader(page, 'rag').locator('[title="Sorted"]')).toBeVisible();
 
     await page.reload();
     await page.waitForTimeout(300);
-    await expect(h.colHeader(page, 'rag').locator('[title="Sort"]')).toBeVisible();
+    await expect(h.colHeader(page, 'rag').locator('[title="Sorted"]')).toBeVisible();
   });
 
   test('a sort persists across switching away and back to the same milestone; a different milestone has none of its own', async ({ page }) => {
     await h.sortByColumn(page, 'rag', 'descending');
-    await expect(h.colHeader(page, 'rag').locator('[title="Sort"]')).toBeVisible();
+    await expect(h.colHeader(page, 'rag').locator('[title="Sorted"]')).toBeVisible();
 
     await h.openTrackerSwitcher(page);
     await h.createNamedBlankProject(page, 'Other milestone');
     await page.waitForTimeout(300);
-    await expect(page.locator('[data-testid=col-header] [title="Sort"]')).toHaveCount(0); // a different (blank-template) milestone, no sort carried over
+    await expect(page.locator('[data-testid=col-header] [title="Sorted"]')).toHaveCount(0); // a different (blank-template) milestone, no sort carried over
 
     await h.openTrackerSwitcher(page);
     await h.milestoneRow(page, 'Delivery tracker').click();
     await page.waitForTimeout(300);
 
-    const sortIcon = h.colHeader(page, 'rag').locator('[title="Sort"]');
+    const sortIcon = h.colHeader(page, 'rag').locator('[title="Sorted"]');
     await expect(sortIcon).toBeVisible();
     const pathD = await sortIcon.locator('svg path').getAttribute('d');
     expect(pathD).toBe('M12 3v9M12 12l-2.5-2.5M12 12l2.5-2.5'); // the descending glyph specifically, not reset to ascending

@@ -1,0 +1,52 @@
+name: Tauri build
+
+# Builds the desktop app (src-tauri/) for Mac, Linux, and Windows. No code
+# signing/notarization yet (tracker #168/233a071d) -- Mac builds trigger a
+# Gatekeeper warning and Windows builds trigger SmartScreen until that's
+# set up as a deliberate follow-up. Artifacts only for now, not attached to
+# a GitHub Release -- there's no existing release process to hook into.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+          - platform: ubuntu-latest
+          - platform: windows-latest
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install JS dependencies
+        run: npm ci
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: wigwag-${{ matrix.platform }}
+          path: |
+            src-tauri/target/release/bundle/**
+          if-no-files-found: error

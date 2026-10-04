@@ -40,6 +40,17 @@
 //                           Repeatable. Drop every issue whose CURRENT
 //                            value for that field equals Value (case-
 //                            insensitive) -- e.g. --exclude-where "Type=Chore".
+//   --exclude-where-prefix "Label=Prefix"
+//                           Repeatable. Drop every issue whose CURRENT
+//                            value for that field STARTS WITH Prefix
+//                            (case-insensitive) -- e.g. a Jira-style ticket
+//                            key convention like --exclude-where-prefix
+//                            "Issue=SUP-" to drop every SUP-xxxx ticket,
+//                            regardless of the number that follows.
+//   --require-value "Label" Repeatable. Keep only issues that currently
+//                            have a non-empty value for that field --
+//                            e.g. --require-value "ECID" to only chart
+//                            issues that have one set at all.
 //   --exclude-no-value      Drop every issue that STILL has no value for
 //                            --field, even at the end of the range. An
 //                            issue is already invisible in the chart for
@@ -64,14 +75,16 @@ function usage() {
   console.log('Usage: node wigwag-cfd.js <export.jsonl> --field "<label>" [options]');
   console.log('  --order "A,B,C"                  override stage order (earliest first)');
   console.log('  --exclude <id-prefix>             repeatable, drop an issue by id prefix');
-  console.log('  --exclude-where "Label=Value"      repeatable, drop issues by current field value');
+  console.log('  --exclude-where "Label=Value"      repeatable, drop issues by current field value (exact, case-insensitive)');
+  console.log('  --exclude-where-prefix "Label=Prefix"  repeatable, drop issues whose current field value STARTS WITH prefix (case-insensitive)');
+  console.log('  --require-value "Label"            repeatable, keep only issues with a non-empty current value for this field');
   console.log('  --exclude-no-value                 drop issues with no current value for --field');
   console.log('  --since YYYY-MM-DD  --until YYYY-MM-DD');
   console.log('  --out <name>                       default "cfd" -> cfd.html + cfd.csv');
 }
 
 function parseArgs(argv) {
-  const opts = { exclude: [], excludeWhere: [], out: 'cfd' };
+  const opts = { exclude: [], excludeWhere: [], excludeWherePrefix: [], requireValue: [], out: 'cfd' };
   const positional = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -79,6 +92,8 @@ function parseArgs(argv) {
     else if (a === '--order') opts.order = argv[++i];
     else if (a === '--exclude') opts.exclude.push(argv[++i]);
     else if (a === '--exclude-where') opts.excludeWhere.push(argv[++i]);
+    else if (a === '--exclude-where-prefix') opts.excludeWherePrefix.push(argv[++i]);
+    else if (a === '--require-value') opts.requireValue.push(argv[++i]);
     else if (a === '--exclude-no-value') opts.excludeNoValue = true;
     else if (a === '--since') opts.since = argv[++i];
     else if (a === '--until') opts.until = argv[++i];
@@ -142,15 +157,23 @@ function main() {
     console.warn('Warning: "' + fieldDef.label + '" is a "' + fieldDef.type + '" field, not select -- there is no defined stage order to compute "reached or past" against, so this will be a plain (non-cumulative) stacked count per distinct value instead of a real CFD.');
   }
 
-  // Resolve exclude-where's field labels once, up front, so a typo fails
-  // fast instead of silently excluding nothing.
-  const excludeWhere = opts.excludeWhere.map(spec => {
+  // Resolve exclude-where/exclude-where-prefix/require-value's field labels
+  // once, up front, so a typo fails fast instead of silently excluding
+  // (or including) nothing.
+  function resolveFieldValueSpec(spec, flagName) {
     const eq = spec.indexOf('=');
-    if (eq === -1) { console.error('--exclude-where expects "Label=Value", got: ' + spec); process.exit(1); }
+    if (eq === -1) { console.error(flagName + ' expects "Label=Value", got: ' + spec); process.exit(1); }
     const label = spec.slice(0, eq).trim(), value = spec.slice(eq + 1).trim();
-    const excludeColId = findColIdByLabel(doc.fields, label);
-    if (!excludeColId) { console.error('--exclude-where: no field labeled "' + label + '"'); process.exit(1); }
-    return { colId: excludeColId, def: doc.fields[excludeColId], value };
+    const specColId = findColIdByLabel(doc.fields, label);
+    if (!specColId) { console.error(flagName + ': no field labeled "' + label + '"'); process.exit(1); }
+    return { colId: specColId, def: doc.fields[specColId], value };
+  }
+  const excludeWhere = opts.excludeWhere.map(spec => resolveFieldValueSpec(spec, '--exclude-where'));
+  const excludeWherePrefix = opts.excludeWherePrefix.map(spec => resolveFieldValueSpec(spec, '--exclude-where-prefix'));
+  const requireValue = opts.requireValue.map(label => {
+    const reqColId = findColIdByLabel(doc.fields, label);
+    if (!reqColId) { console.error('--require-value: no field labeled "' + label + '"'); process.exit(1); }
+    return { colId: reqColId, def: doc.fields[reqColId] };
   });
 
   function currentDisplayValue(issue, forColId, forDef) {
@@ -163,11 +186,26 @@ function main() {
     return raw == null ? '' : String(raw);
   }
 
+  // Non-empty same as --exclude-no-value's own check, but usable against
+  // ANY field, not just --field -- a multiselect with zero chips is an
+  // empty array, which (unlike a plain '' string) would otherwise always
+  // look "non-empty" to a naive !== '' check.
+  function hasValue(issue, forColId, forDef) {
+    const disp = currentDisplayValue(issue, forColId, forDef);
+    return Array.isArray(disp) ? disp.length > 0 : disp !== '';
+  }
+
   let issues = doc.issues.filter(iss => !opts.exclude.some(prefix => iss.id.toLowerCase().startsWith(prefix.toLowerCase())));
   issues = issues.filter(iss => !excludeWhere.some(({ colId: ec, def, value }) => {
     const disp = currentDisplayValue(iss, ec, def);
     return Array.isArray(disp) ? disp.some(v => v.toLowerCase() === value.toLowerCase()) : String(disp).toLowerCase() === value.toLowerCase();
   }));
+  issues = issues.filter(iss => !excludeWherePrefix.some(({ colId: ec, def, value }) => {
+    const disp = currentDisplayValue(iss, ec, def);
+    const prefix = value.toLowerCase();
+    return Array.isArray(disp) ? disp.some(v => v.toLowerCase().startsWith(prefix)) : String(disp).toLowerCase().startsWith(prefix);
+  }));
+  issues = issues.filter(iss => requireValue.every(({ colId: rc, def }) => hasValue(iss, rc, def)));
   if (opts.excludeNoValue) issues = issues.filter(iss => currentDisplayValue(iss, colId, fieldDef) !== '');
   if (!issues.length) { console.error('No issues left after exclusions -- nothing to chart.'); process.exitCode = 1; return; }
 

@@ -44,12 +44,12 @@ test.describe('wigwag.work marketing site (index.html)', () => {
     await expect(button).toHaveText('Copy', { timeout: 3000 });
   });
 
-  test('the desktop app card is clearly inert (no real download links yet)', async ({ page }) => {
+  test('the desktop app card links each platform straight at its rolling-release installer, with no "Coming soon" badge', async ({ page }) => {
     await page.goto('/');
-    await expect(page.locator('text=Coming soon')).toBeVisible();
-    for (const label of ['macOS', 'Windows', 'Linux']) {
-      await expect(page.locator('span', { hasText: label })).toHaveCount(1);
-    }
-    await expect(page.locator('a[href]', { hasText: 'macOS' })).toHaveCount(0);
+    await expect(page.locator('text=Coming soon')).toHaveCount(0);
+    const base = 'https://github.com/lampholder/wigwag/releases/latest/download/';
+    await expect(page.locator(`a[href="${base}Wigwag-macOS.dmg"]`)).toHaveText('macOS');
+    await expect(page.locator(`a[href="${base}Wigwag-Windows.msi"]`)).toHaveText('Windows');
+    await expect(page.locator(`a[href="${base}Wigwag-Linux.AppImage"]`)).toHaveText('Linux');
   });
 });

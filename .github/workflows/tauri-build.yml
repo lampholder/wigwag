@@ -1,10 +1,41 @@
 name: Tauri build
 
-# Builds the desktop app (src-tauri/) for Mac, Linux, and Windows. No code
-# signing/notarization yet (tracker #168/233a071d) -- Mac builds trigger a
-# Gatekeeper warning and Windows builds trigger SmartScreen until that's
-# set up as a deliberate follow-up. Artifacts only for now, not attached to
-# a GitHub Release -- there's no existing release process to hook into.
+# Builds the desktop app (src-tauri/) for Mac, Linux, and Windows, and
+# publishes ONE canonical installer per platform to a rolling GitHub
+# Release so wigwag.work's "Get started" cards can link directly to a
+# stable URL (tracker #168/233a071d; follow-up requested on #172/2fda589c
+# -- "make the app links link to the built artefacts").
+#
+# Still no code signing/notarization (tracker #168) -- Mac triggers
+# Gatekeeper's "unidentified developer" prompt (right-click -> Open) and
+# Windows may trigger SmartScreen until that's set up as a deliberate
+# follow-up.
+#
+# Why a rolling "desktop-latest" release instead of one tagged per
+# version: there's no version-bump/tagging workflow in this project, and
+# tauri.conf.json's version stays fixed between ordinary pushes -- a
+# per-version tag would either silently no-op on every push after the
+# first, or need extra logic to detect a real bump. A single, deliberately
+# version-less tag that's recreated on every push keeps this as simple as
+# deploy-pages.yml's own "main is the one source of truth" model.
+#
+# Why renamed, fixed filenames (Wigwag-macOS.dmg / Wigwag-Windows.msi /
+# Wigwag-Linux.AppImage) rather than linking the bundler's own output
+# filenames: those embed the version number (Wigwag_0.1.0_aarch64.dmg
+# etc.), which would silently break index.html's download links the next
+# time the version changes. A fixed name per platform means
+# github.com/.../releases/latest/download/<fixed-name> stays correct
+# forever, independent of versioning.
+#
+# One installer per platform, not every format targets:"all" produces:
+# macOS only ever emits one install format (.dmg). Windows emits both
+# .msi and an NSIS .exe -- .msi picked as the more standard/enterprise-
+# friendly format. Linux emits .AppImage/.deb/.rpm -- .AppImage picked
+# since it runs on any distro with no package manager involved, closest
+# to "no install step" a desktop binary can get. The other formats are
+# still built and still available as this workflow's own per-OS build
+# artifacts (Actions tab) -- just not linked from the site's single
+# per-platform chip.
 on:
   push:
     branches: [main]
@@ -17,8 +48,14 @@ jobs:
       matrix:
         include:
           - platform: macos-latest
+            asset_glob: bundle/dmg/*.dmg
+            asset_name: Wigwag-macOS.dmg
           - platform: ubuntu-latest
+            asset_glob: bundle/appimage/*.AppImage
+            asset_name: Wigwag-Linux.AppImage
           - platform: windows-latest
+            asset_glob: bundle/msi/*.msi
+            asset_name: Wigwag-Windows.msi
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
@@ -43,10 +80,53 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload bundles
+      - name: Upload bundles (all formats, per-OS build artifact)
         uses: actions/upload-artifact@v4
         with:
           name: wigwag-${{ matrix.platform }}
           path: |
             src-tauri/target/release/bundle/**
           if-no-files-found: error
+
+      - name: Rename the canonical installer for the public download link
+        shell: bash
+        run: |
+          set -e
+          mkdir -p dist-release
+          src=$(ls src-tauri/target/release/${{ matrix.asset_glob }})
+          cp "$src" "dist-release/${{ matrix.asset_name }}"
+
+      - name: Upload canonical installer (feeds the release job)
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-asset-${{ matrix.platform }}
+          path: dist-release/${{ matrix.asset_name }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download the canonical installer from each platform leg
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-asset-*
+          path: dist-release
+          merge-multiple: true
+
+      - name: Publish/update the rolling desktop-latest release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: desktop-latest
+          name: Desktop app (latest build)
+          body: >
+            Automatically rebuilt from the latest main branch commit on
+            every push -- not a stable version release, just the current
+            desktop build. No code signing/notarization yet (tracker
+            #168/233a071d): macOS shows an "unidentified developer"
+            prompt (right-click -> Open); Windows may trigger a
+            SmartScreen warning.
+          make_latest: true
+          files: dist-release/*

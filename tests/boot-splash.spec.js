@@ -70,20 +70,77 @@ test.describe('Full-screen boot splash', () => {
     await expect(page.locator('[data-testid=title-col-header]')).toBeVisible();
   });
 
-  test('Room Scoped Widget Mode: stays visible through the async room handshake, then clears once real content is ready', async ({ page }) => {
+  test('Room Scoped Widget Mode: wigwag.html never shows its own splash when embedded -- the host owns the loading visual, #frame stays hidden until real content is ready', async ({ page }) => {
+    // Tracker #167/2275c4a6 follow-up, live-reported: showing #frame as
+    // soon as the Matrix-level connect succeeded let wigwag.html's OWN
+    // splash become visible too, right after the host's own (two loading
+    // treatments in sequence). Fixed by suppressing wigwag.html's splash
+    // entirely when embedded (window.parent !== window) and having the
+    // host keep #frame hidden -- loading silently in the background --
+    // until wigwag.html itself posts wigwag:ready.
+    //
     // Deliberately NOT h.gotoFakeWidgetHost -- that helper itself now waits
-    // out the splash's full lifecycle before returning (so OTHER tests
-    // using it don't race its click-blocking window), which would already
-    // be fully resolved by the time this test got a look, defeating the
-    // whole point of catching it still attached here.
+    // out the host's own splash lifecycle before returning, which would
+    // already be fully resolved by the time this test got a look.
+    // Local mocks resolve the whole handshake in well under 100ms, which
+    // races any single-point-in-time assertion of the intermediate
+    // "#frame hidden, still loading" state -- log a continuous timeline
+    // instead (same technique as the first test above) and assert on
+    // properties of the whole sequence.
     await page.addInitScript((cfg) => { window.__fakeHostConfig = cfg; }, { roomId: '!room:example.org', userId: '@tom:example.org', displayName: 'Tom' });
+    await page.addInitScript(() => {
+      window.__frameRevealLog = [];
+      const iv = setInterval(() => {
+        const frame = document.getElementById('frame');
+        if (!frame) return;
+        const frameVisible = getComputedStyle(frame).display !== 'none';
+        let innerSplashVisible = false;
+        let innerRoomModeBootstrappingVisible = false;
+        try {
+          const splashEl = frame.contentDocument.querySelector('[data-testid=boot-splash]');
+          innerSplashVisible = !!splashEl && frame.contentWindow.getComputedStyle(splashEl).display !== 'none';
+          // Regression guard for a REAL bug found live (not a stale
+          // deploy, as first suspected): componentDidMount -- used for
+          // the wigwag:ready signal below -- fires on the component's
+          // very FIRST mount, which in Room Mode happens WHILE
+          // roomModeBootstrapping is still true (showing this text),
+          // before the real handshake resolves. That posted wigwag:ready
+          // (and so revealed #frame) right as this placeholder text was
+          // the only thing rendered. Fixed by moving the signal to the
+          // two places roomModeBootstrapping actually flips to false
+          // instead (beginRoomModeHandshake's timeout fallback and
+          // activateRoomMode's real-success path) -- same anchoring
+          // mistake the splash's own dismiss-timer deliberately avoided
+          // by using the end of runBootSequence(), not componentDidMount.
+          const rmbEl = frame.contentDocument.querySelector('[data-testid=room-mode-bootstrapping]');
+          innerRoomModeBootstrappingVisible = !!rmbEl && frame.contentWindow.getComputedStyle(rmbEl).display !== 'none';
+        } catch (e) { /* cross-origin in a real browser; same-origin here */ }
+        window.__frameRevealLog.push({
+          frameVisible,
+          splashActuallyVisible: frameVisible && innerSplashVisible,
+          roomModeBootstrappingActuallyVisible: frameVisible && innerRoomModeBootstrappingVisible,
+        });
+      }, 10);
+      setTimeout(() => clearInterval(iv), 4000);
+    });
     await page.goto('/tests/fixtures/fake-widget-host.html');
+    await page.waitForTimeout(4100);
 
-    const frame = page.frameLocator('#widget').frameLocator('#frame');
-    const overlay = frame.locator('[data-testid=boot-splash]');
-    await overlay.waitFor({ state: 'attached', timeout: 5000 });
+    const widgetFrame = page.frameLocator('#widget');
+    const log = await widgetFrame.locator(':root').evaluate(() => window.__frameRevealLog);
 
-    await expect(overlay).toHaveCount(0, { timeout: 10000 });
-    await expect(frame.locator('[data-testid=room-no-projects], [data-testid=col-header]').first()).toBeVisible();
+    // Neither wigwag.html's own splash nor its "Connecting to room…" text
+    // is ever actually VISIBLE (frame shown AND the element itself not
+    // display:none) at any point in the sequence -- not before, during,
+    // or after the reveal. Either may still exist in the DOM at some
+    // point, hidden by the prehide mechanism or by #frame itself still
+    // being display:none -- that's fine, only real visibility matters.
+    expect(log.some(e => e.splashActuallyVisible)).toBe(false);
+    expect(log.some(e => e.roomModeBootstrappingActuallyVisible)).toBe(false);
+
+    // #frame does eventually become visible with real content, though
+    // (sanity: the reveal mechanism itself still works).
+    expect(log.some(e => e.frameVisible)).toBe(true);
+    await expect(widgetFrame.frameLocator('#frame').locator('[data-testid=room-no-projects], [data-testid=col-header]').first()).toBeVisible();
   });
 });

@@ -3,6 +3,23 @@
 <head>
 <meta charset="utf-8">
 <title>wigwag — Matrix</title>
+<script>
+// Live-reported (Tom): in a real Element widget embed, the plain
+// "wigwag — connect to a Matrix room" form/copy below was visible
+// (unstyled, title + subtitle) for the whole real connect-handshake
+// duration before the real app ever appears -- widget mode never has
+// anything to prompt for (room/user/access are all implied by being
+// embedded), so that form should never paint at all. document.write
+// here (synchronous, during <head> parsing, before <body> exists yet)
+// blocks it before the browser's very first paint -- waiting for the
+// main script at the bottom of <body> to hide it would already be too
+// late. Mirrors the SAME widgetId check getWidgetContext() does later;
+// duplicated here deliberately since this has to run before that
+// function (or anything else in the main script) exists.
+if (new URLSearchParams(location.search).get('widgetId')) {
+  document.write('<style id="__wigwag_prehide_setup">#setup{display:none!important}</style>');
+}
+</script>
 <!--
   wigwag-matrix-host.html -- a separate, non-bundled container that lets
   wigwag.html read/write its data through a Matrix room instead of (or
@@ -87,9 +104,29 @@
   #status.error { color: #b91c1c; }
   #status.ok { color: #15803d; }
   #frame { display: none; width: 100%; height: 100vh; border: none; }
+  /* Widget mode's branded stand-in for the plain #setup form while it
+     auto-connects -- same mark/wordmark as wigwag.html's own boot splash
+     (tracker #167/2275c4a6), shown instead of (not alongside) the raw
+     connecting text for as long as things are going normally. Deliberately
+     fully static -- no pulse, no sweep (live-reported, Tom: this page
+     stays alive and re-renders under it while the real handshake runs, so
+     a CSS animation on a persistent element periodically looked like a
+     flicker/jump, unlike wigwag.html's own splash which lives in a fresh
+     iframe document each time and never has that problem). Light-only:
+     this page has no dark-mode support at all today, unlike wigwag.html
+     itself. */
+  #widget-boot-splash { display:none; position:fixed; inset:0; z-index:400; background:#fcfcfe; flex-direction:column; align-items:center; justify-content:center; gap:14px; }
+  #widget-boot-splash-mark { display:flex; flex-direction:column; align-items:center; gap:14px; }
+  #widget-boot-splash-mark span { font-size:19px; font-weight:700; letter-spacing:-0.005em; color:#27292C; }
 </style>
 </head>
 <body>
+  <div id="widget-boot-splash">
+    <div id="widget-boot-splash-mark">
+      <svg viewBox="0 0 48 62" fill="none" style="width:34px; height:44px; display:block;"><path d="M0 2C0 0.8954 0.8954 0 2 0C3.1046 0 4 0.8954 4 2V60C4 61.1046 3.1046 62 2 62C0.8954 62 0 61.1046 0 60V2Z" fill="#27292C"></path><path d="M4 4H48V48H4V4Z" fill="#EF4755"></path><path d="M17 18H33V34H17V18Z" fill="white"></path></svg>
+      <span>Wigwag</span>
+    </div>
+  </div>
   <div id="setup">
     <h1>wigwag — connect to a Matrix room</h1>
     <div class="sub">This project's data lives in the room's own timeline, not this browser's storage alone. Anyone with access to the room and their own token can open this same page and see the same tracker.</div>
@@ -125,6 +162,14 @@
   function setStatus(text, kind) {
     statusEl.textContent = text || '';
     statusEl.className = kind || '';
+    // An error needs to be actually readable -- fall back to the plain
+    // setup text instead of leaving a widget-mode viewer staring at a
+    // branded splash with no visible explanation of what went wrong.
+    if (kind === 'error' && document.body.classList.contains('widget-mode')) {
+      const splash = $('widget-boot-splash');
+      if (splash) splash.style.display = 'none';
+      $('setup').style.display = '';
+    }
   }
 
   // A room id has no inherent relationship to a wigwag project id (the
@@ -2494,13 +2539,43 @@
   // `sharedProjectContext`/`multiIdentity` capabilities handed over in
   // wigwag:hello-ack, instead of being puppeted from out here after the
   // fact. See wigwag.html's own switcher rendering.
-  function showFrame() {
-    $('setup').style.display = 'none';
+  // Split in two (tracker #167/2275c4a6 follow-up, live-reported: "static
+  // host splash -> pulsing/sweeping real splash -> app" -- wigwag.html has
+  // its OWN boot splash, meant for genuine standalone use; nested in here,
+  // showing #frame as soon as the Matrix-level connect succeeds let that
+  // second splash become visible too, right after this page's own. #frame
+  // now loads silently in the background (display:none doesn't pause an
+  // iframe's own JS/rendering) the whole time wigwag.html is booting --
+  // which now skips its own splash entirely when embedded, see its own
+  // renderVals -- and is only revealed once wigwag.html itself says it has
+  // real content ready (the wigwag:ready listener below). One visible
+  // loading treatment for the whole wait, not two in sequence.
+  function startLoadingFrame() {
     const frame = $('frame');
-    frame.style.display = 'block';
     localStorage.attachFrame(frame);
     frame.src = '../wigwag.html';
   }
+  function revealFrame() {
+    $('setup').style.display = 'none';
+    const splash = $('widget-boot-splash');
+    if (splash) splash.style.display = 'none';
+    const frame = $('frame');
+    frame.style.display = 'block';
+    // Tracker #167/2275c4a6 follow-up, live-reported "table resizes
+    // itself after rendering": #frame sat display:none for part of boot
+    // (this whole startLoadingFrame/revealFrame split), during which any
+    // measurement wigwag.html took of its own layout (table overflow,
+    // etc.) necessarily saw zero dimensions -- a hidden iframe's content
+    // has no real layout at all, confirmed empirically, not merely
+    // "unpainted". Double rAF lets a real paint happen first, so this
+    // lands against actual, non-zero layout.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (frame.contentWindow) frame.contentWindow.postMessage({ type: 'wigwag:revealed' }, '*');
+    }));
+  }
+  window.addEventListener('message', (e) => {
+    if (e.data && e.data.type === 'wigwag:ready' && e.source === $('frame').contentWindow) revealFrame();
+  });
 
   // Shared by both transports once connect() has succeeded: bootstraps
   // and bridges EVERY discovered project (tracker #149, live-reported --
@@ -2519,7 +2594,7 @@
       ? connectResult.legacyDefaultProjectId
       : (projects[0] ? projects[0].id : connectResult.legacyDefaultProjectId);
     const openResult = await bridge.openAll(projects, defaultProjectId);
-    if (openResult.status === 'ok') { showFrame(); return; }
+    if (openResult.status === 'ok') { startLoadingFrame(); return; }
     onOpenFail(openResult);
   }
 
@@ -2533,6 +2608,24 @@
     // nothing to pick, so no Connect Remote / switcher entry points are
     // shown either (there's simply no UI for them here to begin with).
     document.body.classList.add('widget-mode');
+    // The prehide <style> (injected synchronously in <head>, before
+    // #setup could ever paint) has done its job -- from here on,
+    // visibility is this script's job: show the branded splash instead
+    // of the plain form/status text while things are going normally,
+    // falling back to #setup (see setStatus's own error branch) only if
+    // something actually goes wrong.
+    const prehide = document.getElementById('__wigwag_prehide_setup');
+    if (prehide) prehide.remove();
+    // Removing the prehide tag alone only stops FORCING #setup hidden --
+    // without an explicit replacement, #setup reverts to its own default
+    // visibility (block) underneath the splash, which is still covered
+    // visually (the splash is a higher-z-index fixed overlay) but now
+    // takes up real space in normal document flow, causing exactly the
+    // reflow/repaint "flicker" live-reported here. Hide it explicitly
+    // instead of relying on the overlay to merely cover it.
+    $('setup').style.display = 'none';
+    const splash = $('widget-boot-splash');
+    if (splash) splash.style.display = 'flex';
     setStatus('Connecting…');
     if (!widgetContext.roomId) {
       setStatus('This widget was not registered with a $matrix_room_id in its URL -- cannot tell which room to use.', 'error');

@@ -456,6 +456,7 @@ test.describe('Bound value panel: ANDing multiple criteria within one row', () =
     });
     await h.writeActiveMilestoneDoc(page, doc);
     await page.reload({ waitUntil: 'networkidle' });
+    await h.waitForBootSplashGone(page);
     await page.waitForTimeout(400);
 
     await h.openFieldEditor(page, 'priority');

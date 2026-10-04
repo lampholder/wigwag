@@ -2686,6 +2686,7 @@ test.describe('wigwag-matrix-host.html: moderator-proposed table layouts', () =>
     await page.locator('#roomId').fill(ROOM_ID);
     await page.locator('#connectBtn').click();
     await expect(page.locator('#frame')).toBeVisible();
+    await h.waitForBootSplashGone(page.frameLocator('#frame'));
     await page.waitForTimeout(300);
     return state;
   }

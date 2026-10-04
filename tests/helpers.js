@@ -123,11 +123,26 @@ async function seedDemoIdentityEmail(page) {
   }, DEMO_IDENTITY_EMAIL);
 }
 
+// Tracker #167 (2275c4a6): every boot now shows a full-screen splash that
+// deliberately blocks clicks (pointer-events) for up to ~680ms (260ms
+// minimum display + 420ms fade) before unmounting. The suite's existing
+// "goto/reload, wait a fixed few hundred ms, then interact" convention
+// predates that and is shorter than the splash's own guaranteed minimum,
+// so an immediate interaction can land on the (invisible, since it's
+// click-blocking even while fading) overlay instead of the real content
+// underneath. Call this after any navigation that can show it, before
+// interacting -- it resolves immediately if the splash was never present
+// or has already gone, so it's always safe to call.
+async function waitForBootSplashGone(locatorRoot) {
+  await locatorRoot.locator('[data-testid=boot-splash]').waitFor({ state: 'detached', timeout: 5000 });
+}
+
 async function gotoTracker(page) {
   await useFastTimers(page);
   await seedDemoIdentityEmail(page);
   await seedDemoMilestone(page);
   await page.goto(TRACKER_PATH, { waitUntil: 'networkidle' });
+  await waitForBootSplashGone(page);
   await page.waitForTimeout(300); // initial render settle
 }
 
@@ -138,6 +153,7 @@ async function gotoTrackerFreshIdentity(page) {
   await useFastTimers(page);
   await seedDemoMilestone(page);
   await page.goto(TRACKER_PATH, { waitUntil: 'networkidle' });
+  await waitForBootSplashGone(page);
   await page.waitForTimeout(300);
 }
 
@@ -171,6 +187,7 @@ async function gotoTrackerWithSharedProject(page) {
     localStorage.setItem('git_native_tracker_v1:' + sharedId, JSON.stringify(doc));
   }, { personalId: SHARED_PERSONAL_IDENTITY_ID, sharedId: SHARED_PROJECT_ID, sharedName: SHARED_PROJECT_NAME, doc: demoDoc, email: DEMO_IDENTITY_EMAIL });
   await page.goto(TRACKER_PATH, { waitUntil: 'networkidle' });
+  await waitForBootSplashGone(page);
   await page.waitForTimeout(300);
 }
 
@@ -864,6 +881,10 @@ function mockMatrixClientApi(page, { homeserverUrl, roomId, initialEntries = [],
 async function gotoFakeWidgetHost(page, { roomId, userId, displayName, roomName, initialEntries, rejectReadEventsTimes, dropReadEventsTimes, forbidStateEventType, rejectUploadTimes, seedMediaBlobs, powerLevels, roomCreator } = {}) {
   await page.addInitScript((cfg) => { window.__fakeHostConfig = cfg; }, { roomId, userId, displayName, roomName, initialEntries, rejectReadEventsTimes, dropReadEventsTimes, forbidStateEventType, rejectUploadTimes, seedMediaBlobs, powerLevels, roomCreator });
   await page.goto('/tests/fixtures/fake-widget-host.html');
+  // The real tracker lives two iframe levels down (#widget, the MSC2762
+  // host simulator, then #frame, wigwag.html itself) -- see
+  // waitForBootSplashGone's own comment for why this matters.
+  await waitForBootSplashGone(page.frameLocator('#widget').frameLocator('#frame'));
 }
 
 // Mocks the GitHub repo-metadata endpoint (GET /repos/{owner}/{repo}) that
@@ -1045,6 +1066,7 @@ module.exports = {
   TRACKER_PATH,
   DEMO_MILESTONE_NAME,
   gotoTracker,
+  waitForBootSplashGone,
   seedDemoMilestone,
   useFastTimers,
   row,

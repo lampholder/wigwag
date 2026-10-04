@@ -135,6 +135,7 @@ test.describe('Cross-tab sync', () => {
 
     const pageB = await context.newPage();
     await pageB.goto(h.TRACKER_PATH);
+    await h.waitForBootSplashGone(pageB);
     await pageB.waitForTimeout(300);
     await h.openTrackerSwitcher(pageB);
     await h.milestoneRow(pageB, 'Delivery tracker').click();
@@ -144,6 +145,7 @@ test.describe('Cross-tab sync', () => {
     // Tab A never touched anything -- reloading it must not jump to
     // whatever tab B made globally active.
     await page.reload();
+    await h.waitForBootSplashGone(page);
     await page.waitForTimeout(400);
     await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('Second Project');
 
@@ -151,6 +153,7 @@ test.describe('Cross-tab sync', () => {
     // back to the shared "last active anywhere" pointer as a default.
     const pageC = await context.newPage();
     await pageC.goto(h.TRACKER_PATH);
+    await h.waitForBootSplashGone(pageC);
     await pageC.waitForTimeout(300);
     await expect(pageC.locator('[data-testid=tracker-name-title]')).toHaveText('Delivery tracker');
   });

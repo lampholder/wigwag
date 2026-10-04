@@ -28,9 +28,9 @@ test.describe('wigwag.work marketing site (index.html)', () => {
     expect(await links.count()).toBeGreaterThanOrEqual(3);
   });
 
-  test('the widget URL chip shows the real bridges/ path, not the handoff\'s flattened sample', async ({ page }) => {
+  test('the widget URL chip shows the real published /widget path, not the handoff\'s flattened sample', async ({ page }) => {
     await page.goto('/');
-    await expect(page.locator('#widget-url')).toContainText('https://wigwag.work/bridges/wigwag-matrix-host.html?matrix_room_id=');
+    await expect(page.locator('#widget-url')).toContainText('https://wigwag.work/widget?matrix_room_id=');
   });
 
   test('"Copy" copies the widget URL to the clipboard and shows "Copied" before reverting', async ({ page }) => {
@@ -40,7 +40,7 @@ test.describe('wigwag.work marketing site (index.html)', () => {
     await button.click();
     await expect(button).toHaveText('Copied');
     const copied = await page.evaluate(() => navigator.clipboard.readText());
-    expect(copied).toContain('wigwag.work/bridges/wigwag-matrix-host.html');
+    expect(copied).toContain('wigwag.work/widget');
     await expect(button).toHaveText('Copy', { timeout: 3000 });
   });
 

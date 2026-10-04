@@ -1,0 +1,78 @@
+name: Deploy GitHub Pages (wigwag.work)
+
+# Publishes a CURATED subset of this repo to wigwag.work via GitHub's
+# Actions-based Pages deployment (Settings -> Pages -> Source: GitHub
+# Actions) -- deliberately not "Deploy from branch", and deliberately not
+# a hand-maintained orphan/gh-pages branch either. Both of those require a
+# second, manually-synced copy of wigwag.html/bridges/wigwag-matrix-
+# host.html to stay current with main -- exactly the dual-copy staleness
+# trap this project has already been burned by once (wigwag-core.js vs.
+# wigwag.html's own embedded copy). This workflow instead re-copies the
+# public-facing files fresh from main on every push, so there's nothing to
+# remember to update and nothing that can go stale.
+#
+# Everything NOT explicitly copied below (tests/, docs/, CLAUDE.md,
+# src-tauri/, wigwag-core.test.js, package-lock.json, etc.) stays off
+# wigwag.work entirely -- still visible on github.com like any public
+# repo, just not served from the marketing domain alongside the app.
+#
+# bridges/wigwag-matrix-host.html is relocated to widget/index.html in the
+# published tree so it resolves at the clean https://wigwag.work/widget
+# URL Tom asked for; its only two relative references (../wigwag-core.js,
+# ../wigwag.html) resolve identically whether the file lives at
+# bridges/wigwag-matrix-host.html or widget/index.html -- both are
+# exactly one directory level below the published root.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assemble the public site
+        run: |
+          set -e
+          mkdir -p _site/widget
+          cp index.html _site/index.html
+          cp CNAME _site/CNAME
+          cp wigwag.html _site/wigwag.html
+          cp wigwag-core.js _site/wigwag-core.js
+          cp manifest.json _site/manifest.json
+          cp icon-256.png _site/icon-256.png
+          cp icon-512.png _site/icon-512.png
+          cp sw.js _site/sw.js
+          cp bridges/wigwag-matrix-host.html _site/widget/index.html
+          # Disables GitHub's default Jekyll processing step -- without
+          # this, Pages tries to run every file through Jekyll/Liquid,
+          # which has no business touching a hand-built static app with
+          # no build step of its own.
+          touch _site/.nojekyll
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

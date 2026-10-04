@@ -98,4 +98,27 @@ test.describe('Header generated background', () => {
     await page.waitForTimeout(200);
     expect(lightness(await washColor())).toBeLessThan(0.3); // near-black wash
   });
+
+  // Live-reported (Tom, 2026-10-03): shrinking the window to the mobile
+  // breakpoint turned the header white (blank), and it STAYED white even
+  // after growing back to full size. Root cause: the desktop and mobile
+  // shells are two separate <sc-if> branches, not one shell with
+  // CSS-hidden variants -- crossing the breakpoint in either direction
+  // destroys whichever header-pattern-mount was filled and mounts a
+  // brand new, empty one. ensureHeaderPattern()'s own redraw guard only
+  // tracked "has the project id changed", so it kept skipping the
+  // redraw against the new, genuinely empty mount in both directions.
+  test('crossing the mobile breakpoint in either direction keeps the header mesh filled, not permanently blank', async ({ page }) => {
+    await page.waitForTimeout(200);
+    const canvasAt = () => page.locator('[data-testid=header-pattern-mount] canvas');
+    await expect(canvasAt()).toHaveCount(1);
+
+    await page.setViewportSize({ width: 375, height: 800 });
+    await page.waitForTimeout(300);
+    await expect(canvasAt()).toHaveCount(1);
+
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.waitForTimeout(300);
+    await expect(canvasAt()).toHaveCount(1);
+  });
 });

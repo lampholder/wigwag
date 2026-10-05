@@ -1668,7 +1668,8 @@ test.describe('wigwag-matrix-host.html: moderator-gated project creation', () =>
     expect(fieldIds).not.toContain('mitigation'); // Mitigation
     // Its own real starter fields must still be there, untouched.
     expect(fieldIds.some(id => doc.fieldDefs[id].label === 'Priority')).toBe(true);
-    expect(fieldIds.some(id => doc.fieldDefs[id].label === 'RAG')).toBe(true);
+    expect(fieldIds.some(id => doc.fieldDefs[id].label === 'Description')).toBe(true);
+    expect(fieldIds.some(id => doc.fieldDefs[id].label === 'Status')).toBe(true);
   });
 
   test('an existing room\'s legacy project (grandfathered, predates this feature) is discovered without needing a state event', async ({ page }) => {

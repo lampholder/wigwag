@@ -48,7 +48,7 @@ test.describe('Tracker switcher', () => {
     // Not the demo seed's own schema (Type/Related/Delivery teams/Mitigation)
     // -- the starter template instead (see blankProjectFieldDefs()).
     const headers = await page.locator('[data-testid=col-header]').allTextContents();
-    expect(headers.map(h => h.replace(/\W+$/, '').trim())).toEqual(['Priority', 'Remedy', 'RAG', 'Status']);
+    expect(headers.map(h => h.replace(/\W+$/, '').trim())).toEqual(['Description', 'Priority', 'Status']);
     await expect(page.locator('body')).toContainText('Second milestone');
 
     await h.openTrackerSwitcher(page);

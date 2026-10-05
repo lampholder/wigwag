@@ -22,6 +22,14 @@ name: Deploy GitHub Pages (wigwag.work)
 # ../wigwag.html) resolve identically whether the file lives at
 # bridges/wigwag-matrix-host.html or widget/index.html -- both are
 # exactly one directory level below the published root.
+#
+# wigwag.html is ALSO copied to app/index.html, so the site can link a
+# clean https://wigwag.work/app for "open it right now, no install" --
+# on top of, not instead of, the existing wigwag.html path (left in
+# place deliberately: widget/index.html's own ../wigwag.html reference
+# depends on that path still resolving, and changing it would mean
+# touching bridges/wigwag-matrix-host.html's source just for a cosmetic
+# deploy-path preference).
 on:
   push:
     branches: [main]
@@ -45,7 +53,7 @@ jobs:
       - name: Assemble the public site
         run: |
           set -e
-          mkdir -p _site/widget
+          mkdir -p _site/widget _site/app
           cp index.html _site/index.html
           cp CNAME _site/CNAME
           cp wigwag.html _site/wigwag.html
@@ -55,6 +63,16 @@ jobs:
           cp icon-512.png _site/icon-512.png
           cp sw.js _site/sw.js
           cp bridges/wigwag-matrix-host.html _site/widget/index.html
+          # wigwag.html pulls manifest.json/icon-512.png/sw.js via plain
+          # relative (not rooted) paths, resolved against its own URL's
+          # directory -- so its app/index.html copy needs its own
+          # siblings of each, one directory deeper, or those three
+          # 404 silently for anyone who opens /app specifically.
+          cp wigwag.html _site/app/index.html
+          cp manifest.json _site/app/manifest.json
+          cp icon-256.png _site/app/icon-256.png
+          cp icon-512.png _site/app/icon-512.png
+          cp sw.js _site/app/sw.js
           # Disables GitHub's default Jekyll processing step -- without
           # this, Pages tries to run every file through Jekyll/Liquid,
           # which has no business touching a hand-built static app with

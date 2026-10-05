@@ -44,6 +44,11 @@ test.describe('wigwag.work marketing site (index.html)', () => {
     await expect(button).toHaveText('Copy', { timeout: 3000 });
   });
 
+  test('"Open the app" links to the clean /app path, the zero-setup way in', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('a:text("Open the app")')).toHaveAttribute('href', '/app');
+  });
+
   test('the desktop app card links each platform straight at its rolling-release installer, with no "Coming soon" badge', async ({ page }) => {
     await page.goto('/');
     await expect(page.locator('text=Coming soon')).toHaveCount(0);

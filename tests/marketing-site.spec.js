@@ -22,10 +22,17 @@ test.describe('wigwag.work marketing site (index.html)', () => {
     await expect(page.locator('#start h2')).toBeInViewport();
   });
 
-  test('GitHub links point at the real repository, not a placeholder', async ({ page }) => {
+  test('GitHub links (hero + footer) point at the real repository, not a placeholder', async ({ page }) => {
     await page.goto('/');
     const links = page.locator('a[href="https://github.com/lampholder/wigwag"]');
-    expect(await links.count()).toBeGreaterThanOrEqual(3);
+    expect(await links.count()).toBeGreaterThanOrEqual(2);
+  });
+
+  test('"Run it where you already are" has exactly three cards, with the browser link in preference to a dedicated GitHub card', async ({ page }) => {
+    await page.goto('/');
+    const start = page.locator('#start');
+    await expect(start.locator('h3')).toHaveText(['Desktop app', 'Matrix widget', 'In your browser']);
+    await expect(start.locator('text=Source on GitHub')).toHaveCount(0);
   });
 
   test('the widget URL chip shows the real published /widget path, not the handoff\'s flattened sample', async ({ page }) => {

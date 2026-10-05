@@ -61,6 +61,11 @@ test.describe('Deep links', () => {
     await expect(page.locator('[data-testid=deep-link-notice]')).toBeVisible();
     await expect(page.locator('[data-testid=row]')).toHaveCount(9);
     await expect(page.locator('[data-testid=slideover]')).toHaveCount(0);
+    // Live-reported (Tom): this notice (a sibling BEFORE the app-root div
+    // that actually declares the app's base font-family) rendered in the
+    // browser's default serif font -- confirm it's not Times New Roman.
+    const font = await page.locator('[data-testid=deep-link-notice]').evaluate(el => getComputedStyle(el).fontFamily);
+    expect(font.toLowerCase()).not.toContain('times');
   });
 
   test('a fresh load with no hash still ends up with an addressable #/project/<id> in the address bar', async ({ page }) => {

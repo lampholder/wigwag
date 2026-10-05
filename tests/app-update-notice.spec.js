@@ -27,6 +27,11 @@ test.describe('App update notice', () => {
     await page.waitForTimeout(300);
     await expect(page.locator('[data-testid=app-update-notice]')).toBeVisible();
     await expect(page.locator('[data-testid=app-update-notice]')).toContainText('Update available');
+    // Live-reported (Tom): this notice (a sibling BEFORE the app-root div
+    // that actually declares the app's base font-family) rendered in the
+    // browser's default serif font -- confirm it's not Times New Roman.
+    const font = await page.locator('[data-testid=app-update-notice]').evaluate(el => getComputedStyle(el).fontFamily);
+    expect(font.toLowerCase()).not.toContain('times');
   });
 
   test('an older (or equal) server Last-Modified shows nothing -- already current', async ({ page }) => {

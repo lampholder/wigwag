@@ -59,6 +59,44 @@ test.describe('Full-screen boot splash', () => {
     await expect(page.locator('[data-testid=title-col-header]')).toBeVisible();
   });
 
+  test('any raw unresolved template text ("{{ ... }}") visible in the DOM during load is always covered by the splash itself, never exposed to the user', async ({ page }) => {
+    // Live-reported (Tom): "a big flash of templated mess... all the
+    // modals at once, with lots of {{ note.ProjectName }} style bits" in
+    // plain Local Mode. Root cause: making boot-splash's own prehide
+    // UNCONDITIONAL (a prior fix for a different bug, the disappear/
+    // reappear flicker below) meant NOTHING covered the gap between the
+    // unpacker's document.documentElement.replaceWith() swap -- which
+    // destroys the Layer-1 #__bundler_thumbnail outright, since it's
+    // part of the OLD document being wholesale replaced -- and
+    // componentDidMount's real mount. Reverted to conditional-on-
+    // embedding (desktop's own hint-placeholder-val for boot-splash is
+    // {{ true }} specifically so it covers exactly this gap). This test
+    // doesn't assert the raw text never EXISTS in the DOM (document.body
+    // .innerText doesn't know about z-index/visual occlusion, which is
+    // exactly the false positive that first had to be ruled out with a
+    // real screenshot before trusting this result) -- it asserts that
+    // whenever it does, boot-splash is actively covering it.
+    await page.addInitScript(() => {
+      window.__rawTemplateLog = [];
+      let n = 0;
+      function sample() {
+        const text = document.body ? document.body.innerText : '';
+        if (text.includes('{{') || text.includes('}}')) {
+          const el = document.querySelector('[data-testid=boot-splash]');
+          const splashCovering = !!el && getComputedStyle(el).display !== 'none' && parseFloat(getComputedStyle(el).opacity) > 0.9;
+          window.__rawTemplateLog.push({ splashCovering });
+        }
+        n++;
+        if (n < 300) requestAnimationFrame(sample);
+      }
+      requestAnimationFrame(sample);
+    });
+    await page.goto('/wigwag.html', { waitUntil: 'load' });
+    await page.waitForTimeout(1500);
+    const log = await page.evaluate(() => window.__rawTemplateLog);
+    expect(log.every(e => e.splashCovering)).toBe(true);
+  });
+
   test('reappears on every reload, not just the very first boot', async ({ page }) => {
     await h.gotoTracker(page); // settles well past the splash's own lifecycle
     await expect(page.locator('[data-testid=boot-splash]')).toHaveCount(0);

@@ -111,4 +111,42 @@ test.describe('Responsive column narrowing', () => {
     await expect(h.colHeader(page, 'teams').locator('span').first()).toHaveText('Delivery teams');
     await expect(h.colHeader(page, 'teams').locator('[data-testid=col-menu-trigger]')).toBeVisible();
   });
+
+  // Live-reported (Tom, wigwag.work/app): "I just killed an import...
+  // Root.renderVals(): can't access property 'trim', label is undefined".
+  // Root cause: computeHeaderCompression(label, width) called label.trim()
+  // on its very first line with no guard, and is called as
+  // computeHeaderCompression(def.label, width) for every column header --
+  // a field definition with no .label at all (e.g. from an externally
+  // authored or malformed imported file -- there's no schema validation
+  // on import) crashed the WHOLE table's render, not just that column.
+  // Confirmed via a real repro before fixing: this isn't hypothetical.
+  test('a field definition with no label at all renders a blank header instead of crashing the whole table', async ({ page }) => {
+    const pageErrors = [];
+    page.on('pageerror', e => pageErrors.push(String(e)));
+
+    let doc = await h.readActiveMilestoneDoc(page);
+    doc.fieldDefs.badfield = { type: 'text' }; // no .label key at all
+    doc.projectHistory.push({
+      id: 'bad-field-entry-1', time: 'Aug 2, 1:00pm', actor: 'dave', email: 'dave@wigwag.dev',
+      text: 'Created field', field: 'badfield', value: { type: 'text' }, origin: 'authored', sortKey: Date.now()
+    });
+    await h.writeActiveMilestoneDoc(page, doc);
+    await page.evaluate(() => {
+      const all = JSON.parse(localStorage.getItem('git_native_tracker_column_order_v1') || '{}');
+      const idx = JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1'));
+      const pid = idx.activeMilestoneId;
+      all[pid] = [...(all[pid] || []), 'badfield'];
+      localStorage.setItem('git_native_tracker_column_order_v1', JSON.stringify(all));
+    });
+
+    await page.reload();
+    await h.waitForBootSplashGone(page);
+    await page.waitForTimeout(300);
+
+    expect(pageErrors).toEqual([]);
+    await expect(page.locator('[data-testid=col-header]').first()).toBeVisible(); // whole table still renders
+    await expect(h.colHeader(page, 'badfield')).toBeVisible(); // the bad column itself is there, just blank
+    await expect(h.colHeader(page, 'badfield').locator('span').first()).toHaveText('');
+  });
 });

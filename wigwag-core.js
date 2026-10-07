@@ -3366,6 +3366,7 @@ function computeHeaderMeshTriangles(seed) {
 // otherwise the label has less room than its final width throughout the
 // fade, producing a visible truncate-then-untruncate flash.
 function computeHeaderCompression(label, width) {
+  label = label || '';
   const labelWords = label.trim().split(/\s+/);
   const isAlreadyAcronym = label === label.toUpperCase() && /[A-Z]/.test(label);
   const canAcronym = labelWords.length > 1 && !isAlreadyAcronym;

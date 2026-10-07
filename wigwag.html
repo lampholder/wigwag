@@ -3369,6 +3369,7 @@ function computeHeaderMeshTriangles(seed) {
 }
 
 function computeHeaderCompression(label, width) {
+  label = label || '';
   const labelWords = label.trim().split(/\s+/);
   const isAlreadyAcronym = label === label.toUpperCase() && /[A-Z]/.test(label);
   const canAcronym = labelWords.length > 1 && !isAlreadyAcronym;

@@ -385,6 +385,146 @@ test.describe('Project activity feed (Comments/History tabs)', () => {
   });
 });
 
+// Tracker (live-reported, Tom): "I just exported a project and imported
+// it on top of an older version - it didn't pull in changes to the
+// project Notes field." Root cause: applyMergedIssues only ever adopted
+// an incoming Notes value when the LOCAL copy's own Notes was currently
+// empty -- any local content at all, however stale, silently blocked a
+// genuinely newer incoming value forever. Notes is now promoted to a
+// real, derivable value with its own signed history on projectHistory
+// (field:'__project_notes__', the same reserved-sentinel pattern as the
+// project's own name), so a real divergence gets the identical
+// three-way (diff3) merge prose issue fields already get, instead of
+// either side just winning by presence.
+test.describe('Project Notes participates in real merge (not silently overwritten or silently kept)', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  async function exportCurrentProjectLines(page) {
+    await page.locator('[data-testid=btn-export]').click();
+    const [dl] = await Promise.all([
+      page.waitForEvent('download'),
+      page.locator('[data-testid=btn-export-jsonl]').click(),
+    ]);
+    const fs = require('fs');
+    const text = fs.readFileSync(await dl.path(), 'utf8');
+    return text.trim().split('\n').map(l => JSON.parse(l));
+  }
+  async function importLines(page, lines, { filename }) {
+    await page.locator('[data-testid=btn-import-merge]').click();
+    await page.waitForTimeout(150);
+    const [fc] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      page.locator('[data-testid=btn-paste-merge-open-file]').click(),
+    ]);
+    await fc.setFiles({ name: filename, mimeType: 'application/octet-stream', buffer: Buffer.from(lines.map(l => JSON.stringify(l)).join('\n')) });
+    await page.waitForTimeout(400);
+  }
+
+  test('a genuine divergence (both sides authored different Notes text) produces a real three-way merge, not a silently-ignored incoming change', async ({ page }) => {
+    await page.locator('[data-testid=btn-notes]').click();
+    await page.locator('[data-testid=notes-body-wrap]').click();
+    await page.locator('[data-testid=notes-textarea]').fill('Local notes.');
+    await page.locator('[data-testid=notes-save-btn]').click();
+    await page.waitForTimeout(300);
+    await page.locator('[data-testid=notes-close-btn]').click();
+    await page.waitForTimeout(200);
+
+    const lines = await exportCurrentProjectLines(page);
+    const fieldsLine = lines.find(l => l.type === 'fields');
+    // Simulate a second device's own, independently-authored Notes edit:
+    // a real entry with its own id/actor, strictly before "now" so the
+    // merge-time reconciliation entry (created with a real, current
+    // sortKey) naturally becomes the newest -- matching how two real
+    // devices' sortKeys actually relate (both are real past wall-clock
+    // moments by the time either one imports the other's export).
+    fieldsLine.projectNotes = 'Incoming notes.';
+    fieldsLine.projectHistory = (fieldsLine.projectHistory || []).filter(hh => hh.field !== '__project_notes__');
+    fieldsLine.projectHistory.push({
+      id: 'other-device-notes-1', time: 'Aug 2, 1:00pm', actor: 'dave', email: 'dave@wigwag.dev',
+      text: 'Notes updated', field: '__project_notes__', value: 'Incoming notes.',
+      origin: 'authored', sortKey: Date.now() - 5000
+    });
+
+    await importLines(page, lines, { filename: 'reimport-notes.jsonl' });
+
+    // The merge gate must be genuinely enabled -- a Notes-only divergence
+    // is a real change to merge, not a no-op.
+    const mergeBtn = page.locator('[data-testid=btn-merge-primary]');
+    await expect(mergeBtn).toBeVisible();
+    await expect(mergeBtn).toBeEnabled();
+    await mergeBtn.click();
+    await page.waitForTimeout(400);
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    // Both sides' own text survives somewhere in the final merged value
+    // (as plain text, or inside real conflict markers) -- never silently
+    // dropped in favor of whichever side merely "already had content".
+    expect(doc.projectNotes).toContain('Local notes.');
+    expect(doc.projectNotes).toContain('Incoming notes.');
+    const notesHistory = doc.projectHistory.filter(hh => hh.field === '__project_notes__');
+    expect(notesHistory.length).toBe(3); // local's own entry + incoming's + the new merge-reconciliation entry
+  });
+
+  test('incoming Notes content with nothing local yet is adopted cleanly, no conflict markers', async ({ page }) => {
+    const lines = await exportCurrentProjectLines(page);
+    const fieldsLine = lines.find(l => l.type === 'fields');
+    fieldsLine.projectNotes = 'Fresh notes from the incoming file.';
+    fieldsLine.projectHistory = (fieldsLine.projectHistory || []).filter(hh => hh.field !== '__project_notes__');
+    fieldsLine.projectHistory.push({
+      id: 'incoming-notes-1', time: 'Aug 2, 1:00pm', actor: 'dave', email: 'dave@wigwag.dev',
+      text: 'Notes updated', field: '__project_notes__', value: 'Fresh notes from the incoming file.',
+      origin: 'authored', sortKey: Date.now() - 5000
+    });
+
+    await importLines(page, lines, { filename: 'reimport-fresh-notes.jsonl' });
+    const mergeBtn = page.locator('[data-testid=btn-merge-primary]');
+    await expect(mergeBtn).toBeEnabled();
+    await mergeBtn.click();
+    await page.waitForTimeout(400);
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    expect(doc.projectNotes).toBe('Fresh notes from the incoming file.');
+    expect(doc.projectNotes).not.toContain('<<<<<<<');
+  });
+
+  test('two independently legacy-backfilled Notes (pre-dating real history tracking) get distinct history entries, not silently collapsed into one', async ({ page }) => {
+    // Force the LOCAL doc into a pre-this-feature shape: non-empty
+    // projectNotes, zero __project_notes__ history entries at all.
+    let doc = await h.readActiveMilestoneDoc(page);
+    doc.projectNotes = 'Legacy local notes, never migrated.';
+    await h.writeActiveMilestoneDoc(page, doc);
+    await page.reload();
+    await h.waitForBootSplashGone(page);
+    await page.waitForTimeout(300);
+
+    doc = await h.readActiveMilestoneDoc(page);
+    let notesHistory = doc.projectHistory.filter(hh => hh.field === '__project_notes__');
+    expect(notesHistory.length).toBe(1);
+    expect(notesHistory[0].origin).toBe('legacy-backfill');
+    const localBackfillId = notesHistory[0].id;
+
+    const lines = await exportCurrentProjectLines(page);
+    const fieldsLine = lines.find(l => l.type === 'fields');
+    // A second, independent legacy device: also no history yet, but
+    // DIFFERENT notes text -- the two devices' own backfilled entries
+    // must not collide on id just because they share the same field.
+    fieldsLine.projectNotes = 'Different legacy notes from another device.';
+    fieldsLine.projectHistory = (fieldsLine.projectHistory || []).filter(hh => hh.field !== '__project_notes__');
+
+    await importLines(page, lines, { filename: 'legacy-reimport.jsonl' });
+    await expect(page.locator('[data-testid=btn-merge-primary]')).toBeVisible();
+    await page.locator('[data-testid=btn-merge-primary]').click();
+    await page.waitForTimeout(400);
+
+    doc = await h.readActiveMilestoneDoc(page);
+    notesHistory = doc.projectHistory.filter(hh => hh.field === '__project_notes__');
+    expect(notesHistory.some(e => e.id === localBackfillId)).toBe(true); // local's own entry survived the union
+    expect(notesHistory.length).toBeGreaterThanOrEqual(2); // local + incoming backfills are distinct entries, not collapsed to one
+    expect(doc.projectNotes).toContain('Legacy local notes');
+    expect(doc.projectNotes).toContain('Different legacy notes');
+  });
+});
+
 test.describe('Email pills and URL autolinking in issue comments', () => {
   test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
 

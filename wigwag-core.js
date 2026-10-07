@@ -1358,10 +1358,25 @@ function deriveProjectName(projectHistory) {
   // derived name" result a caller already handles for "never renamed".
   return latest ? latest.value : null;
 }
+// Same reserved-sentinel pattern as PROJECT_NAME_FIELD_ID above, for the
+// project's free-form Notes text -- promotes it from plain cached-only
+// browser state to a real, derivable, mergeable value with its own
+// signed history on projectHistory, so a genuine divergence between two
+// copies' Notes gets the same real three-way (diff3) merge prose fields
+// already get, instead of either side silently overwriting the other.
+const PROJECT_NOTES_FIELD_ID = '__project_notes__';
+function deriveProjectNotes(projectHistory) {
+  let latest = null;
+  for (const h of (projectHistory || [])) {
+    if (h.field !== PROJECT_NOTES_FIELD_ID || h.value === undefined) continue;
+    if (!latest || h.sortKey > latest.sortKey) latest = h;
+  }
+  return latest ? latest.value : null;
+}
 function deriveFieldDefs(projectHistory) {
   const latestByField = {};
   for (const h of (projectHistory || [])) {
-    if (!h.field || h.field === PROJECT_NAME_FIELD_ID || h.value === undefined) continue;
+    if (!h.field || h.field === PROJECT_NAME_FIELD_ID || h.field === PROJECT_NOTES_FIELD_ID || h.value === undefined) continue;
     const existing = latestByField[h.field];
     if (!existing || h.sortKey > existing.sortKey) latestByField[h.field] = h;
   }
@@ -1412,12 +1427,39 @@ function effectiveFieldDefs(fieldDefs, localFieldBindings) {
 // changes became logged) gets one synthesized entry carrying its whole
 // current definition as value -- same "log the whole new definition, not
 // a delta" shape every real edit uses.
-function backfillProjectHistory(fieldDefs, projectHistory) {
+// A plain, synchronous, non-cryptographic string hash (classic
+// djb2-ish polynomial) -- just enough entropy that two independently
+// backfilled Notes entries with DIFFERENT text never collide on id (see
+// below); nothing here needs to resist tampering, only accidental
+// collision between two legacy devices' own differing Notes strings.
+function simpleStringHash(str) {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) { h = (Math.imul(31, h) + str.charCodeAt(i)) | 0; }
+  return (h >>> 0).toString(36);
+}
+function backfillProjectHistory(fieldDefs, projectHistory, projectNotes) {
   const fieldsWithHistory = new Set();
   for (const h of (projectHistory || [])) { if (h.field) fieldsWithHistory.add(h.field); }
   const oldestSortKey = (projectHistory && projectHistory.length) ? Math.min.apply(null, projectHistory.map(function (h) { return h.sortKey || 0; })) : 0;
   const earliestTime = (projectHistory && projectHistory.length) ? projectHistory[0].time : formatNow();
   const backfillEntries = [];
+  if (projectNotes && !fieldsWithHistory.has(PROJECT_NOTES_FIELD_ID)) {
+    backfillEntries.push({
+      // Content-derived, not a bare fixed string like the per-field
+      // backfill ids below -- two devices that each typed DIFFERENT
+      // Notes text before ever seeing this feature must get DIFFERENT
+      // ids, or unionByKey (keyed on entryKey, which prefers a real id
+      // over its own content-sensitive fallback) would silently treat
+      // them as "the same entry" and drop one side's content outright
+      // on the very first merge between them.
+      id: 'backfill-field-' + PROJECT_NOTES_FIELD_ID + '-' + simpleStringHash(projectNotes),
+      time: earliestTime, actor: 'system', email: '',
+      text: 'Notes (backfilled from existing data)',
+      field: PROJECT_NOTES_FIELD_ID, value: projectNotes,
+      origin: 'legacy-backfill', sortKey: oldestSortKey - 1,
+      sig: null, sigRedacted: null, pubKey: null
+    });
+  }
   for (const colId in fieldDefs) {
     if (fieldsWithHistory.has(colId)) continue;
     backfillEntries.push({
@@ -1454,14 +1496,15 @@ function ensureTimestampFieldDefs(fieldDefs) {
 }
 // Shared load-time preparation for a project's schema coming from anywhere
 // other than this session's own live edits -- mirrors hydrateIssue.
-function hydrateProject(fieldDefs, projectHistory) {
+function hydrateProject(fieldDefs, projectHistory, projectNotes) {
   const ensuredFieldDefs = ensureTimestampFieldDefs(ensureCommentsFieldDef(fieldDefs));
-  const backfilled = backfillProjectHistory(ensuredFieldDefs, projectHistory);
-  // null (not '') when no field:'name' entry exists yet -- an older
-  // project that predates this, or one that's never been renamed -- so a
-  // caller can tell "no derived name yet" apart from "derived name is
-  // empty" and fall back to its own locally-cached name instead.
-  return { fieldDefs: deriveFieldDefs(backfilled), projectHistory: backfilled, projectName: deriveProjectName(backfilled) };
+  const backfilled = backfillProjectHistory(ensuredFieldDefs, projectHistory, projectNotes);
+  // null (not '') when no field:'name'/field:'__project_notes__' entry
+  // exists yet -- an older project that predates this, or one that's
+  // never been renamed/noted -- so a caller can tell "no derived value
+  // yet" apart from "derived value is empty" and fall back to its own
+  // locally-cached value instead.
+  return { fieldDefs: deriveFieldDefs(backfilled), projectHistory: backfilled, projectName: deriveProjectName(backfilled), projectNotes: deriveProjectNotes(backfilled) };
 }
 
 
@@ -2277,7 +2320,7 @@ function parseJsonl(text, fallbackFieldDefs) {
   }
   const effectiveFields = fields || fallbackFieldDefs;
   const hydratedIssues = issues.map(iss => hydrateIssue(iss, effectiveFields));
-  const projectHistory = fields ? backfillProjectHistory(fields, incomingProjectHistory || []) : (incomingProjectHistory || []);
+  const projectHistory = fields ? backfillProjectHistory(fields, incomingProjectHistory || [], projectNotes) : (incomingProjectHistory || []);
   return { fields, projectHistory, issues: hydratedIssues, projectId, projectName, projectNotes, projectComments, formatVersion: incomingFormatVersion };
 }
 // A stable identity for a history/comment entry for union-dedup purposes.
@@ -2955,6 +2998,7 @@ function computeIssueMerge(localIssues, parsedIssues, fieldDefs, inboundInfo) {
 // only ever unioned").
 function mergeHasRealChanges(localIssues, computed) {
   if ((computed.mergeIssueSummaries || []).length) return true;
+  if (computed.notesChanged) return true;
   const localById = new Map((localIssues || []).map(i => [i.id, i]));
   for (const mi of (computed.mergedIssues || [])) {
     const local = localById.get(mi.id);
@@ -4036,7 +4080,7 @@ async function probeMatrixRoomAccess({ fetchImpl, homeserverUrl, accessToken, ro
 }
 
 const WigwagCoreExports = {
-  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, xlsxDateTimeSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LAYOUT_PROPOSAL_DEVICE_ID_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, tokenizeFilterQuery, parseFilterQuery, issueMatchesFieldToken, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, COMMENT_READS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, formatNow, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, migrateLegacyComments, deriveFieldDefs, effectiveFieldDefs, PROJECT_NAME_FIELD_ID, deriveProjectName, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, issueTimestampValue, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, MATRIX_USER_ID_RE, principalKind, identityPrincipal, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, evalRule, computeBoundValue, isFieldLocked, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, sortValue, computeSortSnapshot, issueCreatedAt,
+  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, xlsxDateTimeSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LAYOUT_PROPOSAL_DEVICE_ID_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, tokenizeFilterQuery, parseFilterQuery, issueMatchesFieldToken, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, COMMENT_READS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, formatNow, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, migrateLegacyComments, deriveFieldDefs, effectiveFieldDefs, PROJECT_NAME_FIELD_ID, deriveProjectName, PROJECT_NOTES_FIELD_ID, deriveProjectNotes, simpleStringHash, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, issueTimestampValue, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, MATRIX_USER_ID_RE, principalKind, identityPrincipal, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, evalRule, computeBoundValue, isFieldLocked, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, sortValue, computeSortSnapshot, issueCreatedAt,
   importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry,
   squashHistory, displayValueForHistory, buildSourceText, keyRegistryEncoder, rehydrateKeyRef, humanFileSize, parseJsonl, entryKey, commentKey, unionByKey, mergeCommentStreams, mergeIssuePair, computeIssueMerge, mergeHasRealChanges, computeFieldDefsMerge, computeDerivedChangeEntries,
   isPastedTextASingleUrl, wrapSelectionWithMarkdownLink,

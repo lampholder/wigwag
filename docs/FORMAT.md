@@ -231,6 +231,85 @@ authoritative once a real derived name exists; it only wins when nothing
 has ever written this sentinel field, which is exactly the "migration
 gap" fallback field definitions already use.
 
+## A project's Notes field is also derived from a log
+
+The project-level Notes field (shown from the "Notes" button, free-form
+markdown) used to be plain cached-only browser state — a bare string,
+written directly by `saveNoteEdit()` with no history entry at all. Two
+copies of the same project that had each typed different Notes text had
+no way to reconcile that on merge: `applyMergedIssues` would only ever
+adopt the incoming file's Notes when the *local* copy's own Notes was
+currently empty, so any local content at all — however stale — silently
+blocked a genuinely newer incoming value forever (live-reported: "I just
+exported a project and imported it on top of an older version — it
+didn't pull in changes to the project Notes field").
+
+Notes now follows the exact same pattern as the project name above,
+using its own reserved sentinel field id — `__project_notes__`:
+
+```json
+{
+  "id": "h_...",
+  "time": "Aug 3, 2:14pm",
+  "actor": "tom",
+  "email": "tom@example.com",
+  "text": "Notes updated",
+  "field": "__project_notes__",
+  "value": "Meeting notes: ...",
+  "origin": "authored",
+  "sortKey": 1738594440100,
+  "sig": "base64…",
+  "pubKey": { ... }
+}
+```
+
+`deriveProjectNotes(projectHistory)` derives the current value the same
+way `deriveProjectName` does (highest `sortKey` wins, `null` when no such
+entry has ever been written), and `deriveFieldDefs` excludes this
+sentinel the same way it excludes `__project_name__`. Because Notes now
+has a real signed history, a genuine divergence between two copies gets
+the identical three-way (diff3) merge real prose (`type:'text'`) fields
+already get (see "Prose fields get a real three-way merge" above) —
+`applyComputedMerge` treats `projectHistory` as a pseudo-issue's own
+`history` and runs it through the very same `computeMergeProseEntries`,
+rather than a separate mechanism. `mergeHasRealChanges` (the pre-merge
+gate's own guard, see below) also checks for a genuine Notes divergence,
+so a file that changed *only* Notes still enables "Merge update" rather
+than looking like a no-op.
+
+**This real diff3 treatment is deliberately limited to the interactive
+gate** (`previewMerge`/`confirmPendingMerge` — file import, paste, "Apply
+update…"), not `startMerge`'s own silent/automatic path (every GitHub
+pull: initial connect, background poll). `previewMerge` is the only
+place that computes `notesMergeEntries`/`notesChanged` at all;
+`applyComputedMerge` only runs the real-merge override when
+`notesChanged` is present, so a silent merge leaves Notes entirely to
+`applyMergedIssues`' own older, more conservative guard — adopt an
+incoming value only into a genuinely empty local slot, never overwrite
+existing local content. That guard is itself a deliberate fix for a real
+live incident (2026-09-07, "Project-level notes keep disappearing!" —
+see `tests/github-sync.spec.js`'s "Project notes surviving a GitHub
+pull/push cycle"): a background poll must never silently inject
+unresolved conflict markers into Notes text nobody is watching to
+resolve, nor clobber an in-progress local edit just because a stale
+remote snapshot happened to poll in first. `wigwag-cli.js`'s own merge
+command goes further still and doesn't touch `projectNotes` either way —
+the same pre-existing "scalar-only, no diff3" limitation this doc
+already notes for prose issue fields via the CLI.
+
+A project that predates this (non-empty `projectNotes`, zero
+`__project_notes__` history entries) gets one synthesized
+`origin:'legacy-backfill'` entry the same way an old field definition
+does — except its `id` is **content-derived**
+(`'backfill-field-__project_notes__-' + simpleStringHash(projectNotes)`),
+not the bare fixed string the per-field backfill below uses. Two
+independent legacy devices whose Notes had already diverged before ever
+seeing this feature must not collide on id — if they did, `unionByKey`
+would silently keep only one side's backfilled entry and the other
+device's entire legacy Notes history would vanish on the very first
+merge between them, the same failure mode this whole feature exists to
+fix, just moved one step earlier.
+
 ## Issue deletion is also a tombstone, not a removal
 
 Deleting an issue used to be a direct, unlogged removal from `issues[]` --
@@ -1414,9 +1493,16 @@ un-decided key change, a damaged signature, or a prose field that still
 literally carries unresolved conflict markers in its *current* value) —
 never just because a merge happened.
 
-"Back out this update" reverts every field from one merge that's still
-safe to revert, as **one whole-transaction action** — same "all or
-nothing" rule as the gate itself, never a per-field pick. Because
+"Back out this update" reverts every **issue** field from one merge
+that's still safe to revert, as **one whole-transaction action** — same
+"all or nothing" rule as the gate itself, never a per-field pick. The
+project's own Notes field is not part of this: its merge-reconciliation
+entry (see above) is appended straight to `projectHistory` via
+`appendProjectHistory`, the same path a live edit uses, not through
+`mergeIssueSummaries`/the local merge log at all — a merge that changed
+only Notes leaves nothing for "Back out this update" to show or revert.
+Reverting a Notes merge today means editing the Notes text by hand, the
+same as undoing any other live edit. Because
 wigwag's history is append-only, backing out can't delete or mutate the
 merge's own entries; instead `computeMergeRollbackEntries` writes a
 **new** signed entry per field, restoring its pre-merge local value

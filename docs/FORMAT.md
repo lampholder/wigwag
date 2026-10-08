@@ -310,6 +310,32 @@ device's entire legacy Notes history would vanish on the very first
 merge between them, the same failure mode this whole feature exists to
 fix, just moved one step earlier.
 
+## Project-level comments merge by union, not by presence
+
+`projectComments` (the project-level comment thread, separate from any
+issue's own comments) is a plain array of already-individually-signed
+entries (`signableProjectCommentPayload`/`commitSignedEntry`, same as
+every comment in the app) — but merging it used to follow the exact same
+crude pattern Notes did before the fix above: an incoming file's
+comments were only ever adopted when the local copy currently had *zero*
+project comments. Two copies that had each posted even one comment never
+merged — the later import silently kept only its own side's comments,
+permanently.
+
+Since each entry is already a discrete, signed, dedupable record (not
+free text needing a real diff3 pass), the fix is a plain `unionByKey`
+merge by `commentKey(c)` — the exact primitive `mergeCommentStreams`
+already uses for every issue's own comment stream — rather than Notes'
+heavier three-way merge. Applied in `applyMergedIssues` unconditionally,
+for **both** the interactive gate and `startMerge`'s own silent path:
+unlike Notes, a union of discrete comments has no "surprise conflict
+marker" risk — it's strictly additive, so there's no reason to withhold
+it from a silent background poll the way Notes' real-text merge is.
+`mergeHasRealChanges`/`previewMerge`'s own `commentsChanged` flag follows
+the identical pattern to `notesChanged`, so a file that changed only
+project comments still enables "Merge update" instead of looking like a
+no-op.
+
 ## Issue deletion is also a tombstone, not a removal
 
 Deleting an issue used to be a direct, unlogged removal from `issues[]` --

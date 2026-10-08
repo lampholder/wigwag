@@ -2999,6 +2999,7 @@ function computeIssueMerge(localIssues, parsedIssues, fieldDefs, inboundInfo) {
 function mergeHasRealChanges(localIssues, computed) {
   if ((computed.mergeIssueSummaries || []).length) return true;
   if (computed.notesChanged) return true;
+  if (computed.commentsChanged) return true;
   const localById = new Map((localIssues || []).map(i => [i.id, i]));
   for (const mi of (computed.mergedIssues || [])) {
     const local = localById.get(mi.id);

@@ -525,6 +525,108 @@ test.describe('Project Notes participates in real merge (not silently overwritte
   });
 });
 
+// Project-level comments (separate from any issue's own comments) had
+// the exact same bug shape as Notes above, just for an array instead of
+// a single string: applyMergedIssues only ever adopted an incoming
+// file's projectComments when the local copy currently had ZERO project
+// comments. Two copies that had each posted even one comment never
+// merged -- whichever side imported kept only its own comments,
+// permanently. Fixed with a plain unionByKey merge by commentKey (the
+// same primitive issue-level commentStreams already use) rather than
+// Notes' heavier diff3 -- each comment is already a discrete, signed,
+// dedupable entry, not free text needing a real three-way merge.
+test.describe('Project comments merge by union, not by presence', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  async function exportCurrentProjectLines(page) {
+    await page.locator('[data-testid=btn-export]').click();
+    const [dl] = await Promise.all([
+      page.waitForEvent('download'),
+      page.locator('[data-testid=btn-export-jsonl]').click(),
+    ]);
+    const fs = require('fs');
+    const text = fs.readFileSync(await dl.path(), 'utf8');
+    return text.trim().split('\n').map(l => JSON.parse(l));
+  }
+  async function importLines(page, lines, { filename }) {
+    await page.locator('[data-testid=btn-import-merge]').click();
+    await page.waitForTimeout(150);
+    const [fc] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      page.locator('[data-testid=btn-paste-merge-open-file]').click(),
+    ]);
+    await fc.setFiles({ name: filename, mimeType: 'application/octet-stream', buffer: Buffer.from(lines.map(l => JSON.stringify(l)).join('\n')) });
+    await page.waitForTimeout(400);
+  }
+
+  test('both sides having posted a different comment merges them together, not silently keeping only one side', async ({ page }) => {
+    await page.locator('[data-testid=btn-notes]').click();
+    await page.locator('[data-testid=project-comment-input]').fill('Local comment A.');
+    await page.locator('[data-testid=project-comment-input]').press('Enter');
+    await page.waitForTimeout(300);
+    await page.locator('[data-testid=notes-close-btn]').click();
+    await page.waitForTimeout(200);
+
+    const lines = await exportCurrentProjectLines(page);
+    const fieldsLine = lines.find(l => l.type === 'fields');
+    fieldsLine.projectComments = [
+      { id: 'incoming-comment-1', author: 'dave', email: 'dave@wigwag.dev', time: 'Aug 2, 1:00pm', text: 'Incoming comment B.', sortKey: Date.now() - 5000 }
+    ];
+    await importLines(page, lines, { filename: 'reimport-comments.jsonl' });
+
+    const mergeBtn = page.locator('[data-testid=btn-merge-primary]');
+    await expect(mergeBtn).toBeVisible();
+    await expect(mergeBtn).toBeEnabled();
+    await mergeBtn.click();
+    await page.waitForTimeout(400);
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    const texts = doc.projectComments.map(c => c.text);
+    expect(texts).toContain('Local comment A.');
+    expect(texts).toContain('Incoming comment B.');
+    expect(doc.projectComments.length).toBe(2);
+  });
+
+  test('incoming comments with none posted locally yet are adopted cleanly', async ({ page }) => {
+    const lines = await exportCurrentProjectLines(page);
+    const fieldsLine = lines.find(l => l.type === 'fields');
+    fieldsLine.projectComments = [
+      { id: 'incoming-only-1', author: 'dave', email: 'dave@wigwag.dev', time: 'Aug 2, 1:00pm', text: 'Only remote comment.', sortKey: Date.now() - 5000 }
+    ];
+    await importLines(page, lines, { filename: 'adopt-comments.jsonl' });
+    await expect(page.locator('[data-testid=btn-merge-primary]')).toBeEnabled();
+    await page.locator('[data-testid=btn-merge-primary]').click();
+    await page.waitForTimeout(400);
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    expect(doc.projectComments.length).toBe(1);
+    expect(doc.projectComments[0].text).toBe('Only remote comment.');
+  });
+
+  test('a byte-identical re-import of the same comments is a genuine no-op, not treated as a change to merge', async ({ page }) => {
+    await page.locator('[data-testid=btn-notes]').click();
+    await page.locator('[data-testid=project-comment-input]').fill('Only comment.');
+    await page.locator('[data-testid=project-comment-input]').press('Enter');
+    await page.waitForTimeout(300);
+    await page.locator('[data-testid=notes-close-btn]').click();
+    await page.waitForTimeout(200);
+
+    const lines = await exportCurrentProjectLines(page);
+    await importLines(page, lines, { filename: 'identical-comments.jsonl' });
+
+    const mergeBtn = page.locator('[data-testid=btn-merge-primary]');
+    const cursor = await mergeBtn.evaluate(el => getComputedStyle(el).cursor);
+    expect(cursor).toBe('not-allowed');
+
+    const before = await h.readActiveMilestoneDoc(page);
+    await mergeBtn.click(); // clicking a cosmetically-disabled button must still genuinely no-op
+    await page.waitForTimeout(300);
+    const after = await h.readActiveMilestoneDoc(page);
+    expect(after.projectHistory.length).toBe(before.projectHistory.length);
+    expect(after.projectComments.length).toBe(before.projectComments.length);
+  });
+});
+
 test.describe('Email pills and URL autolinking in issue comments', () => {
   test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
 

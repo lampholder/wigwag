@@ -61,6 +61,14 @@ generator for a `.jsonl` export's full history — deliberately kept out of
 the app itself (a once-in-a-while retrospective view, not a live-editor
 feature).
 
+**`wigwag-validate.js`** is a separate, standalone local schema/sanity
+checker for a `.jsonl` export — run it before importing a file you're
+unsure of (`node wigwag-validate.js <path>`). It runs the same parse/
+derive pipeline wigwag.html itself uses (built on `wigwag-core.js`), so a
+clean result means the file is actually safe to import, not just
+well-formed JSON. There's no schema validation on import itself today, so
+this exists as the local, pre-flight alternative.
+
 ## `bridges/` — optional connections to other systems
 
 Everything in `bridges/` is an optional way to connect wigwag to

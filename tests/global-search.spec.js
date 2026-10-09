@@ -189,19 +189,13 @@ test.describe('Global search: opening a result', () => {
     await expect(page.locator('[data-testid=slideover]')).toBeVisible();
   });
 
-  // Tracker #187, Phase 3: KNOWN GAP, not fixed by this test run. Global
-  // search reads every NON-active project's doc via buildGlobalSearchIndex(),
-  // which still reads straight from localStorage (deliberately deferred to
-  // Phase 5's render-path summary cache, same scope boundary as
-  // projectGithubRepo/resolveWigwagRef/mobileIssueCountFor). Before Phase 3
-  // this worked because every write landed in localStorage synchronously;
-  // now that persist()/createBlankProject() write only to IndexedDB, a
-  // project created or edited THIS session has no localStorage copy at all
-  // for buildGlobalSearchIndex to find -- worse than the "briefly stale
-  // after a cold boot" tradeoff the plan explicitly accepted, since this
-  // is permanent for the rest of the session, not just a momentary window.
-  // Re-enable once Phase 5 lands.
-  test.fixme('an issue in a different project switches projects and opens it there, reusing the deep-link path', async ({ page }) => {
+  // Tracker #187, Phase 5: this is the gap Phase 5's render-path summary
+  // cache exists to close. buildGlobalSearchIndex() now reads a non-active
+  // project's issues from this._projectSummaries instead of localStorage,
+  // kept warm by switchProject() itself (covers a project created THIS
+  // session, like "Other Project XYZ" below) and by the boot-time sweep
+  // for everything else.
+  test('an issue in a different project switches projects and opens it there, reusing the deep-link path', async ({ page }) => {
     await h.openTrackerSwitcher(page);
     await h.createNamedBlankProject(page, 'Other Project XYZ');
     await page.waitForTimeout(300);
@@ -313,5 +307,63 @@ test.describe('Global search: typing stays responsive on a large project (live r
     await page.waitForTimeout(300);
     await expect(page.locator('[data-testid=global-search-overlay]')).toHaveCount(0);
     await expect(page.locator('[data-testid=slideover]')).toContainText('Sidebar sizing');
+  });
+});
+
+// Tracker #187, Phase 5: on a cold boot with more than one existing
+// project, this._projectSummaries starts empty for every NON-active
+// project -- warmProjectSummaries() populates it fire-and-forget,
+// deliberately NOT gating the boot overlay or first render (a surface
+// reading a project the sweep hasn't reached yet briefly sees the
+// empty defaults, same as resolveWigwagRef's own existing "not found
+// yet" fallback shape -- an accepted tradeoff, not a new failure mode).
+// The thing that actually matters, and the thing this test guards: it
+// self-corrects shortly after, rather than staying permanently empty
+// for the rest of the session the way it did before this phase.
+test.describe('Global search: cold multi-project boot', () => {
+  test('a second project not yet warmed by the boot-time sweep still becomes searchable shortly after, not permanently empty', async ({ page }) => {
+    const OTHER_ID = 'cold-boot-other-project';
+    // gotoTracker's own seeding (identity email + demo milestone) isn't
+    // available piecemeal outside it -- useFastTimers + seedDemoMilestone
+    // cover the parts this test needs; this addInitScript registers
+    // AFTER seedDemoMilestone's own, so it runs second at page-load time
+    // and can append to (not race) the milestones list already seeded,
+    // same pattern already used in mentions.spec.js/
+    // comment-stream-fields.spec.js for an "other project" seed.
+    await h.useFastTimers(page);
+    await h.seedDemoMilestone(page);
+    await page.addInitScript(({ OTHER_ID }) => {
+      const raw = localStorage.getItem('git_native_tracker_secrets_v1');
+      const secrets = raw ? JSON.parse(raw) : {};
+      if (!secrets.identityEmail) localStorage.setItem('git_native_tracker_secrets_v1', JSON.stringify(Object.assign({}, secrets, { identityEmail: 'tom@example.com' })));
+      const idx = JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1'));
+      idx.milestones.push({ id: OTHER_ID, name: 'Cold Boot Other Project' });
+      localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify(idx));
+      localStorage.setItem('git_native_tracker_v1:' + OTHER_ID, JSON.stringify({
+        fieldDefs: { title: { label: 'Issue', type: 'issue' } },
+        issues: [{
+          id: 'cb-1', num: 1, fieldRefs: {}, fieldLoading: {}, comments: [],
+          history: [{
+            id: 'cb-1-title', time: new Date().toISOString(), actor: 'Peer', email: 'peer@example.com',
+            text: 'Set Issue to "Findable after cold boot"', field: 'title', value: 'Findable after cold boot',
+            origin: 'authored', sortKey: 1, sig: null, sigRedacted: null, pubKey: null
+          }]
+        }],
+        githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: ''
+      }));
+    }, { OTHER_ID });
+    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
+    await h.waitForBootSplashGone(page);
+    // The warm sweep is fire-and-forget and not awaited by anything the
+    // test can observe directly -- a short settle wait stands in for
+    // "shortly after", matching the plan's own "self-corrects within
+    // moments" wording rather than asserting on the exact transient
+    // value at some precise instant.
+    await page.waitForTimeout(500);
+
+    await openGlobalSearch(page);
+    await page.locator('[data-testid=global-search-input]').fill('findable after cold boot');
+    await page.waitForTimeout(250);
+    await expect(page.locator('[data-testid=global-search-result]')).toHaveCount(1);
   });
 });

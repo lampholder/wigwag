@@ -243,6 +243,66 @@ test.describe('M2: switcher sheet', () => {
     await page.waitForTimeout(300);
     await expect(page.locator('[data-testid=mobile-sheet]')).toHaveCount(0);
   });
+
+  // Tracker #187, Phase 5: the per-project issue count shown here for a
+  // NON-active project comes from this._projectSummaries, kept warm by
+  // the same doc-saved broadcasts Phase 4 built for cross-tab doc sync
+  // -- reused for a second purpose. This is the live-update path: tab B
+  // never switches into "Other Project" at all, yet its already-open
+  // switcher sheet reflects tab A's edit there within one broadcast.
+  test('a doc saved in another tab updates this tab\'s already-open switcher sheet live, without switching into that project', async ({ page, context }) => {
+    // No mobile UI exists for creating/switching projects within this
+    // viewport (M2's sheet is a picker, not an editor) -- seed "Other
+    // Project" directly the same way the other Phase 5 cold-boot tests
+    // do, and simulate tab A's later edit as a real doc-saved broadcast
+    // (same pattern as milestones.spec.js's peer-authored-rename test),
+    // rather than trying to drive a UI that isn't there. Must carry the
+    // SAME identityId the solo identity's own auto-backfill already
+    // stamped onto the demo project -- otherwise it lands in the
+    // "shared" switcher scope instead of the one previewed by default,
+    // and never shows up in this test's row list at all.
+    await page.evaluate(() => {
+      const idx = JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1'));
+      const activeIdentityId = idx.milestones.find(m => m.id === idx.activeMilestoneId).identityId;
+      idx.milestones.push({ id: 'other-project', name: 'Other Project', identityId: activeIdentityId });
+      localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify(idx));
+    });
+    await h.idbSetProjectDoc(page, 'other-project', {
+      fieldDefs: { title: { label: 'Issue', type: 'issue' } },
+      issues: [], githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: ''
+    });
+
+    const pageB = await context.newPage();
+    await h.gotoTracker(pageB);
+    await pageB.waitForTimeout(200); // on top of gotoTracker's own settle, for the boot-time summary sweep
+
+    await pageB.locator('[data-testid=mobile-crumb-switcher]').click();
+    await pageB.waitForTimeout(300);
+    const otherRow = pageB.locator('[data-testid=mobile-project-row]').filter({ hasText: 'Other Project' });
+    await expect(otherRow).toContainText('0 issues');
+
+    // Tab A (which never switches into "Other Project" itself) saves a
+    // new doc for it with one real issue; tab B's sheet stays open on
+    // "Delivery tracker" throughout and must pick the count up live.
+    await h.idbSetProjectDoc(page, 'other-project', {
+      fieldDefs: { title: { label: 'Issue', type: 'issue' } },
+      issues: [{
+        id: 'op-live-1', num: 1, fieldRefs: {}, fieldLoading: {}, comments: [],
+        history: [{
+          id: 'op-live-1-title', time: new Date().toISOString(), actor: 'Peer', email: 'peer@example.com',
+          text: 'Set Issue to "Cross-tab mobile count test"', field: 'title', value: 'Cross-tab mobile count test',
+          origin: 'authored', sortKey: 1, sig: null, sigRedacted: null, pubKey: null
+        }]
+      }],
+      githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: ''
+    });
+    await page.evaluate((doc) => {
+      new BroadcastChannel('wigwag:docsync').postMessage({ type: 'doc-saved', projectId: 'other-project', doc });
+    }, await h.idbGetProjectDoc(page, 'other-project'));
+    await pageB.waitForTimeout(300);
+
+    await expect(otherRow).toContainText('1 issue');
+  });
 });
 
 test.describe('M3: overflow sheet', () => {

@@ -101,24 +101,38 @@ test.describe('wigwag: links -- issue-type fields', () => {
   });
 
   test('cross-project resolution reads the OTHER project\'s own stored doc, not the active one', async ({ page }) => {
-    // Tracker #187, Phase 3: cross-project reads (resolveWigwagRef and
-    // friends) are DELIBERATELY still reading the other project's doc
-    // straight from localStorage -- that render-path conversion is
-    // out of scope for this phase, deferred to Phase 5's summary cache
-    // (see the plan doc). This seed must match what the app actually
-    // reads today, not where the ACTIVE project's own doc now lives.
+    // Tracker #187, Phase 5: resolveWigwagRef (and the other render-path
+    // cross-project reads) now go through this._projectSummaries, kept
+    // warm by a fire-and-forget boot-time sweep that does NOT gate the
+    // first render -- seeding this project via a plain localStorage
+    // write still works (migration-in picks it up on the reload below,
+    // same as any other legacy-shaped project), but the sweep itself
+    // needs a moment after boot to actually land before the resolved
+    // label reflects it. The seed issue must carry a real history entry
+    // for its title, not just a bare `values` blob -- deriveIssueValues
+    // (what the summary cache actually calls) derives titles from
+    // history only, same as any real persisted doc; a `values`-only
+    // seed is a shape persist() never actually produces.
     await page.evaluate(() => {
       const idx = JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1'));
       idx.milestones.push({ id: 'other-project', name: 'Other Project' });
       localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify(idx));
       localStorage.setItem('git_native_tracker_v1:other-project', JSON.stringify({
         fieldDefs: { title: { label: 'Issue', type: 'issue' } },
-        issues: [{ id: 'op-1', num: 1, fieldRefs: {}, fieldLoading: {}, values: { title: 'A remote-project issue' }, comments: [], history: [] }],
+        issues: [{
+          id: 'op-1', num: 1, fieldRefs: {}, fieldLoading: {}, comments: [],
+          history: [{
+            id: 'op-1-title', time: new Date().toISOString(), actor: 'Peer', email: 'peer@example.com',
+            text: 'Set Issue to "A remote-project issue"', field: 'title', value: 'A remote-project issue',
+            origin: 'authored', sortKey: 1, sig: null, sigRedacted: null, pubKey: null
+          }]
+        }],
         githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: ''
       }));
     });
     await page.reload({ waitUntil: 'networkidle' });
-    await page.waitForTimeout(300);
+    await h.waitForBootSplashGone(page);
+    await page.waitForTimeout(500); // let the fire-and-forget summary sweep land
 
     await h.clickFieldToEdit(page, 1, 'linked');
     await h.pasteText(page, 'wigwag:/project/other-project/issue/op-1/');

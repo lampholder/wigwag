@@ -211,9 +211,11 @@ reuse stale offsets.
   disposable script can hit the same origin without racing the test
   runner's own server lifecycle.
 - One worker, no parallelism (`workers: 1` in `playwright.config.js`) —
-  tests share real `localStorage` state per browser context, and the app's
-  cross-tab-sync features specifically need real multi-tab timing, which
-  doesn't play well with parallel workers touching shared fixtures.
+  tests share real `localStorage` (and, since tracker #187's migration of
+  the project doc + merge log, real IndexedDB) state per browser context,
+  and the app's cross-tab-sync features specifically need real multi-tab
+  timing, which doesn't play well with parallel workers touching shared
+  fixtures.
 - Current suite size: ~209 tests across 11 spec files (`data-structures`,
   `external-auth`, `interaction`, `issue-field`, `select-fields`,
   `milestones`, `cross-tab-sync`, `github-sync`,

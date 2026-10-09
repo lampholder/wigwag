@@ -139,3 +139,83 @@ test.describe('IndexedDB migration-in (shadow copy, tracker #187)', () => {
     expect(idbDocCAfter).toEqual(freshIdbDocC);
   });
 });
+
+test.describe('Lazy localStorage cleanup (tracker #187, Phase 7)', () => {
+  // "Verified twice" per the plan: don't delete the legacy localStorage
+  // copy on the strength of the SAME boot that did the copy -- only
+  // once a SEPARATE, later boot independently confirms IndexedDB is
+  // still readable for it does the leftover actually get removed.
+  test('a legacy localStorage copy survives the first boot that copies it, and is only deleted on a later, independent boot', async ({ page }) => {
+    await page.addInitScript(seedLegacyLocalStorage, { PROJ_A, PROJ_B, docA, docB, mergeLogA });
+    await page.goto('/wigwag.html', { waitUntil: 'networkidle' });
+    await h.waitForBootSplashGone(page);
+    await page.waitForTimeout(500);
+
+    let migrationState = await rawIdbGet(page, 'meta', 'migrationState');
+    expect(migrationState[PROJ_B].cleanedUp).toBeFalsy();
+    expect(await page.evaluate((k) => localStorage.getItem(k), 'git_native_tracker_v1:' + PROJ_B)).not.toBeNull();
+    expect(await page.evaluate((k) => localStorage.getItem(k), 'git_native_tracker_merge_log_v1:' + PROJ_A)).not.toBeNull();
+
+    await page.reload({ waitUntil: 'networkidle' });
+    await h.waitForBootSplashGone(page);
+    await page.waitForTimeout(500);
+
+    migrationState = await rawIdbGet(page, 'meta', 'migrationState');
+    expect(migrationState[PROJ_A].cleanedUp).toBe(true);
+    expect(migrationState[PROJ_B].cleanedUp).toBe(true);
+    expect(await page.evaluate((k) => localStorage.getItem(k), 'git_native_tracker_v1:' + PROJ_A)).toBeNull();
+    expect(await page.evaluate((k) => localStorage.getItem(k), 'git_native_tracker_v1:' + PROJ_B)).toBeNull();
+    expect(await page.evaluate((k) => localStorage.getItem(k), 'git_native_tracker_merge_log_v1:' + PROJ_A)).toBeNull();
+
+    // IndexedDB's own copies -- the only ones left -- are unaffected and
+    // still correct (Project A through its normal hydration pass).
+    expect(await rawIdbGet(page, 'projectDocs', PROJ_B)).toEqual(docB);
+    const idbDocA = await rawIdbGet(page, 'projectDocs', PROJ_A);
+    expect(idbDocA.projectNotes).toBe(docA.projectNotes);
+
+    // A third boot: nothing left to clean up, nothing re-runs, no errors.
+    const errors = [];
+    page.on('pageerror', e => errors.push(e.message));
+    await page.reload({ waitUntil: 'networkidle' });
+    await h.waitForBootSplashGone(page);
+    await page.waitForTimeout(500);
+    expect(errors).toEqual([]);
+    migrationState = await rawIdbGet(page, 'meta', 'migrationState');
+    expect(migrationState[PROJ_A].cleanedUp).toBe(true);
+    expect(migrationState[PROJ_B].cleanedUp).toBe(true);
+  });
+
+  test('deleting a project immediately removes its legacy localStorage keys and migration bookkeeping, even on the very first boot (before the verified-twice cleanup would otherwise run)', async ({ page }) => {
+    // docA/docB above are deliberately minimal (only ever read back from
+    // IndexedDB directly, never rendered) -- this test drives the real
+    // UI (switcher, project settings, delete), so it needs real
+    // renderable issues, same shape as the app's own demo fixture.
+    const renderableDocA = { ...docA, issues: [{ id: 'a1', num: 1, fieldRefs: {}, fieldLoading: {}, comments: [], history: [{ id: 'ha1', time: new Date().toISOString(), actor: 'Tester', email: 'tester@example.com', text: 'Set Issue to "Issue A1"', field: 'title', value: 'Issue A1', origin: 'authored', sortKey: 1, sig: null, sigRedacted: null, pubKey: null }] }] };
+    const renderableDocB = { ...docB, issues: [{ id: 'b1', num: 1, fieldRefs: {}, fieldLoading: {}, comments: [], history: [{ id: 'hb1', time: new Date().toISOString(), actor: 'Tester', email: 'tester@example.com', text: 'Set Issue to "Issue B1"', field: 'title', value: 'Issue B1', origin: 'authored', sortKey: 1, sig: null, sigRedacted: null, pubKey: null }] }] };
+    await page.addInitScript(seedLegacyLocalStorage, { PROJ_A, PROJ_B, docA: renderableDocA, docB: renderableDocB, mergeLogA });
+    await page.goto('/wigwag.html', { waitUntil: 'networkidle' });
+    await h.waitForBootSplashGone(page);
+    await page.waitForTimeout(500);
+
+    await h.openTrackerSwitcher(page);
+    await h.milestoneRow(page, 'Project B').click();
+    await page.waitForTimeout(300);
+    await page.locator('[data-testid=btn-notes]').click();
+    await page.waitForTimeout(300);
+    await h.selectProjectPanelSection(page, 'danger');
+    await page.locator('[data-testid=btn-delete-project]').click();
+    await page.waitForTimeout(200);
+    await page.locator('[data-testid=delete-project-name-input]').fill('Project B');
+    await page.locator('[data-testid=btn-confirm-delete-project]').click();
+    await page.waitForTimeout(400);
+
+    expect(await page.evaluate((k) => localStorage.getItem(k), 'git_native_tracker_v1:' + PROJ_B)).toBeNull();
+    expect(await rawIdbGet(page, 'projectDocs', PROJ_B)).toBeNull();
+    const migrationState = await rawIdbGet(page, 'meta', 'migrationState');
+    expect(migrationState[PROJ_B]).toBeUndefined();
+    // Project A is untouched by B's deletion -- still mid-way through its
+    // own 2-boot cycle, its leftover legacy copy still present.
+    expect(migrationState[PROJ_A].cleanedUp).toBeFalsy();
+    expect(await page.evaluate((k) => localStorage.getItem(k), 'git_native_tracker_v1:' + PROJ_A)).not.toBeNull();
+  });
+});

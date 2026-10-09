@@ -133,8 +133,11 @@ notes/comments — switchable from a dropdown next to the milestone title.
 **A single `.jsonl` file/export always represents exactly one milestone**;
 the multi-milestone concept (which id is active, which ids exist at all)
 exists only in the app's own per-browser storage (a small index of
-`{id, name}` pairs, plus one localStorage key per milestone holding its
-actual document), never inside the file format itself. That local `name`
+`{id, name}` pairs in localStorage, plus one record per milestone
+holding its actual document — in IndexedDB since tracker #187, Local
+Mode's localStorage doc/merge-log having outgrown Firefox's ~5MB
+per-origin quota; Room Mode keeps its own in-memory/room-backed copy
+unchanged), never inside the file format itself. That local `name`
 is a cache, though, not the source of truth — see "A project's name is
 also derived from a log" below — kept around so the switcher has
 *something* to show before a project has ever been hydrated. Importing a
@@ -1157,14 +1160,27 @@ touches real browser storage in Room Mode at all. A top-level
 `let localStorage = ...` inside wigwag.html's own script (a classic,
 non-module script — this legally shadows the platform global for every
 method in the file that closes over this scope) resolves to either the
-real `window.localStorage` (Local Mode — every existing call site, and
-`persist()`/`persistProjectIndex()`/the `storage`-event cross-tab listener,
-needs zero changes) or an in-memory, `Storage`-shaped shim
-(`createRoomModeStorageShim`) for exactly `PROJECTS_KEY` and
+real `window.localStorage` (Local Mode) or an in-memory, `Storage`-shaped
+shim (`createRoomModeStorageShim`) for exactly `PROJECTS_KEY` and
 `docKey(projectId)` — everything else (per-device UI prefs, `SECRETS_KEY`)
 passes through to real `localStorage` unchanged in both modes. `IDENTITIES_KEY`
 is also deliberately excluded from the shim — see "Identity in Room Scoped
 Widget Mode" below.
+
+Since tracker #187 (migrating the project doc + merge log off
+localStorage onto IndexedDB, Local Mode's own copies having outgrown
+Firefox's ~5MB per-origin quota), the above is mediated through one more
+layer for `docKey(projectId)`/the merge log specifically: every read/write
+site calls a small `docStore` abstraction, which branches *before*
+touching any storage identifier at all. In Local Mode it reads/writes
+real IndexedDB (`wigwag-docstore`), bypassing `localStorage` (real or
+shimmed) entirely for the doc/merge-log. In Room Mode it calls the exact
+same shimmed `localStorage.getItem`/`setItem` calls this section already
+describes — Room Mode's own code path is deliberately untouched by #187,
+right down to the literal call sites. `PROJECTS_KEY` itself is unaffected
+by any of this in either mode — the project *index* (which ids exist,
+which is active) was never part of #187's scope, only the per-project
+document and its merge log were.
 
 wigwag.html and this page talk over a small `postMessage` protocol instead
 of shared storage:

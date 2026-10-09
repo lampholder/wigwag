@@ -272,18 +272,14 @@ test.describe('Comment stream fields: legacy migration', () => {
   test('an old top-level `comments` array migrates to commentStreams.comments on load, and is written back to disk', async ({ page }) => {
     await h.gotoTracker(page);
 
-    await page.evaluate(() => {
-      const raw = localStorage.getItem('git_native_tracker_v1:demo-milestone');
-      const doc = JSON.parse(raw);
-      doc.issues[0].comments = [{ id: 'legacy-c1', author: 'Old Author', email: 'old@example.com', time: 'Jan 1, 2020', text: 'a legacy comment', sortKey: 123 }];
-      delete doc.issues[0].commentStreams;
-      localStorage.setItem('git_native_tracker_v1:demo-milestone', JSON.stringify(doc));
-    });
+    const seedDoc = await h.idbGetProjectDoc(page, 'demo-milestone');
+    seedDoc.issues[0].comments = [{ id: 'legacy-c1', author: 'Old Author', email: 'old@example.com', time: 'Jan 1, 2020', text: 'a legacy comment', sortKey: 123 }];
+    delete seedDoc.issues[0].commentStreams;
+    await h.idbSetProjectDoc(page, 'demo-milestone', seedDoc);
     await page.reload();
     await page.waitForTimeout(400);
 
-    const onDisk = await page.evaluate(() => {
-      const doc = JSON.parse(localStorage.getItem('git_native_tracker_v1:demo-milestone'));
+    const onDisk = await h.idbGetProjectDoc(page, 'demo-milestone').then(doc => {
       const iss = doc.issues[0];
       return { hasOldKey: 'comments' in iss, migratedText: iss.commentStreams && iss.commentStreams.comments && iss.commentStreams.comments[0] && iss.commentStreams.comments[0].text };
     });
@@ -298,12 +294,9 @@ test.describe('Comment stream fields: legacy migration', () => {
   test('a project with no comment-stream field at all (very old schema) gets "Comments" synthesized automatically', async ({ page }) => {
     await h.gotoTracker(page);
 
-    await page.evaluate(() => {
-      const raw = localStorage.getItem('git_native_tracker_v1:demo-milestone');
-      const doc = JSON.parse(raw);
-      delete doc.fieldDefs.comments; // simulate a pre-#108 schema
-      localStorage.setItem('git_native_tracker_v1:demo-milestone', JSON.stringify(doc));
-    });
+    const seedDoc2 = await h.idbGetProjectDoc(page, 'demo-milestone');
+    delete seedDoc2.fieldDefs.comments; // simulate a pre-#108 schema
+    await h.idbSetProjectDoc(page, 'demo-milestone', seedDoc2);
     await page.reload();
     await page.waitForTimeout(400);
 

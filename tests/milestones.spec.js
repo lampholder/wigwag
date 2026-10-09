@@ -188,7 +188,7 @@ test.describe('Tracker switcher', () => {
     await page.keyboard.press('Enter');
     await page.waitForTimeout(200);
 
-    const doc = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_v1:demo-milestone')));
+    const doc = await h.idbGetProjectDoc(page, 'demo-milestone');
     const nameEntries = doc.projectHistory.filter(h => h.field === '__project_name__');
     expect(nameEntries.length).toBeGreaterThan(0);
     expect(nameEntries[nameEntries.length - 1].value).toBe('Derivable Name Test');
@@ -345,6 +345,12 @@ test.describe('Tracker switcher', () => {
     await h.setGithubRepoSync(page, { repo: REPO_A, token: 'ghp_faketoken' });
     await page.reload({ waitUntil: 'networkidle' });
     await h.waitUntil(() => Promise.resolve(gh.pushCount >= 1)); // A's initial-commit push
+    // A's own connect flow genuinely fires a second, immediate follow-up
+    // push in quick succession after the first (pre-existing, unrelated
+    // to anything this test is about) -- give it the same settling grace
+    // the test already gives AFTER creating B below, so a real timing
+    // shift elsewhere can't make this capture an incomplete count.
+    await page.waitForTimeout(500);
     const pushCountAfterA = gh.pushCount;
     const getCountAfterA = gh.getCount;
 

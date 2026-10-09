@@ -186,8 +186,8 @@ test.describe('Bulk actions: Set field', () => {
     await page.locator('[data-testid=row]').nth(1).locator('[data-testid=row-select-checkbox]').click({ modifiers: ['ControlOrMeta'] });
     await expect(page.locator('[data-testid=bulk-action-bar]')).toContainText('2 selected of 9');
 
-    const idx = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1')));
-    const before = await page.evaluate((pid) => JSON.parse(localStorage.getItem('git_native_tracker_v1:' + pid)), idx.activeMilestoneId);
+    const idx = { activeMilestoneId: await h.activeMilestoneId(page) };
+    const before = await h.idbGetProjectDoc(page, idx.activeMilestoneId);
     const beforeCounts = before.issues.slice(0, 2).map(iss => iss.history.length);
 
     await page.locator('[data-testid=bulk-set-field-btn]').click();
@@ -197,7 +197,7 @@ test.describe('Bulk actions: Set field', () => {
     await page.waitForTimeout(300);
 
     await expect(page.locator('[data-testid=bulk-value-picker]')).toHaveCount(0);
-    const after = await page.evaluate((pid) => JSON.parse(localStorage.getItem('git_native_tracker_v1:' + pid)), idx.activeMilestoneId);
+    const after = await h.idbGetProjectDoc(page, idx.activeMilestoneId);
     const afterCounts = after.issues.slice(0, 2).map(iss => iss.history.length);
     expect(afterCounts).toEqual(beforeCounts.map(c => c + 1));
     await expect(page.locator('[data-testid=row]').nth(0).locator('[data-testid=field-cell][data-col=priority]')).toContainText('P0');
@@ -209,17 +209,17 @@ test.describe('Bulk actions: Set field', () => {
     // Give row 0 a pre-existing "teams" value with MULTIPLE options set,
     // directly via history (matches how the app itself derives values --
     // avoids a fragile multi-step UI sequence just to set up the test).
-    const idx = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1')));
-    await page.evaluate((pid) => {
-      const doc = JSON.parse(localStorage.getItem('git_native_tracker_v1:' + pid));
+    const idx = { activeMilestoneId: await h.activeMilestoneId(page) };
+    {
+      const doc = await h.idbGetProjectDoc(page, idx.activeMilestoneId);
       const maxSortKey = Math.max(0, ...doc.issues[0].history.map(h => h.sortKey || 0));
       doc.issues[0].history.push({
         id: 'test-preexisting-teams', time: 'now', actor: 'test', email: 'test@example.com',
         text: 'Delivery teams set to platform, ops', field: 'teams', value: ['platform', 'ops'],
         origin: 'authored', sortKey: maxSortKey + 1, sig: null, sigRedacted: null, pubKey: null
       });
-      localStorage.setItem('git_native_tracker_v1:' + pid, JSON.stringify(doc));
-    }, idx.activeMilestoneId);
+      await h.idbSetProjectDoc(page, idx.activeMilestoneId, doc);
+    }
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
 
@@ -240,23 +240,23 @@ test.describe('Bulk actions: Set field', () => {
     await page.locator('[data-testid=bulk-value-apply]').click();
     await page.waitForTimeout(300);
 
-    const doc = await page.evaluate((pid) => JSON.parse(localStorage.getItem('git_native_tracker_v1:' + pid)), idx.activeMilestoneId);
+    const doc = await h.idbGetProjectDoc(page, idx.activeMilestoneId);
     const latestTeamsEntry = doc.issues[0].history.filter(hEntry => hEntry.field === 'teams').slice(-1)[0];
     expect(latestTeamsEntry.value).toHaveLength(1);
   });
 
   test('a field with any selected row deriving it from a linked issue is disabled, with a row-count explanation', async ({ page }) => {
     await h.gotoTracker(page);
-    const idx = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1')));
-    await page.evaluate((pid) => {
-      const doc = JSON.parse(localStorage.getItem('git_native_tracker_v1:' + pid));
+    const idx = { activeMilestoneId: await h.activeMilestoneId(page) };
+    {
+      const doc = await h.idbGetProjectDoc(page, idx.activeMilestoneId);
       const maxSortKey = Math.max(0, ...doc.issues[0].history.map(h => h.sortKey || 0));
       doc.issues[0].history.push({
         id: 'test-link-force', time: 'now', actor: 'test', email: 'test@example.com', text: 'Linked', field: 'title', value: doc.issues[0].history.slice(-1)[0].value,
         fieldRef: { system: 'github', owner: 'acme', repo: 'demo', num: 99, labels: [] }, origin: 'authored', sortKey: maxSortKey + 1, sig: null, sigRedacted: null, pubKey: null
       });
-      localStorage.setItem('git_native_tracker_v1:' + pid, JSON.stringify(doc));
-    }, idx.activeMilestoneId);
+      await h.idbSetProjectDoc(page, idx.activeMilestoneId, doc);
+    }
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
 
@@ -284,19 +284,19 @@ test.describe('Bulk actions: Refresh', () => {
 
   test('scoped only to the selection, refreshes a linked field and recomputes any field bound to it -- even when the underlying value (e.g. title) is unchanged but other data (e.g. labels) is', async ({ page }) => {
     await h.gotoTracker(page);
-    const idx = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1')));
+    const idx = { activeMilestoneId: await h.activeMilestoneId(page) };
     await page.route('https://api.github.com/repos/acme/demo/issues/42', route => route.fulfill({
       status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Fresh title', labels: [{ name: 'bug' }], state: 'open', body: '' })
     }));
-    await page.evaluate((pid) => {
-      const doc = JSON.parse(localStorage.getItem('git_native_tracker_v1:' + pid));
+    {
+      const doc = await h.idbGetProjectDoc(page, idx.activeMilestoneId);
       const maxSortKey = Math.max(0, ...doc.issues[0].history.map(h => h.sortKey || 0));
       doc.issues[0].history.push({
         id: 'test-link', time: 'now', actor: 'test', email: 'test@example.com', text: 'Linked', field: 'title', value: 'Fresh title',
         fieldRef: { system: 'github', owner: 'acme', repo: 'demo', num: 42, labels: [] }, origin: 'authored', sortKey: maxSortKey + 1, sig: null, sigRedacted: null, pubKey: null
       });
-      localStorage.setItem('git_native_tracker_v1:' + pid, JSON.stringify(doc));
-    }, idx.activeMilestoneId);
+      await h.idbSetProjectDoc(page, idx.activeMilestoneId, doc);
+    }
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
 
@@ -310,22 +310,22 @@ test.describe('Bulk actions: Refresh', () => {
 
   test('a refreshing linked title cell keeps the row at its normal height (no jump) even though "Loading…" is one line and the linked display is two', async ({ page }) => {
     await h.gotoTracker(page);
-    const idx = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1')));
+    const idx = { activeMilestoneId: await h.activeMilestoneId(page) };
     let release;
     const gate = new Promise(r => { release = r; });
     await page.route('https://api.github.com/repos/acme/demo/issues/42', async (route) => {
       await gate;
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Fresh title', labels: [], state: 'open', body: '' }) });
     });
-    await page.evaluate((pid) => {
-      const doc = JSON.parse(localStorage.getItem('git_native_tracker_v1:' + pid));
+    {
+      const doc = await h.idbGetProjectDoc(page, idx.activeMilestoneId);
       const maxSortKey = Math.max(0, ...doc.issues[0].history.map(h => h.sortKey || 0));
       doc.issues[0].history.push({
         id: 'test-link2', time: 'now', actor: 'test', email: 'test@example.com', text: 'Linked', field: 'title', value: 'Fresh title',
         fieldRef: { system: 'github', owner: 'acme', repo: 'demo', num: 42, labels: [] }, origin: 'authored', sortKey: maxSortKey + 1, sig: null, sigRedacted: null, pubKey: null
       });
-      localStorage.setItem('git_native_tracker_v1:' + pid, JSON.stringify(doc));
-    }, idx.activeMilestoneId);
+      await h.idbSetProjectDoc(page, idx.activeMilestoneId, doc);
+    }
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
 
@@ -346,8 +346,8 @@ test.describe('Bulk actions: Refresh', () => {
 test.describe('Bulk actions: Delete', () => {
   test('a single confirm regardless of selection size removes exactly the selected issues and clears the selection', async ({ page }) => {
     await h.gotoTracker(page);
-    const idx = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1')));
-    const before = await page.evaluate((pid) => JSON.parse(localStorage.getItem('git_native_tracker_v1:' + pid)), idx.activeMilestoneId);
+    const idx = { activeMilestoneId: await h.activeMilestoneId(page) };
+    const before = await h.idbGetProjectDoc(page, idx.activeMilestoneId);
     const idsToDelete = before.issues.slice(0, 3).map(i => i.id);
 
     await page.locator('[data-testid=row]').nth(0).locator('[data-testid=row-select-checkbox]').click();
@@ -365,7 +365,7 @@ test.describe('Bulk actions: Delete', () => {
     // Tracker #149: deletion is a tombstone now, not a hard removal -- the
     // issue objects stay in storage (so another party/device sees the
     // deletion), just flagged, and filtered out of the visible grid above.
-    const after = await page.evaluate((pid) => JSON.parse(localStorage.getItem('git_native_tracker_v1:' + pid)), idx.activeMilestoneId);
+    const after = await h.idbGetProjectDoc(page, idx.activeMilestoneId);
     for (const id of idsToDelete) {
       const iss = after.issues.find(i => i.id === id);
       expect(iss, 'deleted issue must still exist in storage').toBeTruthy();

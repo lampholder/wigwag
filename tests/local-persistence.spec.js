@@ -27,12 +27,9 @@ test.describe('Local persistence staleness guard', () => {
     // a user might do overnight) while THIS tab sat open and never
     // re-read localStorage -- a direct write bypassing this page's own
     // app entirely, standing in for that other tab/session.
-    await page.evaluate(() => {
-      const raw = localStorage.getItem('git_native_tracker_v1:demo-milestone');
-      const doc = JSON.parse(raw);
-      doc.issues = doc.issues.slice(0, 3); // "cleaned" -- only 3 legitimate issues remain
-      localStorage.setItem('git_native_tracker_v1:demo-milestone', JSON.stringify(doc));
-    });
+    const cleanedDoc = await h.idbGetProjectDoc(page, 'demo-milestone');
+    cleanedDoc.issues = cleanedDoc.issues.slice(0, 3); // "cleaned" -- only 3 legitimate issues remain
+    await h.idbSetProjectDoc(page, 'demo-milestone', cleanedDoc);
 
     // Trigger a re-render in THIS tab with NO edit to issues at all --
     // just opening/closing the switcher, standing in for the kind of
@@ -43,7 +40,7 @@ test.describe('Local persistence staleness guard', () => {
     await page.waitForTimeout(300);
 
     // The stale tab must NOT have stomped the cleaned data back to 9.
-    const docAfter = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_v1:demo-milestone')));
+    const docAfter = await h.idbGetProjectDoc(page, 'demo-milestone');
     expect(docAfter.issues).toHaveLength(3);
 
     // And this tab's own UI should reflect the adopted (cleaned) state too.
@@ -64,7 +61,7 @@ test.describe('Local persistence staleness guard', () => {
     await page.waitForTimeout(300);
 
     await expect(page.locator('[data-testid=row]')).toHaveCount(10);
-    const doc = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_v1:demo-milestone')));
+    const doc = await h.idbGetProjectDoc(page, 'demo-milestone');
     expect(doc.issues).toHaveLength(10);
   });
 
@@ -81,8 +78,7 @@ test.describe('Local persistence staleness guard', () => {
     await page.waitForTimeout(300);
 
     await expect(page.locator('[data-testid=row]')).toHaveCount(1);
-    const idx = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1')));
-    const doc = await page.evaluate((id) => JSON.parse(localStorage.getItem('git_native_tracker_v1:' + id)), idx.activeMilestoneId);
+    const doc = await h.readActiveMilestoneDoc(page);
     expect(doc.issues).toHaveLength(1);
   });
 });

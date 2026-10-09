@@ -111,8 +111,8 @@ test.describe('GitHub repo sync', () => {
 
     await expect(h.fieldCell(page, 8, 'mitigation')).toContainText('Root cause identified');
 
-    const idx = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1')).activeMilestoneId);
-    const log = await page.evaluate((key) => JSON.parse(localStorage.getItem(key) || '[]'), 'git_native_tracker_merge_log_v1:' + idx);
+    const idx = await h.activeMilestoneId(page);
+    const log = await h.idbGetMergeLog(page, 'git_native_tracker_merge_log_v1:' + idx);
     expect(log.length).toBeGreaterThan(0);
     expect(log[log.length - 1].source.exported_by).toBe('dave@example.com');
   });
@@ -591,7 +591,7 @@ test.describe('GitHub repo sync', () => {
     releaseA(); // project A's connect resolves now, with project B active
     await page.waitForTimeout(1000);
 
-    const docB = await page.evaluate((id) => JSON.parse(localStorage.getItem('git_native_tracker_v1:' + id)), projectBId);
+    const docB = await h.idbGetProjectDoc(page, projectBId);
     expect(docB.issues || []).toHaveLength(0);
   });
 

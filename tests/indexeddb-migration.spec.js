@@ -75,14 +75,22 @@ test.describe('IndexedDB migration-in (shadow copy, tracker #187)', () => {
     expect(migrationState[PROJ_A].doc).toBe('copied');
     expect(migrationState[PROJ_B].doc).toBe('copied');
 
-    // Project A IS the active project, so its localStorage copy gets
-    // legitimately rewritten by the pre-existing hydration/backfill pass
-    // before migration-in ever runs (new timestamp field defs, backfill
-    // history entries) -- the meaningful check is that IndexedDB matches
-    // whatever localStorage *currently* holds, not our raw pre-hydration seed.
-    const currentLocalStorageDocA = await page.evaluate((k) => JSON.parse(localStorage.getItem(k)), 'git_native_tracker_v1:' + PROJ_A);
+    // Project A IS the active project, so its doc goes through the
+    // pre-existing hydration/backfill pass once loaded, which calls
+    // persist() if anything changed (new timestamp field defs, backfill
+    // history entries) -- and since Phase 3, persist() writes ONLY to
+    // IndexedDB, never back to localStorage. So localStorage's own copy
+    // is now a permanently-frozen migration-time snapshot (pre-hydration),
+    // while IndexedDB correctly ends up with the richer, fully-hydrated
+    // version -- these are expected to DIFFER now, not match. The
+    // meaningful check is that IndexedDB's copy is the hydrated one.
     const idbDocA = await rawIdbGet(page, 'projectDocs', PROJ_A);
-    expect(idbDocA).toEqual(currentLocalStorageDocA);
+    // hydrateIssue() also backfills a `deleted: false` tombstone flag --
+    // same category of enrichment as the created/updated field defs below.
+    expect(idbDocA.issues).toEqual(docA.issues.map(iss => ({ ...iss, deleted: false })));
+    expect(idbDocA.projectNotes).toBe(docA.projectNotes);
+    expect(idbDocA.projectHistory.some(h => h.field === 'created' && h.origin === 'legacy-backfill')).toBe(true);
+    expect(idbDocA.projectHistory.some(h => h.field === 'updated' && h.origin === 'legacy-backfill')).toBe(true);
   });
 
   test('a second boot does not redo (and cannot clobber) an already-migrated project', async ({ page }) => {

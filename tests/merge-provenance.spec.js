@@ -318,7 +318,7 @@ test.describe('Merge provenance: diff3 prose merge + conflict markers + local-on
   const MERGE_LOG_KEY_PREFIX = 'git_native_tracker_merge_log_v1:';
 
   async function readMergeLog(page, projectId) {
-    return page.evaluate((key) => JSON.parse(localStorage.getItem(key) || '[]'), MERGE_LOG_KEY_PREFIX + projectId);
+    return h.idbGetMergeLog(page, MERGE_LOG_KEY_PREFIX + projectId);
   }
 
   async function mitigationColId(page) {
@@ -330,24 +330,18 @@ test.describe('Merge provenance: diff3 prose merge + conflict markers + local-on
   // copies once shared) without going through the UI, to keep these
   // tests focused on the merge itself rather than editing mechanics.
   async function seedBase(page, issueId, colId, value) {
-    await page.evaluate(async ({ issueId, colId, value }) => {
-      const idx = JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1'));
-      const key = 'git_native_tracker_v1:' + idx.activeMilestoneId;
-      const d = JSON.parse(localStorage.getItem(key));
-      d.issues.find(i => i.id === issueId).history.push({ id: 'base1', field: colId, value, text: 'set', origin: 'authored', sortKey: 100, actor: 'seed', email: 'seed@x' });
-      localStorage.setItem(key, JSON.stringify(d));
-    }, { issueId, colId, value });
+    const projectId = await h.activeMilestoneId(page);
+    const d = await h.idbGetProjectDoc(page, projectId);
+    d.issues.find(i => i.id === issueId).history.push({ id: 'base1', field: colId, value, text: 'set', origin: 'authored', sortKey: 100, actor: 'seed', email: 'seed@x' });
+    await h.idbSetProjectDoc(page, projectId, d);
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
   }
   async function addLocalEdit(page, issueId, colId, value) {
-    await page.evaluate(async ({ issueId, colId, value }) => {
-      const idx = JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1'));
-      const key = 'git_native_tracker_v1:' + idx.activeMilestoneId;
-      const d = JSON.parse(localStorage.getItem(key));
-      d.issues.find(i => i.id === issueId).history.push({ id: 'local1', field: colId, value, text: 'edited', origin: 'authored', sortKey: 200, actor: 'Tom', email: 'tom@example.com' });
-      localStorage.setItem(key, JSON.stringify(d));
-    }, { issueId, colId, value });
+    const projectId = await h.activeMilestoneId(page);
+    const d = await h.idbGetProjectDoc(page, projectId);
+    d.issues.find(i => i.id === issueId).history.push({ id: 'local1', field: colId, value, text: 'edited', origin: 'authored', sortKey: 200, actor: 'Tom', email: 'tom@example.com' });
+    await h.idbSetProjectDoc(page, projectId, d);
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
   }
@@ -355,9 +349,10 @@ test.describe('Merge provenance: diff3 prose merge + conflict markers + local-on
   // instead of the local one (the local-only entry is stripped, an
   // inbound-only one added), using the app's own real pure functions.
   async function buildInboundWithFieldEdit(page, issueId, colId, inboundValue, exportedBy) {
-    return page.evaluate(async ({ issueId, colId, inboundValue, exportedBy }) => {
-      const idx = JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1'));
-      const d = JSON.parse(localStorage.getItem('git_native_tracker_v1:' + idx.activeMilestoneId));
+    const projectId = await h.activeMilestoneId(page);
+    const d = await h.idbGetProjectDoc(page, projectId);
+    return page.evaluate(async ({ issueId, colId, inboundValue, exportedBy, activeMilestoneId, d }) => {
+      const idx = { activeMilestoneId };
       const incomingIssues = d.issues.map(iss => {
         if (iss.id !== issueId) return iss;
         const history = iss.history.filter(h => h.id !== 'local1');
@@ -375,7 +370,7 @@ test.describe('Merge provenance: diff3 prose merge + conflict markers + local-on
         exportedBy, exportedAt: new Date().toISOString(), project: 'Test', tracker: 'Issues', recordsBody, publicKeyJwk: pub, privateKeyJwk: priv
       });
       return JSON.stringify(envelope) + '\n' + recordsBody;
-    }, { issueId, colId, inboundValue, exportedBy });
+    }, { issueId, colId, inboundValue, exportedBy, activeMilestoneId: projectId, d });
   }
   async function latestFieldHistory(page, issueId, colId) {
     const doc = await h.readActiveMilestoneDoc(page);
@@ -479,19 +474,15 @@ test.describe('Merge provenance: diff3 prose merge + conflict markers + local-on
     const doc = await h.readActiveMilestoneDoc(page);
     const issueId = doc.issues[0].id;
     const ragColId = Object.keys(doc.fieldDefs).find(id => doc.fieldDefs[id].label === 'RAG');
-    await page.evaluate(async ({ issueId, colId }) => {
-      const idx = JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1'));
-      const key = 'git_native_tracker_v1:' + idx.activeMilestoneId;
-      const d = JSON.parse(localStorage.getItem(key));
-      d.issues.find(i => i.id === issueId).history.push({ id: 'local1', field: colId, value: 'green', text: 'RAG set', origin: 'authored', sortKey: 500, actor: 'Tom', email: 'tom@example.com' });
-      localStorage.setItem(key, JSON.stringify(d));
-    }, { issueId, colId: ragColId });
+    const scalarProjectId = await h.activeMilestoneId(page);
+    const scalarDoc1 = await h.idbGetProjectDoc(page, scalarProjectId);
+    scalarDoc1.issues.find(i => i.id === issueId).history.push({ id: 'local1', field: ragColId, value: 'green', text: 'RAG set', origin: 'authored', sortKey: 500, actor: 'Tom', email: 'tom@example.com' });
+    await h.idbSetProjectDoc(page, scalarProjectId, scalarDoc1);
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
 
-    const inboundText = await page.evaluate(async ({ issueId, colId }) => {
-      const idx = JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1'));
-      const d = JSON.parse(localStorage.getItem('git_native_tracker_v1:' + idx.activeMilestoneId));
+    const scalarDoc2 = await h.idbGetProjectDoc(page, scalarProjectId);
+    const inboundText = await page.evaluate(async ({ issueId, colId, activeMilestoneId, d }) => {
       const incomingIssues = d.issues.map(iss => {
         if (iss.id !== issueId) return iss;
         const history = iss.history.filter(h => h.id !== 'local1');
@@ -501,10 +492,10 @@ test.describe('Merge provenance: diff3 prose merge + conflict markers + local-on
       const kp = await crypto.subtle.generateKey(window.WigwagCore.SIGN_ALG, true, ['sign', 'verify']);
       const priv = await crypto.subtle.exportKey('jwk', kp.privateKey);
       const pub = await crypto.subtle.exportKey('jwk', kp.publicKey);
-      const recordsBody = window.WigwagCore.buildSourceText('full', { projectId: d.id || idx.activeMilestoneId, projectName: undefined, fieldDefs: d.fieldDefs, projectHistory: d.projectHistory || [], projectNotes: '', projectComments: [], issues: incomingIssues });
+      const recordsBody = window.WigwagCore.buildSourceText('full', { projectId: d.id || activeMilestoneId, projectName: undefined, fieldDefs: d.fieldDefs, projectHistory: d.projectHistory || [], projectNotes: '', projectComments: [], issues: incomingIssues });
       const envelope = await window.WigwagCore.buildExportEnvelope({ exportedBy: 'dave@example.com', exportedAt: new Date().toISOString(), project: 'Test', tracker: 'Issues', recordsBody, publicKeyJwk: pub, privateKeyJwk: priv });
       return JSON.stringify(envelope) + '\n' + recordsBody;
-    }, { issueId, colId: ragColId });
+    }, { issueId, colId: ragColId, activeMilestoneId: scalarProjectId, d: scalarDoc2 });
     await applyPasteMerge(page, inboundText);
 
     const latest = await latestFieldHistory(page, issueId, ragColId);
@@ -582,14 +573,14 @@ test.describe('Merge provenance: the pre-merge gate and Merge History (tracker #
     // Now the LOCAL side gets its own, separate edit -- persisted for
     // real via a reload, same as any other seeded-history helper in this
     // file.
-    await page.evaluate(({ issueId, ragColId, localValue }) => {
-      const key = 'git_native_tracker_v1:' + JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1')).activeMilestoneId;
-      const d = JSON.parse(localStorage.getItem(key));
+    {
+      const pid = await h.activeMilestoneId(page);
+      const d = await h.idbGetProjectDoc(page, pid);
       const iss = d.issues.find(i => i.id === issueId);
       const maxSort = Math.max(0, ...iss.history.map(h => h.sortKey || 0));
       iss.history.push({ id: 'rag-local-' + Date.now(), time: new Date().toISOString(), actor: 'Tom', email: 'tom@example.com', text: 'RAG changed', field: ragColId, value: localValue, origin: 'authored', sortKey: maxSort + 10, sig: null, sigRedacted: null, pubKey: null });
-      localStorage.setItem(key, JSON.stringify(d));
-    }, { issueId, ragColId, localValue });
+      await h.idbSetProjectDoc(page, pid, d);
+    }
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
 
@@ -656,10 +647,7 @@ test.describe('Merge provenance: the pre-merge gate and Merge History (tracker #
     const latest = latestOf(issueAfter.history.filter(h => h.field === colId));
     expect(latest.value).toBe('red'); // incoming's later sortKey wins
 
-    const log = await page.evaluate((prefix) => {
-      const idx = JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1')).activeMilestoneId;
-      return JSON.parse(localStorage.getItem(prefix + idx) || '[]');
-    }, 'git_native_tracker_merge_log_v1:');
+    const log = await h.idbGetMergeLog(page, 'git_native_tracker_merge_log_v1:' + await h.activeMilestoneId(page));
     expect(log.length).toBe(1);
     expect(log[0].issues[0].fields.find(f => f.field === colId).outcome).toBe('newest-edit-wins');
   });
@@ -740,14 +728,14 @@ test.describe('Merge provenance: the pre-merge gate and Merge History (tracker #
     await page.waitForTimeout(400);
 
     // Edit the field AGAIN, for real, after the merge landed.
-    await page.evaluate(({ issueId, colId }) => {
-      const key = 'git_native_tracker_v1:' + JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1')).activeMilestoneId;
-      const d = JSON.parse(localStorage.getItem(key));
-      const iss = d.issues.find(i => i.id === issueId);
+    {
+      const pid = await h.activeMilestoneId(page);
+      const d = await h.idbGetProjectDoc(page, pid);
+      const iss = d.issues.find(i => i.id === issue.id);
       const maxSort = Math.max(0, ...iss.history.map(h => h.sortKey || 0));
       iss.history.push({ id: 'post-merge-edit', time: new Date().toISOString(), actor: 'Tom', email: 'tom@example.com', text: 'RAG changed again', field: colId, value: 'green', origin: 'authored', sortKey: maxSort + 10, sig: null, sigRedacted: null, pubKey: null });
-      localStorage.setItem(key, JSON.stringify(d));
-    }, { issueId: issue.id, colId });
+      await h.idbSetProjectDoc(page, pid, d);
+    }
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
 

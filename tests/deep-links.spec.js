@@ -97,12 +97,9 @@ test.describe('Deep links', () => {
     });
 
     test('Copy link attaches ?from=&path= when the project has a connected GitHub repo -- path= is always stated explicitly, even at its default', async ({ page }) => {
-      await page.evaluate(() => {
-        const idx = JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1'));
-        const doc = JSON.parse(localStorage.getItem('git_native_tracker_v1:' + idx.activeMilestoneId));
-        doc.githubRepo = 'acme/demo';
-        localStorage.setItem('git_native_tracker_v1:' + idx.activeMilestoneId, JSON.stringify(doc));
-      });
+      const doc = await h.readActiveMilestoneDoc(page);
+      doc.githubRepo = 'acme/demo';
+      await h.writeActiveMilestoneDoc(page, doc);
       await page.reload({ waitUntil: 'load' });
       await page.waitForTimeout(300);
       await h.openProjectPanel(page);

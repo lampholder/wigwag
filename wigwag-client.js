@@ -136,11 +136,21 @@ function deriveValues(issue) {
   return values;
 }
 
+// Tracker #187, Phase 3: the project doc now lives in IndexedDB
+// (wigwag-docstore/projectDocs), not localStorage -- read it the same
+// way the app's own docStore.getDoc() does.
 function readDoc(page, projectId) {
-  return page.evaluate((pid) => {
-    const raw = localStorage.getItem('git_native_tracker_v1:' + pid);
-    return raw ? JSON.parse(raw) : null;
-  }, projectId);
+  return page.evaluate((pid) => new Promise((resolve, reject) => {
+    const req = indexedDB.open('wigwag-docstore', 1);
+    req.onsuccess = () => {
+      const db = req.result;
+      const tx = db.transaction(['projectDocs'], 'readonly');
+      const getReq = tx.objectStore('projectDocs').get(pid);
+      getReq.onsuccess = () => resolve(getReq.result || null);
+      getReq.onerror = () => reject(getReq.error);
+    };
+    req.onerror = () => reject(req.error);
+  }), projectId);
 }
 
 function getActiveProjectId(page) {

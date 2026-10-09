@@ -739,17 +739,14 @@ test.describe('Detail slide-over', () => {
   // elsewhere in the file.
   test('the source-platform glyph in the title ref line is vertical-aligned, not floated', async ({ page }) => {
     await h.gotoTracker(page);
-    const projectId = JSON.parse(await page.evaluate(() => localStorage.getItem('git_native_tracker_milestones_v1'))).activeMilestoneId;
-    await page.evaluate((pid) => {
-      const key = 'git_native_tracker_v1:' + pid;
-      const doc = JSON.parse(localStorage.getItem(key));
-      doc.issues[2].history.push({
-        id: 'h-jira-align-test', field: 'title', value: 'TRK-1 A Jira-linked title',
-        fieldRef: { system: 'jira', key: 'TRK-1', href: 'https://example.atlassian.net/browse/TRK-1' },
-        text: 'Title set', actor: 'test', email: '', time: 'now', sortKey: 999999999
-      });
-      localStorage.setItem(key, JSON.stringify(doc));
-    }, projectId);
+    const projectId = await h.activeMilestoneId(page);
+    const doc = await h.idbGetProjectDoc(page, projectId);
+    doc.issues[2].history.push({
+      id: 'h-jira-align-test', field: 'title', value: 'TRK-1 A Jira-linked title',
+      fieldRef: { system: 'jira', key: 'TRK-1', href: 'https://example.atlassian.net/browse/TRK-1' },
+      text: 'Title set', actor: 'test', email: '', time: 'now', sortKey: 999999999
+    });
+    await h.idbSetProjectDoc(page, projectId, doc);
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
 
@@ -3335,11 +3332,8 @@ test.describe('Delete project (project panel danger zone)', () => {
 
     // The deleted project's own doc and per-project prefs are gone, not just
     // dropped from the index -- nothing left over to leak or resurrect.
-    const stillThere = await page.evaluate(() => {
-      const keys = Object.keys(localStorage).filter(k => k.startsWith('git_native_tracker_v1:'));
-      return keys.some(k => localStorage.getItem(k).includes('Delivery tracker'));
-    });
-    expect(stillThere).toBe(false);
+    const deletedDoc = await h.idbGetProjectDoc(page, 'demo-milestone');
+    expect(deletedDoc).toBeFalsy();
   });
 
   // Regression / deliberate behavior change: a native window.confirm() was

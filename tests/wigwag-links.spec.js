@@ -101,6 +101,12 @@ test.describe('wigwag: links -- issue-type fields', () => {
   });
 
   test('cross-project resolution reads the OTHER project\'s own stored doc, not the active one', async ({ page }) => {
+    // Tracker #187, Phase 3: cross-project reads (resolveWigwagRef and
+    // friends) are DELIBERATELY still reading the other project's doc
+    // straight from localStorage -- that render-path conversion is
+    // out of scope for this phase, deferred to Phase 5's summary cache
+    // (see the plan doc). This seed must match what the app actually
+    // reads today, not where the ACTIVE project's own doc now lives.
     await page.evaluate(() => {
       const idx = JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1'));
       idx.milestones.push({ id: 'other-project', name: 'Other Project' });
@@ -369,10 +375,7 @@ test.describe('wigwag: links -- prose (comments, notes, multiline text fields)',
     await page.fill('[data-testid=notes-textarea]', 'Kickoff notes: http://localhost:8935/wigwag.html#/project/demo-milestone/issue/i1');
     await page.locator('[data-testid=notes-save-btn]').click();
     await page.waitForTimeout(300);
-    const notes = await page.evaluate(() => {
-      const idx = JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1'));
-      return JSON.parse(localStorage.getItem('git_native_tracker_v1:' + idx.activeMilestoneId)).projectNotes;
-    });
+    const notes = (await h.readActiveMilestoneDoc(page)).projectNotes;
     expect(notes).toBe('Kickoff notes: wigwag:/project/demo-milestone/issue/i1');
   });
 
@@ -381,10 +384,7 @@ test.describe('wigwag: links -- prose (comments, notes, multiline text fields)',
     await page.locator('[data-testid=project-comment-input]').fill('Filed as http://localhost:8935/wigwag.html#/project/demo-milestone/issue/i3');
     await page.keyboard.press('Enter');
     await page.waitForTimeout(400);
-    const comments = await page.evaluate(() => {
-      const idx = JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1'));
-      return JSON.parse(localStorage.getItem('git_native_tracker_v1:' + idx.activeMilestoneId)).projectComments;
-    });
+    const comments = (await h.readActiveMilestoneDoc(page)).projectComments;
     expect(comments[comments.length - 1].text).toBe('Filed as wigwag:/project/demo-milestone/issue/i3');
   });
 });
@@ -393,11 +393,11 @@ test.describe('wigwag: links -- grammar (?from=, wigwag:/remote/..., unknown-pro
   test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
 
   test('translating an embedded link attaches ?from=&path= when the target project has a connected GitHub repo -- path= is always stated explicitly, even at its default', async ({ page }) => {
-    await page.evaluate(() => {
-      const doc = JSON.parse(localStorage.getItem('git_native_tracker_v1:demo-milestone'));
+    {
+      const doc = await h.idbGetProjectDoc(page, 'demo-milestone');
       doc.githubRepo = 'acme/demo';
-      localStorage.setItem('git_native_tracker_v1:demo-milestone', JSON.stringify(doc));
-    });
+      await h.idbSetProjectDoc(page, 'demo-milestone', doc);
+    }
     await page.reload({ waitUntil: 'load' });
     await page.waitForTimeout(300);
     await h.openSlideover(page, 1);
@@ -418,11 +418,11 @@ test.describe('wigwag: links -- grammar (?from=, wigwag:/remote/..., unknown-pro
   });
 
   test('a wigwag:/remote/... link resolves via an existing project\'s own connected repo, storing the resolved project id (not the remote form)', async ({ page }) => {
-    await page.evaluate(() => {
-      const doc = JSON.parse(localStorage.getItem('git_native_tracker_v1:demo-milestone'));
+    {
+      const doc = await h.idbGetProjectDoc(page, 'demo-milestone');
       doc.githubRepo = 'acme/demo';
-      localStorage.setItem('git_native_tracker_v1:demo-milestone', JSON.stringify(doc));
-    });
+      await h.idbSetProjectDoc(page, 'demo-milestone', doc);
+    }
     await page.reload({ waitUntil: 'load' });
     await page.waitForTimeout(300);
 
@@ -460,13 +460,13 @@ test.describe('wigwag: links -- grammar (?from=, wigwag:/remote/..., unknown-pro
   });
 
   test('?from= also carries path=/ref= when the project\'s repo sync uses a non-default path or branch', async ({ page }) => {
-    await page.evaluate(() => {
-      const doc = JSON.parse(localStorage.getItem('git_native_tracker_v1:demo-milestone'));
+    {
+      const doc = await h.idbGetProjectDoc(page, 'demo-milestone');
       doc.githubRepo = 'acme/demo';
       doc.githubRepoPath = 'projects/roadmap/tracker.jsonl';
       doc.githubRepoBranch = 'main';
-      localStorage.setItem('git_native_tracker_v1:demo-milestone', JSON.stringify(doc));
-    });
+      await h.idbSetProjectDoc(page, 'demo-milestone', doc);
+    }
     await page.reload({ waitUntil: 'load' });
     await page.waitForTimeout(300);
     await h.openProjectPanel(page);

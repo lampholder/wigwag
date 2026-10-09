@@ -1187,7 +1187,7 @@ test.describe('Migration: backfilling history from pre-existing stored values', 
     await expect(h.fieldCell(page, 1, 'priority')).toContainText('P0');
     await expect(h.fieldCell(page, 1, 'tags')).toContainText('Bug');
 
-    const readDoc = () => page.evaluate((id) => JSON.parse(localStorage.getItem('git_native_tracker_v1:' + id)), id);
+    const readDoc = () => h.idbGetProjectDoc(page, id);
     let doc = await readDoc();
     let backfillEntries = doc.issues[0].history.filter(hh => hh.origin === 'legacy-backfill');
     expect(backfillEntries).toHaveLength(3);
@@ -1240,7 +1240,7 @@ test.describe('Migration: backfilling history from pre-existing stored values', 
     await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
 
-    const doc = await page.evaluate((id) => JSON.parse(localStorage.getItem('git_native_tracker_v1:' + id)), id);
+    const doc = await h.idbGetProjectDoc(page, id);
     const backfillEntries = doc.issues[0].history.filter(hh => hh.origin === 'legacy-backfill');
     // Only title (a real, non-default value) gets backfilled -- priority/tags are already default-shaped.
     expect(backfillEntries.map(hh => hh.field)).toEqual(['title']);
@@ -1270,7 +1270,7 @@ test.describe('Migration: backfilling history from pre-existing stored values', 
     await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
 
-    const doc = await page.evaluate((id) => JSON.parse(localStorage.getItem('git_native_tracker_v1:' + id)), id);
+    const doc = await h.idbGetProjectDoc(page, id);
     expect(doc.issues[0].history.filter(hh => hh.origin === 'legacy-backfill')).toHaveLength(2);
 
     const slideover = await h.openSlideover(page, 1);
@@ -1364,7 +1364,7 @@ test.describe('Project-level schema history (Batch 3)', () => {
     await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
 
-    const readDoc = () => page.evaluate((id) => JSON.parse(localStorage.getItem('git_native_tracker_v1:' + id)), id);
+    const readDoc = () => h.idbGetProjectDoc(page, id);
     let doc = await readDoc();
     expect(Array.isArray(doc.projectHistory)).toBe(true);
     // 'comments' is also backfilled -- every project gets a synthesized

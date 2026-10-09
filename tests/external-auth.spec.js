@@ -44,13 +44,10 @@ test.describe('GitHub token', () => {
 
   test('the token is stored separately and never appears in the tracker\'s own persisted state or "View source"', async ({ page }) => {
     await h.setGithubToken(page, 'ghp_shouldNeverLeak');
-    const storage = await page.evaluate(() => {
-      const idx = JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1'));
-      return {
-        main: localStorage.getItem('git_native_tracker_v1:' + idx.activeMilestoneId),
-        secrets: localStorage.getItem('git_native_tracker_secrets_v1'),
-      };
-    });
+    const storage = {
+      main: JSON.stringify(await h.readActiveMilestoneDoc(page)),
+      secrets: await page.evaluate(() => localStorage.getItem('git_native_tracker_secrets_v1')),
+    };
     expect(storage.main).not.toContain('shouldNeverLeak');
     expect(storage.secrets).toContain('shouldNeverLeak');
 
@@ -348,13 +345,10 @@ test.describe('Salesforce linking', () => {
 
   test('the Salesforce proxy URL is stored separately and never appears in the tracker\'s own persisted state or "View source"', async ({ page }) => {
     await h.setSalesforceProxyUrl(page, 'http://sf-proxy-marker-shouldneverleak.local:8936');
-    const storage = await page.evaluate(() => {
-      const idx = JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1'));
-      return {
-        main: localStorage.getItem('git_native_tracker_v1:' + idx.activeMilestoneId),
-        secrets: localStorage.getItem('git_native_tracker_secrets_v1'),
-      };
-    });
+    const storage = {
+      main: JSON.stringify(await h.readActiveMilestoneDoc(page)),
+      secrets: await page.evaluate(() => localStorage.getItem('git_native_tracker_secrets_v1')),
+    };
     expect(storage.main).not.toContain('shouldneverleak');
     expect(storage.secrets).toContain('shouldneverleak');
 

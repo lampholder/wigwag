@@ -68,7 +68,7 @@ test.describe('Issue deletion: in-app confirm modal + tombstone', () => {
     await page.locator('[data-testid=btn-confirm-dialog-confirm]').click();
     await page.waitForTimeout(200);
 
-    const doc = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_v1:demo-milestone')));
+    const doc = await h.idbGetProjectDoc(page, 'demo-milestone');
     expect(doc.issues.length).toBe(9); // still present in storage
     const tombstoned = doc.issues.find(i => (i.history || []).some(hh => hh.field === '__deleted__' && hh.value === true));
     expect(tombstoned).toBeTruthy();
@@ -94,7 +94,7 @@ test.describe('Issue deletion: in-app confirm modal + tombstone', () => {
     await page.locator('[data-testid=slideover-delete-btn]').click();
     await page.locator('[data-testid=btn-confirm-dialog-confirm]').click();
     await page.waitForTimeout(200);
-    const doc = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_v1:demo-milestone')));
+    const doc = await h.idbGetProjectDoc(page, 'demo-milestone');
     expect(doc.issues.length).toBe(9); // full fidelity kept for another party/device to see the deletion
     const liveCount = doc.issues.filter(i => !(i.history || []).some(hh => hh.field === '__deleted__' && hh.value === true)).length;
     expect(liveCount).toBe(8); // matches what buildSourceText('squashed', ...) would keep, and what the grid shows

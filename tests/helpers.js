@@ -211,17 +211,59 @@ async function readSourceViewText(page) {
   return text;
 }
 
+// Tracker #187, Phase 3: the project doc now lives in IndexedDB
+// (wigwag-docstore/projectDocs), not localStorage -- read/write it the
+// same way the app's own docStore.getDoc()/putDoc() do. The project
+// INDEX (git_native_tracker_milestones_v1, which id is active) is one of
+// the ~17 keys that stayed on localStorage untouched by this migration.
+function idbGetProjectDoc(page, projectId) {
+  return page.evaluate((pid) => new Promise((resolve, reject) => {
+    const req = indexedDB.open('wigwag-docstore', 1);
+    req.onsuccess = () => {
+      const db = req.result;
+      const tx = db.transaction(['projectDocs'], 'readonly');
+      const getReq = tx.objectStore('projectDocs').get(pid);
+      getReq.onsuccess = () => resolve(getReq.result || null);
+      getReq.onerror = () => reject(getReq.error);
+    };
+    req.onerror = () => reject(req.error);
+  }), projectId);
+}
+function idbSetProjectDoc(page, projectId, doc) {
+  return page.evaluate(({ pid, doc }) => new Promise((resolve, reject) => {
+    const req = indexedDB.open('wigwag-docstore', 1);
+    req.onsuccess = () => {
+      const db = req.result;
+      const tx = db.transaction(['projectDocs'], 'readwrite');
+      tx.objectStore('projectDocs').put(doc, pid);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    };
+    req.onerror = () => reject(req.error);
+  }), { pid: projectId, doc });
+}
+function idbGetMergeLog(page, mergeLogKey) {
+  return page.evaluate((key) => new Promise((resolve, reject) => {
+    const req = indexedDB.open('wigwag-docstore', 1);
+    req.onsuccess = () => {
+      const db = req.result;
+      const tx = db.transaction(['mergeLogs'], 'readonly');
+      const getReq = tx.objectStore('mergeLogs').get(key);
+      getReq.onsuccess = () => resolve(getReq.result || []);
+      getReq.onerror = () => reject(getReq.error);
+    };
+    req.onerror = () => reject(req.error);
+  }), mergeLogKey);
+}
+
+async function activeMilestoneId(page) {
+  return page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1')).activeMilestoneId);
+}
 async function readActiveMilestoneDoc(page) {
-  return page.evaluate(() => {
-    const idx = JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1'));
-    return JSON.parse(localStorage.getItem('git_native_tracker_v1:' + idx.activeMilestoneId));
-  });
+  return idbGetProjectDoc(page, await activeMilestoneId(page));
 }
 async function writeActiveMilestoneDoc(page, doc) {
-  await page.evaluate((doc) => {
-    const idx = JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1'));
-    localStorage.setItem('git_native_tracker_v1:' + idx.activeMilestoneId, JSON.stringify(doc));
-  }, doc);
+  await idbSetProjectDoc(page, await activeMilestoneId(page), doc);
 }
 // values/fieldRefs are no longer persisted/exported directly -- history is
 // the sole source of truth. Mirrors the app's own deriveIssueFieldRefs:
@@ -1054,12 +1096,9 @@ async function getHistoryEntries(page) {
 // than getHistoryEntries (which scrapes the slide-over's DOM and requires it
 // to be open) for tests that just need to confirm a specific event happened.
 async function getHistoryEntriesFor(page, issueId) {
-  return page.evaluate((issueId) => {
-    const idx = JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1'));
-    const d = JSON.parse(localStorage.getItem('git_native_tracker_v1:' + idx.activeMilestoneId));
-    const iss = d.issues.find(i => i.id === issueId);
-    return iss ? iss.history.map(h => h.text) : [];
-  }, issueId);
+  const d = await readActiveMilestoneDoc(page);
+  const iss = d.issues.find(i => i.id === issueId);
+  return iss ? iss.history.map(h => h.text) : [];
 }
 
 module.exports = {
@@ -1094,6 +1133,10 @@ module.exports = {
   getHistoryEntriesFor,
   readActiveMilestoneDoc,
   writeActiveMilestoneDoc,
+  idbGetProjectDoc,
+  idbSetProjectDoc,
+  idbGetMergeLog,
+  activeMilestoneId,
   readSourceViewText,
   latestFieldRef,
   latestFieldValue,

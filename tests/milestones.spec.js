@@ -198,26 +198,30 @@ test.describe('Tracker switcher', () => {
 
   // The whole point of making the name derivable: another session picking
   // up a name change purely from history, the same way a field-definition
-  // change already propagates via wigwag's existing cross-tab storage sync
+  // change already propagates via wigwag's existing cross-tab sync
   // (a stand-in here for a real peer -- GitHub sync pull, Matrix room,
   // Connect Remote -- pushing new signed history for this same project).
-  test('a peer-authored rename (new field:__project_name__ entry, no local cache update) is picked up via cross-tab storage sync', async ({ page }) => {
+  // Tracker #187, Phase 4: the project doc now lives in IndexedDB, and
+  // cross-tab delivery for it is a BroadcastChannel message
+  // ({type:'doc-saved', projectId, doc}), not a real localStorage
+  // 'storage' event -- simulate "another tab/peer already wrote this"
+  // the same way: write the doc into IndexedDB directly, then post the
+  // same message shape the app's own persist() broadcasts on a real save.
+  test('a peer-authored rename (new field:__project_name__ entry, no local cache update) is picked up via cross-tab sync', async ({ page }) => {
     const title = page.locator('[data-testid=tracker-name-title]');
     await expect(title).toContainText('Delivery tracker');
 
-    await page.evaluate(() => {
-      const key = 'git_native_tracker_v1:demo-milestone';
-      const doc = JSON.parse(localStorage.getItem(key));
-      doc.projectHistory.push({
-        id: 'peer-rename-1', time: new Date().toISOString(), actor: 'Peer', email: 'peer@example.com',
-        text: 'Renamed project from "Delivery tracker" to "Peer Renamed It"',
-        field: '__project_name__', value: 'Peer Renamed It',
-        origin: 'authored', sortKey: Date.now() + 100000, sig: null, sigRedacted: null, pubKey: null
-      });
-      const newValue = JSON.stringify(doc);
-      localStorage.setItem(key, newValue);
-      window.dispatchEvent(new StorageEvent('storage', { key, newValue, oldValue: null, storageArea: localStorage }));
+    const doc = await h.idbGetProjectDoc(page, 'demo-milestone');
+    doc.projectHistory.push({
+      id: 'peer-rename-1', time: new Date().toISOString(), actor: 'Peer', email: 'peer@example.com',
+      text: 'Renamed project from "Delivery tracker" to "Peer Renamed It"',
+      field: '__project_name__', value: 'Peer Renamed It',
+      origin: 'authored', sortKey: Date.now() + 100000, sig: null, sigRedacted: null, pubKey: null
     });
+    await h.idbSetProjectDoc(page, 'demo-milestone', doc);
+    await page.evaluate((doc) => {
+      new BroadcastChannel('wigwag:docsync').postMessage({ type: 'doc-saved', projectId: 'demo-milestone', doc });
+    }, doc);
     await page.waitForTimeout(300);
     await expect(title).toContainText('Peer Renamed It');
 
@@ -225,7 +229,7 @@ test.describe('Tracker switcher', () => {
     const milestones = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1')).milestones);
     expect(milestones.find(m => m.id === 'demo-milestone').name).toBe('Peer Renamed It');
 
-    // Survives a fresh boot (loadPersisted), not just the live storage-event path.
+    // Survives a fresh boot (loadPersistedAsync), not just the live broadcast path.
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
     await expect(title).toContainText('Peer Renamed It');

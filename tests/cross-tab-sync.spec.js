@@ -98,6 +98,51 @@ test.describe('Cross-tab sync', () => {
     expect(midB).toBe(0); // tab B never had a reason to write localStorage in the first place
   });
 
+  // Tracker #187, Phase 4: the active project's doc + merge log sync via
+  // a BroadcastChannel('wigwag:docsync') now, not real 'storage' events.
+  // persist() runs unconditionally on every componentDidUpdate -- so tab
+  // B receiving tab A's doc-saved broadcast, applying it, and re-rendering
+  // would call persist() again in tab B, which could otherwise re-
+  // broadcast the exact same content right back at tab A, which would
+  // do the same, forever. _lastDocSyncJson (mirroring the existing
+  // _lastPersistedColumnWidthsJson pattern for the OTHER synced keys) is
+  // what's supposed to stop that -- same shape of test as the column-
+  // width one above, instrumenting BroadcastChannel.postMessage instead
+  // of localStorage.setItem.
+  test('an edit to the active milestone does not cause the two tabs to keep re-broadcasting the doc at each other', async ({ page, context }) => {
+    const pageB = await context.newPage();
+    await pageB.goto(h.TRACKER_PATH);
+    await h.waitForBootSplashGone(pageB);
+    await pageB.waitForTimeout(500); // let tab B's own boot-time hydration/backfill fully settle before counting -- otherwise its normal multi-step boot churn (which legitimately mutates and re-persists the doc a few times) can get miscounted as an echo
+
+    for (const p of [page, pageB]) {
+      await p.evaluate(() => {
+        window.__docSyncBroadcasts = 0;
+        const orig = BroadcastChannel.prototype.postMessage;
+        BroadcastChannel.prototype.postMessage = function (msg) {
+          if (msg && msg.type === 'doc-saved') window.__docSyncBroadcasts++;
+          return orig.call(this, msg);
+        };
+      });
+    }
+
+    await h.clickTitleToEdit(page, 1);
+    await h.typeAndCommit(page, 'Echo-loop check');
+    await page.waitForTimeout(300);
+    await expect(h.titleCell(pageB, 1).locator('span').first()).toHaveText('Echo-loop check');
+
+    const midA = await page.evaluate(() => window.__docSyncBroadcasts);
+    const midB = await pageB.evaluate(() => window.__docSyncBroadcasts);
+    await page.waitForTimeout(1500); // well past any real propagation delay
+    const endA = await page.evaluate(() => window.__docSyncBroadcasts);
+    const endB = await pageB.evaluate(() => window.__docSyncBroadcasts);
+
+    expect(endA).toBe(midA); // tab A: no further broadcasts once the edit itself landed
+    expect(endB).toBe(midB); // tab B: no echo broadcast at all, let alone a growing count
+    expect(midB).toBe(0); // tab B never had a reason to broadcast in the first place
+    expect(midA).toBeGreaterThanOrEqual(1); // tab A's own edit did genuinely broadcast once
+  });
+
   test('independent edits made in two tabs at once are not lost: neither tab clobbers the other', async ({ page, context }) => {
     const pageB = await context.newPage();
     await pageB.goto(h.TRACKER_PATH);

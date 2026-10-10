@@ -6,10 +6,11 @@ name: Tauri build
 # stable URL (tracker #168/233a071d; follow-up requested on #172/2fda589c
 # -- "make the app links link to the built artefacts").
 #
-# Still no code signing/notarization (tracker #168) -- Mac triggers
-# Gatekeeper's "unidentified developer" prompt (right-click -> Open) and
-# Windows may trigger SmartScreen until that's set up as a deliberate
-# follow-up.
+# macOS leg is now code-signed and notarized (tracker #180) -- real
+# Developer ID Application cert + App Store Connect API key, both
+# supplied as repo secrets (never committed, never touch this workflow's
+# own source). Windows still has no signing cert lined up, so it may
+# still trigger a SmartScreen warning until that's its own follow-up.
 #
 # Why a rolling "desktop-latest" release instead of one tagged per
 # version: there's no version-bump/tagging workflow in this project, and
@@ -79,6 +80,12 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
 
       - name: Upload bundles (all formats, per-OS build artifact)
         uses: actions/upload-artifact@v4
@@ -124,9 +131,8 @@ jobs:
           body: >
             Automatically rebuilt from the latest main branch commit on
             every push -- not a stable version release, just the current
-            desktop build. No code signing/notarization yet (tracker
-            #168/233a071d): macOS shows an "unidentified developer"
-            prompt (right-click -> Open); Windows may trigger a
-            SmartScreen warning.
+            desktop build. macOS is code-signed and notarized (tracker
+            #180); Windows has no signing cert yet and may still trigger
+            a SmartScreen warning.
           make_latest: true
           files: dist-release/*

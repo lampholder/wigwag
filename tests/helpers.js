@@ -978,6 +978,23 @@ async function pasteText(page, text) {
   await page.keyboard.press('Control+KeyV');
 }
 
+// Tracker #191: opens the add-item box (Ctrl+Space, same shortcut as a
+// normal single-line add) and pastes several lines at once into whichever
+// add-item input is actually present (desktop add-item-input or the
+// widget's own widget-add-item-input) -- a real clipboard paste, not
+// .fill(), since detection relies on an actual paste event firing.
+// `page` drives the keyboard (always the real top-level page, even when
+// the input itself lives inside a nested iframe); `root` is where to find
+// the input itself -- a frameLocator for widget-mode tests, `page` itself
+// otherwise.
+async function pasteMultilineIntoAddItem(page, lines) {
+  await page.keyboard.down('Control'); await page.keyboard.press('Space'); await page.keyboard.up('Control');
+  await page.waitForTimeout(150); // sc-camel-auto-focus lands focus in the newly-opened input itself
+  await page.evaluate((t) => navigator.clipboard.writeText(t), lines.join('\n'));
+  await page.keyboard.press('Control+A');
+  await page.keyboard.press('Control+KeyV');
+}
+
 // Commits via Tab (which blurs), not Enter -- blur already commits every
 // field type regardless of which key triggered it, but Enter itself no
 // longer does for a multiline markdown 'text' field (it inserts a
@@ -1120,6 +1137,7 @@ module.exports = {
   closeSlideover,
   refreshRow,
   pasteText,
+  pasteMultilineIntoAddItem,
   typeAndCommit,
   waitUntil,
   waitForFieldResolved,

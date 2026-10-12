@@ -1375,16 +1375,22 @@ function deriveProjectNotes(projectHistory) {
 }
 function deriveFieldDefs(projectHistory) {
   const latestByField = {};
+  const earliestTypeByField = {};
   for (const h of (projectHistory || [])) {
     if (!h.field || h.field === PROJECT_NAME_FIELD_ID || h.field === PROJECT_NOTES_FIELD_ID || h.value === undefined) continue;
     const existing = latestByField[h.field];
     if (!existing || h.sortKey > existing.sortKey) latestByField[h.field] = h;
+    if (h.value && h.value.type) {
+      const earliest = earliestTypeByField[h.field];
+      if (!earliest || h.sortKey < earliest.sortKey) earliestTypeByField[h.field] = h;
+    }
   }
   const fieldDefs = {};
   for (const colId in latestByField) {
     const value = latestByField[colId].value;
     if (value === null) continue; // tombstoned -- most recent event was a removal
-    fieldDefs[colId] = value;
+    const earliestType = earliestTypeByField[colId] && earliestTypeByField[colId].value.type;
+    fieldDefs[colId] = (earliestType && earliestType !== value.type) ? { ...value, type: earliestType } : value;
   }
   // The built-in "Issue" field is conceptually always issue-typed -- it's
   // what GitHub/Jira/Salesforce linking and the "Related"-style

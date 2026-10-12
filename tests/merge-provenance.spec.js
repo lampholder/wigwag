@@ -682,12 +682,19 @@ test.describe('Merge provenance: the pre-merge gate and Merge History (tracker #
     expect(sides).toContain('inbound'); // handoff's own §6 contract: data-side="local|inbound"
   });
 
-  test('"Back out this update" restores the pre-merge local value as a new signed entry -- nothing is deleted from history', async ({ page }) => {
+  test('"Back out this update" restores the pre-merge local value by deleting the entry the merge introduced, not appending a new one', async ({ page }) => {
     const colId = await ragColId(page);
     const doc = await h.readActiveMilestoneDoc(page);
     const issue = doc.issues.find(i => (i.history || []).some(h => h.field === colId));
 
+    // buildRagOverlap gives LOCAL its own separate pre-merge edit (to make
+    // this a genuine overlap) before returning the incoming file -- that
+    // local edit is not part of what the merge itself introduces, so the
+    // revert baseline is captured after it, right before clicking "Merge
+    // update".
     const text = await buildRagOverlap(page, issue.id, colId, 'amber', 'red', 'dave@example.com');
+    const historyLenBeforeMerge = (await h.readActiveMilestoneDoc(page)).issues.find(i => i.id === issue.id).history.length;
+
     await page.locator('[data-testid=btn-import-merge]').click();
     await page.waitForTimeout(150);
     await page.locator('[data-testid=paste-merge-textarea]').fill(text);
@@ -695,8 +702,6 @@ test.describe('Merge provenance: the pre-merge gate and Merge History (tracker #
     await page.waitForTimeout(400);
     await page.locator('[data-testid=btn-merge-primary]').click();
     await page.waitForTimeout(400);
-
-    const historyLenAfterMerge = (await h.readActiveMilestoneDoc(page)).issues.find(i => i.id === issue.id).history.length;
 
     await openMergeHistory(page);
     await page.locator('[data-testid=merge-history-item]').first().click();
@@ -710,10 +715,13 @@ test.describe('Merge provenance: the pre-merge gate and Merge History (tracker #
     const issueAfter = after.issues.find(i => i.id === issue.id);
     const latest = latestOf(issueAfter.history.filter(h => h.field === colId));
     expect(latest.value).toBe('amber'); // back to the pre-merge local value
-    expect(issueAfter.history.length).toBe(historyLenAfterMerge + 1); // a NEW entry, nothing deleted
+    expect(issueAfter.history.length).toBe(historyLenBeforeMerge); // the merge's entry was DELETED, not superseded by a new one
+
+    // The record itself is marked reverted and offers no further "Back out".
+    await expect(page.locator('[data-testid=btn-merge-primary]')).toHaveCount(0);
   });
 
-  test('a field edited again since the merge is refused, not silently clobbered, when backing out', async ({ page }) => {
+  test('a field edited again since the merge still backs out cleanly -- deleting a superseded entry is a safe no-op, not a refusal', async ({ page }) => {
     const colId = await ragColId(page);
     const doc = await h.readActiveMilestoneDoc(page);
     const issue = doc.issues.find(i => (i.history || []).some(h => h.field === colId));
@@ -739,17 +747,29 @@ test.describe('Merge provenance: the pre-merge gate and Merge History (tracker #
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
 
+    const historyLenBeforeRevert = (await h.readActiveMilestoneDoc(page)).issues.find(i => i.id === issue.id).history.length;
+
     await openMergeHistory(page);
     await page.locator('[data-testid=merge-history-item]').first().click();
     await page.waitForTimeout(200);
 
-    // Nothing left to revert -- no primary "Back out" action offered, and no explanatory copy either.
-    await expect(page.locator('[data-testid=btn-merge-primary]')).toHaveCount(0);
+    // Revert is unconditional -- the button is still offered, and the
+    // panel surfaces that this field has already moved on rather than
+    // refusing the action outright.
+    await expect(page.locator('[data-testid=btn-merge-primary]')).toHaveCount(1);
+    await expect(page.getByText(/skipped — edited again since this merge/)).toBeVisible();
+
+    await page.locator('[data-testid=btn-merge-primary]').click();
+    await page.locator('[data-testid=btn-confirm-dialog-confirm]').click();
+    await page.waitForTimeout(400);
 
     const after = await h.readActiveMilestoneDoc(page);
     const issueAfter = after.issues.find(i => i.id === issue.id);
     const latest = latestOf(issueAfter.history.filter(h => h.field === colId));
-    expect(latest.value).toBe('green'); // the real post-merge edit is untouched
+    expect(latest.value).toBe('green'); // the real post-merge edit is untouched -- it was already latest
+    // The merge's now-superseded entry was still deleted (tidied up), even
+    // though it had no visible effect on the current value.
+    expect(issueAfter.history.length).toBe(historyLenBeforeRevert - 1);
   });
 
   test('the Merge History nav badge appears only when something is genuinely unresolved, not just because a merge happened', async ({ page }) => {
@@ -810,5 +830,57 @@ test.describe('Merge provenance: the pre-merge gate and Merge History (tracker #
     await page.locator('[data-testid=btn-merge-secondary]').click();
     await page.waitForTimeout(200);
     await expect(page.locator('[data-testid=merge-card]')).toHaveCount(0);
+  });
+
+  // Tracker #196: refreshes (GitHub/Jira/Salesforce/wigwag-link) are
+  // bundled into the same local-only merge log as real merges, and are
+  // revertible the same way -- including whatever a bound/derived field
+  // recomputes as a side effect of the refresh, which nothing used to
+  // track or revert at all.
+  test('a refresh of a linked field records a revertible bundle in Merge History, covering the derived field it recomputes too', async ({ page }) => {
+    await h.mockGithubApi(page);
+    const pid = await h.activeMilestoneId(page);
+    // Row 0 (i1) is Title-linked to acme/demo#42 with Type bound to it via
+    // the demo fixture's own default rule (source.github.labels) -- same
+    // seed shape as row-selection.spec.js's own refresh test.
+    await page.route('https://api.github.com/repos/acme/demo/issues/42', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Fresh title', labels: [{ name: 'bug' }], state: 'open', body: '' })
+    }));
+    {
+      const doc = await h.idbGetProjectDoc(page, pid);
+      const maxSortKey = Math.max(0, ...doc.issues[0].history.map(x => x.sortKey || 0));
+      doc.issues[0].history.push({
+        id: 'test-link', time: 'now', actor: 'test', email: 'test@example.com', text: 'Linked', field: 'title', value: 'Fresh title',
+        fieldRef: { system: 'github', owner: 'acme', repo: 'demo', num: 42, labels: [] }, origin: 'authored', sortKey: maxSortKey + 1, sig: null, sigRedacted: null, pubKey: null
+      });
+      await h.idbSetProjectDoc(page, pid, doc);
+    }
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    await expect(page.locator('[data-testid=row]').nth(0).locator('[data-testid=field-cell][data-col=type]')).toContainText('Enhancement');
+    const historyLenBeforeRefresh = (await h.readActiveMilestoneDoc(page)).issues[0].history.length;
+
+    await page.locator('[data-testid=row]').nth(0).locator('[data-testid=row-select-checkbox]').click();
+    await page.locator('[data-testid=bulk-refresh-btn]').click();
+    await page.waitForTimeout(500);
+
+    await expect(page.locator('[data-testid=row]').nth(0).locator('[data-testid=field-cell][data-col=type]')).toContainText('Bug');
+    const historyLenAfterRefresh = (await h.readActiveMilestoneDoc(page)).issues[0].history.length;
+    expect(historyLenAfterRefresh).toBeGreaterThan(historyLenBeforeRefresh); // both title (explicit) and type (derived) added real entries
+
+    await openMergeHistory(page);
+    await page.locator('[data-testid=merge-history-item]').first().click();
+    await page.waitForTimeout(200);
+    const fieldsShown = await page.locator('[data-testid=merge-field-row]').evaluateAll(els => els.map(e => e.getAttribute('data-field')));
+    expect(fieldsShown.sort()).toEqual(['title', 'type']); // one bundle covers both the explicit and derived change
+
+    await page.locator('[data-testid=btn-merge-primary]').click();
+    await page.locator('[data-testid=btn-confirm-dialog-confirm]').click();
+    await page.waitForTimeout(400);
+
+    const after = await h.readActiveMilestoneDoc(page);
+    expect(after.issues[0].history.length).toBe(historyLenBeforeRefresh); // both entries deleted, exact round-trip
+    await expect(page.locator('[data-testid=row]').nth(0).locator('[data-testid=field-cell][data-col=type]')).toContainText('Enhancement'); // derived field fell back too
   });
 });

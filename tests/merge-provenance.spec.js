@@ -837,7 +837,7 @@ test.describe('Merge provenance: the pre-merge gate and Merge History (tracker #
   // revertible the same way -- including whatever a bound/derived field
   // recomputes as a side effect of the refresh, which nothing used to
   // track or revert at all.
-  test('a refresh of a linked field records a revertible bundle in Merge History, covering the derived field it recomputes too', async ({ page }) => {
+  test('a refresh of a linked field records a revertible bundle in Merge History, covering the derived field it recomputes too, and is genuinely signed by this identity', async ({ page }) => {
     await h.mockGithubApi(page);
     const pid = await h.activeMilestoneId(page);
     // Row 0 (i1) is Title-linked to acme/demo#42 with Type bound to it via
@@ -874,6 +874,15 @@ test.describe('Merge provenance: the pre-merge gate and Merge History (tracker #
     await page.waitForTimeout(200);
     const fieldsShown = await page.locator('[data-testid=merge-field-row]').evaluateAll(els => els.map(e => e.getAttribute('data-field')));
     expect(fieldsShown.sort()).toEqual(['title', 'type']); // one bundle covers both the explicit and derived change
+
+    // Tracker #196 follow-up: a refresh is signed the same way a real
+    // export/merge is -- same identity key, same envelope shape, just
+    // scoped to this operation's own two records instead of the whole
+    // project.
+    await expect(page.locator('[data-testid=merge-provenance]')).toHaveAttribute('data-sig-state', 'signed');
+    await expect(page.locator('[data-testid=merge-envelope]')).toContainText('2 records');
+    const hashChip = await page.locator('[data-testid=merge-envelope]').textContent();
+    expect(hashChip).toMatch(/[0-9a-f]{12}/); // a real content hash, not a placeholder
 
     await page.locator('[data-testid=btn-merge-primary]').click();
     await page.locator('[data-testid=btn-confirm-dialog-confirm]').click();

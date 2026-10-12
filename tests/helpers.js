@@ -101,6 +101,11 @@ async function useFastTimers(page) {
     // clears Playwright's 500ms idle threshold in the gaps between ticks;
     // tests that specifically exercise polling wait past it.
     window.__wigwagPollIntervalMs = 5000;
+    // Tracker #198: refresh's per-attempt timeout and retry backoff base --
+    // shrunk so a retry-exhausted test doesn't actually wait ~15s+7s of
+    // real backoff.
+    window.__wigwagRefreshTimeoutMs = 300;
+    window.__wigwagRefreshRetryBaseMs = 20;
   });
 }
 

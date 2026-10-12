@@ -343,6 +343,241 @@ test.describe('Bulk actions: Refresh', () => {
   });
 });
 
+// Tracker #198: refreshing 2+ rows stages everything into a job first --
+// nothing in the grid changes until every row has resolved (or been
+// excluded after retries are exhausted), then the existing merge-review
+// gate takes over unmodified. 1-row refresh (covered above) is
+// unaffected -- it still applies directly.
+test.describe('Bulk actions: Refresh -- staged job (2+ rows)', () => {
+  async function seedTwoLinkedRows(page) {
+    const pid = await h.activeMilestoneId(page);
+    const doc = await h.idbGetProjectDoc(page, pid);
+    for (const i of [0, 1]) {
+      const maxSortKey = Math.max(0, ...doc.issues[i].history.map(hh => hh.sortKey || 0));
+      doc.issues[i].history.push({
+        id: 'test-link-' + i, time: 'now', actor: 'test', email: 'test@example.com', text: 'Linked', field: 'title', value: 'Old ' + i,
+        fieldRef: { system: 'github', owner: 'acme', repo: 'demo', num: i + 1 }, origin: 'authored', sortKey: maxSortKey + 1, sig: null, sigRedacted: null, pubKey: null
+      });
+    }
+    await h.idbSetProjectDoc(page, pid, doc);
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+    return pid;
+  }
+
+  test('nothing in the grid changes until the job resolves, then the gate shows the real fetched values and applies everything in one shot', async ({ page }) => {
+    await h.gotoTracker(page);
+    await page.route('https://api.github.com/repos/acme/demo/issues/1', async route => {
+      await new Promise(r => setTimeout(r, 100));
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Fresh 1', labels: [], state: 'open', body: '' }) });
+    });
+    await page.route('https://api.github.com/repos/acme/demo/issues/2', async route => {
+      await new Promise(r => setTimeout(r, 100));
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Fresh 2', labels: [], state: 'open', body: '' }) });
+    });
+    await seedTwoLinkedRows(page);
+
+    const histLenBefore = (await h.readActiveMilestoneDoc(page)).issues[0].history.length;
+    await page.locator('[data-testid=row]').nth(0).locator('[data-testid=row-select-checkbox]').click();
+    await page.locator('[data-testid=row]').nth(1).locator('[data-testid=row-select-checkbox]').click({ modifiers: ['ControlOrMeta'] });
+    await page.locator('[data-testid=bulk-refresh-btn]').click();
+    await page.waitForTimeout(80);
+
+    // Mid-job: the grid is untouched and the selection bar has morphed
+    // into the progress view, not the normal bulk-action-bar.
+    await expect(page.locator('[data-testid=bulk-refresh-progress]')).toBeVisible();
+    await expect(page.locator('[data-testid=bulk-action-bar]')).toHaveCount(0);
+    const title0Mid = (await page.locator('[data-testid=row]').nth(0).locator('[data-testid=title-cell]').textContent()).trim();
+    expect(title0Mid).toContain('Old 0');
+    expect((await h.readActiveMilestoneDoc(page)).issues[0].history.length).toBe(histLenBefore);
+
+    await page.waitForTimeout(600);
+
+    await expect(page.locator('[data-testid=merge-card]')).toBeVisible();
+    await expect(page.locator('[data-testid=merge-provenance]')).toHaveAttribute('data-sig-state', 'signed');
+    const settledTexts = (await page.locator('[data-testid=merge-field-row]').allTextContents()).join(' ');
+    expect(settledTexts).toContain('Fresh 1');
+    expect(settledTexts).toContain('Fresh 2');
+    expect(settledTexts).not.toContain('Old 0');
+    expect(settledTexts).not.toContain('Old 1');
+
+    await page.locator('[data-testid=btn-merge-primary]').click();
+    await page.waitForTimeout(300);
+
+    await expect(page.locator('[data-testid=row]').nth(0).locator('[data-testid=title-cell]')).toContainText('Fresh 1');
+    await expect(page.locator('[data-testid=row]').nth(1).locator('[data-testid=title-cell]')).toContainText('Fresh 2');
+  });
+
+  test('a row that never resolves is excluded after retries are exhausted -- the rest still apply, nothing hangs forever', async ({ page }) => {
+    await h.gotoTracker(page);
+    await page.route('https://api.github.com/repos/acme/demo/issues/1', route => new Promise(() => {})); // never resolves
+    await page.route('https://api.github.com/repos/acme/demo/issues/2', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Fresh 2', labels: [], state: 'open', body: '' })
+    }));
+    await seedTwoLinkedRows(page);
+
+    await page.locator('[data-testid=row]').nth(0).locator('[data-testid=row-select-checkbox]').click();
+    await page.locator('[data-testid=row]').nth(1).locator('[data-testid=row-select-checkbox]').click({ modifiers: ['ControlOrMeta'] });
+    await page.locator('[data-testid=bulk-refresh-btn]').click();
+
+    // Fast timers: 300ms timeout x up to 3 attempts + tiny backoff --
+    // comfortably resolves well under this wait, proving it doesn't hang
+    // forever the way the original bug did.
+    await page.waitForTimeout(3000);
+
+    await expect(page.locator('[data-testid=merge-card]')).toBeVisible();
+    const fieldsShown = await page.locator('[data-testid=merge-field-row]').evaluateAll(els => els.map(e => e.getAttribute('data-field')));
+    expect(fieldsShown.sort()).toEqual(['title', 'type']); // row 2's title + its own bound Type recompute -- row 1 excluded entirely
+    const issueCount = await page.locator('[data-testid=merge-issue]').count();
+    expect(issueCount).toBe(1);
+
+    await page.locator('[data-testid=btn-merge-primary]').click();
+    await page.waitForTimeout(300);
+
+    await expect(page.locator('[data-testid=row]').nth(0).locator('[data-testid=title-cell]')).toContainText('Old 0'); // untouched
+    await expect(page.locator('[data-testid=row]').nth(1).locator('[data-testid=title-cell]')).toContainText('Fresh 2');
+
+    // The refresh button is usable again once the job has resolved.
+    await expect(page.locator('[data-testid=bulk-refresh-btn]')).toHaveCSS('cursor', 'pointer');
+  });
+
+  test('a second refresh cannot be started for the same project while one is already in flight -- selecting ANY rows still shows the progress view, not the normal action bar', async ({ page }) => {
+    await h.gotoTracker(page);
+    // Extend the fetch timeout well past these mocks' own delay -- a
+    // comfortable, reliable "still fetching" window for this test to
+    // check against, rather than racing the job's own fast completion.
+    await page.addInitScript(() => { window.__wigwagRefreshTimeoutMs = 8000; });
+    await page.route('https://api.github.com/repos/acme/demo/issues/1', async route => {
+      await new Promise(r => setTimeout(r, 2000));
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Fresh 1', labels: [], state: 'open', body: '' }) });
+    });
+    await page.route('https://api.github.com/repos/acme/demo/issues/2', async route => {
+      await new Promise(r => setTimeout(r, 2000));
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Fresh 2', labels: [], state: 'open', body: '' }) });
+    });
+    await seedTwoLinkedRows(page);
+
+    await page.locator('[data-testid=row]').nth(0).locator('[data-testid=row-select-checkbox]').click();
+    await page.locator('[data-testid=row]').nth(1).locator('[data-testid=row-select-checkbox]').click({ modifiers: ['ControlOrMeta'] });
+    await page.locator('[data-testid=bulk-refresh-btn]').click();
+    await page.waitForTimeout(80);
+
+    // While this project's job is fetching, the progress view occupies
+    // the whole slot for ANY selection -- there's no reachable UI state
+    // showing a plain, clickable "Refresh" for this project in the
+    // meantime (the button only exists at all once jobFetching is false).
+    await page.locator('[data-testid=row]').nth(0).locator('[data-testid=row-select-checkbox]').click(); // deselect
+    await page.locator('[data-testid=row]').nth(1).locator('[data-testid=row-select-checkbox]').click(); // deselect
+    await page.locator('[data-testid=row]').nth(2).locator('[data-testid=row-select-checkbox]').click(); // select a row with no part in the job
+    await expect(page.locator('[data-testid=bulk-refresh-progress]')).toBeVisible();
+    await expect(page.locator('[data-testid=bulk-refresh-btn]')).toHaveCount(0);
+  });
+
+  test('clearing the selection mid-job reverts the slot to the add-item row, but the job itself keeps running', async ({ page }) => {
+    await h.gotoTracker(page);
+    await page.addInitScript(() => { window.__wigwagRefreshTimeoutMs = 8000; });
+    await page.route('https://api.github.com/repos/acme/demo/issues/1', async route => {
+      await new Promise(r => setTimeout(r, 2000));
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Fresh 1', labels: [], state: 'open', body: '' }) });
+    });
+    await page.route('https://api.github.com/repos/acme/demo/issues/2', async route => {
+      await new Promise(r => setTimeout(r, 2000));
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Fresh 2', labels: [], state: 'open', body: '' }) });
+    });
+    await seedTwoLinkedRows(page);
+
+    await page.locator('[data-testid=row]').nth(0).locator('[data-testid=row-select-checkbox]').click();
+    await page.locator('[data-testid=row]').nth(1).locator('[data-testid=row-select-checkbox]').click({ modifiers: ['ControlOrMeta'] });
+    await page.locator('[data-testid=bulk-refresh-btn]').click();
+    await page.waitForTimeout(80);
+    await expect(page.locator('[data-testid=bulk-refresh-progress]')).toBeVisible();
+
+    // Clear the selection -- the slot reverts to the add-item row, but
+    // the job itself keeps running regardless (per the handoff's own
+    // correction: the inline view is tied to selection, not job lifetime).
+    await page.locator('[data-testid=bulk-refresh-progress-clear]').click();
+    await page.waitForTimeout(100);
+    await expect(page.locator('[data-testid=bulk-refresh-progress]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=bulk-action-bar]')).toHaveCount(0); // neither bulk state -- back to the plain add-item row
+    await expect(page.locator('[data-testid=header-job-chip]')).toHaveCount(1); // the job survives the clear, tracked only by the header chip now
+  });
+
+  // Live feedback from Tom: refreshing a row with a bound field that ALSO
+  // carries a copied fieldRef (the "copy field" mechanic copies the real
+  // link, not just the value -- see bind-issue-field.spec.js) showed the
+  // bound field TWICE in the gate (once as if independently linked, once
+  // via the derived-recompute diff), and the timeline said "0 edits
+  // across both copies" despite real edits coming in.
+  async function addField(page, name, type) {
+    await page.locator('[data-testid=add-field-wrap] span').first().click();
+    await page.waitForTimeout(150);
+    await page.locator('input[placeholder="Field name"]').fill(name);
+    await page.locator('select').selectOption(type);
+    await page.locator('button', { hasText: 'Add field' }).click();
+    await page.waitForTimeout(200);
+    return page.locator('[data-testid=col-header]').last().getAttribute('data-col');
+  }
+
+  test('a bound field that also carries a copied fieldRef is refreshed exactly once, and the timeline counts its edits correctly', async ({ page }) => {
+    await h.gotoTracker(page);
+    await page.route('https://api.github.com/repos/acme/demo/issues/1', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Fresh Title', labels: [], state: 'open', body: '' })
+    }));
+    const pid = await h.activeMilestoneId(page);
+    {
+      const doc = await h.idbGetProjectDoc(page, pid);
+      const maxSortKey = Math.max(0, ...doc.issues[0].history.map(hh => hh.sortKey || 0));
+      doc.issues[0].history.push({
+        id: 'test-title-link', time: 'now', actor: 'test', email: 'test@example.com', text: 'Linked', field: 'title', value: 'Old Title',
+        fieldRef: { system: 'github', owner: 'acme', repo: 'demo', num: 1 }, origin: 'authored', sortKey: maxSortKey + 1, sig: null, sigRedacted: null, pubKey: null
+      });
+      doc.issues[0].history.push({
+        id: 'test-related-seed', time: 'now', actor: 'test', email: 'test@example.com', text: 'Related set', field: 'linked', value: 'placeholder', origin: 'authored', sortKey: maxSortKey + 2, sig: null, sigRedacted: null, pubKey: null
+      });
+      await h.idbSetProjectDoc(page, pid, doc);
+    }
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    // Remedy (issue-type) bound to Issue via "copy field", condition on
+    // Related being non-empty -- same structural shape as Tom's own
+    // Issue/Remedy scenario.
+    const remedyId = await addField(page, 'Remedy', 'issue');
+    await h.openFieldEditor(page, remedyId);
+    await page.locator('[data-testid=field-editor-source-select]').selectOption({ label: 'Issue' });
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=field-editor-open-rules]').click();
+    await page.waitForTimeout(400);
+    await page.locator('[data-testid=rule-add-row]').click();
+    await page.waitForTimeout(150);
+    const row = page.locator('[data-testid=rule-row]').first();
+    await row.locator('[data-testid=rule-row-subject]').selectOption('values.linked');
+    await row.locator('[data-testid=rule-row-op]').selectOption('isNotEmpty');
+    await page.waitForTimeout(150);
+    await row.locator('[data-testid=rule-row-then-copy-field]').selectOption({ label: 'Copy Issue' });
+    await page.waitForTimeout(300);
+    await page.locator('[data-testid=rule-builder] >> text=✕').first().click();
+    await page.waitForTimeout(400);
+    await page.mouse.click(50, 50);
+    await page.waitForTimeout(300);
+
+    await page.locator('[data-testid=row]').nth(0).locator('[data-testid=row-select-checkbox]').click();
+    await page.locator('[data-testid=row]').nth(3).locator('[data-testid=row-select-checkbox]').click({ modifiers: ['ControlOrMeta'] });
+    await page.locator('[data-testid=bulk-refresh-btn]').click();
+    await expect(page.locator('[data-testid=merge-card]')).toBeVisible({ timeout: 15000 });
+
+    const fieldsShown = await page.locator('[data-testid=merge-field-row]').evaluateAll(els => els.map(e => e.getAttribute('data-field')));
+    expect(fieldsShown.filter(f => f === remedyId).length).toBe(1); // not twice
+
+    const toggleLabels = await page.locator('[data-testid=btn-merge-timeline]').allTextContents();
+    expect(toggleLabels.some(t => /— 0 edits/.test(t))).toBe(false); // not "0 edits" when real edits are coming in
+
+    await page.locator('[data-testid=btn-merge-primary]').click();
+    await page.waitForTimeout(400);
+    await expect(page.locator('[data-testid=row]').nth(0).locator(`[data-testid=field-cell][data-col="${remedyId}"]`)).toContainText('Fresh Title');
+  });
+});
+
 test.describe('Bulk actions: Delete', () => {
   test('a single confirm regardless of selection size removes exactly the selected issues and clears the selection', async ({ page }) => {
     await h.gotoTracker(page);

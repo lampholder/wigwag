@@ -484,19 +484,24 @@ test.describe('Refresh: row / whole table', () => {
     await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'linked');
 
+    // Tracker #198: refreshing 2+ rows ("every row" here) now stages
+    // everything into a job first -- nothing lands until the merge gate
+    // is confirmed, and row 1's permanently-failing link (a real 404 via
+    // the mock) is excluded from the merge entirely rather than logging
+    // a "Could not fetch" entry the way the old immediate-apply path did
+    // (Tom's own explicit call: a failed-after-retries row is reported
+    // via the job summary, not written to that issue's history).
     await page.locator('[data-testid=header-select-checkbox]').click(); // select every row, respecting the current filter
     await page.locator('[data-testid=bulk-refresh-btn]').click();
-    await h.waitForFieldResolved(page, 3, 'linked');
-    // row 1's title was already linked in seed data — refreshing it too means it
-    // hits the mocked API (acme/app is a fictional repo, so this resolves as a
-    // real 404 via the mock — the point is it was attempted, not that it succeeds).
-    await page.waitForTimeout(500);
+    await expect(page.locator('[data-testid=merge-card]')).toBeVisible({ timeout: 15000 });
+    await page.locator('[data-testid=btn-merge-primary]').click();
+    await page.waitForTimeout(400);
 
     expect(linkedCalls).toBe(2);
     await expect(h.fieldCell(page, 3, 'linked')).toContainText('(v2)');
 
     const h1 = await h.getHistoryEntriesFor(page, 'i1');
-    expect(h1.some(t => /Could not fetch/.test(t))).toBe(true);
+    expect(h1.some(t => /Could not fetch/.test(t))).toBe(false); // excluded from the merge entirely, not logged
     const h3 = await h.getHistoryEntriesFor(page, 'i3');
     expect(h3.some(t => /Related/.test(t) && /[Rr]efresh/.test(t))).toBe(true);
   });

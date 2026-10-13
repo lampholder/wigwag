@@ -203,4 +203,49 @@ test.describe('Binding an issue-type field to another field ("copy field")', () 
     const iss = doc.issues.find(i => i.id === 'i1');
     expect(h.latestFieldRef(iss, remedyId)).toEqual(h.latestFieldRef(iss, 'linked'));
   });
+
+  // Live feedback from Tom, from his real production data: an issue-type
+  // field bound via a HAND-WRITTEN (not row-based) rule, that ALSO
+  // carries its own independently-pasted real link, lost that link
+  // permanently -- on the very next edit to ANY field on the same issue.
+  // Root cause: computeDerivedChangeEntries called computeBoundFieldRef
+  // for EVERY bound field regardless of rule shape, but that function
+  // only ever manages a fieldRef for a row-based "copy field" rule --
+  // for a hand-written rule it unconditionally returns null, which
+  // computeDerivedChangeEntries read as "the rule says clear the
+  // fieldRef" and wrote straight into history, erasing a real,
+  // independently-maintained link that the rule was never responsible
+  // for in the first place.
+  test('a hand-written-rule bound field that ALSO carries its own independently-pasted link keeps that link after an unrelated edit', async ({ page }) => {
+    await h.mockGithubApi(page);
+    const remedyId = await addField(page, 'Remedy', 'issue');
+    await h.openFieldEditor(page, remedyId);
+    await page.locator('[data-testid=field-editor-source-select]').selectOption({ label: 'Issue' });
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=field-editor-open-rules]').click();
+    await page.waitForTimeout(400);
+    await page.locator('[data-testid=rule-edit-expression]').click();
+    await page.waitForTimeout(300);
+    await page.locator('[data-testid=rule-advanced-textarea]').fill('(source.github?.labels || []).includes("bug") ? (values.title) : null');
+    await page.waitForTimeout(400);
+    await page.mouse.click(50, 50);
+    await page.waitForTimeout(300);
+
+    await h.clickFieldToEdit(page, 1, remedyId);
+    await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/1');
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(500);
+    await expect(h.fieldCell(page, 1, remedyId).locator('a')).toHaveCount(1); // a real pill, not plain text
+
+    // Edit a totally unrelated field on the same issue.
+    await h.clickFieldToEdit(page, 1, 'mitigation');
+    await page.keyboard.type('unrelated edit');
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(400);
+
+    await expect(h.fieldCell(page, 1, remedyId).locator('a')).toHaveCount(1); // still a real pill
+    const doc = await h.readActiveMilestoneDoc(page);
+    const iss = doc.issues.find(i => i.id === 'i1');
+    expect(h.latestFieldRef(iss, remedyId)).toEqual({ system: 'github', owner: 'octocat', repo: 'Hello-World', num: '1' });
+  });
 });

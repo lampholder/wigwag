@@ -678,6 +678,58 @@ test.describe('Bulk actions: Refresh -- staged job (2+ rows)', () => {
     expect(typeEntries[typeEntries.length - 1].origin).toBe('derived');
   });
 
+  // Live feedback from Tom: after accepting a staged refresh's merge, the
+  // SAME gate popped back up on its own later (after switching projects
+  // and back), and the header chip's "Review" pill never went away. Root
+  // cause: confirmPendingMerge/cancelPendingMerge only ever cleared
+  // pendingMerge itself, never the matching state.refreshJobs entry --
+  // switchProject's own "a completed job auto-surfaces its gate" logic
+  // (there for the legitimate case of leaving and coming back to an
+  // UNreviewed job) had no way to tell a genuinely-still-pending job
+  // apart from one already decided, so it kept re-surfacing the stale,
+  // already-applied job's own preparedMerge, and the header chip kept
+  // counting it as needing review.
+  test('confirming a staged refresh clears its job -- it does not resurface on a later project switch, and the header chip clears too', async ({ page }) => {
+    await h.gotoTracker(page);
+    await page.route('https://api.github.com/repos/acme/demo/issues/1', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Fresh title', labels: [], state: 'open', body: '' })
+    }));
+    const pid = await h.activeMilestoneId(page);
+    {
+      const doc = await h.idbGetProjectDoc(page, pid);
+      const maxSortKey = Math.max(0, ...doc.issues[0].history.map(hh => hh.sortKey || 0));
+      doc.issues[0].history.push({
+        id: 'test-link', time: 'now', actor: 'test', email: 'test@example.com', text: 'Linked', field: 'title', value: 'Old title',
+        fieldRef: { system: 'github', owner: 'acme', repo: 'demo', num: 1 }, origin: 'authored', sortKey: maxSortKey + 1, sig: null, sigRedacted: null, pubKey: null
+      });
+      await h.idbSetProjectDoc(page, pid, doc);
+    }
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    await page.locator('[data-testid=row]').nth(0).locator('[data-testid=row-select-checkbox]').click();
+    await page.locator('[data-testid=row]').nth(3).locator('[data-testid=row-select-checkbox]').click({ modifiers: ['ControlOrMeta'] });
+    await page.locator('[data-testid=bulk-refresh-btn]').click();
+    await expect(page.locator('[data-testid=merge-card]')).toBeVisible({ timeout: 15000 });
+    await page.locator('[data-testid=btn-merge-primary]').click();
+    await page.waitForTimeout(400);
+
+    await expect(page.locator('[data-testid=merge-card]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=header-job-chip]')).toHaveCount(0);
+
+    // Switch to a new project and back -- this round trip through
+    // switchProject is what used to re-surface the stale job's gate.
+    await h.openTrackerSwitcher(page);
+    await h.addBlankProject(page);
+    await page.waitForTimeout(300);
+    await h.openTrackerSwitcher(page);
+    await h.milestoneRow(page, h.DEMO_MILESTONE_NAME).click();
+    await page.waitForTimeout(400);
+
+    await expect(page.locator('[data-testid=merge-card]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=header-job-chip]')).toHaveCount(0);
+  });
+
   // Live feedback from Tom: a THIRD field bound to Remedy (itself bound to
   // Issue) only updated the first hop after a refresh -- Remedy's own
   // value changed, but nothing bound to Remedy ever saw it. Root cause,

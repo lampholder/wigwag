@@ -193,6 +193,47 @@ test.describe('JSONL export/import', () => {
     await expect(h.milestoneRow(page, 'Delivery tracker')).toBeVisible(); // the original demo project is still there, untouched
   });
 
+  // Live bug report: importing a project with no issues at all (but a
+  // real name and project comments) silently did nothing. It actually DID
+  // do something -- it hit a check that treated "zero issues" alone as
+  // "not a valid tracker export", showing a misleading alert and bailing
+  // out before ever reaching importParsedAsNewProject. A project with no
+  // issues yet (an empty backlog, or one that's so far just project-level
+  // notes/comments) is a perfectly valid export; the correct "is this
+  // actually garbage" check -- used correctly everywhere else this file
+  // parses a .jsonl -- is "neither fields NOR issues are present".
+  test('a pasted project with zero issues but a real name and project comments imports correctly, not silently rejected', async ({ page }) => {
+    const pastedJsonl = [
+      JSON.stringify({
+        type: 'fields', id: 'empty-issues-proj', name: 'No Issues Yet',
+        fields: { title: { label: 'Issue', type: 'text' } },
+        projectComments: [{ id: 'c1', author: 'tom@example.com', email: 'tom@example.com', time: 'now', text: 'Kickoff notes before any issues exist.', sortKey: 1, sig: null, pubKey: null }]
+      })
+      // deliberately no "issue" lines at all
+    ].join('\n');
+
+    let alertShown = false;
+    page.on('dialog', async d => { alertShown = true; await d.accept(); });
+
+    await page.locator('[data-testid=btn-import-merge]').click();
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=paste-merge-textarea]').fill(pastedJsonl);
+    await page.locator('[data-testid=btn-submit-paste-merge]').click();
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=confirm-dialog-modal]')).toBeVisible();
+    await page.locator('[data-testid=btn-confirm-dialog-confirm]').click();
+    await page.waitForTimeout(400);
+
+    expect(alertShown).toBe(false);
+    await expect(page.locator('[data-testid=tracker-name-title]')).toHaveText('No Issues Yet');
+    await expect(page.locator('[data-testid=row]')).toHaveCount(0);
+
+    const pid = await h.activeMilestoneId(page);
+    const doc = await h.idbGetProjectDoc(page, pid);
+    expect(doc.projectComments).toHaveLength(1);
+    expect(doc.projectComments[0].text).toBe('Kickoff notes before any issues exist.');
+  });
+
   test('Cancel on the Receive modal creates nothing, and typing into the textarea does not close it', async ({ page }) => {
     await page.locator('[data-testid=btn-import-merge]').click();
     await page.waitForTimeout(150);

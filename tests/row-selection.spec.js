@@ -633,6 +633,51 @@ test.describe('Bulk actions: Refresh -- staged job (2+ rows)', () => {
     await expect(page.locator('[data-testid=row]').nth(0).locator('[data-testid=field-cell][data-col=type]')).toContainText('Bug');
   });
 
+  // Live feedback from Tom: after applying a staged refresh's merge, the
+  // bound field that DID update (his "Remedy") started flickering, and
+  // anything bound to IT never updated. Root cause for the flicker (and a
+  // real correctness gap even without one): logDerivedChanges -- the
+  // single-row/merge-landing path -- hardcodes origin:'derived' on every
+  // entry computeDerivedChangeEntries produces. That marker is exactly
+  // what computeBoundValue's own conservative branch checks
+  // (latest.origin === 'derived') to treat a bound field's last write as
+  // a real rule computation and stay locked/stable on every later render.
+  // stageFieldRefresh's own two call sites built entries by hand and
+  // never set it, so a staged refresh's derived writes looked exactly
+  // like a manual edit forever after -- unlocking the field on the very
+  // next render instead of settling.
+  test('a bound field written by a staged refresh is marked origin:derived, same as the single-row/merge-landing path', async ({ page }) => {
+    await h.gotoTracker(page);
+    await page.route('https://api.github.com/repos/acme/demo/issues/1', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Fresh title', labels: [{ name: 'bug' }], state: 'open', body: '' })
+    }));
+    const pid = await h.activeMilestoneId(page);
+    {
+      const doc = await h.idbGetProjectDoc(page, pid);
+      const maxSortKey = Math.max(0, ...doc.issues[0].history.map(hh => hh.sortKey || 0));
+      doc.issues[0].history.push({
+        id: 'test-link', time: 'now', actor: 'test', email: 'test@example.com', text: 'Linked', field: 'title', value: 'Old title',
+        fieldRef: { system: 'github', owner: 'acme', repo: 'demo', num: 1 }, origin: 'authored', sortKey: maxSortKey + 1, sig: null, sigRedacted: null, pubKey: null
+      });
+      await h.idbSetProjectDoc(page, pid, doc);
+    }
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    await page.locator('[data-testid=row]').nth(0).locator('[data-testid=row-select-checkbox]').click();
+    await page.locator('[data-testid=row]').nth(3).locator('[data-testid=row-select-checkbox]').click({ modifiers: ['ControlOrMeta'] });
+    await page.locator('[data-testid=bulk-refresh-btn]').click();
+    await expect(page.locator('[data-testid=merge-card]')).toBeVisible({ timeout: 15000 });
+    await page.locator('[data-testid=btn-merge-primary]').click();
+    await page.waitForTimeout(400);
+
+    const doc = await h.idbGetProjectDoc(page, pid);
+    const iss0 = doc.issues.find(i => i.id === 'i1');
+    const typeEntries = iss0.history.filter(hh => hh.field === 'type');
+    expect(typeEntries.length).toBeGreaterThan(0);
+    expect(typeEntries[typeEntries.length - 1].origin).toBe('derived');
+  });
+
   // Live feedback from Tom: a THIRD field bound to Remedy (itself bound to
   // Issue) only updated the first hop after a refresh -- Remedy's own
   // value changed, but nothing bound to Remedy ever saw it. Root cause,
@@ -725,6 +770,96 @@ test.describe('Bulk actions: Refresh -- staged job (2+ rows)', () => {
     const doc = await h.readActiveMilestoneDoc(page);
     const iss = doc.issues.find(i => i.id === 'i1');
     expect(h.latestFieldRef(iss, escId)).toEqual(h.latestFieldRef(iss, remedyId)); // the real link cascaded too, not just the text
+  });
+
+  // Live feedback from Tom: the test above covers a second hop whose rule
+  // only reads values.* -- this covers the harder case he actually hit,
+  // where the second hop's rule needs LIVE source data (not just a value
+  // passthrough). Root cause: refreshRow (the single-row path) iterates
+  // every field in fieldDefs, including a bound field that also carries
+  // its own real (copied) fieldRef -- refreshing THAT field via its own
+  // ref is what triggers applyLiveLinkedRules keyed on it, which is the
+  // only thing that can feed a second-hop field needing live data.
+  // stageRefreshRow instead explicitly skipped any bound field in this
+  // same loop (to fix a real "shown twice" bug) -- correct for
+  // suppressing a bound field's own separate entry, but it also threw
+  // out the live-data cascade that refreshing-via-its-own-ref provided,
+  // so a staged refresh updated Remedy's text but never fed live data to
+  // anything bound to it. Fixed by threading one accumulating issue
+  // through every linked field in a row (still fetching+cascading for a
+  // bound field that carries its own ref, just suppressing its own
+  // entry) so a multi-hop chain gets live data at every hop, same as the
+  // single-row path always has.
+  test('a field bound two hops away, whose rule needs LIVE source data (not just values.*), cascades fully via a staged refresh', async ({ page }) => {
+    await h.gotoTracker(page);
+    await page.route('https://api.github.com/repos/acme/demo/issues/1', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Fresh Title', labels: [{ name: 'bug' }], state: 'open', body: '' })
+    }));
+    const pid = await h.activeMilestoneId(page);
+    {
+      const doc = await h.idbGetProjectDoc(page, pid);
+      const maxSortKey = Math.max(0, ...doc.issues[0].history.map(hh => hh.sortKey || 0));
+      doc.issues[0].history.push({
+        id: 'test-title-link', time: 'now', actor: 'test', email: 'test@example.com', text: 'Linked', field: 'title', value: 'Old Title',
+        fieldRef: { system: 'github', owner: 'acme', repo: 'demo', num: 1 }, origin: 'authored', sortKey: maxSortKey + 1, sig: null, sigRedacted: null, pubKey: null
+      });
+      doc.issues[0].history.push({
+        id: 'test-related-seed', time: 'now', actor: 'test', email: 'test@example.com', text: 'Related set', field: 'linked', value: 'placeholder', origin: 'authored', sortKey: maxSortKey + 2, sig: null, sigRedacted: null, pubKey: null
+      });
+      await h.idbSetProjectDoc(page, pid, doc);
+    }
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    // Hop 1: Remedy bound to Issue -- row-based copy field, real fieldRef.
+    const remedyId = await addField(page, 'Remedy', 'issue');
+    await h.openFieldEditor(page, remedyId);
+    await page.locator('[data-testid=field-editor-source-select]').selectOption({ label: 'Issue' });
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=field-editor-open-rules]').click();
+    await page.waitForTimeout(400);
+    await page.locator('[data-testid=rule-add-row]').click();
+    await page.waitForTimeout(150);
+    {
+      const row = page.locator('[data-testid=rule-row]').first();
+      await row.locator('[data-testid=rule-row-subject]').selectOption('values.linked');
+      await row.locator('[data-testid=rule-row-op]').selectOption('isNotEmpty');
+      await page.waitForTimeout(150);
+      await row.locator('[data-testid=rule-row-then-copy-field]').selectOption({ label: 'Copy Issue' });
+      await page.waitForTimeout(300);
+    }
+    await page.locator('[data-testid=rule-builder] >> text=✕').first().click();
+    await page.waitForTimeout(400);
+    await page.mouse.click(50, 50);
+    await page.waitForTimeout(300);
+
+    // Hop 2: Status (text) bound to Remedy, condition reads source.github
+    // (live labels), not just values.* -- needs a hand-written expression,
+    // the row-based builder has no "source.github.labels" subject.
+    const statusId = await addField(page, 'Status', 'text');
+    await h.openFieldEditor(page, statusId);
+    await page.locator('[data-testid=field-editor-source-select]').selectOption({ label: 'Remedy' });
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=field-editor-open-rules]').click();
+    await page.waitForTimeout(400);
+    await page.locator('[data-testid=rule-edit-expression]').click();
+    await page.waitForTimeout(300);
+    await page.locator('[data-testid=rule-advanced-textarea]').fill('(source.github?.labels || []).includes("bug") ? "Blocked" : "Triage"');
+    await page.waitForTimeout(400);
+    await page.mouse.click(50, 50);
+    await page.waitForTimeout(300);
+
+    await expect(page.locator('[data-testid=row]').nth(0).locator(`[data-testid=field-cell][data-col="${statusId}"]`)).toHaveText('—');
+
+    await page.locator('[data-testid=row]').nth(0).locator('[data-testid=row-select-checkbox]').click();
+    await page.locator('[data-testid=row]').nth(3).locator('[data-testid=row-select-checkbox]').click({ modifiers: ['ControlOrMeta'] });
+    await page.locator('[data-testid=bulk-refresh-btn]').click();
+    await expect(page.locator('[data-testid=merge-card]')).toBeVisible({ timeout: 15000 });
+    await page.locator('[data-testid=btn-merge-primary]').click();
+    await page.waitForTimeout(400);
+
+    await expect(page.locator('[data-testid=row]').nth(0).locator(`[data-testid=field-cell][data-col="${remedyId}"]`)).toContainText('Fresh Title');
+    await expect(page.locator('[data-testid=row]').nth(0).locator(`[data-testid=field-cell][data-col="${statusId}"]`)).toHaveText('Blocked');
   });
 
   // Live feedback from Tom: a refresh where nothing actually changed (a

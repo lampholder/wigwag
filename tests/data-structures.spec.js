@@ -1147,6 +1147,44 @@ test.describe('Field values are derived from history', () => {
 
     await expect(h.fieldCell(page, 1, 'tags')).toContainText('—');
   });
+
+  // Live feedback from Tom: several issues were left permanently showing
+  // "Loading…" on their linked field, surviving every reload. Root cause:
+  // fieldLoading (purely transient "a fetch for this field is currently
+  // in flight" UI state) was never excluded from what persist() writes to
+  // disk, and nothing reset it on load -- a tab closed mid-fetch (or an
+  // exception before the completion handler's own setState could clear
+  // the flag) left fieldLoading:true baked into the stored doc forever.
+  // Fixed two ways: persist() now never writes it at all, and hydrateIssue
+  // resets it defensively on every load, so an issue already stuck this
+  // way (like Tom's real data) self-heals on its very next load.
+  test('a stuck fieldLoading flag from a fetch that never completed does not survive a reload -- the field renders normally, not "Loading…" forever', async ({ page }) => {
+    const id = 'stuck-field-loading-project';
+    await page.context().addInitScript(({ id }) => {
+      localStorage.setItem('git_native_tracker_secrets_v1', JSON.stringify({ identityEmail: 'tom@example.com' }));
+      localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({
+        activeMilestoneId: id, milestones: [{ id, name: 'Stuck Loading' }]
+      }));
+      localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
+        fieldDefs: { title: { label: 'Issue', type: 'text' } },
+        issues: [{
+          id: 'i1', num: 1, fieldRefs: {},
+          // Simulates a fetch that never finished (tab closed mid-fetch,
+          // or an exception before the clearing setState ran) -- exactly
+          // what persist() used to leak to disk verbatim.
+          fieldLoading: { title: true },
+          values: { title: 'Real title' }, comments: [],
+          history: [{ id: 'h1', time: 'Jul 1', actor: 'tom', email: 'tom@example.com', text: 'Title set', field: 'title', value: 'Real title', origin: 'authored', sortKey: 1, sig: null, pubKey: null }]
+        }],
+        hiddenFieldIds: [], githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', projectNotes: '', projectComments: []
+      }));
+    }, { id });
+    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    await expect(h.titleCell(page, 1)).toContainText('Real title');
+    await expect(h.titleCell(page, 1)).not.toContainText('Loading');
+  });
 });
 
 test.describe('Migration: backfilling history from pre-existing stored values', () => {

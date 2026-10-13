@@ -748,4 +748,89 @@ test.describe('Bound value panel: null-computed rows are overridable', () => {
     await page.waitForTimeout(400);
     await expect(h.fieldCell(page, 1, 'priority')).toHaveText('P0');
   });
+
+  // Live feedback from Tom, from his real production data: a bound field
+  // stuck showing stale, rule-derived text forever after the underlying
+  // condition stopped matching -- looking "bound" to the user even though
+  // nothing backed it any more. The distinction that makes this safe: row
+  // 1's P2 above (a genuine manual/seed value, never computed by this
+  // rule) must never be auto-cleared just because the rule has nothing to
+  // say -- but row 7's P0 here WAS itself computed by this same rule, so
+  // once a refresh confirms (with live data) that the condition no longer
+  // matches, it should clear for real and become human-editable again,
+  // not sit there looking locked with no fieldRef backing it.
+  test('a field whose rule-derived value goes stale clears on refresh and becomes editable again', async ({ page }) => {
+    await openRowsFor(page, 'priority', 'Issue');
+    await page.locator('[data-testid=rule-add-row]').click();
+    await page.waitForTimeout(150);
+    const row = page.locator('[data-testid=rule-row]').first();
+    await row.locator('[data-testid=rule-row-subject]').selectOption('source.github?.labels');
+    await row.locator('[data-testid=rule-row-op]').selectOption('includes');
+    await row.locator('[data-testid=rule-row-operand]').fill('bug');
+    await page.waitForTimeout(150);
+    await row.locator('[data-testid=rule-row-then]').selectOption({ label: 'P0' });
+    await page.waitForTimeout(300);
+    await page.locator('[data-testid=rule-builder] >> text=✕').first().click();
+    await page.waitForTimeout(400);
+    await page.mouse.click(50, 50);
+    await page.waitForTimeout(200);
+
+    // row 7 has the "bug" label -- rule-derived to P0, locked.
+    await expect(h.fieldCell(page, 7, 'priority')).toHaveText('P0');
+    await h.clickFieldToEdit(page, 7, 'priority');
+    await expect(page.locator('[data-testid=select-option]')).toHaveCount(0); // locked
+
+    // Refresh with the label now gone -- a confident, live-data null.
+    await page.route('https://api.github.com/repos/owner/app/issues/3390', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Multiselect field doesn\'t render colored pills on CSV export', state: 'open', labels: [] })
+    }));
+    await h.refreshRow(page, 7);
+    await page.waitForTimeout(400);
+
+    await expect(h.fieldCell(page, 7, 'priority')).toHaveText('—');
+    await h.clickFieldToEdit(page, 7, 'priority');
+    await expect(page.locator('[data-testid=select-option]').filter({ hasText: 'P1' })).toBeVisible(); // unlocked now
+  });
+
+  // Live feedback from Tom: typing a manual override into a field that had
+  // just been correctly unlocked got IMMEDIATELY re-locked by the override
+  // itself. Root cause: logDerivedChanges diffs beforeValues against the
+  // issue's already-updated current state, which by the time it runs
+  // reflects the just-committed manual edit -- with no way to tell "the
+  // rule computed this" from "a different code path in this same commit
+  // already wrote this", it mislabeled the override as a derived entry,
+  // and the conservative lock check then trusted that bogus marker to
+  // re-lock the field right after the override.
+  test('a manual override into a freshly-unlocked field is not immediately re-locked by its own commit', async ({ page }) => {
+    await openRowsFor(page, 'priority', 'Issue');
+    await page.locator('[data-testid=rule-add-row]').click();
+    await page.waitForTimeout(150);
+    const row = page.locator('[data-testid=rule-row]').first();
+    await row.locator('[data-testid=rule-row-subject]').selectOption('source.github?.labels');
+    await row.locator('[data-testid=rule-row-op]').selectOption('includes');
+    await row.locator('[data-testid=rule-row-operand]').fill('bug');
+    await page.waitForTimeout(150);
+    await row.locator('[data-testid=rule-row-then]').selectOption({ label: 'P0' });
+    await page.waitForTimeout(300);
+    await page.locator('[data-testid=rule-builder] >> text=✕').first().click();
+    await page.waitForTimeout(400);
+    await page.mouse.click(50, 50);
+    await page.waitForTimeout(200);
+
+    await page.route('https://api.github.com/repos/owner/app/issues/3390', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Multiselect field doesn\'t render colored pills on CSV export', state: 'open', labels: [] })
+    }));
+    await h.refreshRow(page, 7);
+    await page.waitForTimeout(400);
+    await expect(h.fieldCell(page, 7, 'priority')).toHaveText('—');
+
+    await h.clickFieldToEdit(page, 7, 'priority');
+    await page.locator('[data-testid=select-option]').filter({ hasText: 'P1' }).click();
+    await page.waitForTimeout(300);
+    await expect(h.fieldCell(page, 7, 'priority')).toHaveText('P1');
+
+    // Still editable right after -- not silently re-locked by its own write.
+    await h.clickFieldToEdit(page, 7, 'priority');
+    await expect(page.locator('[data-testid=select-option]')).not.toHaveCount(0);
+  });
 });

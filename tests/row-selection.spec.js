@@ -576,6 +576,230 @@ test.describe('Bulk actions: Refresh -- staged job (2+ rows)', () => {
     await page.waitForTimeout(400);
     await expect(page.locator('[data-testid=row]').nth(0).locator(`[data-testid=field-cell][data-col="${remedyId}"]`)).toContainText('Fresh Title');
   });
+
+  // Live feedback from Tom: a staged (2+ row) refresh of his real project
+  // reported "no changes" even though a bound field's rule plainly reads
+  // live data (Jira status, GitHub labels) that HAD changed since the
+  // last fetch. Root cause: stageFieldRefresh's own "unchanged" check
+  // (comparing the ROOT linked field's displayed value + trimmed fieldRef
+  // against before) was an EARLY RETURN that skipped the whole bound-
+  // field recompute, not just the root field's own entry -- and a link's
+  // title/key is often stable refresh over refresh while status/labels
+  // change constantly, which is exactly the data a bound field's rule
+  // usually cares about. The single-row direct-apply path never had this
+  // bug (it always recomputes bound fields against live data and only
+  // uses "unchanged" to gate the root field's OWN history write), which
+  // is why Tom saw the single-row path work but the staged one silently
+  // report nothing. Seeds the REAL persisted (trimmed, no 'labels' key)
+  // fieldRef shape -- not the labels:[] shortcut some other tests use to
+  // force a specific live-render state -- so title+fieldRef are
+  // genuinely unchanged here, same as a real second refresh of a stable
+  // link.
+  test('a bound field recomputes from fresh live data even when the root linked field\'s own value and fieldRef are unchanged', async ({ page }) => {
+    await h.gotoTracker(page);
+    await page.route('https://api.github.com/repos/acme/demo/issues/1', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Stable title', labels: [{ name: 'bug' }], state: 'open', body: '' })
+    }));
+    const pid = await h.activeMilestoneId(page);
+    {
+      const doc = await h.idbGetProjectDoc(page, pid);
+      const maxSortKey = Math.max(0, ...doc.issues[0].history.map(hh => hh.sortKey || 0));
+      doc.issues[0].history.push({
+        id: 'test-link', time: 'now', actor: 'test', email: 'test@example.com', text: 'Linked', field: 'title', value: 'Stable title',
+        fieldRef: { system: 'github', owner: 'acme', repo: 'demo', num: 1 }, origin: 'authored', sortKey: maxSortKey + 1, sig: null, sigRedacted: null, pubKey: null
+      });
+      doc.issues[0].history.push({
+        id: 'test-type', time: 'now', actor: 'test', email: 'test@example.com', text: 'Type set', field: 'type', value: 'enhancement',
+        origin: 'derived', sortKey: maxSortKey + 2, sig: null, sigRedacted: null, pubKey: null
+      });
+      await h.idbSetProjectDoc(page, pid, doc);
+    }
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=row]').nth(0).locator('[data-testid=field-cell][data-col=type]')).toContainText('Enhancement');
+
+    await page.locator('[data-testid=row]').nth(0).locator('[data-testid=row-select-checkbox]').click();
+    await page.locator('[data-testid=row]').nth(3).locator('[data-testid=row-select-checkbox]').click({ modifiers: ['ControlOrMeta'] });
+    await page.locator('[data-testid=bulk-refresh-btn]').click();
+    await expect(page.locator('[data-testid=merge-card]')).toBeVisible({ timeout: 15000 });
+
+    // The root "title" field itself did not change -- only "type" should
+    // be in the gate, not a spurious "title refreshed" entry.
+    const fieldsShown = await page.locator('[data-testid=merge-field-row]').evaluateAll(els => els.map(e => e.getAttribute('data-field')));
+    expect(fieldsShown).toEqual(['type']);
+
+    await page.locator('[data-testid=btn-merge-primary]').click();
+    await page.waitForTimeout(400);
+    await expect(page.locator('[data-testid=row]').nth(0).locator('[data-testid=field-cell][data-col=type]')).toContainText('Bug');
+  });
+
+  // Live feedback from Tom: a THIRD field bound to Remedy (itself bound to
+  // Issue) only updated the first hop after a refresh -- Remedy's own
+  // value changed, but nothing bound to Remedy ever saw it. Root cause,
+  // confirmed directly in computeBoundValue/sourceRefHasFullData: a
+  // copy-field fieldRef is always the trimmed display shape ({system,
+  // owner, repo, num}, no 'labels') and so NEVER counts as "full data" for
+  // github/jira/salesforce -- computeBoundValue took its conservative
+  // "can't safely re-run the rule, trust the last locked value" branch
+  // for ANY field bound to a copy-field source, even when (like here) the
+  // rule only ever reads values.* and never touches source.* at all. Fixed
+  // by ruleNeedsSourceData gating that fallback on the rule's own content,
+  // plus promoting settleLinkedRules (fieldRef propagation to a fixed
+  // point) from refresh-only to every applyLinkedRules call site.
+  test('a field bound two hops away (bound to a field that is itself bound) cascades fully after a refresh', async ({ page }) => {
+    await h.gotoTracker(page);
+    await page.route('https://api.github.com/repos/acme/demo/issues/1', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Fresh Title', labels: [], state: 'open', body: '' })
+    }));
+    const pid = await h.activeMilestoneId(page);
+    {
+      const doc = await h.idbGetProjectDoc(page, pid);
+      const maxSortKey = Math.max(0, ...doc.issues[0].history.map(hh => hh.sortKey || 0));
+      doc.issues[0].history.push({
+        id: 'test-title-link', time: 'now', actor: 'test', email: 'test@example.com', text: 'Linked', field: 'title', value: 'Old Title',
+        fieldRef: { system: 'github', owner: 'acme', repo: 'demo', num: 1 }, origin: 'authored', sortKey: maxSortKey + 1, sig: null, sigRedacted: null, pubKey: null
+      });
+      doc.issues[0].history.push({
+        id: 'test-related-seed', time: 'now', actor: 'test', email: 'test@example.com', text: 'Related set', field: 'linked', value: 'placeholder', origin: 'authored', sortKey: maxSortKey + 2, sig: null, sigRedacted: null, pubKey: null
+      });
+      await h.idbSetProjectDoc(page, pid, doc);
+    }
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    // Hop 1: Remedy bound to Issue -- copy field, same as the test above.
+    const remedyId = await addField(page, 'Remedy', 'issue');
+    await h.openFieldEditor(page, remedyId);
+    await page.locator('[data-testid=field-editor-source-select]').selectOption({ label: 'Issue' });
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=field-editor-open-rules]').click();
+    await page.waitForTimeout(400);
+    await page.locator('[data-testid=rule-add-row]').click();
+    await page.waitForTimeout(150);
+    {
+      const row = page.locator('[data-testid=rule-row]').first();
+      await row.locator('[data-testid=rule-row-subject]').selectOption('values.linked');
+      await row.locator('[data-testid=rule-row-op]').selectOption('isNotEmpty');
+      await page.waitForTimeout(150);
+      await row.locator('[data-testid=rule-row-then-copy-field]').selectOption({ label: 'Copy Issue' });
+      await page.waitForTimeout(300);
+    }
+    await page.locator('[data-testid=rule-builder] >> text=✕').first().click();
+    await page.waitForTimeout(400);
+    await page.mouse.click(50, 50);
+    await page.waitForTimeout(300);
+
+    // Hop 2: Escalation bound to Remedy -- a plain values.* condition,
+    // never reading source.* at all, exactly the shape that was blocked.
+    const escId = await addField(page, 'Escalation', 'issue');
+    await h.openFieldEditor(page, escId);
+    await page.locator('[data-testid=field-editor-source-select]').selectOption({ label: 'Remedy' });
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=field-editor-open-rules]').click();
+    await page.waitForTimeout(400);
+    await page.locator('[data-testid=rule-add-row]').click();
+    await page.waitForTimeout(150);
+    {
+      const row = page.locator('[data-testid=rule-row]').first();
+      await row.locator('[data-testid=rule-row-subject]').selectOption('values.linked');
+      await row.locator('[data-testid=rule-row-op]').selectOption('isNotEmpty');
+      await page.waitForTimeout(150);
+      await row.locator('[data-testid=rule-row-then-copy-field]').selectOption({ label: 'Copy Remedy' });
+      await page.waitForTimeout(300);
+    }
+    await page.locator('[data-testid=rule-builder] >> text=✕').first().click();
+    await page.waitForTimeout(400);
+    await page.mouse.click(50, 50);
+    await page.waitForTimeout(300);
+
+    await page.locator('[data-testid=row]').nth(0).locator('[data-testid=row-select-checkbox]').click();
+    await page.locator('[data-testid=row]').nth(3).locator('[data-testid=row-select-checkbox]').click({ modifiers: ['ControlOrMeta'] });
+    await page.locator('[data-testid=bulk-refresh-btn]').click();
+    await expect(page.locator('[data-testid=merge-card]')).toBeVisible({ timeout: 15000 });
+    await page.locator('[data-testid=btn-merge-primary]').click();
+    await page.waitForTimeout(400);
+
+    await expect(page.locator('[data-testid=row]').nth(0).locator(`[data-testid=field-cell][data-col="${remedyId}"]`)).toContainText('Fresh Title');
+    await expect(page.locator('[data-testid=row]').nth(0).locator(`[data-testid=field-cell][data-col="${escId}"]`)).toContainText('Fresh Title');
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    const iss = doc.issues.find(i => i.id === 'i1');
+    expect(h.latestFieldRef(iss, escId)).toEqual(h.latestFieldRef(iss, remedyId)); // the real link cascaded too, not just the text
+  });
+
+  // Live feedback from Tom: a refresh where nothing actually changed (a
+  // genuine no-op) silently deleted the job with zero feedback -- the
+  // header chip just vanished mid-use, indistinguishable from a bug.
+  test('a refresh where nothing actually changed still surfaces a completion state, reusing the existing "nothing to merge" gate display', async ({ page }) => {
+    await h.gotoTracker(page);
+    await page.route('https://api.github.com/repos/acme/demo/issues/1', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Same 0', labels: [], state: 'open', body: '' })
+    }));
+    await page.route('https://api.github.com/repos/acme/demo/issues/2', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Same 1', labels: [], state: 'open', body: '' })
+    }));
+    const pid = await h.activeMilestoneId(page);
+    {
+      const doc = await h.idbGetProjectDoc(page, pid);
+      for (const i of [0, 1]) {
+        const maxSortKey = Math.max(0, ...doc.issues[i].history.map(hh => hh.sortKey || 0));
+        doc.issues[i].history.push({
+          id: 'test-link-' + i, time: 'now', actor: 'test', email: 'test@example.com', text: 'Linked', field: 'title', value: 'Same ' + i,
+          fieldRef: { system: 'github', owner: 'acme', repo: 'demo', num: i + 1 }, origin: 'authored', sortKey: maxSortKey + 1, sig: null, sigRedacted: null, pubKey: null
+        });
+        // Live data (an empty labels array, matching the mock below) now
+        // genuinely drives the bound "Type" field's recompute even when
+        // the root link's own value/fieldRef don't change -- align it
+        // here so this stays a true no-op, not an incidental Bug ->
+        // Enhancement change the test wasn't about.
+        doc.issues[i].history.push({
+          id: 'test-type-' + i, time: 'now', actor: 'test', email: 'test@example.com', text: 'Type set', field: 'type', value: 'enhancement',
+          origin: 'derived', sortKey: maxSortKey + 2, sig: null, sigRedacted: null, pubKey: null
+        });
+      }
+      await h.idbSetProjectDoc(page, pid, doc);
+    }
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    await page.locator('[data-testid=row]').nth(0).locator('[data-testid=row-select-checkbox]').click();
+    await page.locator('[data-testid=row]').nth(1).locator('[data-testid=row-select-checkbox]').click({ modifiers: ['ControlOrMeta'] });
+    await page.locator('[data-testid=bulk-refresh-btn]').click();
+    await page.waitForTimeout(600);
+
+    await expect(page.locator('[data-testid=header-job-chip]')).toHaveCount(1); // not silently removed
+    await expect(page.locator('[data-testid=merge-card]')).toBeVisible();
+    await expect(page.locator('[data-testid=merge-gate-no-changes]')).toBeVisible();
+    await expect(page.locator('[data-testid=btn-merge-primary]')).toHaveCSS('cursor', 'not-allowed');
+  });
+
+  test('a refresh where every row fails also surfaces a completion state, with the failure count visible on the chip', async ({ page }) => {
+    await h.gotoTracker(page);
+    await page.route('https://api.github.com/repos/acme/demo/issues/1', route => route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ message: 'Not Found' }) }));
+    await page.route('https://api.github.com/repos/acme/demo/issues/2', route => route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ message: 'Not Found' }) }));
+    const pid = await h.activeMilestoneId(page);
+    {
+      const doc = await h.idbGetProjectDoc(page, pid);
+      for (const i of [0, 1]) {
+        const maxSortKey = Math.max(0, ...doc.issues[i].history.map(hh => hh.sortKey || 0));
+        doc.issues[i].history.push({
+          id: 'test-link-' + i, time: 'now', actor: 'test', email: 'test@example.com', text: 'Linked', field: 'title', value: 'Old ' + i,
+          fieldRef: { system: 'github', owner: 'acme', repo: 'demo', num: i + 1 }, origin: 'authored', sortKey: maxSortKey + 1, sig: null, sigRedacted: null, pubKey: null
+        });
+      }
+      await h.idbSetProjectDoc(page, pid, doc);
+    }
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    await page.locator('[data-testid=row]').nth(0).locator('[data-testid=row-select-checkbox]').click();
+    await page.locator('[data-testid=row]').nth(1).locator('[data-testid=row-select-checkbox]').click({ modifiers: ['ControlOrMeta'] });
+    await page.locator('[data-testid=bulk-refresh-btn]').click();
+    await page.waitForTimeout(600);
+
+    await expect(page.locator('[data-testid=header-job-chip-label]')).toContainText('0 ready, 2 failed');
+    await expect(page.locator('[data-testid=merge-gate-no-changes]')).toBeVisible();
+  });
 });
 
 test.describe('Bulk actions: Delete', () => {

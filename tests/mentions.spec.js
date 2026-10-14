@@ -229,6 +229,82 @@ test.describe('Settings: "Send test notification" button', () => {
   });
 });
 
+// The Tauri desktop app has no web Notification API worth trusting (the
+// WKWebView/WebKitGTK it embeds reports permission as permanently denied
+// with no OS-level way to change it) -- notifications there go through
+// window.__TAURI__.notification (isPermissionGranted/requestPermission/
+// sendNotification) instead, wired up alongside the existing external-
+// link-opening use of window.__TAURI__.core.invoke. This stub mocks that
+// global the same way stubNotifications mocks the browser's own API.
+async function stubTauriNotifications(page, { permission = 'granted' } = {}) {
+  await page.addInitScript((perm) => {
+    window.__notifications = [];
+    window.__TAURI__ = window.__TAURI__ || {};
+    window.__TAURI__.notification = {
+      isPermissionGranted: () => Promise.resolve(perm === 'granted'),
+      requestPermission: () => Promise.resolve(perm),
+      sendNotification: (opts) => { window.__notifications.push({ title: opts.title, body: opts.body }); }
+    };
+  }, permission);
+}
+
+test.describe('Settings: mention notifications via the Tauri runtime', () => {
+  test('enabling it goes through window.__TAURI__.notification instead of the browser Notification API, and persists on', async ({ page }) => {
+    await stubTauriNotifications(page);
+    await h.gotoTracker(page);
+    await page.waitForTimeout(300); // let componentDidMount's permission check resolve
+
+    await h.openSettingsSection(page, 'notifications');
+    await page.locator('[data-testid=settings-mention-toggle]').click();
+    await page.waitForTimeout(150);
+    const persisted = await page.evaluate(() => localStorage.getItem('git_native_tracker_mention_notifications_v1'));
+    expect(persisted).toBe('1');
+    // the generic browser Notification constructor was never touched
+    expect(await page.evaluate(() => window.Notification)).toBeFalsy();
+  });
+
+  test('a denial surfaces the Tauri-specific "OS level" message, not the generic browser-blocked one', async ({ page }) => {
+    await stubTauriNotifications(page, { permission: 'denied' });
+    await h.gotoTracker(page);
+    await page.waitForTimeout(300);
+
+    await h.openSettingsSection(page, 'notifications');
+    await page.locator('[data-testid=settings-mention-toggle]').click();
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=settings-mention-blocked-tauri]')).toBeVisible();
+    await expect(page.locator('[data-testid=settings-mention-blocked-tauri]')).toContainText('OS level');
+    await expect(page.locator('[data-testid=settings-mention-blocked]')).toHaveCount(0);
+    const persisted = await page.evaluate(() => localStorage.getItem('git_native_tracker_mention_notifications_v1'));
+    expect(persisted).not.toBe('1');
+  });
+
+  test('"Send test notification" fires via sendNotification and reports success', async ({ page }) => {
+    await stubTauriNotifications(page);
+    await h.gotoTracker(page);
+    await page.waitForTimeout(300);
+
+    await h.openSettingsSection(page, 'notifications');
+    await page.locator('[data-testid=settings-send-test-notification]').click();
+    await page.waitForTimeout(150);
+    const notifications = await page.evaluate(() => window.__notifications.map(n => ({ title: n.title, body: n.body })));
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0].title).toContain('Test notification');
+    await expect(page.locator('[data-testid=settings-test-notification-result]')).toContainText('Sent');
+  });
+
+  test('"Send test notification" reports the Tauri-specific blocked wording when denied', async ({ page }) => {
+    await stubTauriNotifications(page, { permission: 'denied' });
+    await h.gotoTracker(page);
+    await page.waitForTimeout(300);
+
+    await h.openSettingsSection(page, 'notifications');
+    await page.locator('[data-testid=settings-send-test-notification]').click();
+    await page.waitForTimeout(150);
+    expect(await page.evaluate(() => window.__notifications.length)).toBe(0);
+    await expect(page.locator('[data-testid=settings-test-notification-result]')).toContainText('OS level');
+  });
+});
+
 test.describe('Mention notifications: firing on a background poll', () => {
   test('a new issue comment @mentioning the active identity fires a notification; the comment author mentioning themself does not', async ({ page }) => {
     test.setTimeout(45000);

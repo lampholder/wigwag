@@ -2515,7 +2515,16 @@ function mergeIssuePair(localIssue, incomingIssue, fieldDefs) {
     const localOnly = localAuthored.some(h => !incomingKeys.has(entryKey(h)));
     const incomingOnly = incomingAuthored.some(h => !localKeys.has(entryKey(h)));
     if (localOnly && incomingOnly) overlappingFields.push(colId);
-    if (incomingOnly) touchedFields.push(colId);
+    // touchedFields (unlike overlappingFields above) must catch ANY real
+    // value the incoming side brought, including a purely rule-derived
+    // one (origin:'derived') -- a field whose only change is derived is
+    // still real data a receiving, not-yet-refreshed instance needs to
+    // see landed, not silently invisible to "is there anything to merge".
+    const localAll = localIssue.history.filter(h => h.field === colId);
+    const incomingAll = incomingIssue.history.filter(h => h.field === colId);
+    const localAllKeys = new Set(localAll.map(h => entryKey(h)));
+    const incomingTouchedAny = incomingAll.some(h => !localAllKeys.has(entryKey(h)));
+    if (incomingTouchedAny) touchedFields.push(colId);
   }
   const merged = { ...localIssue, commentStreams, history };
   const mergedIssue = { ...merged, values: deriveIssueValues(merged, fieldDefs), fieldRefs: deriveIssueFieldRefs(merged, fieldDefs), deleted: issueIsDeleted(history) };
@@ -2810,8 +2819,19 @@ function buildMergeIssueSummary(issueId, localIssue, incomingIssue, touchedField
     if (!fieldDefs[colId]) continue;
     const localAuthored = (localIssue.history || []).filter(h => h.field === colId && h.origin !== 'derived');
     const incomingAuthored = (incomingIssue.history || []).filter(h => h.field === colId && h.origin !== 'derived');
-    const localLatest = latestOf(localAuthored);
-    const incomingLatest = latestOf(incomingAuthored);
+    // latest/winner/resultEntryId deliberately look at the FULL history
+    // (derived entries included), not just localAuthored/incomingAuthored
+    // above -- a field that only ever changes via a bound rule (origin
+    // 'derived' on both sides, e.g. Remedy cascading off a refreshed
+    // source field) can reach here with no authored entry on either side
+    // at all now that touchedFields counts a derived-only change as real
+    // (see mergeIssuePair); picking resultEntryId off an always-filtered,
+    // possibly-empty authored list crashed on a null .id in exactly that
+    // case.
+    const localAll = (localIssue.history || []).filter(h => h.field === colId);
+    const incomingAll = (incomingIssue.history || []).filter(h => h.field === colId);
+    const localLatest = latestOf(localAll);
+    const incomingLatest = latestOf(incomingAll);
     const winner = (localLatest && incomingLatest)
       ? (localLatest.sortKey >= incomingLatest.sortKey ? 'local' : 'incoming')
       : (localLatest ? 'local' : 'incoming');

@@ -20,14 +20,19 @@ name: Tauri build
 # would just be busywork with no real meaning attached to the number.
 # Auto-update support needed a REAL, ever-increasing version per build
 # regardless (the updater only prompts when the manifest's version is
-# semver-greater than the installed one), solved via tauri-action's own
-# `appVersion` input, overriding the build's version to
-# "0.1.<github.run_number>" -- auto-incrementing, always-greater, no
-# human step. That same number is reused as this release's own tag/name
-# below, which is what makes real per-version releases possible without
-# reintroducing a manual bump step: the version already exists by the
-# time the release job runs, it just didn't used to go anywhere visible.
-# `make_latest: true` on every new release keeps
+# semver-greater than the installed one). The "Bump the build's own
+# version" step below patches src-tauri/tauri.conf.json's version to
+# "0.1.<github.run_number>" directly, in the runner's own checkout, right
+# before the real build -- NOT tauri-action's own `appVersion` input,
+# which looks like it should do exactly this but doesn't for an existing
+# project like this one (see that step's own comment for the full story;
+# confirmed live, the hard way, by Tom's installed app reporting itself
+# as 0.1.0 forever regardless of how many times he "updated"). That same
+# number is reused as this release's own tag/name below, which is what
+# makes real per-version releases possible without reintroducing a
+# manual bump step: the version already exists by the time the release
+# job runs, it just didn't used to go anywhere visible. `make_latest:
+# true` on every new release keeps
 # github.com/.../releases/latest/download/<fixed-name> resolving to
 # the newest one regardless of its own tag name, so nothing downstream
 # (this file's own asset-naming scheme below, tauri.conf.json's updater
@@ -114,6 +119,28 @@ jobs:
       - name: Install JS dependencies
         run: npm ci
 
+      - name: Bump the build's own version (tracker #205 correction)
+        shell: bash
+        run: |
+          set -e
+          # tauri-action's own `appVersion` input turned out to be a no-op
+          # for a project like this one: its build.ts only calls
+          # initProject (the ONE place appVersion actually gets applied,
+          # in init-project.ts) when no src-tauri/ directory exists yet --
+          # i.e. only for a project tauri-action scaffolds itself from
+          # scratch. This repo already has a real src-tauri/, so that path
+          # never ran, appVersion was silently ignored, and every build
+          # kept shipping the committed "0.1.0" -- confirmed live: Tom's
+          # installed app reported itself as 0.1.0 no matter how many
+          # "updates" he applied, while the hand-built latest.json kept
+          # advancing independently. Patching tauri.conf.json directly,
+          # here, before the real build runs, is what actually works --
+          # this is the normal way Tauri resolves its own version, with
+          # no dependency on tauri-action's init-only behavior.
+          version="0.1.${{ github.run_number }}"
+          jq --arg v "$version" '.version = $v' src-tauri/tauri.conf.json > /tmp/tauri.conf.json.tmp
+          mv /tmp/tauri.conf.json.tmp src-tauri/tauri.conf.json
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -125,11 +152,6 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          # Auto-incrementing, always-greater than the last build -- see
-          # this file's own top-of-file comment on tracker #205 for why
-          # the committed tauri.conf.json version never changes instead.
-          appVersion: "0.1.${{ github.run_number }}"
 
       - name: Upload bundles (all formats, per-OS build artifact)
         uses: actions/upload-artifact@v4

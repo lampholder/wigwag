@@ -35,3 +35,4 @@ wigwag_tracker
 # committed.
 .push-relay-vapid.json
 .push-relay-subscriptions.json
+.updater-keys/

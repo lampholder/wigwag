@@ -20,6 +20,26 @@ name: Tauri build
 # version-less tag that's recreated on every push keeps this as simple as
 # deploy-pages.yml's own "main is the one source of truth" model.
 #
+# Tracker #205 (f656ffae): auto-update support needs a REAL, ever-
+# increasing version per build (the updater only prompts when the
+# manifest's version is semver-greater than the installed one) -- the
+# committed tauri.conf.json version stays "0.1.0" forever (no manual
+# bump commits, matching this file's own existing versionless-release
+# philosophy above); tauri-action's own `appVersion` input overrides it
+# for just this build to "0.1.<run number>", an auto-incrementing,
+# always-greater value with no human step. Each build is also signed
+# with a dedicated updater keypair (separate from the Apple code-signing
+# cert -- public half lives in tauri.conf.json's plugins.updater.pubkey,
+# private half in the TAURI_SIGNING_PRIVATE_KEY secret below) and the
+# `release` job hand-builds latest.json (the static manifest format the
+# updater polls) from each platform's .sig file, since this workflow's
+# `build` job never lets tauri-action manage the GitHub release itself
+# (that stays the `release` job's job, same as the canonical installers).
+# KNOWN GAP: only darwin-aarch64 is published (macos-latest runners are
+# Apple Silicon) -- an Intel Mac won't be offered this update at all,
+# same as it wouldn't be able to run the .dmg this workflow already
+# builds today. Not a regression, just not yet solved.
+#
 # Why renamed, fixed filenames (Wigwag-macOS.dmg / Wigwag-Windows.msi /
 # Wigwag-Linux.AppImage) rather than linking the bundler's own output
 # filenames: those embed the version number (Wigwag_0.1.0_aarch64.dmg
@@ -48,15 +68,26 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # updater_asset_glob is only set when the updater's own payload is
+          # a DIFFERENT file from the canonical installer -- macOS's updater
+          # bundle is a .app.tar.gz, not the .dmg. Linux/Windows reuse their
+          # already-canonical installer as the updater payload directly, so
+          # updater_asset_name just equals asset_name for those two.
           - platform: macos-latest
             asset_glob: bundle/dmg/*.dmg
             asset_name: Wigwag-macOS.dmg
+            updater_asset_glob: "*.app.tar.gz"
+            updater_asset_name: Wigwag-macOS.app.tar.gz
           - platform: ubuntu-latest
             asset_glob: bundle/appimage/*.AppImage
             asset_name: Wigwag-Linux.AppImage
+            updater_asset_glob: ""
+            updater_asset_name: Wigwag-Linux.AppImage
           - platform: windows-latest
             asset_glob: bundle/msi/*.msi
             asset_name: Wigwag-Windows.msi
+            updater_asset_glob: ""
+            updater_asset_name: Wigwag-Windows.msi
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
@@ -86,6 +117,13 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          # Auto-incrementing, always-greater than the last build -- see
+          # this file's own top-of-file comment on tracker #205 for why
+          # the committed tauri.conf.json version never changes instead.
+          appVersion: "0.1.${{ github.run_number }}"
 
       - name: Upload bundles (all formats, per-OS build artifact)
         uses: actions/upload-artifact@v4
@@ -103,11 +141,30 @@ jobs:
           src=$(ls src-tauri/target/release/${{ matrix.asset_glob }})
           cp "$src" "dist-release/${{ matrix.asset_name }}"
 
-      - name: Upload canonical installer (feeds the release job)
+      - name: Collect the updater artifact + signature (tracker #205)
+        shell: bash
+        run: |
+          set -e
+          mkdir -p dist-release
+          # Tauri always places a bundle's .sig right next to it with the
+          # exact same name + ".sig" -- derive the sig path from whichever
+          # source file we already resolved, rather than matching by name
+          # a second time (the renamed dist-release/ filename never
+          # appears in the original bundler output path, so grepping for
+          # it there would never match).
+          if [ -n "${{ matrix.updater_asset_glob }}" ]; then
+            updater_src=$(find src-tauri/target/release/bundle -name "${{ matrix.updater_asset_glob }}" | head -n1)
+          else
+            updater_src=$(ls src-tauri/target/release/${{ matrix.asset_glob }})
+          fi
+          cp "$updater_src" "dist-release/${{ matrix.updater_asset_name }}"
+          cp "$updater_src.sig" "dist-release/${{ matrix.updater_asset_name }}.sig"
+
+      - name: Upload canonical installer + updater artifact (feeds the release job)
         uses: actions/upload-artifact@v4
         with:
           name: release-asset-${{ matrix.platform }}
-          path: dist-release/${{ matrix.asset_name }}
+          path: dist-release/*
           if-no-files-found: error
 
   release:
@@ -122,6 +179,32 @@ jobs:
           pattern: release-asset-*
           path: dist-release
           merge-multiple: true
+
+      - name: Build the updater manifest (latest.json) from each platform's .sig (tracker #205)
+        shell: bash
+        run: |
+          set -e
+          version="0.1.${{ github.run_number }}"
+          base_url="https://github.com/${{ github.repository }}/releases/latest/download"
+          jq -n \
+            --arg version "$version" \
+            --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg darwin_sig "$(cat dist-release/Wigwag-macOS.app.tar.gz.sig)" \
+            --arg darwin_url "$base_url/Wigwag-macOS.app.tar.gz" \
+            --arg linux_sig "$(cat dist-release/Wigwag-Linux.AppImage.sig)" \
+            --arg linux_url "$base_url/Wigwag-Linux.AppImage" \
+            --arg windows_sig "$(cat dist-release/Wigwag-Windows.msi.sig)" \
+            --arg windows_url "$base_url/Wigwag-Windows.msi" \
+            '{
+              version: $version,
+              notes: "Automatic build from the latest main branch commit.",
+              pub_date: $pub_date,
+              platforms: {
+                "darwin-aarch64": { signature: $darwin_sig, url: $darwin_url },
+                "linux-x86_64": { signature: $linux_sig, url: $linux_url },
+                "windows-x86_64": { signature: $windows_sig, url: $windows_url }
+              }
+            }' > dist-release/latest.json
 
       - name: Publish/update the rolling desktop-latest release
         uses: softprops/action-gh-release@v2

@@ -7,8 +7,8 @@
 const { test, expect } = require('@playwright/test');
 const h = require('./helpers');
 
-async function stubUpdater(page, { available = false, version = '0.1.99', failCheck = false, failInstall = false } = {}) {
-  await page.addInitScript(({ available, version, failCheck, failInstall }) => {
+async function stubUpdater(page, { available = false, version = '0.1.99', installedVersion = '0.1.50', failCheck = false, failInstall = false } = {}) {
+  await page.addInitScript(({ available, version, installedVersion, failCheck, failInstall }) => {
     window.__updaterCalls = { downloadAndInstall: 0, relaunch: 0 };
     window.__TAURI__ = window.__TAURI__ || {};
     window.__TAURI__.updater = {
@@ -29,7 +29,10 @@ async function stubUpdater(page, { available = false, version = '0.1.99', failCh
     window.__TAURI__.process = {
       relaunch: () => { window.__updaterCalls.relaunch++; return Promise.resolve(); }
     };
-  }, { available, version, failCheck, failInstall });
+    window.__TAURI__.app = {
+      getVersion: () => Promise.resolve(installedVersion)
+    };
+  }, { available, version, installedVersion, failCheck, failInstall });
 }
 
 test.describe('Auto-update (Tauri desktop)', () => {
@@ -37,6 +40,24 @@ test.describe('Auto-update (Tauri desktop)', () => {
     await h.gotoTracker(page);
     await page.waitForTimeout(400);
     await expect(page.locator('[data-testid=update-available-banner]')).toHaveCount(0);
+  });
+
+  // Added after a real "it keeps saying an update is available even
+  // though I'm already on it" report -- the installed version was only
+  // ever shown inside the (conditional) update banner, so there was no
+  // way to check it at all in the common "already up to date" case. Now
+  // the footer shows it unconditionally, Tauri runtime only.
+  test('the footer shows the installed app version, even with no update pending', async ({ page }) => {
+    await stubUpdater(page, { available: false, installedVersion: '0.1.52' });
+    await h.gotoTracker(page);
+    await page.waitForTimeout(400);
+    await expect(page.locator('[data-testid=footer-app-version]')).toContainText('0.1.52');
+  });
+
+  test('the footer shows no app-version segment at all outside the Tauri runtime', async ({ page }) => {
+    await h.gotoTracker(page);
+    await page.waitForTimeout(400);
+    await expect(page.locator('[data-testid=footer-app-version]')).toHaveCount(0);
   });
 
   test('no update available -- check() resolves null, no banner', async ({ page }) => {
@@ -55,6 +76,19 @@ test.describe('Auto-update (Tauri desktop)', () => {
     await expect(banner).toContainText('0.1.99');
     await expect(page.locator('[data-testid=btn-update-now]')).toContainText('Update & Restart');
     await expect(page.locator('[data-testid=btn-update-dismiss]')).toContainText('Not now');
+  });
+
+  // Added after a real "it keeps saying an update is available even
+  // though I'm already on it" report -- there was no way to see the two
+  // numbers side by side to tell a real update from a stale check. Now
+  // the banner states both, so that's answerable at a glance.
+  test('the banner names the currently-installed version alongside the available one', async ({ page }) => {
+    await stubUpdater(page, { available: true, version: '0.1.99', installedVersion: '0.1.50' });
+    await h.gotoTracker(page);
+    await page.waitForTimeout(400);
+    const banner = page.locator('[data-testid=update-available-banner]');
+    await expect(banner).toContainText('0.1.99');
+    await expect(banner).toContainText('0.1.50');
   });
 
   test('"Not now" dismisses the banner for this session without downloading anything', async ({ page }) => {

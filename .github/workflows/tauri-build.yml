@@ -1,10 +1,12 @@
 name: Tauri build
 
 # Builds the desktop app (src-tauri/) for Mac, Linux, and Windows, and
-# publishes ONE canonical installer per platform to a rolling GitHub
-# Release so wigwag.work's "Get started" cards can link directly to a
-# stable URL (tracker #168/233a071d; follow-up requested on #172/2fda589c
-# -- "make the app links link to the built artefacts").
+# publishes ONE canonical installer per platform to a real, versioned
+# GitHub Release per push, so wigwag.work's "Get started" cards can keep
+# linking to a stable URL (tracker #168/233a071d; follow-up requested on
+# #172/2fda589c -- "make the app links link to the built artefacts")
+# while still leaving a real history of past releases behind (tracker
+# #205 follow-up -- "versioned releases ftw").
 #
 # macOS leg is now code-signed and notarized (tracker #180) -- real
 # Developer ID Application cert + App Store Connect API key, both
@@ -12,33 +14,37 @@ name: Tauri build
 # own source). Windows still has no signing cert lined up, so it may
 # still trigger a SmartScreen warning until that's its own follow-up.
 #
-# Why a rolling "desktop-latest" release instead of one tagged per
-# version: there's no version-bump/tagging workflow in this project, and
-# tauri.conf.json's version stays fixed between ordinary pushes -- a
-# per-version tag would either silently no-op on every push after the
-# first, or need extra logic to detect a real bump. A single, deliberately
-# version-less tag that's recreated on every push keeps this as simple as
-# deploy-pages.yml's own "main is the one source of truth" model.
+# Versioning (tracker #205, f656ffae): this project has no manual
+# version-bump/tagging step, and tauri.conf.json's committed version
+# stays "0.1.0" forever on purpose -- bumping it for every ordinary push
+# would just be busywork with no real meaning attached to the number.
+# Auto-update support needed a REAL, ever-increasing version per build
+# regardless (the updater only prompts when the manifest's version is
+# semver-greater than the installed one), solved via tauri-action's own
+# `appVersion` input, overriding the build's version to
+# "0.1.<github.run_number>" -- auto-incrementing, always-greater, no
+# human step. That same number is reused as this release's own tag/name
+# below, which is what makes real per-version releases possible without
+# reintroducing a manual bump step: the version already exists by the
+# time the release job runs, it just didn't used to go anywhere visible.
+# `make_latest: true` on every new release keeps
+# github.com/.../releases/latest/download/<fixed-name> resolving to
+# the newest one regardless of its own tag name, so nothing downstream
+# (this file's own asset-naming scheme below, tauri.conf.json's updater
+# endpoint, wigwag.work's download links) needed to change for this.
 #
-# Tracker #205 (f656ffae): auto-update support needs a REAL, ever-
-# increasing version per build (the updater only prompts when the
-# manifest's version is semver-greater than the installed one) -- the
-# committed tauri.conf.json version stays "0.1.0" forever (no manual
-# bump commits, matching this file's own existing versionless-release
-# philosophy above); tauri-action's own `appVersion` input overrides it
-# for just this build to "0.1.<run number>", an auto-incrementing,
-# always-greater value with no human step. Each build is also signed
-# with a dedicated updater keypair (separate from the Apple code-signing
-# cert -- public half lives in tauri.conf.json's plugins.updater.pubkey,
-# private half in the TAURI_SIGNING_PRIVATE_KEY secret below) and the
-# `release` job hand-builds latest.json (the static manifest format the
-# updater polls) from each platform's .sig file, since this workflow's
-# `build` job never lets tauri-action manage the GitHub release itself
-# (that stays the `release` job's job, same as the canonical installers).
-# KNOWN GAP: only darwin-aarch64 is published (macos-latest runners are
-# Apple Silicon) -- an Intel Mac won't be offered this update at all,
-# same as it wouldn't be able to run the .dmg this workflow already
-# builds today. Not a regression, just not yet solved.
+# Each build is also signed with a dedicated updater keypair (separate
+# from the Apple code-signing cert -- public half lives in
+# tauri.conf.json's plugins.updater.pubkey, private half in the
+# TAURI_SIGNING_PRIVATE_KEY secret below) and the `release` job hand-
+# builds latest.json (the static manifest format the updater polls) from
+# each platform's .sig file, since this workflow's `build` job never
+# lets tauri-action manage the GitHub release itself (that stays the
+# `release` job's job, same as the canonical installers). KNOWN GAP:
+# only darwin-aarch64 is published (macos-latest runners are Apple
+# Silicon) -- an Intel Mac won't be offered this update at all, same as
+# it wouldn't be able to run the .dmg this workflow already builds today.
+# Not a regression, just not yet solved.
 #
 # Why renamed, fixed filenames (Wigwag-macOS.dmg / Wigwag-Windows.msi /
 # Wigwag-Linux.AppImage) rather than linking the bundler's own output
@@ -205,17 +211,25 @@ jobs:
                 "windows-x86_64": { signature: $windows_sig, url: $windows_url }
               }
             }' > dist-release/latest.json
+          # Shared with the publish step below -- this version is now
+          # the release's own tag, not just a number buried inside
+          # latest.json (tracker #205 follow-up: Tom wanted a real,
+          # browsable release history, not one release silently
+          # overwritten on every push).
+          echo "APP_VERSION=$version" >> "$GITHUB_ENV"
 
-      - name: Publish/update the rolling desktop-latest release
+      - name: Publish a real, versioned release for this build
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: desktop-latest
-          name: Desktop app (latest build)
+          tag_name: desktop-v${{ env.APP_VERSION }}
+          name: Desktop app v${{ env.APP_VERSION }}
           body: >
-            Automatically rebuilt from the latest main branch commit on
-            every push -- not a stable version release, just the current
-            desktop build. macOS is code-signed and notarized (tracker
-            #180); Windows has no signing cert yet and may still trigger
-            a SmartScreen warning.
+            Automatically built from the latest main branch commit at the
+            time -- not a hand-picked, QA'd release, just whatever main
+            looked like on this push. Also shown in the app's own footer,
+            next to "Format", and (if you're updating from an older
+            build) in the update banner. macOS is code-signed and
+            notarized (tracker #180); Windows has no signing cert yet and
+            may still trigger a SmartScreen warning.
           make_latest: true
           files: dist-release/*

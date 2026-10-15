@@ -132,6 +132,42 @@ test.describe('Auto-update (Tauri desktop)', () => {
     expect(calls.relaunch).toBe(0);
   });
 
+  // Added after a real live report: the error state rendered with NO
+  // buttons at all (showActions was unconditionally false there) -- a
+  // genuinely failed update left the banner permanently stuck on screen
+  // with no way to close it.
+  test('an error state is dismissible, not stuck on screen forever', async ({ page }) => {
+    await stubUpdater(page, { available: true, failInstall: true });
+    await h.gotoTracker(page);
+    await page.waitForTimeout(400);
+
+    await page.locator('[data-testid=btn-update-now]').click();
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=update-available-banner]')).toContainText('Update failed');
+
+    await page.locator('[data-testid=btn-update-dismiss]').click();
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=update-available-banner]')).toHaveCount(0);
+  });
+
+  test('"Try again" on a failed update re-runs the check from scratch', async ({ page }) => {
+    await stubUpdater(page, { available: true, failInstall: true });
+    await h.gotoTracker(page);
+    await page.waitForTimeout(400);
+
+    await page.locator('[data-testid=btn-update-now]').click();
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=btn-update-now]')).toContainText('Try again');
+
+    await page.locator('[data-testid=btn-update-now]').click();
+    await page.waitForTimeout(400);
+    // The stale error no longer masks a fresh, successful check --
+    // back to the normal "available" banner, not stuck saying "failed"
+    // forever even though checkForUpdate() just succeeded.
+    await expect(page.locator('[data-testid=update-available-banner]')).not.toContainText('Update failed');
+    await expect(page.locator('[data-testid=btn-update-now]')).toContainText('Update & Restart');
+  });
+
   test('a failed check() leaves the app working normally, with no banner and no thrown error', async ({ page }) => {
     const errors = [];
     page.on('pageerror', e => errors.push(e.message));

@@ -213,7 +213,20 @@ jobs:
         run: |
           set -e
           version="0.1.${{ github.run_number }}"
-          base_url="https://github.com/${{ github.repository }}/releases/latest/download"
+          # Pinned to THIS release's own tag, deliberately NOT
+          # /latest/download/ -- that resolves to whatever's CURRENTLY
+          # flagged latest at DOWNLOAD time, not whenever this manifest
+          # was fetched. With pushes landing as often as they do, a
+          # newer release can become "latest" in the gap between an
+          # already-running app fetching this exact manifest and the
+          # user actually clicking "Update & Restart" -- the signature
+          # above was computed for THIS build's own artifact, so
+          # resolving to a *different*, newer one at download time is
+          # exactly what "signature verification failed" means. Pinning
+          # to this release's own immutable tag keeps every manifest
+          # and its signatures permanently self-consistent, no matter
+          # how many newer releases land afterward.
+          base_url="https://github.com/${{ github.repository }}/releases/download/desktop-v$version"
           jq -n \
             --arg version "$version" \
             --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \

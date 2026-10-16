@@ -315,7 +315,7 @@ async function buildXlsxWorkbook({ sheetName, colIds, fieldDefs, issues }) {
 
 // Starter field schema for a brand-new blank project -- lifted from
 // example.jsonl (see docs/EDITING.md for how it's regenerated).
-function blankProjectFieldDefs() { return {"title":{"label":"Issue","type":"issue"},"f_1787164202568":{"label":"Priority","type":"select","options":[{"id":"opt_1787164226963","label":"Urgent","color":"purple","emoji":""},{"id":"opt_1787164229357","label":"High","color":"red","emoji":""},{"id":"opt_1787164233013","label":"Medium","color":"amber","emoji":""},{"id":"opt_1787164235630","label":"Low","color":"green","emoji":""}]},"f_1787164210795":{"label":"Remedy","type":"issue"},"f_1787164327071":{"label":"RAG","type":"select","options":[{"id":"opt_1787164345232","label":"🔴","color":"red","emoji":""},{"id":"opt_1787164350517","label":"🟡","color":"amber","emoji":""},{"id":"opt_1787164355074","label":"🟢","color":"green","emoji":""}]},"f_1787164381749":{"label":"Status","type":"select","options":[{"id":"opt_1787164390598","label":"Todo","color":"amber","emoji":""},{"id":"opt_1787164393422","label":"In Progress","color":"blue","emoji":""},{"id":"opt_1787164396972","label":"Blocked","color":"red","emoji":""},{"id":"opt_1787164398993","label":"Done","color":"green","emoji":""}]}}; }
+function blankProjectFieldDefs() { return {"title":{"label":"Issue","type":"issue"},"f_1791195503213":{"label":"Description","type":"text"},"f_1787164202568":{"label":"Priority","type":"select","options":[{"id":"opt_1787164226963","label":"Urgent","color":"purple","emoji":""},{"id":"opt_1787164229357","label":"High","color":"red","emoji":""},{"id":"opt_1787164233013","label":"Medium","color":"amber","emoji":""},{"id":"opt_1787164235630","label":"Low","color":"green","emoji":""}]},"f_1787164381749":{"label":"Status","type":"select","options":[{"id":"opt_1787164390598","label":"Todo","color":"amber","emoji":""},{"id":"opt_1787164393422","label":"In Progress","color":"blue","emoji":""},{"id":"opt_1787164396972","label":"Blocked","color":"red","emoji":""},{"id":"opt_1787164398993","label":"Done","color":"green","emoji":""},{"id":"opt_1791195503214","label":"Won't Do","color":"purple","emoji":""}]}}; }
 const WIDTHS = { type: 150, priority: 118, linked: 190, rag: 150, teams: 200, mitigation: 190 };
 function defaultFieldDefs() {
   return {
@@ -394,6 +394,25 @@ function reconcileColumnOrder(override, fieldDefs, hiddenFieldIds) {
   return result;
 }
 const FORMAT_VERSION = 1;
+// Optional storage namespace (tracker #149's storage-models framework --
+// wigwag issue f6b39bf0, "Room Scoped Widget Mode"): an embedder
+// (wigwag-matrix-host.html) can load this file with
+// ?storageNamespace=<id> so this instance's own localStorage keys are
+// entirely distinct from any other instance sharing this browser origin
+// -- a different Matrix room, a plain local/Tauri use, whatever. Generic
+// multi-tenancy primitive, not Matrix-specific: this file has zero
+// awareness anything is different, it just happens to read/write under a
+// different key prefix. Defaults to no prefix (today's exact behavior,
+// byte-identical key names) for every existing deployment, since none of
+// them ever pass this param.
+function storageNamespacePrefix() {
+  try {
+    if (typeof location === 'undefined' || !location.search) return '';
+    const ns = new URLSearchParams(location.search).get('storageNamespace');
+    return ns ? ns + ':' : '';
+  } catch (e) { return ''; }
+}
+const STORAGE_NS = storageNamespacePrefix();
 const STORAGE_KEY = 'git_native_tracker_v1';
 // Secrets (GitHub token, Jira proxy URL) live under a deliberately separate
 // key — never read by persist()/loadPersisted() (the tracker's own,
@@ -461,6 +480,42 @@ const LAYOUT_PROPOSAL_DEVICE_ID_KEY = 'git_native_tracker_device_id_v1';
 // ruleFallback } } }. See effectiveFieldDefs() below for how this
 // overlays onto the portable fieldDefs at evaluation/render time only.
 const LOCAL_FIELD_BINDINGS_KEY = 'git_native_tracker_local_bindings_v1';
+// Connected Sources (Phase 1): user-defined custom connectors (name,
+// glyph/color, patterns, pasted macro source) -- local-only, same
+// reasoning as LOCAL_FIELD_BINDINGS_KEY above (a connector pointing at
+// someone's own API key only means anything on a device with that
+// credential configured), but global/device-wide rather than per-
+// project/per-field: the design mockup shows one flat list with no
+// project/identity switcher in view, and "any field can bind to any of
+// these" is a cross-project property, not a per-project one. Credentials
+// themselves never live in this blob -- only a cached, render-only
+// credentialConfigured boolean; the real secret lives in the OS keychain
+// (connected_source_{set,get,delete}_credential), reached via
+// window.__TAURI__.core.invoke, never through localStorage.
+// { connectors: [{ id, key, name, glyph, color, patterns: [{regex,label}],
+// macro, credentialConfigured }] }.
+const CONNECTED_SOURCES_KEY = 'git_native_tracker_connected_sources_v1';
+// Reserved words a custom connector's own key can never collide with --
+// every one is either a fixed buildSource/applyLiveLinkedRules property
+// name already (github/jira/salesforce/wigwag) or a property on the
+// source object itself (text/isLinked) that a dynamic source[key]
+// assignment would otherwise silently clobber.
+const CONNECTED_SOURCE_RESERVED_KEYS = ['github', 'jira', 'salesforce', 'wigwag', 'text', 'isLinked'];
+// Lowercase, strip to [a-z0-9], ensure it starts with a letter (a bare
+// numeric-leading slug isn't a valid identifier-like source.<key> access
+// though it's always used via bracket/dynamic access here -- kept letter-
+// leading anyway for consistency with every other colId-shaped id in this
+// codebase), then de-duplicate against existingKeys (already-defined
+// connectors, plus the reserved words above) with a numeric suffix.
+function slugifyConnectorKey(name, existingKeys) {
+  let base = (name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (!base || !/^[a-z]/.test(base)) base = 'c' + base;
+  const taken = new Set([...(existingKeys || []), ...CONNECTED_SOURCE_RESERVED_KEYS]);
+  if (!taken.has(base)) return base;
+  let i = 2;
+  while (taken.has(base + i)) i++;
+  return base + i;
+}
 // A synthetic filter-option id meaning "this field has no value" -- lives
 // in the same columnFilters[colId] array as real option ids, so
 // toggleColumnFilterValue/the checkbox markup need no special-casing at
@@ -760,6 +815,7 @@ function commitFilterSuggestion(query, suggestion, fieldDefs) {
   return tokens.join(' ');
 }
 const COMMENT_READS_KEY = 'git_native_tracker_comment_reads_v1';
+const ISSUE_SUBSCRIPTIONS_KEY = 'git_native_tracker_issue_subscriptions_v1';
 // Mention notifications (tracker issue #65, 178b0afa): a per-browser
 // on/off preference (like appearance/columnWidths -- not project data,
 // never exported) and a capped log of comment ids already delivered as a
@@ -841,6 +897,20 @@ function formatNow() {
   const d = new Date();
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ', ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 }
+// The short identifier shown in a linked field's own ref chip (a Jira key,
+// a GitHub owner/repo#num, a Salesforce record Id) -- once a field links
+// to one of these, its stored value becomes the resolved display text
+// (e.g. the Jira issue's title), so that identifier only survives as
+// fieldRef metadata, invisible to a plain substring search over values
+// unless it's checked here too.
+function fieldRefSearchText(ref) {
+  if (!ref) return '';
+  if (ref.system === 'jira') return ref.key || '';
+  if (ref.system === 'salesforce') return ref.id || '';
+  if (ref.system === 'wigwag') return '';
+  if (ref.owner && ref.repo && ref.num != null) return ref.owner + '/' + ref.repo + '#' + ref.num;
+  return '';
+}
 
 const JIRA_KEY_RE = /^[A-Z][A-Z0-9]+-\d+$/i;
 // First 3 chars of any Salesforce Id reliably identify a standard object
@@ -854,6 +924,48 @@ const SF_ID_PREFIXES = {
 };
 function salesforceObjectTypeFromId(id) {
   return SF_ID_PREFIXES[(id || '').slice(0, 3)] || 'Salesforce record';
+}
+// Every local-proxy integration is identity-scoped (a URL + a shared
+// secret the proxy itself requires -- see proxy-shared.js) and threaded
+// through the same handful of places (hydrate-on-boot/switch, blank new
+// identity, cross-tab sync, the legacy secrets blob, Settings). One list
+// driving all of those means adding a fifth integration later is a
+// one-line addition here, not another copy of each call site.
+// Deliberately no default/suggested URL baked in here: unlike Jira/
+// Salesforce's own pre-filled localhost ports (a harmless hint, since
+// those systems have no fallback), a non-blank githubProxyUrl actually
+// changes behavior (proxy vs. direct browser fetch) -- state defaulting
+// it to anything but '' would silently opt every fresh identity into the
+// proxy path. The suggested port for each system is shown only as the
+// Settings input's own placeholder text.
+const IDENTITY_PROXY_FIELDS = [
+  { url: 'jiraProxyUrl', secret: 'jiraProxySecret' },
+  { url: 'salesforceProxyUrl', secret: 'salesforceProxySecret' },
+  { url: 'githubProxyUrl', secret: 'githubProxySecret' },
+  { url: 'googleDriveProxyUrl', secret: 'googleDriveProxySecret' },
+  { url: 'pushRelayUrl', secret: 'pushRelaySecret' }
+];
+// Flat {jiraProxyUrl: '', jiraProxySecret: '', ...} bag for every field in
+// IDENTITY_PROXY_FIELDS, reading off `identity` (or blank if null/absent)
+// -- the one place that shape gets built, reused for hydrating state from
+// the active identity, a brand-new blank identity, and the legacy
+// SECRETS_KEY blob.
+function identityProxyFieldsFrom(identity) {
+  const out = {};
+  IDENTITY_PROXY_FIELDS.forEach(f => {
+    out[f.url] = (identity && identity[f.url]) || '';
+    out[f.secret] = (identity && identity[f.secret]) || '';
+  });
+  return out;
+}
+// Recognizes a Drive/Docs/Sheets/Slides/Forms link and extracts its file
+// id -- used to upgrade a bare URL in rendered markdown into a named file
+// pill (see renderMarkdownInline) instead of leaving it as a raw link.
+const GOOGLE_DRIVE_URL_RE = /^https:\/\/(?:drive\.google\.com\/(?:file\/d\/([\w-]{10,})|open\?id=([\w-]{10,})|drive\/folders\/([\w-]{10,}))|docs\.google\.com\/(?:document|spreadsheets|presentation|forms)\/d\/([\w-]{10,}))/i;
+function googleDriveFileIdFromUrl(url) {
+  const m = GOOGLE_DRIVE_URL_RE.exec(url);
+  if (!m) return null;
+  return m[1] || m[2] || m[3] || m[4] || null;
 }
 function refInfo(text) {
   if (!text) return null;
@@ -897,6 +1009,23 @@ function pickSalesforceFields(obj) {
     id: obj.id || '', objectType: obj.objectType || '', name: obj.name || '',
     status: obj.status || '', owner: obj.owner || '', url: obj.url || '',
     lastModified: obj.lastModified || '', fields: obj.fields || {}
+  };
+}
+// Connected Sources (Phase 1): a custom connector's macro always hands
+// back { title, url, state, extra }, plus labels/assignee promoted out of
+// the free-form extra bag -- near-universal across issue trackers and
+// genuinely chip-worthy, same as state already is. Deliberately NOT
+// title/url/state/updated_at as a single fixed timestamp field: wigwag's
+// existing Created/Updated fields (ensureTimestampFieldDefs below) are a
+// different fact entirely (activity-log-derived, over the WHOLE issue,
+// not one field's remote value) -- see the plan doc for the full
+// reasoning. A remote timestamp belongs in extra (e.g. extra.updatedAt),
+// same as any other non-universal field.
+function pickConnectorFields(obj) {
+  return {
+    title: obj.title || '', url: obj.url || '', state: obj.state || '',
+    labels: obj.labels || [], assignee: obj.assignee || '',
+    extra: obj.extra || {}
   };
 }
 // The template engine HTML-escapes every {{ }} interpolation (confirmed by
@@ -995,6 +1124,18 @@ function renderMarkdownInline(line) {
       url = url.slice(0, -1);
     }
     if (!url) return m;
+    // A Drive/Docs/Sheets/Slides/Forms link gets a placeholder file pill
+    // instead of a plain autolink -- real href (works with zero proxy
+    // configuration, unlike the wigwag-ref-pill's href="#"), resolved to
+    // the real file name + icon asynchronously by hydrateMarkdownBodies()
+    // once fetchGoogleDriveData() returns, since that's a real network
+    // round-trip and can't happen synchronously here. Only bare autolinks
+    // get this treatment, same scope as the email-pill enrichment below --
+    // an explicit [label](url) markdown link keeps its given label.
+    const gdriveId = googleDriveFileIdFromUrl(url);
+    if (gdriveId) {
+      return push('<a href="' + url + '" target="_blank" rel="noopener noreferrer" class="gdrive-file-pill" data-gdrive-id="' + escapeHtml(gdriveId) + '" data-gdrive-url="' + escapeHtml(url) + '">' + truncate(url, 40) + '</a>') + trail;
+    }
     return push('<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + url + '</a>') + trail;
   });
   // Bare email addresses -> a person pill (local part at full strength,
@@ -1305,7 +1446,7 @@ function issueIsDeleted(history) {
 function hydrateIssue(issue, fieldDefs) {
   const migrated = migrateLegacyComments(issue);
   const backfilled = backfillIssueHistoryFromValues(migrated, fieldDefs);
-  return { ...backfilled, values: deriveIssueValues(backfilled, fieldDefs), fieldRefs: deriveIssueFieldRefs(backfilled, fieldDefs), deleted: issueIsDeleted(backfilled.history) };
+  return { ...backfilled, values: deriveIssueValues(backfilled, fieldDefs), fieldRefs: deriveIssueFieldRefs(backfilled, fieldDefs), fieldLoading: {}, deleted: issueIsDeleted(backfilled.history) };
 }
 // Project-level counterpart to deriveIssueValues -- but unlike issue
 // values (where the SET of fields is fixed by fieldDefs and every value
@@ -1709,19 +1850,47 @@ function buildSource(issue, linkedSourceId) {
   if (!linkedSourceId) return { text: '', isLinked: false, github: null, jira: null, salesforce: null };
   const ref = issue.fieldRefs && issue.fieldRefs[linkedSourceId];
   const system = ref ? (ref.system || 'github') : null;
-  return {
+  const source = {
     text: issue.values[linkedSourceId] || '',
     isLinked: !!ref,
     github: system === 'github' ? pickGithubFields(ref) : null,
     jira: system === 'jira' ? pickJiraFields(ref) : null,
     salesforce: system === 'salesforce' ? pickSalesforceFields(ref) : null
   };
+  // Connected Sources (Phase 1): a custom connector's own fieldRef carries
+  // its connectorKey (the immutable slug set at creation -- see
+  // slugifyConnectorKey -- surviving a later rename so existing rules
+  // referencing source.<key> never silently break), used as a DYNAMIC
+  // property name here. A rule reading source.linear when the row is
+  // bound to something else just gets undefined, same optional-chaining
+  // discipline every source.jira/source.github rule already needs.
+  if (system === 'connector' && ref.connectorKey) source[ref.connectorKey] = pickConnectorFields(ref);
+  return source;
 }
 function evalRule(ruleStr, source, values) {
   try {
     const fn = new Function('source', 'values', 'S', 'return (' + ruleStr + ');');
     return fn(source, values, S);
   } catch (e) { return undefined; }
+}
+// Connected Sources (Phase 1): the ONLY other precedent in this codebase
+// for running user-authored JS, same new Function(...) mechanism as
+// evalRule above (no more sandboxed than that -- full ambient window/
+// global access, no try/catch here since the caller needs the real
+// thrown error for the "Test" button's honest "show what broke" display,
+// not a silent undefined). macroSource is always a complete
+// `async (id, credential) => {...}` expression (never a bare statement
+// body) -- a PLAIN (non-async) Function constructor is sufficient to
+// construct and return that async function value, since no `await`
+// happens in the factory body itself, only later when the returned
+// function is called and awaited by the caller. `fetch` is a parameter,
+// not closed over from the real global, so the caller can hand the macro
+// either window.fetch directly (outside Tauri) or a shim forwarding to
+// connected_source_fetch (inside Tauri, no CORS restriction) -- see
+// connectorFetchShim in wigwag.html's own Component (Tauri-only, so it
+// lives there, not here).
+function compileConnectorMacro(macroSource) {
+  return new Function('fetch', 'return (' + macroSource + ');');
 }
 // Tracker #112 (b564316d): a persisted fieldRef for an externally-linked
 // source (github/jira/salesforce) only ever carries display fields now
@@ -1743,6 +1912,7 @@ function sourceRefHasFullData(ref) {
   if (ref.system === 'github') return 'labels' in ref;
   if (ref.system === 'jira') return 'status' in ref;
   if (ref.system === 'salesforce') return 'fields' in ref;
+  if (ref.system === 'connector') return 'labels' in ref; // same trimmed-persist pattern as github/jira/salesforce
   return true; // wigwag (or any other system) was never given the maximalist treatment
 }
 // The history entry (if any) that most recently set colId's value --
@@ -1759,20 +1929,39 @@ function latestEntryForField(issue, colId) {
 // with no rule/no bound source AND for bound-but-not-yet-linked rows —
 // callers use isLinked to decide whether to lock the cell / overwrite its
 // materialized value at all.
+// only values.* -- never source.* -- so it can always be safely re-run
+// from a trimmed/display-only fieldRef, including a second-hop bound
+// field's own fieldRef (which, being copied rather than externally
+// fetched, NEVER carries the maximalist keys sourceRefHasFullData checks
+// for and so would otherwise be permanently stuck on its last-locked
+// value, blocking any multi-hop cascade past the first bound field no
+// matter how many times the rule settles). Detected structurally rather
+// than by rule shape, so a hand-written/advanced-mode rule that happens
+// not to mention source gets the same treatment.
+function ruleNeedsSourceData(ruleStr) {
+  return /\bsource\b/.test(ruleStr || '');
+}
+// A rule-derived value of "" / null / [] is a REAL, confident answer (the
+// binding was evaluated and genuinely matched nothing) -- not the same
+// as never having been evaluated at all. Used to tell those two apart
+// when deciding whether a cached derived value still counts as "locked".
+function isEmptyBoundValue(v) {
+  return v == null || v === '' || (Array.isArray(v) && v.length === 0);
+}
 function computeBoundValue(issue, colId, def) {
   if (!def.rule || !def.linkedSourceId) return { isLinked: false, computed: undefined };
   const sourceRef = issue.fieldRefs && issue.fieldRefs[def.linkedSourceId];
   if (!sourceRef) return { isLinked: false, computed: undefined };
-  if (!sourceRefHasFullData(sourceRef)) {
+  if (!sourceRefHasFullData(sourceRef) && ruleNeedsSourceData(def.rule)) {
     // Can't re-run the rule -- trust the last value a live refresh
     // actually computed, tracked via an explicit origin:'derived' marker
     // on this field's own most recent entry. Tracker #66's "a null
     // computation unlocks the field" behavior falls out of this for
-    // free: a null result is never written (see applyLinkedRules below),
-    // so a field that's never been refreshed, or whose last refresh
-    // computed null, simply has no derived entry to find here.
+    // free: a field that's never been refreshed, or whose last refresh
+    // confidently computed empty/null (now written for real -- see
+    // applyLinkedRules below), simply isn't treated as locked here.
     const latest = latestEntryForField(issue, colId);
-    const locked = !!latest && latest.origin === 'derived';
+    const locked = !!latest && latest.origin === 'derived' && !isEmptyBoundValue(latest.value);
     return { isLinked: true, computed: locked ? issue.values[colId] : undefined };
   }
   const source = buildSource(issue, def.linkedSourceId);
@@ -1819,14 +2008,26 @@ function applyLinkedRules(iss, fieldDefs) {
   for (const colId in fieldDefs) {
     const def = fieldDefs[colId];
     const bound = computeBoundValue(iss, colId, def);
-    // A null computed value means "hands off" (see isFieldLocked above) --
-    // don't clear or overwrite whatever's currently there, whether that's
-    // blank (never touched) or a manual override the user typed in while
-    // the rule had nothing to say. The moment the rule computes a real
-    // value again, this resumes overwriting on the very next call, same
-    // as it always has -- the override is discarded with no special
-    // tracking needed anywhere.
-    if (!bound.isLinked || bound.computed == null) continue;
+    // undefined means "couldn't evaluate this with any confidence" (not
+    // bound, not yet linked, or the conservative can't-safely-re-run
+    // branch) -- hands off, same as ever: don't clear or overwrite
+    // whatever's currently there, whether that's blank (never touched)
+    // or a manual override the user typed in while the rule had nothing
+    // to say. A REAL answer -- including a confident "" / null / [] from
+    // a rule that was actually evaluated against full data -- always
+    // applies, clearing the field if that's what the rule now says. The
+    // moment the rule computes a non-empty value again, this resumes
+    // overwriting on the very next call, same as it always has. A
+    // confident EMPTY result is more careful, though: it only clears a
+    // value that was ITSELF previously computed by this same rule (its
+    // latest entry is origin:'derived', now stale) -- a genuine manual
+    // entry, or a field never yet touched by any binding, is never
+    // auto-cleared just because the rule currently has nothing to say.
+    if (!bound.isLinked || bound.computed === undefined) continue;
+    if (isEmptyBoundValue(bound.computed)) {
+      const latest = latestEntryForField(iss, colId);
+      if (!latest || latest.origin !== 'derived') continue;
+    }
     values = applyComputedToField(values, colId, def, bound.computed);
   }
   return values === iss.values ? iss : { ...iss, values };
@@ -1855,12 +2056,32 @@ function applyLiveLinkedRules(iss, fieldDefs, sourceColId, system, liveData) {
     jira: system === 'jira' ? pickJiraFields(liveData) : null,
     salesforce: system === 'salesforce' ? pickSalesforceFields(liveData) : null
   };
+  // Connected Sources (Phase 1): the caller passes the connector's own key
+  // (e.g. 'linear') as `system` here -- reserved words github/jira/
+  // salesforce/wigwag can never collide with a real connector key
+  // (slugifyConnectorKey excludes them), so this dynamic branch is safe
+  // to check unconditionally after the three fixed ones above.
+  if (system && !['github', 'jira', 'salesforce', 'wigwag'].includes(system)) {
+    source[system] = pickConnectorFields(liveData);
+  }
   let values = iss.values;
   for (const colId in fieldDefs) {
     const def = fieldDefs[colId];
     if (def.linkedSourceId !== sourceColId || !def.rule) continue;
     const computed = evalRule(def.rule, source, iss.values);
-    if (computed == null) continue;
+    // evalRule's own try/catch returns undefined for a broken/erroring
+    // expression -- that's "couldn't evaluate", hands off, same as
+    // applyLinkedRules. This is always called with a real, freshly-
+    // fetched payload (never a trimmed/persisted ref), so a confident ""
+    // / null / [] here really does mean "evaluated it, genuinely no
+    // match" -- but same as applyLinkedRules, that only clears a value
+    // that was ITSELF previously computed by this same rule (now stale),
+    // never a genuine manual entry or a field no binding has touched yet.
+    if (computed === undefined) continue;
+    if (isEmptyBoundValue(computed)) {
+      const latest = latestEntryForField(iss, colId);
+      if (!latest || latest.origin !== 'derived') continue;
+    }
     values = applyComputedToField(values, colId, def, computed);
   }
   return values === iss.values ? iss : { ...iss, values };
@@ -1889,6 +2110,35 @@ function computeBoundFieldRef(issue, def) {
     }
   }
   return null;
+}
+// Repeatedly applies applyLinkedRules (a single pass over CURRENT values,
+// which alone can't see a sibling bound field's own just-updated value
+// within the same pass) plus computeBoundFieldRef-based fieldRef
+// propagation (applyLinkedRules only ever touches .values, never
+// .fieldRefs -- without this, a second-hop bound field's own
+// computeBoundValue gate never even sees its upstream bound field as
+// "linked" at all, regardless of ruleNeedsSourceData) until a fixed point:
+// reference equality on both values and fieldRefs means nothing changed
+// on that pass, so the cascade has settled. Bounded by field count + 1 so
+// a pathological/cyclic binding (A bound to B bound to A) can't loop
+// forever -- it just stops after exhausting the budget, same as any
+// other caller of this shared, pure settle-to-fixed-point helper.
+function settleLinkedRules(issue, fieldDefs) {
+  let afterIssue = issue;
+  const maxHops = Object.keys(fieldDefs).length + 1;
+  for (let i = 0; i < maxHops; i++) {
+    const next = applyLinkedRules(afterIssue, fieldDefs);
+    let fieldRefs = next.fieldRefs;
+    for (const colId in fieldDefs) {
+      if (!fieldDefs[colId].linkedSourceId) continue;
+      const newRef = computeBoundFieldRef(next, fieldDefs[colId]);
+      if (newRef && JSON.stringify(fieldRefs[colId]) !== JSON.stringify(newRef)) fieldRefs = { ...fieldRefs, [colId]: newRef };
+    }
+    const withRefs = fieldRefs === next.fieldRefs ? next : { ...next, fieldRefs };
+    if (withRefs === afterIssue) break;
+    afterIssue = withRefs;
+  }
+  return afterIssue;
 }
 function sortValue(issue, colId, def) {
   if (colId === 'title') return issue.values.title || '';
@@ -2388,7 +2638,16 @@ function mergeIssuePair(localIssue, incomingIssue, fieldDefs) {
     const localOnly = localAuthored.some(h => !incomingKeys.has(entryKey(h)));
     const incomingOnly = incomingAuthored.some(h => !localKeys.has(entryKey(h)));
     if (localOnly && incomingOnly) overlappingFields.push(colId);
-    if (incomingOnly) touchedFields.push(colId);
+    // touchedFields (unlike overlappingFields above) must catch ANY real
+    // value the incoming side brought, including a purely rule-derived
+    // one (origin:'derived') -- a field whose only change is derived is
+    // still real data a receiving, not-yet-refreshed instance needs to
+    // see landed, not silently invisible to "is there anything to merge".
+    const localAll = localIssue.history.filter(h => h.field === colId);
+    const incomingAll = incomingIssue.history.filter(h => h.field === colId);
+    const localAllKeys = new Set(localAll.map(h => entryKey(h)));
+    const incomingTouchedAny = incomingAll.some(h => !localAllKeys.has(entryKey(h)));
+    if (incomingTouchedAny) touchedFields.push(colId);
   }
   const merged = { ...localIssue, commentStreams, history };
   // A tombstone (field: ISSUE_DELETED_FIELD_ID) flows through the same
@@ -2659,6 +2918,24 @@ function buildMergeRecord({ id, ingestedAt, ingestedBy, source, issues }) {
 //   id at rollback time is exactly how "has this field been edited again
 //   since the merge, so backing out would clobber real newer work" gets
 //   detected.
+// reduction used throughout (deriveIssueValues etc.), just returning ids
+// instead of values. Snapshotting this before and after an operation (a
+// merge, a refresh) and diffing the two is how both now detect EVERY field
+// they actually touched, including derived/bound-field fallout that
+// nothing else currently tracks -- logDerivedChanges/applyLinkedRules
+// append real signed entries as a side effect, but neither a merge nor a
+// refresh previously recorded them anywhere revertible.
+function latestEntryIdsByField(issue) {
+  const latest = {};
+  for (const h of (issue.history || [])) {
+    if (!h.field) continue;
+    const existing = latest[h.field];
+    if (!existing || h.sortKey > existing.sortKey) latest[h.field] = h;
+  }
+  const result = {};
+  for (const f in latest) result[f] = latest[f].id;
+  return result;
+}
 function buildMergeIssueSummary(issueId, localIssue, incomingIssue, touchedFields, proseEntries, fieldDefs) {
   const fields = [];
   const proseColIds = new Set((proseEntries || []).map(e => e.colId));
@@ -2668,8 +2945,19 @@ function buildMergeIssueSummary(issueId, localIssue, incomingIssue, touchedField
     if (!fieldDefs[colId]) continue;
     const localAuthored = (localIssue.history || []).filter(h => h.field === colId && h.origin !== 'derived');
     const incomingAuthored = (incomingIssue.history || []).filter(h => h.field === colId && h.origin !== 'derived');
-    const localLatest = latestOf(localAuthored);
-    const incomingLatest = latestOf(incomingAuthored);
+    // latest/winner/resultEntryId deliberately look at the FULL history
+    // (derived entries included), not just localAuthored/incomingAuthored
+    // above -- a field that only ever changes via a bound rule (origin
+    // 'derived' on both sides, e.g. Remedy cascading off a refreshed
+    // source field) can reach here with no authored entry on either side
+    // at all now that touchedFields counts a derived-only change as real
+    // (see mergeIssuePair); picking resultEntryId off an always-filtered,
+    // possibly-empty authored list crashed on a null .id in exactly that
+    // case.
+    const localAll = (localIssue.history || []).filter(h => h.field === colId);
+    const incomingAll = (incomingIssue.history || []).filter(h => h.field === colId);
+    const localLatest = latestOf(localAll);
+    const incomingLatest = latestOf(incomingAll);
     const winner = (localLatest && incomingLatest)
       ? (localLatest.sortKey >= incomingLatest.sortKey ? 'local' : 'incoming')
       : (localLatest ? 'local' : 'incoming');
@@ -2824,16 +3112,25 @@ function buildMergePreviewViewModel(computed, ingestProvenance, fieldDefs) {
   const issues = (computed.mergeIssueSummaries || []).map(summary => {
     const mergedIssue = (computed.mergedIssues || []).find(mi => mi.id === summary.id);
     const title = (mergedIssue && mergedIssue.values && mergedIssue.values.title) || '(untitled)';
+    // Tracker #198: a refresh-sourced field row's "settled" value comes
+    // from the staged entry's OWN fetched value, not from mergedIssue.values
+    // -- which correctly has NOT been patched yet (the real write only
+    // happens once the entry is actually signed, the same moment "Merge
+    // update" is clicked). Patching values early would desync them from
+    // history, the exact integrity violation deletion-based revert (#196)
+    // was designed around. Gated strictly on prov.kind === 'refresh' --
+    // never touches a real merge's own behavior.
+    const isRefreshSource = prov.kind === 'refresh';
     const fields = summary.fields.map(f => {
       const def = fieldDefs[f.field] || {};
-      const editCount = (f.localEntryIds || []).length + (f.incomingEntryIds || []).length;
+      const editCount = isRefreshSource ? 1 : ((f.localEntryIds || []).length + (f.incomingEntryIds || []).length);
       const isProse = f.outcome === 'merged' || f.outcome === 'merged-with-markers';
       const diff = (isProse && mergedIssue) ? buildMergeFieldDiffLines(mergedIssue, f, sourceInfo) : null;
-      const settled = isProse ? null : mergeSettledValueView(mergedIssue, f.field, def);
+      const settled = isProse ? null : (isRefreshSource && f.value !== undefined ? resolveFieldValueView(def, f.value) : mergeSettledValueView(mergedIssue, f.field, def));
       return {
         field: f.field, label: def.label || f.field, outcome: f.outcome, winner: f.winner || null,
         markers: f.markers || 0, editCount,
-        origin: isProse ? '' : (f.outcome === 'newest-edit-wins' ? 'newest edit wins' : 'one copy only'),
+        origin: isProse ? '' : (isRefreshSource ? 'refreshed' : (f.outcome === 'newest-edit-wins' ? 'newest edit wins' : 'one copy only')),
         isProse,
         settledText: settled ? settled.text : '', settledIsPill: settled ? settled.isPill : false,
         settledPillBg: settled ? settled.bg : null, settledPillFg: settled ? settled.fg : null,
@@ -3033,9 +3330,21 @@ function computeFieldDefsMerge(localProjectHistory, parsedFields, parsedProjectH
 // changed value on this issue, and what the resulting history entry
 // should say. Committing each entry (needs identity + signing) stays the
 // caller's job, same split as every other write path.
-function computeDerivedChangeEntries(issue, beforeValues, fieldDefs) {
+// excludeColId: the field (if any) that THIS SAME commit just wrote
+// directly -- a manual edit, a fresh paste/link, a refresh of that one
+// field's own link. That field's own change is already accounted for by
+// its own dedicated history entry; without excluding it here, comparing
+// beforeValues against the now-already-written issue would see the same
+// change again and mislabel it as a rule-derived one -- which, for a
+// field that's ALSO independently bound, immediately re-locks it right
+// after the user's own override (computeBoundValue's conservative branch
+// trusts the latest 'derived' entry) or wipes/misattributes a plain
+// linked field's own fieldRef. Left unset for callers with no single
+// field to exclude (a cross-project merge, a schema-wide recompute).
+function computeDerivedChangeEntries(issue, beforeValues, fieldDefs, excludeColId) {
   const entries = [];
   for (const colId in fieldDefs) {
+    if (colId === excludeColId) continue;
     const def = fieldDefs[colId];
     if (!def.linkedSourceId) continue;
     const before = beforeValues[colId];
@@ -3051,14 +3360,27 @@ function computeDerivedChangeEntries(issue, beforeValues, fieldDefs) {
     // bound with this one as its own linkedSourceId can then read
     // source.github/source.jira/etc. from it for real, not just matching
     // text. null for every other bound field type/mode, unaffected.
-    const fieldRef = computeBoundFieldRef(issue, def);
+    const beforeFieldRef = (issue.fieldRefs && issue.fieldRefs[colId]) || null;
+    // computeBoundFieldRef only ever manages a fieldRef for a ROW-BASED
+    // "copy field" rule -- it returns null for a hand-written rule
+    // unconditionally, regardless of whether this field ALSO carries its
+    // own independent, directly-pasted/refreshed real link (an issue-
+    // type field with a hand-written VALUE rule can still be linked
+    // directly, same as any other issue-type field). Treating that null
+    // as "the rule says clear it" wiped out a real, independently-
+    // maintained fieldRef on every single derived recompute -- found
+    // live: pasting a link into such a field, or even just editing any
+    // OTHER field on the same issue, silently erased it permanently.
+    // Only a row-based rule's computed fieldRef is ever authoritative
+    // here; anything else leaves whatever's already there untouched.
+    const isRowBasedRule = Array.isArray(def.ruleRows);
+    const fieldRef = isRowBasedRule ? computeBoundFieldRef(issue, def) : beforeFieldRef;
     // A copy-field's own fieldRef can go stale even when its copied VALUE
     // doesn't change (e.g. refreshing the source Jira/GitHub issue changes
     // its metadata shape -- tracker #112's trimming -- but not its title).
     // Re-persist whenever the copied ref itself moved too, not just the
     // value, so a source refresh always propagates through the copy.
-    const beforeFieldRef = (issue.fieldRefs && issue.fieldRefs[colId]) || null;
-    const hasFieldRefRelationship = fieldRef !== null || beforeFieldRef !== null;
+    const hasFieldRefRelationship = isRowBasedRule && (fieldRef !== null || beforeFieldRef !== null);
     const fieldRefChanged = hasFieldRefRelationship && JSON.stringify(fieldRef) !== JSON.stringify(beforeFieldRef);
     if (!valueChanged && !fieldRefChanged) continue;
     const displayVal = displayValueForHistory(def, after);
@@ -3816,7 +4138,7 @@ function hydrateProjectFromMatrixTimeline(rawEvents, opts) {
   // of the exact same revision, never two different real ones.
   const seenEntryKeys = new Set();
   const isDuplicateEntry = (entry) => {
-    const key = entry.id + ' ' + entry.sortKey;
+    const key = entry.id + '\0' + entry.sortKey;
     if (seenEntryKeys.has(key)) return true;
     seenEntryKeys.add(key);
     return false;
@@ -4088,7 +4410,7 @@ async function probeMatrixRoomAccess({ fetchImpl, homeserverUrl, accessToken, ro
 }
 
 const WigwagCoreExports = {
-  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, xlsxDateTimeSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LAYOUT_PROPOSAL_DEVICE_ID_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, tokenizeFilterQuery, parseFilterQuery, issueMatchesFieldToken, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, COMMENT_READS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, formatNow, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, migrateLegacyComments, deriveFieldDefs, effectiveFieldDefs, PROJECT_NAME_FIELD_ID, deriveProjectName, PROJECT_NOTES_FIELD_ID, deriveProjectNotes, simpleStringHash, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, issueTimestampValue, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, MATRIX_USER_ID_RE, principalKind, identityPrincipal, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, evalRule, computeBoundValue, isFieldLocked, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, sortValue, computeSortSnapshot, issueCreatedAt,
+  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, xlsxDateTimeSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_NS, storageNamespacePrefix, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LAYOUT_PROPOSAL_DEVICE_ID_KEY, CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, tokenizeFilterQuery, parseFilterQuery, issueMatchesFieldToken, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, formatNow, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, GOOGLE_DRIVE_URL_RE, googleDriveFileIdFromUrl, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, pickConnectorFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, migrateLegacyComments, deriveFieldDefs, effectiveFieldDefs, PROJECT_NAME_FIELD_ID, deriveProjectName, PROJECT_NOTES_FIELD_ID, deriveProjectNotes, simpleStringHash, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, issueTimestampValue, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, MATRIX_USER_ID_RE, principalKind, identityPrincipal, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, sourceRefHasFullData, evalRule, compileConnectorMacro, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isFieldLocked, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, issueCreatedAt,
   importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry,
   squashHistory, displayValueForHistory, buildSourceText, keyRegistryEncoder, rehydrateKeyRef, humanFileSize, parseJsonl, entryKey, commentKey, unionByKey, mergeCommentStreams, mergeIssuePair, computeIssueMerge, mergeHasRealChanges, computeFieldDefsMerge, computeDerivedChangeEntries,
   isPastedTextASingleUrl, wrapSelectionWithMarkdownLink,
@@ -4097,7 +4419,7 @@ const WigwagCoreExports = {
   WIGWAG_EXPORT_TYPE, WIGWAG_EXPORT_VERSION, canonicalRecordsText, computeContentSha256Hex, fingerprintPublicKey, buildExportEnvelope, parseExportEnvelope, verifyExportEnvelope,
   EXPORT_TRUST_KEY, lookupSenderTrust, classifySenderTrust, rememberSenderTrust, classifyExportProvenance,
   diff3Merge, formatDateLabel, provenanceMarkerSuffix, conflictMarkerLines, hasUnresolvedMergeMarkers, computeMergeProseEntries,
-  MERGE_LOG_TYPE, MERGE_LOG_VERSION, mergeLogStorageKey, buildMergeRecord, buildMergeIssueSummary,
+  MERGE_LOG_TYPE, MERGE_LOG_VERSION, mergeLogStorageKey, buildMergeRecord, buildMergeIssueSummary, latestEntryIdsByField,
   patchMergeSummaryResultEntryId, fieldStillSafeToRevert, computeMergeRollbackEntries,
   buildMergePreviewViewModel, buildMergeFieldTimeline, mergeRecordNeedsAttention, buildMergeFieldDiffLines, mergeSettledValueView, buildMergeIssueTimeline, resolveFieldValueView,
   WIGWAG_MATRIX_ENTRY_TYPE, WIGWAG_MATRIX_EVENT_VERSION, matrixEventContentFromEntry, entryFromMatrixEvent, hydrateProjectFromMatrixTimeline,

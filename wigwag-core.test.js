@@ -3153,3 +3153,72 @@ test('computeAffordanceFade: dropdown caret / lock glyph fade 0->1 over exactly 
   assert.equal(half.gap, 3);
   assert.deepEqual(core.computeAffordanceFade(null), { opacity: 1, width: 8, gap: 6 }); // no width known yet -- fully shown, not a crash
 });
+
+// --- Connected Sources (Phase 1) -------------------------------------------
+
+test('slugifyConnectorKey: lowercases, strips to [a-z0-9], prefixes a leading digit', () => {
+  assert.equal(core.slugifyConnectorKey('Linear', []), 'linear');
+  assert.equal(core.slugifyConnectorKey('My Cool API!', []), 'mycoolapi');
+  assert.equal(core.slugifyConnectorKey('123 Tracker', []), 'c123tracker');
+});
+
+test('slugifyConnectorKey: de-duplicates against existing keys with a numeric suffix', () => {
+  assert.equal(core.slugifyConnectorKey('Linear', ['linear']), 'linear2');
+  assert.equal(core.slugifyConnectorKey('Linear', ['linear', 'linear2']), 'linear3');
+});
+
+test('slugifyConnectorKey: never collides with a reserved word (github/jira/salesforce/wigwag/text/isLinked)', () => {
+  assert.equal(core.slugifyConnectorKey('GitHub', []), 'github2');
+  assert.equal(core.slugifyConnectorKey('Text', []), 'text2');
+});
+
+test('pickConnectorFields: defaults every field, never throws on a sparse object', () => {
+  assert.deepEqual(core.pickConnectorFields({}), { title: '', url: '', state: '', labels: [], assignee: '', extra: {} });
+  assert.deepEqual(core.pickConnectorFields({ title: 'Bug', extra: { foo: 1 } }),
+    { title: 'Bug', url: '', state: '', labels: [], assignee: '', extra: { foo: 1 } });
+});
+
+test('sourceRefHasFullData: a trimmed connector ref (no labels key) is NOT full data; an enriched one (has labels) is', () => {
+  assert.equal(core.sourceRefHasFullData({ system: 'connector', connectorId: 'c1', title: 'x' }), false);
+  assert.equal(core.sourceRefHasFullData({ system: 'connector', connectorId: 'c1', title: 'x', labels: [] }), true);
+});
+
+test('buildSource: a connector-system ref populates source.<connectorKey> dynamically, reads undefined for any other key', () => {
+  const issue = {
+    values: { linear: 'Fix the thing' },
+    fieldRefs: { linear: { system: 'connector', connectorId: 'c1', connectorKey: 'linear', title: 'Fix the thing', url: 'https://linear.app/x', state: 'In Progress', labels: ['bug'], assignee: 'jane' } }
+  };
+  const source = core.buildSource(issue, 'linear');
+  assert.equal(source.isLinked, true);
+  assert.equal(source.linear.title, 'Fix the thing');
+  assert.equal(source.linear.state, 'In Progress');
+  assert.deepEqual(source.linear.labels, ['bug']);
+  assert.equal(source.zendesk, undefined); // bound to a DIFFERENT connector -- reads as unset, not a crash
+});
+
+test('applyLiveLinkedRules: the connector key becomes a dynamic branch alongside the fixed github/jira/salesforce ones', () => {
+  const fieldDefs = { linear: { label: 'Linear', type: 'issue' }, summary: { label: 'Summary', type: 'text', linkedSourceId: 'linear', rule: 'source.linear ? source.linear.title : ""' } };
+  const issue = { values: { linear: 'old text', summary: '' }, fieldRefs: {} };
+  const liveData = { title: 'Fresh from Linear', url: '', state: 'Todo', labels: [], assignee: '', extra: {} };
+  const result = core.applyLiveLinkedRules(issue, fieldDefs, 'linear', 'linear', liveData);
+  assert.equal(result.values.summary, 'Fresh from Linear');
+});
+
+test('compileConnectorMacro: compiles an async arrow-function macro source and the returned function is awaitable', async () => {
+  const macro = compileMacroAndRun("async (id, credential) => ({ title: id + ':' + credential, url: '', state: '', extra: {} })", 'ENG-1', 'secret-token');
+  const result = await macro;
+  assert.equal(result.title, 'ENG-1:secret-token');
+});
+
+test('compileConnectorMacro: a thrown error in the macro propagates to the caller (no silent swallow, unlike evalRule)', async () => {
+  const fetchImpl = async () => { throw new Error('network down'); };
+  const factory = core.compileConnectorMacro("async (id, credential) => { await fetch('x'); return {}; }");
+  const macroFn = factory(fetchImpl);
+  await assert.rejects(() => macroFn('id1', 'cred1'), /network down/);
+});
+
+function compileMacroAndRun(macroSource, id, credential) {
+  const factory = core.compileConnectorMacro(macroSource);
+  const fetchImpl = async () => ({ ok: true, status: 200, json: async () => ({}), text: async () => '' });
+  return factory(fetchImpl)(id, credential);
+}

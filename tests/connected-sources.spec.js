@@ -53,36 +53,37 @@ async function stubTauriInvoke(page, { fetchResponse, credential = 'secret-token
 }
 
 test.describe('Connected Sources (Phase 1): paste dispatch + macro engine', () => {
-  test('pasting a matching id into an issue-type field links it via the custom connector, outside Tauri (real fetch fallback)', async ({ page }) => {
+  // Decided with Tom: custom connectors do not exist as a feature outside
+  // the real Tauri app, in any of wigwag.work/app, localhost:, or a plain
+  // file:// open -- not degraded, not available for hand-testing a macro,
+  // gone. Root reason: credential storage is an unconditional Tauri-only
+  // wall (no browser equivalent is worth building), so leaving dispatch
+  // reachable outside Tauri would resolve a link with no real credential
+  // ever stored, or worse, silently never dispatch while the Settings UI
+  // claims "Connected". customConnectorMatches returns [] outside Tauri,
+  // so a paste that would otherwise match falls through to plain-text
+  // handling exactly as if no connector were configured at all.
+  test('outside Tauri, a paste that would otherwise match a configured connector is left as plain text -- the feature does not exist there', async ({ page }) => {
     await seedConnector(page, LINEAR_CONNECTOR);
-    // No window.__TAURI__ at all -- the macro engine must fall back to
-    // real window.fetch, not throw or silently no-op.
-    await page.route('https://api.linear.app/issue/ENG-512', route => route.fulfill({
-      status: 200, contentType: 'application/json',
-      body: JSON.stringify({ title: 'Rate-limit retries drop silently', url: 'https://linear.app/wigwag/issue/ENG-512', state: 'In Progress', labels: ['bug'], assignee: 'jane' })
-    }));
+    // No window.__TAURI__ at all, and no page.route stub for the macro's
+    // own fetch target -- if dispatch wrongly fired here, the test would
+    // hang waiting on a real network call that never resolves, not pass.
     await h.gotoTracker(page);
 
-    // 'linked' ("Related") is the demo fixture's type:'issue' column --
-    // paste-to-resolve linking is gated to that type (same column the
-    // existing GitHub/Jira/Salesforce linking tests already use).
     await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'https://linear.app/wigwag/issue/ENG-512');
     await page.keyboard.press('Tab');
-    await h.waitForFieldResolved(page, 3, 'linked');
-
-    await expect(page.locator('[data-testid=row][data-row-num="3"] [data-testid=field-cell][data-col="linked"]')).toContainText('Rate-limit retries drop silently');
+    await page.waitForTimeout(500);
 
     const doc = await h.readActiveMilestoneDoc(page);
     const issue = doc.issues.find(i => i.num === 3);
-    const ref = h.latestFieldRef(issue, 'linked');
-    expect(ref.system).toBe('connector');
-    expect(ref.connectorKey).toBe('linear');
-    expect(ref.title).toBe('Rate-limit retries drop silently');
-    // Trimmed/minimal persisted shape -- labels/assignee never written to
-    // disk, same tracker #112 pattern as github/jira/salesforce.
-    expect(ref.labels).toBeUndefined();
-    expect(ref.assignee).toBeUndefined();
+    // Falls through to whatever generic treatment an unrecognized pasted
+    // URL already gets on an issue-type field (a plain external-link
+    // pill) -- the raw value is preserved verbatim, and crucially no
+    // connector fieldRef is ever created, same as if no connector had
+    // been configured at all.
+    expect(h.latestFieldValue(issue, 'linked')).toBe('https://linear.app/wigwag/issue/ENG-512');
+    expect(h.latestFieldRef(issue, 'linked')).toBeFalsy();
   });
 
   test('inside Tauri, the macro fetches via connected_source_fetch (no CORS restriction) and reads the credential from the keychain command', async ({ page }) => {
@@ -128,6 +129,9 @@ test.describe('Connected Sources (Phase 1): paste dispatch + macro engine', () =
     await page.addInitScript((connectors) => {
       localStorage.setItem('git_native_tracker_connected_sources_v1', JSON.stringify({ connectors }));
     }, [LINEAR_CONNECTOR, ZENDESK_CONNECTOR]);
+    // Dispatch (and therefore the conflict picker) only exists inside
+    // Tauri -- see the "outside Tauri" test above.
+    await stubTauriInvoke(page, { fetchResponse: { title: 'x', url: '', state: '', labels: [], assignee: '' } });
     await h.gotoTracker(page);
 
     await h.clickFieldToEdit(page, 3, 'linked');

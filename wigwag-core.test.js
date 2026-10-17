@@ -3201,6 +3201,31 @@ test('pickConnectorFields: defaults every field, never throws on a sparse object
     { title: 'Bug', url: '', state: '', labels: [], assignee: '', extra: { foo: 1 } });
 });
 
+test('connectorLinkText: a blank template defaults to {{title}} -- today\'s unchanged default behavior', () => {
+  const ref = { matchedId: 'SUP-123', title: 'Printer on fire', state: 'open' };
+  assert.equal(core.connectorLinkText('', ref), 'Printer on fire');
+  assert.equal(core.connectorLinkText(null, ref), 'Printer on fire');
+  assert.equal(core.connectorLinkText('   ', ref), 'Printer on fire');
+});
+
+test('connectorLinkText: interpolates {{id}}/{{title}}/{{state}}, any combination, any order', () => {
+  const ref = { matchedId: 'SUP-123', title: 'Printer on fire', state: 'open' };
+  assert.equal(core.connectorLinkText('{{id}}', ref), 'SUP-123');
+  assert.equal(core.connectorLinkText('{{title}}', ref), 'Printer on fire');
+  assert.equal(core.connectorLinkText('{{state}}', ref), 'open');
+  assert.equal(core.connectorLinkText('{{id}}: {{title}}', ref), 'SUP-123: Printer on fire');
+  assert.equal(core.connectorLinkText('[{{state}}] {{id}}', ref), '[open] SUP-123');
+});
+
+test('connectorLinkText: an unrecognized {{placeholder}} is left completely alone, not silently dropped', () => {
+  assert.equal(core.connectorLinkText('{{tilte}}', { matchedId: 'X', title: 'Y', state: 'Z' }), '{{tilte}}');
+});
+
+test('connectorLinkText: falls back to title then matchedId if the resolved template is still blank', () => {
+  assert.equal(core.connectorLinkText('{{state}}', { matchedId: 'SUP-123', title: 'Printer on fire', state: '' }), 'Printer on fire');
+  assert.equal(core.connectorLinkText('{{state}}', { matchedId: 'SUP-123', title: '', state: '' }), 'SUP-123');
+});
+
 test('sourceRefHasFullData: a trimmed connector ref (no labels key) is NOT full data; an enriched one (has labels) is', () => {
   assert.equal(core.sourceRefHasFullData({ system: 'connector', connectorId: 'c1', title: 'x' }), false);
   assert.equal(core.sourceRefHasFullData({ system: 'connector', connectorId: 'c1', title: 'x', labels: [] }), true);

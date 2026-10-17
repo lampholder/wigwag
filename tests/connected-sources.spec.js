@@ -230,4 +230,37 @@ test.describe('Connected Sources (Phase 1): paste dispatch + macro engine', () =
     await expect(titleCell).toContainText('Printer on fire');
     await expect(titleCell.locator('a')).toHaveAttribute('href', 'https://supportdesk.test/t/123');
   });
+
+  // Live-reported (Tom): wants a Jira-shaped connector's chip to show
+  // just the bare ticket id underneath, not the resolved title -- the
+  // link text was always ref.title with no way to configure it.
+  test('a custom linkTextTemplate controls what shows under the title, independent of the title itself', async ({ page }) => {
+    await seedConnector(page, { ...SUPPORT_CONNECTOR, linkTextTemplate: '{{id}}' });
+    await stubTauriInvoke(page, { fetchResponse: { title: 'Printer on fire', url: 'https://supportdesk.test/t/123', state: 'open' } });
+    await h.gotoTracker(page);
+
+    await h.clickFieldToEdit(page, 3, 'linked');
+    await h.pasteText(page, 'SUP-123');
+    await page.keyboard.press('Tab');
+    await h.waitForFieldResolved(page, 3, 'linked');
+
+    const cell = h.fieldCell(page, 3, 'linked');
+    await expect(cell).toContainText('Printer on fire'); // the main displayed text is untouched
+    const anchor = cell.locator('a');
+    await expect(anchor).toContainText('SUP-123'); // but the link text is now just the id
+    await expect(anchor).not.toContainText('Printer on fire');
+  });
+
+  test('a connector with no linkTextTemplate (every connector saved before this feature existed) keeps showing the title, unchanged', async ({ page }) => {
+    await seedConnector(page, SUPPORT_CONNECTOR); // no linkTextTemplate key at all
+    await stubTauriInvoke(page, { fetchResponse: { title: 'Printer on fire', url: 'https://supportdesk.test/t/123', state: 'open' } });
+    await h.gotoTracker(page);
+
+    await h.clickFieldToEdit(page, 3, 'linked');
+    await h.pasteText(page, 'SUP-123');
+    await page.keyboard.press('Tab');
+    await h.waitForFieldResolved(page, 3, 'linked');
+
+    await expect(h.fieldCell(page, 3, 'linked').locator('a')).toContainText('Printer on fire');
+  });
 });

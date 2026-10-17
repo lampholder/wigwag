@@ -145,6 +145,38 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
     await expect(renamedRow).toContainText('Connected'); // never clobbered by the blank credential field
   });
 
+  // Live-reported (Tom): a connector's chip always showed the resolved
+  // title underneath, with no way to show something else (e.g. a bare
+  // Jira-shaped ticket id). This is the Settings-side half -- the field
+  // exists, defaults to blank (today's unchanged {{title}} behavior), and
+  // round-trips through edit; tests/connected-sources.spec.js covers the
+  // rendering half (a custom template actually changing the chip).
+  test('the Link text field defaults to blank and round-trips through edit', async ({ page }) => {
+    await stubTauri(page);
+    await page.addInitScript((c) => {
+      localStorage.setItem('git_native_tracker_connected_sources_v1', JSON.stringify({ connectors: [c] }));
+    }, {
+      id: 'conn_test_linktext', key: 'linktexttest', name: 'LinkTextTest', glyph: 'L', color: 'oklch(0.55 0.13 20)',
+      patterns: [{ regex: '^LT-\\d+$', label: 'Short ID' }],
+      macro: "async (id) => ({ title: id, url: '', state: '', labels: [], assignee: '', extra: {} })",
+      credentialConfigured: true
+      // linkTextTemplate deliberately absent -- every connector saved before this feature existed
+    });
+    await h.gotoTracker(page);
+    await h.openSettingsSection(page, 'connectedSources');
+
+    const row = page.locator('[data-testid=connected-source-row]', { hasText: 'LinkTextTest' });
+    await row.locator('[data-testid=btn-edit-connected-source]').click();
+    await expect(page.locator('[data-testid=connector-link-text-input]')).toHaveValue('');
+
+    await page.locator('[data-testid=connector-link-text-input]').fill('{{id}}: {{title}}');
+    await page.locator('[data-testid=btn-save-connector]').click();
+    await expect(page.locator('[data-testid=connector-form-modal]')).toBeHidden();
+
+    await row.locator('[data-testid=btn-edit-connected-source]').click();
+    await expect(page.locator('[data-testid=connector-link-text-input]')).toHaveValue('{{id}}: {{title}}');
+  });
+
   test('deleting a custom connector removes it from the list and closes the form', async ({ page }) => {
     await stubTauri(page);
     await page.addInitScript((c) => {

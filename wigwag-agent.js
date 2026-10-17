@@ -39,7 +39,7 @@
 const { connect } = require('./wigwag-client');
 
 function formatIssueLine(iss) {
-  return `#${String(iss.num).padEnd(3)} [${iss.id.slice(0, 8)}] (${iss.status || ''})  ${iss.values.title || '(untitled)'}`;
+  return `[${iss.id.slice(0, 8)}] (${iss.status || ''})  ${iss.values.title || '(untitled)'}`;
 }
 
 async function cmdList(client) {
@@ -58,7 +58,7 @@ async function cmdNext(client) {
 async function cmdShow(client, numOrId) {
   if (!numOrId) throw new Error('Usage: show <num-or-id-prefix>');
   const issue = await client.getIssue(numOrId);
-  console.log(`#${issue.num} [${issue.id}]\n`);
+  console.log(`[${issue.id}]\n`);
   for (const colId in issue.fieldDefs) {
     const def = issue.fieldDefs[colId];
     const raw = issue.values[colId];

@@ -164,7 +164,7 @@ async function cmdNext(doc) {
   const next = doc.issues.filter(iss => statusColId && resolveOptionLabel(doc.fieldDefs[statusColId], iss.values[statusColId]) === 'Next');
   console.log(`Project ${doc.projectId || '(none yet)'} -- ${next.length} issue(s) with Status "Next"\n`);
   for (const iss of next.slice().sort((a, b) => a.num - b.num)) {
-    console.log(`#${String(iss.num).padEnd(3)} [${iss.id.slice(0, 8)}]  ${iss.values.title || '(untitled)'}`);
+    console.log(`[${iss.id.slice(0, 8)}]  ${iss.values.title || '(untitled)'}`);
   }
 }
 
@@ -173,14 +173,14 @@ async function cmdList(doc) {
   console.log(`Project ${doc.projectId || '(none yet)'} -- ${doc.issues.length} issues\n`);
   for (const iss of doc.issues.slice().sort((a, b) => a.num - b.num)) {
     const status = statusColId ? resolveOptionLabel(doc.fieldDefs[statusColId], iss.values[statusColId]) : '';
-    console.log(`#${String(iss.num).padEnd(3)} [${iss.id.slice(0, 8)}] (${status})  ${iss.values.title || '(untitled)'}`);
+    console.log(`[${iss.id.slice(0, 8)}] (${status})  ${iss.values.title || '(untitled)'}`);
   }
 }
 
 async function cmdShow(doc, numOrId) {
   if (!numOrId) throw new Error('Usage: show <num-or-id-prefix>');
   const issue = findIssue(doc, numOrId);
-  console.log(`#${issue.num} [${issue.id}]\n`);
+  console.log(`[${issue.id}]\n`);
   for (const colId in doc.fieldDefs) {
     const def = doc.fieldDefs[colId];
     const raw = issue.values[colId];

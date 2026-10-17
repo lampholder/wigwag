@@ -158,8 +158,9 @@ cost real debugging time once; it will again if forgotten.
 5. **Add a durable Playwright test** under `tests/` covering the change
    (see `tests/README`-equivalent conventions below — there isn't a
    separate doc, just follow the existing spec files' style).
-6. **Run the full suite** (`npx playwright test`, ~200+ tests, several
-   minutes) and wait for **genuine** completion — the process must have
+6. **Run the full suite** (`npx playwright test`, 1000+ tests, ~15-20
+   minutes at the current `workers: 4` -- see the "workers: 4" note
+   further down for why that's safe) and wait for **genuine** completion — the process must have
    actually exited *and* the log must contain a real `N passed` summary
    line. A task-completion notification alone is not sufficient signal;
    background runs have been checked while still mid-flight more than once
@@ -210,13 +211,29 @@ reuse stale offsets.
   above), where `npx http-server -p 8935 -s` is used instead so a
   disposable script can hit the same origin without racing the test
   runner's own server lifecycle.
-- One worker, no parallelism (`workers: 1` in `playwright.config.js`) —
-  tests share real `localStorage` (and, since tracker #187's migration of
-  the project doc + merge log, real IndexedDB) state per browser context,
-  and the app's cross-tab-sync features specifically need real multi-tab
-  timing, which doesn't play well with parallel workers touching shared
-  fixtures.
-- Current suite size: ~209 tests across 11 spec files (`data-structures`,
-  `external-auth`, `interaction`, `issue-field`, `select-fields`,
-  `milestones`, `cross-tab-sync`, `github-sync`,
-  `github-sync-leader-election`, `project-notes`, `export-html`).
+- `workers: 4` in `playwright.config.js` (2026-10-17, changed from the
+  original `workers: 1`) — the suite had grown ~5x since the original
+  single-worker choice was made, and a full run was taking ~54 minutes.
+  The original rationale here claimed tests shared real `localStorage`/
+  IndexedDB state across parallel workers -- re-examined and found not
+  to hold: Playwright gives each *test* (not each worker) its own fresh
+  browser context by default, and same-origin storage is isolated per
+  context regardless of worker count; a cross-tab-sync test's two tabs
+  deliberately share context WITHIN that one test, which is unaffected
+  by how many *other* tests run concurrently in other workers. Verified
+  empirically, not just theoretically: a full run at `workers: 4` passed
+  1078/1082 in ~16 minutes (3.3x faster), with zero new FAILURE CLASS
+  introduced -- the only failures were the same already-catalogued
+  timing-sensitive, load-dependent flakes (debounce/cross-tab races)
+  this project already lives with at `workers: 1`, just a bit more often
+  under higher peak concurrent load. The existing "re-verify in isolation
+  before treating a failure as a regression" discipline below already
+  covers this; it just gets exercised slightly more often now. If a
+  failure ever looks like genuine cross-test storage bleed (not a timing
+  race -- e.g. one test's leftover localStorage key visibly present in
+  an unrelated test, not just a flaky assertion), that's the one signal
+  that would actually justify dropping back to `workers: 1`.
+- Current suite size: 1082 tests across 50 spec files (`tests/*.spec.js`)
+  -- grown substantially since the original ~209/11 estimate; re-check
+  with `npx playwright test --list | tail -1` rather than trusting a
+  hardcoded number here, since this will drift again.

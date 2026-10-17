@@ -179,3 +179,45 @@ test.describe('Auto-update (Tauri desktop)', () => {
     expect(errors).toHaveLength(0);
   });
 });
+
+// Tom asked for a manual "check for updates" affordance -- checkForUpdate()
+// already existed (called once on mount, plus the error-banner's own "Try
+// again"), just nothing a user could invoke on demand. Reuses the footer,
+// next to the app-version text it's about, gated on isTauriUpdaterRuntime()
+// rather than a traditional app menu (this app has none).
+test.describe('Manual "Check for updates" (footer link)', () => {
+  test('absent outside the Tauri runtime', async ({ page }) => {
+    await h.gotoTracker(page);
+    await page.waitForTimeout(400);
+    await expect(page.locator('[data-testid=footer-check-for-updates]')).toHaveCount(0);
+  });
+
+  test('reflects "up to date" after the automatic boot-time check finds nothing, and clicking again re-checks', async ({ page }) => {
+    await stubUpdater(page, { available: false });
+    await h.gotoTracker(page);
+    await page.waitForTimeout(400);
+    const link = page.locator('[data-testid=footer-check-for-updates]');
+    await expect(link).toHaveText('Up to date'); // componentDidMount's own check already ran
+    await link.click();
+    await page.waitForTimeout(300);
+    await expect(link).toHaveText('Up to date');
+  });
+
+  test('reflects a failed check as "Check failed", distinct from the silent-on-boot banner behavior', async ({ page }) => {
+    await stubUpdater(page, { failCheck: true });
+    await h.gotoTracker(page);
+    await page.waitForTimeout(400);
+    const link = page.locator('[data-testid=footer-check-for-updates]');
+    await expect(link).toHaveText('Check failed');
+    await expect(page.locator('[data-testid=update-available-banner]')).toHaveCount(0); // still no intrusive banner for a boot-time failure
+  });
+
+  test('clicking it when an update is genuinely available drives the same checkForUpdate path as the automatic check', async ({ page }) => {
+    await stubUpdater(page, { available: true });
+    await h.gotoTracker(page);
+    await page.waitForTimeout(400);
+    const link = page.locator('[data-testid=footer-check-for-updates]');
+    await expect(link).toHaveText('Update available');
+    await expect(page.locator('[data-testid=update-available-banner]')).toBeVisible();
+  });
+});

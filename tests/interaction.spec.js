@@ -1986,6 +1986,28 @@ test.describe('Keyword filter polish', () => {
   test('no filter query means no highlight span at all -- the plain-text path is unaffected', async ({ page }) => {
     await expect(page.locator('[data-testid=title-cell] [data-testid=filter-match]')).toHaveCount(0);
   });
+
+  // Tracker #155 (Tom's own report): a hex-looking query (one that happens
+  // to match a real issue's id prefix, e.g. pasted from somewhere) used to
+  // skip keyword filtering entirely -- the input showed the pasted text
+  // but the table kept showing every row, since the id-jump feature
+  // (superseded on desktop by global search, tracker #144/#156) claimed
+  // the query and no jump panel exists on desktop to show in its place.
+  test('a query that happens to look like a real issue\'s id prefix still filters the table by keyword, not just desktop id-jumping', async ({ page }) => {
+    await page.keyboard.down('Control'); await page.keyboard.press('Space'); await page.keyboard.up('Control');
+    await page.locator('[data-testid=add-item-input]').fill('Totally unrelated new row');
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(400);
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    const newIssue = doc.issues[doc.issues.length - 1]; // add-item always appends
+    const idPrefix = newIssue.id.slice(0, 8); // a real id's own hex prefix, exactly what triggers id-jump matching
+
+    await page.locator('[data-testid=filter-input]').fill(idPrefix);
+    await page.waitForTimeout(250);
+    await expect(page.locator('[data-testid=row]')).toHaveCount(0); // no row's title/fields contain this id text
+    await expect(page.locator('[data-testid=jump-panel]')).toHaveCount(0); // desktop still has no jump panel -- unaffected by this fix
+  });
 });
 
 test.describe('Column value filters', () => {

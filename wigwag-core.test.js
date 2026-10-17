@@ -3066,6 +3066,29 @@ test('renderMarkdown: a real email address is completely unaffected by the MXID 
   assert.doesNotMatch(html, /Matrix ID/);
 });
 
+// Tracker #192: a long unbroken run of local-part-shaped characters with
+// no "@" anywhere used to catastrophically backtrack the email regex --
+// confirmed hanging well past a minute on just 50K characters, confirmed
+// (a real Firefox InternalError / content-loss report) at 6MB. Bounding
+// the local-part quantifier to 64 chars (RFC 5321's own limit) fixes it;
+// this test fails by TIMEOUT, not assertion, if that bound ever regresses.
+test('renderMarkdown: a long run with no "@" anywhere does not catastrophically backtrack the email regex', () => {
+  const huge = 'x'.repeat(200000); // well past where the old regex would already hang for minutes
+  const t0 = Date.now();
+  const html = core.renderMarkdown(huge);
+  assert.ok(Date.now() - t0 < 2000, 'renderMarkdown took too long -- the email regex may be backtracking again');
+  assert.doesNotMatch(html, /email-pill/);
+});
+
+// A local part right at (and one past) the real-world 64-char RFC 5321
+// limit -- the bound must not clip a legitimately long-but-valid local
+// part that a real system would still accept.
+test('renderMarkdown: a 64-char local part still matches as an email; 65 chars still resolves (just not as one single local part)', () => {
+  const local64 = 'a'.repeat(64);
+  const html64 = core.renderMarkdown(local64 + '@example.com');
+  assert.match(html64, new RegExp('href="mailto:' + local64 + '@example\\.com"'));
+});
+
 test('renderMarkdown: an MXID at the end of a sentence does not swallow the trailing period', () => {
   const html = core.renderMarkdown('It was @tom:lant.uk.');
   assert.match(html, /Matrix ID @tom:lant\.uk"/); // pill covers exactly the id, not "lant.uk."

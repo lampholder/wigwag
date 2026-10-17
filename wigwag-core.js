@@ -1142,7 +1142,19 @@ function renderMarkdownInline(line) {
   // dimmed domain in one flex child so the pill's own gap doesn't land
   // between them). Domain must end on an alphanumeric label so a
   // sentence-final period isn't swallowed into the address.
-  out = out.replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/g, function (email) {
+  // Tracker #192: the local-part quantifier is bounded to 64 chars (RFC
+  // 5321's own local-part limit, so every real address still matches) --
+  // unbounded, it catastrophically backtracks against a long run of
+  // local-part-shaped characters with no "@" anywhere (every ordinary
+  // alnum char is both a valid match character AND a valid restart
+  // position, so a failed greedy match at one offset repeats in full at
+  // the next, with no shortcut) -- confirmed hanging well past a minute
+  // on just 50K characters, confirmed fixed (1.4s) at the real reported
+  // 6MB. The Matrix-id regex just below has the same `+`-then-literal
+  // shape but isn't vulnerable: its mandatory leading "@" is excluded
+  // from its own body class, so a failed match can never restart one
+  // character later into the same expensive backtrack.
+  out = out.replace(/[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/g, function (email) {
     const at = email.indexOf('@');
     const local = email.slice(0, at), domain = email.slice(at);
     return push('<a href="mailto:' + email + '" title="Email ' + email + '" class="email-pill"><svg width="10" height="10" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="4" r="2.1" stroke="currentColor" stroke-width="1.2"></circle><path d="M2.3 10.2c0-2.05 1.66-3.3 3.7-3.3s3.7 1.25 3.7 3.3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"></path></svg><span>' + local + '<span style="opacity:0.6;">' + domain + '</span></span></a>');

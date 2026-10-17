@@ -385,6 +385,29 @@ test.describe('Text fields: multiline markdown', () => {
     await expect(cellMd.locator('a', { hasText: 'https://example.com/doc' })).toHaveAttribute('href', 'https://example.com/doc');
   });
 
+  // Tracker #192: a long unbroken run of local-part-shaped characters
+  // with no "@" anywhere used to catastrophically backtrack the email
+  // regex -- a real Firefox InternalError, a ~29s reload (vs ~1.5s), and
+  // the edit not surviving the next render. Fixed by bounding the
+  // local-part quantifier (see wigwag-core.js's own comment there). This
+  // is the exact real-world repro, through the real UI, not just a
+  // direct renderMarkdown() unit test (wigwag-core.test.js has that one).
+  test('a very long single-token value (no email anywhere) commits and survives a reload without hanging or losing content', async ({ page }) => {
+    const huge = 'x'.repeat(500000); // large enough to prove linear-time scanning; full 6MB is covered by wigwag-core.test.js
+    await h.clickFieldToEdit(page, 1, 'mitigation');
+    await page.locator('[data-testid=text-field-edit-textarea]').fill(huge);
+    await page.keyboard.press('Control+Enter');
+    await page.waitForTimeout(400);
+
+    const t0 = Date.now();
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+    expect(Date.now() - t0).toBeLessThan(8000);
+
+    const cellText = await h.fieldCell(page, 1, 'mitigation').textContent();
+    expect(cellText.includes('x'.repeat(1000))).toBe(true); // the long run survived intact, not truncated or lost
+  });
+
   test('Cmd/Ctrl+Enter commits; plain Enter inserts a newline and stays in edit mode', async ({ page }) => {
     await h.clickFieldToEdit(page, 2, 'mitigation');
     const textarea = h.fieldCell(page, 2, 'mitigation').locator('[data-testid=text-field-edit-textarea]');

@@ -176,4 +176,58 @@ test.describe('Connected Sources (Phase 1): paste dispatch + macro engine', () =
     expect(result.state).toBe('In Progress');
     expect(result.undefinedForOtherKey).toBeUndefined();
   });
+
+  // Live-reported (Tom), testing against a real (unconfigured) Jira via
+  // a bare-shortcode connector pattern -- exactly the kind of pattern
+  // LINEAR_CONNECTOR's own comment above explains why it avoids (collides
+  // with JIRA_KEY_RE), which is fine now that an unconfigured Jira no
+  // longer claims a pattern at all (see external-auth.spec.js's "Jira
+  // linking, not configured" tests) -- but at the time, buildTextCell's
+  // OWN separate ref-dispatch chain (used for every directly-linked
+  // field; distinct from boundRefParts, which only handles bound/rule
+  // fields and already had this branch) had never been taught about
+  // `ref.system === 'connector'` at all, so it fell through to a bare
+  // GitHub-shaped catch-all: wrong icon, "undefined/undefined#undefined".
+  const SUPPORT_CONNECTOR = {
+    id: 'conn_test_support', key: 'supportdesk', name: 'SupportDesk', glyph: 'SD', color: 'oklch(0.6 0.15 200)',
+    patterns: [{ regex: 'SUP-\\d+', label: 'Ticket code' }],
+    macro: "async (id, credential) => { const res = await fetch('https://api.supportdesk.test/ticket/' + id); const data = await res.json(); return { title: data.title, url: data.url, state: data.state }; }",
+    credentialConfigured: true
+  };
+
+  test('typing a connector pattern directly into a field resolves with the real title/url/glyph, not a GitHub-shaped fallback', async ({ page }) => {
+    await seedConnector(page, SUPPORT_CONNECTOR);
+    await stubTauriInvoke(page, { fetchResponse: { title: 'Printer on fire', url: 'https://supportdesk.test/t/123', state: 'open' } });
+    await h.gotoTracker(page);
+
+    await h.clickFieldToEdit(page, 3, 'linked');
+    await h.pasteText(page, 'SUP-123');
+    await page.keyboard.press('Tab');
+    await h.waitForFieldResolved(page, 3, 'linked');
+
+    const cell = h.fieldCell(page, 3, 'linked');
+    await expect(cell).toContainText('Printer on fire');
+    const anchor = cell.locator('a');
+    await expect(anchor).toHaveAttribute('href', 'https://supportdesk.test/t/123');
+    const anchorHtml = await anchor.innerHTML();
+    expect(anchorHtml).not.toContain('undefined');
+    expect(anchorHtml).not.toContain('github.com');
+    expect(anchorHtml).toContain('SD'); // the connector's own glyph badge, not a brand SVG
+  });
+
+  test('pasting a connector pattern into the add-item bar resolves it, not just a plain-text pill', async ({ page }) => {
+    await seedConnector(page, SUPPORT_CONNECTOR);
+    await stubTauriInvoke(page, { fetchResponse: { title: 'Printer on fire', url: 'https://supportdesk.test/t/123', state: 'open' } });
+    await h.gotoTracker(page);
+
+    await page.keyboard.down('Control'); await page.keyboard.press('Space'); await page.keyboard.up('Control');
+    await page.locator('[data-testid=add-item-input]').fill('SUP-123');
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(800);
+
+    await expect(page.locator('[data-testid=row]')).toHaveCount(10);
+    const titleCell = h.titleCell(page, 10);
+    await expect(titleCell).toContainText('Printer on fire');
+    await expect(titleCell.locator('a')).toHaveAttribute('href', 'https://supportdesk.test/t/123');
+  });
 });

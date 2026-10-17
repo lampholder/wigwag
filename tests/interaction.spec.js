@@ -3660,3 +3660,54 @@ test.describe('Signalling rows below the fold', () => {
     expect(rule).toContain('scrollbar-width: none');
   });
 });
+
+// Tracker #131/#146 (Tom's own "sometimes it feels a bit sluggish" report):
+// measureTableOverflow() used to force a layout reflow (getBoundingClientRect
+// on the scroll container AND every row) on EVERY componentDidUpdate, i.e.
+// after any setState anywhere in the app, including a keystroke in a
+// completely unrelated field. Gated componentDidUpdate's own call behind a
+// cheap dependency check (maybeMeasureTableOverflow) -- the 4 other real
+// triggers (mount, resize, scroll, widget-reveal) call measureTableOverflow
+// directly and are unaffected.
+test.describe('measureTableOverflow perf gate', () => {
+  test('typing an uncommitted edit draft does not re-measure the table at all', async ({ page }) => {
+    await h.gotoTracker(page);
+    await page.waitForTimeout(300);
+    await page.evaluate(() => {
+      window.__rowQueryCalls = 0;
+      const orig = Element.prototype.querySelectorAll;
+      Element.prototype.querySelectorAll = function (sel, ...rest) {
+        if (sel === '[data-testid="row"]') window.__rowQueryCalls++;
+        return orig.call(this, sel, ...rest);
+      };
+    });
+
+    await h.clickFieldToEdit(page, 1, 'mitigation');
+    for (const ch of 'typing without committing anything'.split('')) {
+      await page.keyboard.type(ch);
+      await page.waitForTimeout(20);
+    }
+    const calls = await page.evaluate(() => window.__rowQueryCalls);
+    expect(calls).toBeLessThanOrEqual(1); // at most the initial settle from gotoTracker itself
+  });
+
+  test('adding a real row still re-measures (the gate only skips irrelevant renders)', async ({ page }) => {
+    await h.gotoTracker(page);
+    await page.waitForTimeout(300);
+    await page.evaluate(() => {
+      window.__rowQueryCalls = 0;
+      const orig = Element.prototype.querySelectorAll;
+      Element.prototype.querySelectorAll = function (sel, ...rest) {
+        if (sel === '[data-testid="row"]') window.__rowQueryCalls++;
+        return orig.call(this, sel, ...rest);
+      };
+    });
+
+    await page.keyboard.down('Control'); await page.keyboard.press('Space'); await page.keyboard.up('Control');
+    await page.locator('[data-testid=add-item-input]').fill('a brand new row');
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(400);
+    const calls = await page.evaluate(() => window.__rowQueryCalls);
+    expect(calls).toBeGreaterThanOrEqual(1);
+  });
+});

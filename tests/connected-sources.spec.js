@@ -263,4 +263,27 @@ test.describe('Connected Sources (Phase 1): paste dispatch + macro engine', () =
 
     await expect(h.fieldCell(page, 3, 'linked').locator('a')).toContainText('Printer on fire');
   });
+
+  // Found while fixing a live-reported glyph-alignment bug (the chip's
+  // noHref branch -- a macro that doesn't return a url -- only ever
+  // checked isJiraRef/isSalesforceRef; GitHub/Wigwag can never reach
+  // this branch at all (hasHref hardcoded true for both), so their own
+  // omission here was always correct by construction, but a connector
+  // CAN reach it (hasHref: !!ref.url, same shape as Jira/Salesforce) and
+  // was silently losing its glyph badge entirely.
+  test('the connector glyph badge still shows even when the macro returns no url (noHref)', async ({ page }) => {
+    await seedConnector(page, { ...SUPPORT_CONNECTOR, macro: "async (id) => ({ title: 'No URL here', url: '', state: 'open' })" });
+    await stubTauriInvoke(page, {});
+    await h.gotoTracker(page);
+
+    await h.clickFieldToEdit(page, 3, 'linked');
+    await h.pasteText(page, 'SUP-123');
+    await page.keyboard.press('Tab');
+    await h.waitForFieldResolved(page, 3, 'linked');
+
+    const cell = h.fieldCell(page, 3, 'linked');
+    await expect(cell.locator('a')).toHaveCount(0); // no url -> no anchor
+    const html = await cell.innerHTML();
+    expect(html).toContain('>SD</span>'); // badge still renders
+  });
 });

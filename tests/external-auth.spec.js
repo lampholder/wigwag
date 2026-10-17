@@ -71,6 +71,11 @@ test.describe('Jira linking', () => {
       'TRK-999': { title: 'Mocked Jira ticket title', description: 'A mocked description.', labels: ['bug', 'urgent'], browseUrl: 'https://mock.atlassian.net/browse/TRK-999' },
     });
     await h.gotoTracker(page);
+    // jiraKeyMatch now requires a real configured secret (see "a custom
+    // connector's pattern never loses to an unconfigured Jira" below) --
+    // this describe block is specifically about Jira actually being
+    // configured, so seed one through the real Settings UI.
+    await h.setJiraProxySecret(page, 'mock-jira-proxy-secret');
   });
 
   test('typing a Jira key into an issue-type field resolves it via the configured proxy', async ({ page }) => {
@@ -221,6 +226,54 @@ test.describe('Jira linking', () => {
     const cell = h.titleCell(page, 9);
     await expect(cell).toContainText('TRK-118');
     expect(await cell.locator('a').count()).toBe(0);
+  });
+});
+
+// Live-reported (Tom): a custom connector's own pattern can legitimately
+// collide with Jira's reserved key shape (PROJ-123) -- built-ins always
+// win that collision by dispatch order, so a pasted value that merely
+// LOOKS like a Jira key used to always take the Jira branch, even with
+// no proxy secret configured (removing the secret is how Tom actually
+// disables Jira -- the proxy URL keeps its harmless placeholder default).
+// jiraKeyMatch now requires a real configured secret before claiming a
+// pattern at all, so an unconfigured Jira falls through exactly as if
+// the string never looked like a Jira key -- no secret is ever seeded in
+// this describe block, unlike the "Jira linking" one above.
+test.describe('Jira linking, not configured (no proxy secret)', () => {
+  test.beforeEach(async ({ page }) => {
+    await h.mockJiraProxy(page, {
+      'TRK-999': { title: 'Mocked Jira ticket title', description: 'A mocked description.', labels: ['bug', 'urgent'], browseUrl: 'https://mock.atlassian.net/browse/TRK-999' },
+    });
+    await h.gotoTracker(page);
+  });
+
+  test('a Jira-shaped paste is kept as plain text, never resolved, when no proxy secret is configured', async ({ page }) => {
+    await h.clickFieldToEdit(page, 3, 'linked');
+    await h.pasteText(page, 'TRK-999');
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(500);
+
+    const cell = h.fieldCell(page, 3, 'linked');
+    await expect(cell).toContainText('TRK-999');
+    await expect(cell).not.toContainText('Mocked Jira ticket title');
+    expect(await cell.locator('a').count()).toBe(0);
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'linked');
+    expect(ref?.system).not.toBe('jira');
+  });
+
+  test('a full Jira browse URL is also kept as plain text when no proxy secret is configured', async ({ page }) => {
+    await h.clickTitleToEdit(page, 3);
+    await h.pasteText(page, 'https://mock.atlassian.net/browse/TRK-999');
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(500);
+
+    const cell = h.titleCell(page, 3);
+    await expect(cell).not.toContainText('Mocked Jira ticket title');
+    const doc = await h.readActiveMilestoneDoc(page);
+    const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'title');
+    expect(ref?.system).not.toBe('jira');
   });
 });
 
@@ -378,6 +431,7 @@ test.describe('Jira linking: expanded field set', () => {
       },
     });
     await h.gotoTracker(page);
+    await h.setJiraProxySecret(page, 'mock-jira-proxy-secret');
   });
 
   // Tracker #112 (b564316d): this is now the opposite assertion -- the

@@ -52,10 +52,13 @@ test.describe('Bulk-link issues from a multi-line paste', () => {
 
   test('the review panel groups lines into linked/unlinked/duplicate with correct counts, "Show list" expands each, and confirming creates only the non-duplicate rows', async ({ page }) => {
     // issues/1 and /2 are real GITHUB_FIXTURES entries; ABC-123 is
-    // jira-shaped (no proxy configured in this test -- still creates a
-    // linked row, same as a single Jira paste with no proxy would); the
+    // jira-shaped -- jiraKeyMatch now requires a configured proxy secret
+    // (see external-auth.spec.js's "not configured" describe block), so
+    // this test configures one so ABC-123 still classifies as linked,
+    // same as a single Jira paste with a configured proxy would; the
     // plain line is unlinked; issues/1 repeats within the SAME paste and
     // must only ever create one row, not two.
+    await h.setJiraProxySecret(page, 'mock-jira-proxy-secret');
     const lines = [
       'https://github.com/octocat/Hello-World/issues/1',
       'https://github.com/octocat/Hello-World/issues/2',

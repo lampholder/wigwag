@@ -977,6 +977,13 @@ async function setSalesforceProxyUrl(page, url) {
   await page.waitForTimeout(150);
 }
 
+async function setJiraProxySecret(page, secret) {
+  await openSettingsSection(page, 'integrations');
+  await page.locator('[data-testid=settings-jira-proxy-secret]').fill(secret);
+  await page.mouse.click(10, 10);
+  await page.waitForTimeout(150);
+}
+
 async function pasteText(page, text) {
   await page.evaluate((t) => navigator.clipboard.writeText(t), text);
   await page.keyboard.press('Control+A'); // replace any pre-filled value, don't paste-append at the cursor
@@ -1183,6 +1190,7 @@ module.exports = {
   setGithubToken,
   setGithubRepoSync,
   setJiraProxyUrl,
+  setJiraProxySecret,
   setSalesforceProxyUrl,
   seedTwoIdentities,
   gotoTrackerFreshIdentity,

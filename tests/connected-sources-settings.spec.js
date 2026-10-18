@@ -212,4 +212,75 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
     await expect(page.locator('[data-testid=connected-source-row]')).toHaveCount(3);
     await expect(page.locator('[data-testid=connected-source-row]', { hasText: 'Abandoned' })).toHaveCount(0);
   });
+
+  // Live-reported (Tom): connector-form-modal only had max-height:88vh
+  // with no base height, so it auto-sized to content -- a long macro-
+  // error test result could legitimately make it taller than its own
+  // 640px-tall "parent" (settings-modal), which has an explicit
+  // height:640px. Confirmed exactly: at a typical 1280x800 window,
+  // 88vh=704px > 640px. Now pinned to the same height.
+  test('the connector form modal never exceeds the Settings modal\'s own height, even with a long multi-line error', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await stubTauri(page);
+    await h.gotoTracker(page);
+    await h.openSettingsSection(page, 'connectedSources');
+
+    const settingsModalBox = await page.locator('[data-testid=settings-modal]').boundingBox();
+    await page.locator('[data-testid=btn-add-connected-source]').click();
+    await expect(page.locator('[data-testid=connector-form-modal]')).toBeVisible();
+
+    await page.locator('[data-testid=connector-name-input]').fill('Jira');
+    await page.locator('[data-testid=connector-pattern-regex-input]').fill('^https://element-io\\.atlassian\\.net/browse/([A-Z]+-\\d+)$');
+    const longError = 'Jira 404 undefined for https://element-io.atlassian.net/browse/SUP-124: {"type":"about:blank","title":"Not Found","status":404,"detail":"No endpoint GET /rest/api/3/issue/https:/element-io.atlassian.net/browse/SUP-124.","instance":"/rest/api/3/issue/https:/element-io.atlassian.net/browse/SUP-124"}';
+    await page.locator('[data-testid=connector-macro-textarea]').fill(`async (id, credential) => { throw new Error(${JSON.stringify(longError)}); }`);
+    await page.locator('[data-testid=connector-test-id-input]').fill('https://element-io.atlassian.net/browse/SUP-124');
+    await page.locator('[data-testid=btn-run-connector-test]').click();
+    await page.waitForTimeout(300);
+
+    const formModalBox = await page.locator('[data-testid=connector-form-modal]').boundingBox();
+    expect(formModalBox.height).toBeLessThanOrEqual(settingsModalBox.height);
+    await expect(page.locator('[data-testid=btn-save-connector]')).toBeVisible();
+  });
+
+  // Live-reported (Tom): pasting a full URL into the Test field threw a
+  // confusing error -- the field handed the raw typed value straight to
+  // the macro, never running the connector's own pattern on it the way
+  // a real field-cell paste does. Tom's own call: "we should be testing
+  // the input here, not just the lookup."
+  test.describe('Test field runs the input through the draft patterns first, like a real paste', () => {
+    test('a pasted URL matching a pattern resolves to the captured id before the macro runs', async ({ page }) => {
+      await stubTauri(page);
+      await h.gotoTracker(page);
+      await h.openSettingsSection(page, 'connectedSources');
+      await page.locator('[data-testid=btn-add-connected-source]').click();
+
+      await page.locator('[data-testid=connector-name-input]').fill('Jira');
+      await page.locator('[data-testid=connector-pattern-regex-input]').fill('^https://element-io\\.atlassian\\.net/browse/([A-Z]+-\\d+)$');
+      await page.locator('[data-testid=connector-macro-textarea]').fill('async (id, credential) => ({ title: id, url: "", state: "" })');
+      await page.locator('[data-testid=connector-test-id-input]').fill('https://element-io.atlassian.net/browse/SUP-124');
+      await page.locator('[data-testid=btn-run-connector-test]').click();
+      await page.waitForTimeout(300);
+
+      await expect(page.locator('[data-testid=connector-test-resolved-id]')).toContainText('Pattern matched');
+      await expect(page.locator('[data-testid=connector-test-resolved-id]')).toContainText('SUP-124');
+      await expect(page.locator('[data-testid=connector-test-output]')).toContainText('"title": "SUP-124"');
+    });
+
+    test('a bare id matching no pattern still falls back to the raw typed value, unchanged', async ({ page }) => {
+      await stubTauri(page);
+      await h.gotoTracker(page);
+      await h.openSettingsSection(page, 'connectedSources');
+      await page.locator('[data-testid=btn-add-connected-source]').click();
+
+      await page.locator('[data-testid=connector-name-input]').fill('Jira');
+      await page.locator('[data-testid=connector-pattern-regex-input]').fill('^https://element-io\\.atlassian\\.net/browse/([A-Z]+-\\d+)$');
+      await page.locator('[data-testid=connector-macro-textarea]').fill('async (id, credential) => ({ title: id, url: "", state: "" })');
+      await page.locator('[data-testid=connector-test-id-input]').fill('SUP-124');
+      await page.locator('[data-testid=btn-run-connector-test]').click();
+      await page.waitForTimeout(300);
+
+      await expect(page.locator('[data-testid=connector-test-resolved-id]')).toContainText('No pattern matched');
+      await expect(page.locator('[data-testid=connector-test-output]')).toContainText('"title": "SUP-124"');
+    });
+  });
 });

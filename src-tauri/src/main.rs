@@ -21,6 +21,42 @@ fn connected_source_ping() -> String {
     "ok".into()
 }
 
+// Tracker 0ff73acf: the macOS traffic lights sat too close to the
+// window's top-left corner and weren't vertically centered against the
+// logo/wordmark row. There's no tauri.conf.json field for this --
+// `traffic_light_position` only exists as a Rust-side builder method
+// (confirmed by reading tauri 2.12.2's and wry 0.57.0's own vendored
+// source; no equivalent key in the config schema), set once at window-
+// creation time, so the macOS window can no longer be auto-created
+// purely from tauri.macos.conf.json -- it needs `"create": false`
+// there instead, built manually here via the documented
+// `WebviewWindowBuilder::from_config` + `create:false` pattern (see
+// tauri-utils' own WindowConfig doc comment), reusing every other
+// setting (title/size/decorations/titleBarStyle/hiddenTitle) from the
+// config unchanged and just adding the inset on top.
+//
+// These X/Y values are a REASONED STARTING GUESS, not a verified
+// render -- this container has no real macOS webview to check against.
+// X=28 lines the cluster's left edge up with the rest of the row's own
+// 28px left padding (matching the app's own margin rhythm instead of
+// hugging the bare window edge); Y=14 aims for the cluster's vertical
+// center to land near the logo/wordmark's own center in the 41px-tall
+// title row. Tune both by eye on a real build.
+#[cfg(target_os = "macos")]
+const MAC_TRAFFIC_LIGHT_POSITION: (f64, f64) = (28.0, 14.0);
+
+#[cfg(target_os = "macos")]
+fn create_main_window(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    let config = app.config().app.windows[0].clone();
+    tauri::WebviewWindowBuilder::from_config(app.handle(), &config)?
+        .traffic_light_position(tauri::LogicalPosition::new(
+            MAC_TRAFFIC_LIGHT_POSITION.0,
+            MAC_TRAFFIC_LIGHT_POSITION.1,
+        ))
+        .build()?;
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -34,6 +70,11 @@ fn main() {
             connected_source_get_credential,
             connected_source_delete_credential
         ])
+        .setup(|_app| {
+            #[cfg(target_os = "macos")]
+            create_main_window(_app)?;
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

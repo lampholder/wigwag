@@ -159,3 +159,30 @@ test.describe('Tauri windowed-mode status bar', () => {
     await expect(popover).toHaveCount(0);
   });
 });
+
+// Tracker 0ff73acf, Tom's resolution after the initial implementation
+// conflicted with interaction.spec.js's "Keep add an item reachable"
+// suite (a short table deliberately stays content-height there, add-
+// item box close to the last row): fill-to-bottom is Tauri-windowed-
+// only. "It feels natural for a webpage to end high up the page, but
+// for a native window it feels unnatural" -- web/widget/mobile keep
+// the existing reachability behavior unchanged.
+test.describe('Tauri windowed-mode: table region fills the window', () => {
+  test('outside Tauri: a short table still stays content-height (unchanged, interaction.spec.js owns this)', async ({ page }) => {
+    await h.gotoTracker(page);
+    await page.waitForTimeout(300);
+    const flexGrow = await page.locator('[data-testid=table-region]').evaluate(el => getComputedStyle(el).flexGrow);
+    expect(flexGrow).toBe('0');
+  });
+
+  test('Tauri windowed: a short table grows to fill the window, anchoring the add-item bar to the bottom', async ({ page }) => {
+    await stubTauriWindow(page);
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await h.gotoTracker(page);
+    await page.waitForTimeout(300);
+    const flexGrow = await page.locator('[data-testid=table-region]').evaluate(el => getComputedStyle(el).flexGrow);
+    expect(flexGrow).toBe('1');
+    const tableBox = await page.locator('[data-testid=table-scroll-wrap]').boundingBox();
+    expect(tableBox.height).toBeGreaterThan(600);
+  });
+});

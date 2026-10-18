@@ -10,8 +10,8 @@
 const { test, expect } = require('@playwright/test');
 const h = require('./helpers');
 
-async function stubTauriWindow(page) {
-  await page.addInitScript(() => {
+async function stubTauriWindow(page, { version } = {}) {
+  await page.addInitScript((appVersion) => {
     window.__windowCalls = { minimize: 0, toggleMaximize: 0, close: 0 };
     window.__TAURI__ = window.__TAURI__ || {};
     window.__TAURI__.window = {
@@ -21,7 +21,10 @@ async function stubTauriWindow(page) {
         close: () => { window.__windowCalls.close++; },
       })
     };
-  });
+    if (appVersion) {
+      window.__TAURI__.app = { getVersion: () => Promise.resolve(appVersion) };
+    }
+  }, version);
 }
 async function stubPlatform(page, platform) {
   await page.addInitScript((p) => {
@@ -72,5 +75,33 @@ test.describe('Tauri windowed-mode titlebar', () => {
     await expect(page.getByText('Wigwag', { exact: true })).toBeVisible();
     await expect(page.locator('[data-testid=btn-global-search]')).toBeVisible();
     await expect(page.locator('[data-testid=btn-appearance]')).toBeVisible();
+  });
+});
+
+test.describe('Tauri windowed-mode status bar', () => {
+  test('outside Tauri: normal footer still renders exactly as before, no status bar', async ({ page }) => {
+    await h.gotoTracker(page);
+    await expect(page.locator('[data-testid=app-footer]')).toBeVisible();
+    await expect(page.locator('[data-testid=app-status-bar]')).toHaveCount(0);
+  });
+
+  test('Tauri windowed: compact status bar replaces the footer, overflow popover reveals the full footer content', async ({ page }) => {
+    await stubTauriWindow(page, { version: '0.1.50' });
+    await h.gotoTracker(page);
+
+    await expect(page.locator('[data-testid=app-footer]')).toHaveCount(0);
+    const bar = page.locator('[data-testid=app-status-bar]');
+    await expect(bar).toBeVisible();
+    await expect(page.locator('[data-testid=status-bar-app-version]')).toContainText('0.1.50');
+    await expect(page.locator('[data-testid=status-bar-overflow-popover]')).toHaveCount(0);
+
+    await page.locator('[data-testid=btn-status-bar-overflow]').click();
+    const popover = page.locator('[data-testid=status-bar-overflow-popover]');
+    await expect(popover).toBeVisible();
+    await expect(popover).toContainText('Format');
+    await expect(popover).toContainText('View source');
+
+    await page.mouse.click(640, 400);
+    await expect(popover).toHaveCount(0);
   });
 });

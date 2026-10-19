@@ -119,6 +119,33 @@ test.describe('Binding an issue-type field to another field ("copy field")', () 
     expect(h.latestFieldRef(iss, remedyId)).toEqual(h.latestFieldRef(iss, 'linked')); // the SAME fieldRef, copied wholesale
   });
 
+  // Tom's live feedback: a bound field that copies in another issue's
+  // reference should be styled like the SOURCE issue itself (bold title,
+  // smaller link beneath), and clicking it to edit should let you edit
+  // the underlying ID/link, not navigate away or show the resolved
+  // title. editValue already resolved to the ID correctly -- the real
+  // gaps were no bold-weight distinction, and a plain click risking
+  // landing on the nested <a> (which, for a wigwag ref, would otherwise
+  // navigate in-app instead of ever reaching edit mode).
+  test('a bound copy-field cell is styled bold like the source issue, and a plain click edits the underlying link instead of navigating', async ({ page }) => {
+    const remedyId = await setUpRemedyBoundToRelated(page);
+    const cell = h.fieldCell(page, 1, remedyId);
+    const weight = await cell.locator('span[title*="ACME"]').evaluate(el => getComputedStyle(el).fontWeight);
+    expect(weight).toBe('600');
+
+    await cell.click();
+    await page.waitForTimeout(150);
+    await cell.click();
+    await page.waitForTimeout(200);
+    await expect(cell.locator('input')).toHaveValue('wigwag:/project/demo-milestone/issue/i2');
+    // Still editable to a plain value too, same as any field.
+    await page.keyboard.press('Control+A');
+    await page.keyboard.type('manually typed override');
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(300);
+    await expect(cell).toContainText('manually typed override');
+  });
+
   test('a THIRD field bound with Remedy as its own linked source can read source.* from it, exactly as if a link had been pasted in directly', async ({ page }) => {
     const remedyId = await setUpRemedyBoundToRelated(page);
 

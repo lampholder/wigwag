@@ -91,69 +91,67 @@ test.describe('Tauri windowed-mode status bar', () => {
     await expect(page.locator('[data-testid=app-status-bar]')).toHaveCount(0);
   });
 
-  // Tracker 0ff73acf: no GitHub sync configured -- the app version is
-  // the fallback always-visible item, and clicking IT (not a separate
-  // "up to date" link) triggers the update check. The overflow icon is
-  // a plain info glyph, not a gear (this isn't a settings menu).
-  test('Tauri windowed, no GitHub sync configured: app version shows directly and is itself the update-check control; overflow uses an info icon, not a gear', async ({ page }) => {
+  // Tracker 1bf10151 (Tom's follow-up on 0ff73acf): the bar should show
+  // ALL info items in a row, separated by middots -- same as the old
+  // inline footer -- not just one item with everything else tucked
+  // behind the (i) icon. The (i) button only exists at all once there
+  // genuinely isn't room to show everything (see the next test).
+  test('Tauri windowed, normal width: every item shows in one row (github sync, view source, format, version), no (i) button, never "Up to date"', async ({ page }) => {
     await stubTauriWindow(page, { version: '0.1.50', updater: true });
+    const gh = h.mockGithubContentsApi(page, REPO);
+    gh.getResponses = [{ status: 404 }];
+    await page.setViewportSize({ width: 1600, height: 900 });
     await h.gotoTracker(page);
+    await h.setGithubRepoSync(page, { repo: REPO, token: 'ghp_faketoken' });
     await page.waitForTimeout(400);
 
     await expect(page.locator('[data-testid=app-footer]')).toHaveCount(0);
-    const bar = page.locator('[data-testid=app-status-bar]');
-    await expect(bar).toBeVisible();
-    await expect(page.locator('[data-testid=status-bar-github-sync]')).toHaveCount(0);
-    const versionRow = page.locator('[data-testid=status-bar-app-version]');
-    await expect(versionRow).toContainText('0.1.50');
-    await expect(versionRow).toContainText('Up to date'); // checkForUpdatesLabel, folded into the same row -- settled after componentDidMount's own automatic check
+    const row = page.locator('[data-testid=status-bar-info-row]');
+    await expect(row).toHaveCSS('opacity', '1');
+    await expect(page.locator('[data-testid=status-bar-github-sync]')).toContainText(REPO);
+    await expect(row).toContainText('View source');
+    await expect(row).toContainText('Format');
+    const versionSpan = page.locator('[data-testid=status-bar-app-version]');
+    await expect(versionSpan).toContainText('0.1.50');
+    await expect(versionSpan).not.toContainText('Up to date'); // never shown at rest, per Tom's own call
+    await expect(page.locator('[data-testid=btn-status-bar-overflow]')).toHaveCount(0);
 
-    const overflowBtn = page.locator('[data-testid=btn-status-bar-overflow]');
-    await expect(overflowBtn.locator('circle')).toHaveCount(1); // the info glyph's circle, not the old gear path
-    await expect(page.locator('[data-testid=status-bar-overflow-popover]')).toHaveCount(0);
-
-    // Clicking the version row itself (not a separate link) re-triggers the check.
+    // Clicking the version itself still triggers a check.
     const callsBefore = await page.evaluate(() => window.__updaterCheckCalls);
-    await versionRow.click();
+    await versionSpan.click();
     await page.waitForTimeout(300);
     await expect.poll(() => page.evaluate(() => window.__updaterCheckCalls)).toBeGreaterThan(callsBefore);
   });
 
-  // Tracker 0ff73acf: GitHub sync IS configured -- it's promoted to the
-  // always-visible slot (per Tom's own stated priority order, it's the
-  // most important thing here) instead of being tucked behind the
-  // overflow icon where it used to live in the old footer's equivalent.
-  test('Tauri windowed, GitHub sync configured: sync status shows directly instead of the app version', async ({ page }) => {
+  // Content genuinely too wide for the available space (a long repo
+  // path) -- the row stays mounted (opacity/pointer-events toggled, so
+  // it keeps getting re-measured) but visually hidden, and the (i)
+  // button appears as the sole fallback, revealing the exact same
+  // info set (now including github sync, since nothing else is shown
+  // directly) in a popover.
+  test('Tauri windowed, content too wide to fit: only the (i) button shows; its popover has everything, still never "Up to date"', async ({ page }) => {
     await stubTauriWindow(page, { version: '0.1.50' });
-    const gh = h.mockGithubContentsApi(page, REPO);
+    const longRepo = 'a-very-long-organization-name/an-equally-long-repository-name-here';
+    const gh = h.mockGithubContentsApi(page, longRepo);
     gh.getResponses = [{ status: 404 }];
+    await page.setViewportSize({ width: 900, height: 900 });
     await h.gotoTracker(page);
-    await h.setGithubRepoSync(page, { repo: REPO, token: 'ghp_faketoken' });
-    await page.waitForTimeout(300);
+    await h.setGithubRepoSync(page, { repo: longRepo, token: 'ghp_faketoken' });
+    await page.waitForTimeout(500);
 
-    await expect(page.locator('[data-testid=status-bar-github-sync]')).toBeVisible();
-    await expect(page.locator('[data-testid=status-bar-github-sync]')).toContainText(REPO);
-    await expect(page.locator('[data-testid=status-bar-app-version]')).toHaveCount(0);
-  });
+    await expect(page.locator('[data-testid=status-bar-info-row]')).toHaveCSS('opacity', '0');
+    const overflowBtn = page.locator('[data-testid=btn-status-bar-overflow]');
+    await expect(overflowBtn).toBeVisible();
+    await expect(overflowBtn.locator('circle')).toHaveCount(1); // the info glyph's circle, not the old gear path
 
-  // Overflow popover order follows Tom's stated importance (view source,
-  // updated, format, app version last) -- the old standalone "check for
-  // updates" link and the duplicate github-sync block are both gone from
-  // here now (sync is already visible directly when configured; the
-  // version row's own click handles the update check).
-  test('overflow popover: reordered by importance, app version last and itself clickable for the update check', async ({ page }) => {
-    await stubTauriWindow(page, { version: '0.1.50' });
-    await h.gotoTracker(page);
-    await page.waitForTimeout(300);
-
-    await page.locator('[data-testid=btn-status-bar-overflow]').click();
+    await overflowBtn.click();
     const popover = page.locator('[data-testid=status-bar-overflow-popover]');
     await expect(popover).toBeVisible();
     await expect(popover).toContainText('View source');
     await expect(popover).toContainText('Format');
+    await expect(popover).toContainText(longRepo);
     await expect(popover.locator('[data-testid=status-bar-popover-app-version]')).toContainText('0.1.50');
-    await expect(popover.locator('[data-testid=footer-check-for-updates]')).toHaveCount(0);
-    await expect(popover.locator('[data-testid=footer-github-sync]')).toHaveCount(0);
+    await expect(popover).not.toContainText('Up to date');
 
     await page.mouse.click(640, 400);
     await expect(popover).toHaveCount(0);

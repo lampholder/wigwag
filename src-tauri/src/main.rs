@@ -35,15 +35,12 @@ fn connected_source_ping() -> String {
 // setting (title/size/decorations/titleBarStyle/hiddenTitle) from the
 // config unchanged and just adding the inset on top.
 //
-// These X/Y values are a REASONED STARTING GUESS, not a verified
-// render -- this container has no real macOS webview to check against.
-// X=28 lines the cluster's left edge up with the rest of the row's own
-// 28px left padding (matching the app's own margin rhythm instead of
-// hugging the bare window edge); Y=14 aims for the cluster's vertical
-// center to land near the logo/wordmark's own center in the 41px-tall
-// title row. Tune both by eye on a real build.
+// Started as a reasoned guess (X=28 to line up with the row's own left
+// padding, Y=14 to aim for vertical center against the logo/wordmark),
+// since this sandbox has no real macOS webview to check against --
+// tuned once already from a real build (Tom: "8px down and 12px left").
 #[cfg(target_os = "macos")]
-const MAC_TRAFFIC_LIGHT_POSITION: (f64, f64) = (28.0, 14.0);
+const MAC_TRAFFIC_LIGHT_POSITION: (f64, f64) = (16.0, 22.0);
 
 #[cfg(target_os = "macos")]
 fn create_main_window(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {

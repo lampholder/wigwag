@@ -288,6 +288,55 @@ test.describe('Bound value panel: row-based conditions', () => {
     await expect(h.fieldCell(page, 1, 'priority')).toHaveText('P2');
   });
 
+  // Tom's live feedback: the rule builder's WHEN/THEN subject picker had
+  // zero awareness of custom connectors -- only the 3 built-in systems
+  // got their own group, even though buildSource already populates
+  // source.<connectorKey> for a connector-linked field. One group per
+  // connector now, matching the built-ins' own shape (fixed fields +
+  // "Source is X").
+  test('a custom connector gets its own subject group (Title/State/Labels/Assignee/"Source is X"), and a criterion against it resolves end-to-end', async ({ page }) => {
+    await page.addInitScript(() => {
+      window.__TAURI__ = window.__TAURI__ || {};
+      window.__TAURI__.core = window.__TAURI__.core || { invoke: () => Promise.resolve(null) };
+    });
+    await h.gotoTracker(page);
+    await page.evaluate(() => {
+      const KEY = 'git_native_tracker_connected_sources_v1';
+      localStorage.setItem(KEY, JSON.stringify({ connectors: [
+        { id: 'conn_1', key: 'linear', name: 'Linear', glyph: 'L', color: 'red', patterns: [], macro: 'async () => ({})', credentialConfigured: true }
+      ] }));
+    });
+    const doc = await h.readActiveMilestoneDoc(page);
+    const i1 = doc.issues.find(i => i.id === 'i1');
+    i1.history.push({
+      id: 'test-linear-ref', time: 'now', actor: 'test', email: 'test@example.com', text: 'Related linked',
+      field: 'linked', value: 'ENG-512',
+      fieldRef: { system: 'connector', connectorId: 'conn_1', connectorKey: 'linear', matchedId: 'ENG-512', title: 'Fix the thing', url: 'https://linear.app/x/ENG-512', state: 'In Progress', labels: ['bug'], assignee: 'jane' },
+      origin: 'authored', sortKey: Date.now(), sig: null, pubKey: null
+    });
+    await h.writeActiveMilestoneDoc(page, doc);
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    await openRowsFor(page, 'priority', 'Related');
+    await page.locator('[data-testid=rule-add-row]').click();
+    await page.waitForTimeout(150);
+    const row = page.locator('[data-testid=rule-row]').first();
+    const subjectSelect = row.locator('[data-testid=rule-row-subject]');
+    const linearOptions = await subjectSelect.locator('optgroup[label="Linear"] option').allTextContents();
+    expect(linearOptions).toEqual(['Source is Linear', 'Linear: Title', 'Linear: State', 'Linear: Labels', 'Linear: Assignee']);
+
+    await fillCriterion(page, row, { subject: 'source.linear?.state', op: 'is', operand: 'In Progress' });
+    await row.locator('[data-testid=rule-row-then]').selectOption({ label: 'P0' });
+    await page.waitForTimeout(300);
+    await page.locator('[data-testid=rule-builder] >> text=✕').first().click();
+    await page.waitForTimeout(400);
+    await page.mouse.click(50, 50);
+    await page.waitForTimeout(200);
+
+    await expect(h.fieldCell(page, 1, 'priority')).toHaveText('P0');
+  });
+
   test('an end-to-end match updates the real cell, and a non-match falls through to the fallback', async ({ page }) => {
     await openRowsFor(page, 'priority', 'Issue');
     await page.locator('[data-testid=rule-add-row]').click();

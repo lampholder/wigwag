@@ -1,21 +1,22 @@
-// Connected Sources (Phase 1): the Settings -> Connected sources UI itself
-// -- the add/edit form (Identity/Credential/Patterns/Macro/Test panels)
-// and the list of built-ins + custom connectors. See
-// /home/dev/.claude/plans/encapsulated-waddling-gizmo.md for the full
-// plan. Dispatch/macro-engine/chip-rendering are covered separately in
-// tests/connected-sources.spec.js; this file is just the form that lets
-// a user define a connector without seeding localStorage by hand.
+// Connected Sources: the Settings -> Connected data sources UI itself --
+// the add/edit form (Identity/Credential/Patterns/Macro/Test panels) for
+// custom connectors, the built-in credential modal for GitHub/Jira/
+// Salesforce, and the combined list. See
+// /home/dev/.claude/plans/encapsulated-waddling-gizmo.md for the settings
+// restructure this file reflects. Dispatch/macro-engine/chip-rendering
+// are covered separately in tests/connected-sources.spec.js; this file is
+// just the Settings-page UI that lets a user configure a connector
+// without seeding localStorage by hand.
 const { test, expect } = require('@playwright/test');
 const h = require('./helpers');
 
-// Decided with Tom: Connected Sources does not exist as a feature outside
-// the real Tauri app -- the "Connected sources" settings section itself is
-// excluded from settingsSectionDefs unless window.__TAURI__ is present
-// (see the patch comment in wigwag.html / the plan doc's Status section),
-// so every test in this file needs it stubbed just to reach the section at
-// all. None of these tests exercise a real macro fetch through it, so a
-// minimal stub (just enough for isTauriConnectorRuntime() to see it) is
-// sufficient everywhere here.
+// Custom connectors (the "+ Add source" affordance and custom rows
+// themselves) still don't exist as a feature outside the real Tauri app
+// -- no keychain, no unrestricted fetch there. The section ITSELF
+// (built-ins, their credential forms, Google Drive rendering) is no
+// longer Tauri-gated though, since all of that already works in a plain
+// browser via the existing proxy pattern. Only the custom-connector-
+// specific tests below need this stub.
 async function stubTauri(page) {
   await page.addInitScript(() => {
     window.__TAURI__ = window.__TAURI__ || {};
@@ -24,21 +25,9 @@ async function stubTauri(page) {
 }
 
 test.describe('Connected Sources (Phase 1): Settings UI', () => {
-  test('outside Tauri, "Connected sources" does not appear in Settings at all -- not just empty, absent', async ({ page }) => {
+  test('outside Tauri, Connected data sources still appears and shows the 3 built-ins editable, but with no "+ Add source" affordance', async ({ page }) => {
     await h.gotoTracker(page);
-    await h.openSettings(page);
-    // The original 4 sections (Identity, GitHub access, Integrations,
-    // Notifications) -- settingsSectionDefs excludes the connectedSources
-    // entry entirely outside Tauri, not merely hides its content once
-    // reached.
-    await expect(page.locator('[data-testid=settings-nav-item]')).toHaveCount(4);
-    await expect(page.locator('[data-testid=settings-nav-item]', { hasText: 'Connected sources' })).toHaveCount(0);
-  });
-
-  test('the list always shows the 3 built-ins (read-only, no Edit) before any custom connector exists', async ({ page }) => {
-    await stubTauri(page);
-    await h.gotoTracker(page);
-    await h.openSettingsSection(page, 'connectedSources');
+    await h.openSettingsSection(page, 'connectedDataSources');
 
     const rows = page.locator('[data-testid=connected-source-row]');
     await expect(rows).toHaveCount(3);
@@ -46,14 +35,57 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
     await expect(rows.nth(1)).toContainText('Jira');
     await expect(rows.nth(2)).toContainText('Salesforce');
     await expect(rows.nth(0)).toContainText('Built-in');
-    // Built-ins are read-only this phase -- no Edit link wired.
-    await expect(rows.nth(0).locator('[data-testid=btn-edit-connected-source]')).toHaveCount(0);
+    // Built-ins are editable now (Tom's call: unify into the same list
+    // custom connectors use), but adding a NEW custom connector still
+    // needs Tauri.
+    await expect(rows.nth(0).locator('[data-testid=btn-edit-connected-source]')).toHaveCount(1);
+    await expect(page.locator('[data-testid=btn-add-connected-source]')).toHaveCount(0);
+  });
+
+  test('editing a built-in opens a credential-only modal (no Identity/Patterns/Macro/Test, no Delete) and the change persists', async ({ page }) => {
+    await h.gotoTracker(page);
+    await h.openSettingsSection(page, 'connectedDataSources');
+
+    const jiraRow = page.locator('[data-testid=connected-source-row]', { hasText: 'Jira' });
+    await jiraRow.locator('[data-testid=btn-edit-connected-source]').click();
+    const modal = page.locator('[data-testid=connector-form-modal]');
+    await expect(modal).toBeVisible();
+    await expect(modal).toContainText('Jira credentials');
+    await expect(page.locator('[data-testid=connector-name-input]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=connector-macro-textarea]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=btn-delete-connector]')).toHaveCount(0);
+
+    await page.locator('[data-testid=connector-builtin-url-input]').fill('http://localhost:9934');
+    await page.locator('[data-testid=connector-builtin-secret-input]').fill('a-real-secret');
+    await page.locator('[data-testid=btn-done-builtin-source]').click();
+    await expect(modal).toBeHidden();
+
+    // Re-open it: the typed values round-trip (they save live, same as
+    // the old always-visible Integrations fields did).
+    await jiraRow.locator('[data-testid=btn-edit-connected-source]').click();
+    await expect(page.locator('[data-testid=connector-builtin-url-input]')).toHaveValue('http://localhost:9934');
+    await expect(page.locator('[data-testid=connector-builtin-secret-input]')).toHaveValue('a-real-secret');
+  });
+
+  test('Google Drive link-rendering settings live on the Connected data sources page, outside the connector list', async ({ page }) => {
+    await h.gotoTracker(page);
+    await h.openSettingsSection(page, 'connectedDataSources');
+    await expect(page.locator('[data-testid=settings-google-drive-proxy-url]')).toBeVisible();
+    await expect(page.locator('[data-testid=settings-google-drive-proxy-secret]')).toBeVisible();
+  });
+
+  test('a custom connector only shows up, and "+ Add source" only appears, inside the real Tauri app', async ({ page }) => {
+    await stubTauri(page);
+    await h.gotoTracker(page);
+    await h.openSettingsSection(page, 'connectedDataSources');
+    await expect(page.locator('[data-testid=btn-add-connected-source]')).toBeVisible();
+    await expect(page.locator('[data-testid=connected-source-row]')).toHaveCount(3);
   });
 
   test('adding a connector: fill every panel, test the real macro, save, and see it appear in the list', async ({ page }) => {
     await stubTauri(page);
     await h.gotoTracker(page);
-    await h.openSettingsSection(page, 'connectedSources');
+    await h.openSettingsSection(page, 'connectedDataSources');
 
     await page.locator('[data-testid=btn-add-connected-source]').click();
     await expect(page.locator('[data-testid=connector-form-modal]')).toBeVisible();
@@ -88,7 +120,7 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
   test('an invalid pattern shows an inline error and blocks Save, without blocking the rest of the form', async ({ page }) => {
     await stubTauri(page);
     await h.gotoTracker(page);
-    await h.openSettingsSection(page, 'connectedSources');
+    await h.openSettingsSection(page, 'connectedDataSources');
     await page.locator('[data-testid=btn-add-connected-source]').click();
 
     await page.locator('[data-testid=connector-name-input]').fill('Broken');
@@ -125,7 +157,7 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
       credentialConfigured: true
     });
     await h.gotoTracker(page);
-    await h.openSettingsSection(page, 'connectedSources');
+    await h.openSettingsSection(page, 'connectedDataSources');
 
     const row = page.locator('[data-testid=connected-source-row]', { hasText: 'EditTest' });
     await expect(row).toContainText('Connected'); // credentialConfigured: true
@@ -163,7 +195,7 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
       // linkTextTemplate deliberately absent -- every connector saved before this feature existed
     });
     await h.gotoTracker(page);
-    await h.openSettingsSection(page, 'connectedSources');
+    await h.openSettingsSection(page, 'connectedDataSources');
 
     const row = page.locator('[data-testid=connected-source-row]', { hasText: 'LinkTextTest' });
     await row.locator('[data-testid=btn-edit-connected-source]').click();
@@ -188,7 +220,7 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
       credentialConfigured: false
     });
     await h.gotoTracker(page);
-    await h.openSettingsSection(page, 'connectedSources');
+    await h.openSettingsSection(page, 'connectedDataSources');
 
     const rowsBefore = page.locator('[data-testid=connected-source-row]');
     await expect(rowsBefore).toHaveCount(4); // 3 built-ins + DeleteMe
@@ -204,7 +236,7 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
   test('Cancel discards an in-progress draft without saving anything', async ({ page }) => {
     await stubTauri(page);
     await h.gotoTracker(page);
-    await h.openSettingsSection(page, 'connectedSources');
+    await h.openSettingsSection(page, 'connectedDataSources');
     await page.locator('[data-testid=btn-add-connected-source]').click();
     await page.locator('[data-testid=connector-name-input]').fill('Abandoned');
     await page.locator('[data-testid=btn-cancel-connector-form]').click();
@@ -223,7 +255,7 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
     await page.setViewportSize({ width: 1280, height: 800 });
     await stubTauri(page);
     await h.gotoTracker(page);
-    await h.openSettingsSection(page, 'connectedSources');
+    await h.openSettingsSection(page, 'connectedDataSources');
 
     const settingsModalBox = await page.locator('[data-testid=settings-modal]').boundingBox();
     await page.locator('[data-testid=btn-add-connected-source]').click();
@@ -251,7 +283,7 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
     test('a pasted URL matching a pattern resolves to the captured id before the macro runs', async ({ page }) => {
       await stubTauri(page);
       await h.gotoTracker(page);
-      await h.openSettingsSection(page, 'connectedSources');
+      await h.openSettingsSection(page, 'connectedDataSources');
       await page.locator('[data-testid=btn-add-connected-source]').click();
 
       await page.locator('[data-testid=connector-name-input]').fill('Jira');
@@ -269,7 +301,7 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
     test('a bare id matching no pattern still falls back to the raw typed value, unchanged', async ({ page }) => {
       await stubTauri(page);
       await h.gotoTracker(page);
-      await h.openSettingsSection(page, 'connectedSources');
+      await h.openSettingsSection(page, 'connectedDataSources');
       await page.locator('[data-testid=btn-add-connected-source]').click();
 
       await page.locator('[data-testid=connector-name-input]').fill('Jira');

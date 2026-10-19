@@ -60,8 +60,9 @@ test.describe('Single identity: breadcrumb still renders, migration labels it "P
   });
 
   test('migration preserves the JIRA PROXY URL default for a user who never set their own (regression: it was silently dropped to empty once the gear popover started reading the migrated identity record)', async ({ page }) => {
-    await h.openSettingsSection(page, 'integrations');
-    await expect(page.locator('[data-testid=settings-jira-proxy-url]')).toHaveValue('http://localhost:8934');
+    await h.openSettingsSection(page, 'connectedDataSources');
+    await page.locator('[data-testid=connected-source-row]', { hasText: 'Jira' }).locator('[data-testid=btn-edit-connected-source]').click();
+    await expect(page.locator('[data-testid=connector-builtin-url-input]')).toHaveValue('http://localhost:8934');
   });
 });
 
@@ -400,7 +401,7 @@ test.describe('Settings modal: section navigation', () => {
     await expect(page.locator('[data-testid=settings-identity-email]')).toBeVisible();
     await expect(page.locator('[data-testid=settings-github-token]')).toHaveCount(0);
 
-    await page.locator('[data-testid=settings-nav-item][data-section-id=github]').click();
+    await page.locator('[data-testid=settings-nav-item][data-section-id=remoteDataStores]').click();
     await page.waitForTimeout(120);
     await expect(page.locator('[data-testid=settings-github-token]')).toBeVisible();
     await expect(page.locator('[data-testid=settings-identity-email]')).toHaveCount(0);
@@ -409,17 +410,17 @@ test.describe('Settings modal: section navigation', () => {
     // now, not Settings -- there's no third settings section for it.
     await expect(page.locator('[data-testid=settings-nav-item][data-section-id=sync]')).toHaveCount(0);
 
-    await page.locator('[data-testid=settings-nav-item][data-section-id=integrations]').click();
+    await page.locator('[data-testid=settings-nav-item][data-section-id=connectedDataSources]').click();
     await page.waitForTimeout(120);
-    await expect(page.locator('[data-testid=settings-jira-proxy-url]')).toBeVisible();
+    await expect(page.locator('[data-testid=connected-source-row]', { hasText: 'Jira' })).toBeVisible();
     await expect(page.locator('[data-testid=settings-github-token]')).toHaveCount(0);
   });
 
   test('a section shows a small accent dot once it has something configured', async ({ page }) => {
-    const githubNav = page.locator('[data-testid=settings-nav-item][data-section-id=github]');
+    const githubNav = page.locator('[data-testid=settings-nav-item][data-section-id=remoteDataStores]');
     await expect(githubNav.locator('span[style*="border-radius"]')).toHaveCount(0);
 
-    await page.locator('[data-testid=settings-nav-item][data-section-id=github]').click();
+    await page.locator('[data-testid=settings-nav-item][data-section-id=remoteDataStores]').click();
     await page.waitForTimeout(120);
     await page.locator('[data-testid=settings-github-token]').fill('ghp_configured');
     await page.waitForTimeout(200);
@@ -427,7 +428,7 @@ test.describe('Settings modal: section navigation', () => {
   });
 
   test('reopening Settings from an identity\'s settings cog always resets to the Identity section', async ({ page }) => {
-    await page.locator('[data-testid=settings-nav-item][data-section-id=integrations]').click();
+    await page.locator('[data-testid=settings-nav-item][data-section-id=connectedDataSources]').click();
     await page.waitForTimeout(120);
     await page.mouse.click(10, 10);
     await page.waitForTimeout(150);
@@ -497,7 +498,7 @@ test.describe('Settings is scoped to the active identity', () => {
   test('YOUR EMAIL/GITHUB TOKEN/JIRA PROXY URL show the active identity\'s own values, and swap when switching identity', async ({ page }) => {
     await h.openSettings(page);
     await expect(page.locator('[data-testid=settings-identity-email]')).toHaveValue('tom@personal.com');
-    await page.locator('[data-testid=settings-nav-item][data-section-id=github]').click();
+    await page.locator('[data-testid=settings-nav-item][data-section-id=remoteDataStores]').click();
     await page.waitForTimeout(120);
     await expect(page.locator('[data-testid=settings-github-token]')).toHaveValue('');
     await page.locator('[data-testid=settings-github-token]').fill('ghp_personal');
@@ -508,7 +509,7 @@ test.describe('Settings is scoped to the active identity', () => {
 
     await h.openSettings(page);
     await expect(page.locator('[data-testid=settings-identity-email]')).toHaveValue('tom@northwind.com');
-    await page.locator('[data-testid=settings-nav-item][data-section-id=github]').click();
+    await page.locator('[data-testid=settings-nav-item][data-section-id=remoteDataStores]').click();
     await page.waitForTimeout(120);
     await expect(page.locator('[data-testid=settings-github-token]')).toHaveValue(''); // Northwind's own (unset), not Personal's
   });
@@ -516,7 +517,7 @@ test.describe('Settings is scoped to the active identity', () => {
   test('editing YOUR EMAIL and GITHUB TOKEN writes through to the active identity\'s own record, and survives a switch away and back', async ({ page }) => {
     await h.openSettings(page);
     await page.locator('[data-testid=settings-identity-email]').fill('tom-changed@personal.com');
-    await page.locator('[data-testid=settings-nav-item][data-section-id=github]').click();
+    await page.locator('[data-testid=settings-nav-item][data-section-id=remoteDataStores]').click();
     await page.waitForTimeout(120);
     await page.locator('[data-testid=settings-github-token]').fill('ghp_renamed');
     await page.waitForTimeout(200);
@@ -542,7 +543,7 @@ test.describe('Settings is scoped to the active identity', () => {
 
     await h.openSettings(page);
     await expect(page.locator('[data-testid=settings-identity-email]')).toHaveValue('tom-changed@personal.com');
-    await page.locator('[data-testid=settings-nav-item][data-section-id=github]').click();
+    await page.locator('[data-testid=settings-nav-item][data-section-id=remoteDataStores]').click();
     await page.waitForTimeout(120);
     await expect(page.locator('[data-testid=settings-github-token]')).toHaveValue('ghp_renamed');
   });

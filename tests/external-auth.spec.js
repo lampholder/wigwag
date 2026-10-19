@@ -59,7 +59,7 @@ test.describe('GitHub token', () => {
     await h.setGithubToken(page, 'ghp_persisted');
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
-    await h.openSettingsSection(page, 'github');
+    await h.openSettingsSection(page, 'remoteDataStores');
     await expect(page.locator('[data-testid=settings-github-token]')).toHaveValue('ghp_persisted');
   });
 });
@@ -412,8 +412,9 @@ test.describe('Salesforce linking', () => {
   test('a set Salesforce proxy URL survives a page reload', async ({ page }) => {
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
-    await h.openSettingsSection(page, 'integrations');
-    await expect(page.locator('[data-testid=settings-salesforce-proxy-url]')).toHaveValue('http://localhost:8936');
+    await h.openSettingsSection(page, 'connectedDataSources');
+    await page.locator('[data-testid=connected-source-row]', { hasText: 'Salesforce' }).locator('[data-testid=btn-edit-connected-source]').click();
+    await expect(page.locator('[data-testid=connector-builtin-url-input]')).toHaveValue('http://localhost:8936');
   });
 });
 

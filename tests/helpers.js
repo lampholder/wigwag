@@ -509,7 +509,7 @@ async function openSettingsSection(page, sectionId) {
 }
 
 async function setGithubToken(page, token) {
-  await openSettingsSection(page, 'github');
+  await openSettingsSection(page, 'remoteDataStores');
   await page.locator('[data-testid=settings-github-token]').fill(token);
   await page.mouse.click(10, 10); // outside Settings -- its full-screen backdrop closes it from anywhere
   await page.waitForTimeout(150);
@@ -541,7 +541,7 @@ async function selectProjectPanelSection(page, id) {
 // its own override) still lives in Settings > GitHub access.
 async function setGithubRepoSync(page, { repo, path, branch, token, tokenOverride } = {}) {
   if (token !== undefined) {
-    await openSettingsSection(page, 'github');
+    await openSettingsSection(page, 'remoteDataStores');
     await page.locator('[data-testid=settings-github-token]').fill(token);
     await page.mouse.click(10, 10); // outside Settings -- its full-screen backdrop closes it from anywhere
     await page.waitForTimeout(150);
@@ -963,25 +963,41 @@ function mockGithubRepoAccessApi(page, owner, repo, responses) {
   return calls;
 }
 
-async function setJiraProxyUrl(page, url) {
-  await openSettingsSection(page, 'integrations');
-  await page.locator('[data-testid=settings-jira-proxy-url]').fill(url);
+// Jira/Salesforce proxy credentials now live behind each built-in's own
+// Edit modal on the Connected data sources page (settings restructure --
+// see /home/dev/.claude/plans/encapsulated-waddling-gizmo.md), not as
+// always-visible fields on a flat "Integrations" page any more. Open the
+// row's modal, fill the field, explicitly click Done to close just that
+// modal, then dismiss Settings itself the same way every other helper
+// here does.
+async function openBuiltinSourceModal(page, name) {
+  await openSettingsSection(page, 'connectedDataSources');
+  await page.locator('[data-testid=connected-source-row]', { hasText: name }).locator('[data-testid=btn-edit-connected-source]').click();
+  await page.waitForTimeout(120);
+}
+async function closeBuiltinSourceModalAndSettings(page) {
+  await page.locator('[data-testid=btn-done-builtin-source]').click();
+  await page.waitForTimeout(120);
   await page.mouse.click(10, 10); // outside Settings -- its full-screen backdrop closes it from anywhere
   await page.waitForTimeout(150);
 }
 
+async function setJiraProxyUrl(page, url) {
+  await openBuiltinSourceModal(page, 'Jira');
+  await page.locator('[data-testid=connector-builtin-url-input]').fill(url);
+  await closeBuiltinSourceModalAndSettings(page);
+}
+
 async function setSalesforceProxyUrl(page, url) {
-  await openSettingsSection(page, 'integrations');
-  await page.locator('[data-testid=settings-salesforce-proxy-url]').fill(url);
-  await page.mouse.click(10, 10);
-  await page.waitForTimeout(150);
+  await openBuiltinSourceModal(page, 'Salesforce');
+  await page.locator('[data-testid=connector-builtin-url-input]').fill(url);
+  await closeBuiltinSourceModalAndSettings(page);
 }
 
 async function setJiraProxySecret(page, secret) {
-  await openSettingsSection(page, 'integrations');
-  await page.locator('[data-testid=settings-jira-proxy-secret]').fill(secret);
-  await page.mouse.click(10, 10);
-  await page.waitForTimeout(150);
+  await openBuiltinSourceModal(page, 'Jira');
+  await page.locator('[data-testid=connector-builtin-secret-input]').fill(secret);
+  await closeBuiltinSourceModalAndSettings(page);
 }
 
 async function pasteText(page, text) {

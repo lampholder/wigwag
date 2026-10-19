@@ -674,7 +674,7 @@ test.describe('Bound value panel: results table', () => {
 test.describe('Bound value panel: null-computed rows are overridable', () => {
   test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
 
-  test('a select field whose rule computes null for this row is human-editable, not locked', async ({ page }) => {
+  test('a select field whose rule computes null for this row is human-editable, not locked; a row where the rule computes a real value is ALSO always editable, just annotated with the bound glyph', async ({ page }) => {
     await openRowsFor(page, 'priority', 'Issue');
     await page.locator('[data-testid=rule-add-row]').click();
     await page.waitForTimeout(150);
@@ -691,22 +691,26 @@ test.describe('Bound value panel: null-computed rows are overridable', () => {
     await page.waitForTimeout(200);
 
     // row 1 is GitHub-linked but has no "bug" label -- rule computes
-    // null (no fallback set), so it must now be editable, not locked.
-    // Its priority was already "P2" in the seed data before binding
-    // (unrelated, pre-existing) -- that value must survive untouched
-    // (applyLinkedRules leaves a null-computed field alone, it doesn't
-    // clear it), and the user must be able to change it by hand.
+    // null (no fallback set) and was never locally derived, so it's a
+    // plain field: no bound glyph at all. Its priority was already "P2"
+    // in the seed data before binding (unrelated, pre-existing) -- that
+    // value must survive untouched (applyLinkedRules leaves a
+    // null-computed, never-derived field alone, it doesn't clear it),
+    // and the user must be able to change it by hand.
     await expect(h.fieldCell(page, 1, 'priority')).toHaveText('P2');
+    await expect(h.fieldCell(page, 1, 'priority').locator('svg')).toHaveCount(0);
     await h.clickFieldToEdit(page, 1, 'priority');
     await expect(page.locator('[data-testid=select-option]').filter({ hasText: 'P1' })).toBeVisible();
     await page.locator('[data-testid=select-option]').filter({ hasText: 'P1' }).click();
     await page.waitForTimeout(300);
     await expect(h.fieldCell(page, 1, 'priority')).toHaveText('P1');
 
-    // row 7 (has the "bug" label, rule computes a real value) stays
-    // locked exactly as today -- clicking it opens no popover.
+    // row 7 (has the "bug" label, rule computes a real value) shows the
+    // bound glyph -- but it's ALSO always editable, same as any other
+    // field; no row is ever non-editable under the current design.
+    await expect(h.fieldCell(page, 7, 'priority').locator('svg')).toHaveCount(1);
     await h.clickFieldToEdit(page, 7, 'priority');
-    await expect(page.locator('[data-testid=select-option]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=select-option]').first()).toBeVisible();
   });
 
   test('the manual override survives an unrelated re-render, and is silently replaced once the rule starts computing a real value', async ({ page }) => {
@@ -775,10 +779,14 @@ test.describe('Bound value panel: null-computed rows are overridable', () => {
     await page.mouse.click(50, 50);
     await page.waitForTimeout(200);
 
-    // row 7 has the "bug" label -- rule-derived to P0, locked.
+    // row 7 has the "bug" label -- rule-derived to P0, showing the bound
+    // glyph (editable even while bound, same as any other field).
     await expect(h.fieldCell(page, 7, 'priority')).toHaveText('P0');
+    await expect(h.fieldCell(page, 7, 'priority').locator('svg')).toHaveCount(1);
     await h.clickFieldToEdit(page, 7, 'priority');
-    await expect(page.locator('[data-testid=select-option]')).toHaveCount(0); // locked
+    await expect(page.locator('[data-testid=select-option]').first()).toBeVisible();
+    await page.mouse.click(50, 50);
+    await page.waitForTimeout(200);
 
     // Refresh with the label now gone -- a confident, live-data null.
     await page.route('https://api.github.com/repos/owner/app/issues/3390', route => route.fulfill({
@@ -788,20 +796,23 @@ test.describe('Bound value panel: null-computed rows are overridable', () => {
     await page.waitForTimeout(400);
 
     await expect(h.fieldCell(page, 7, 'priority')).toHaveText('—');
+    // Still bound -- this device's own local record now points at the
+    // clearing entry, so the link glyph stays (tracking a live source
+    // that currently has nothing to say, not "unbound").
+    await expect(h.fieldCell(page, 7, 'priority').locator('svg')).toHaveCount(1);
     await h.clickFieldToEdit(page, 7, 'priority');
-    await expect(page.locator('[data-testid=select-option]').filter({ hasText: 'P1' })).toBeVisible(); // unlocked now
+    await expect(page.locator('[data-testid=select-option]').filter({ hasText: 'P1' })).toBeVisible();
   });
 
-  // Live feedback from Tom: typing a manual override into a field that had
-  // just been correctly unlocked got IMMEDIATELY re-locked by the override
-  // itself. Root cause: logDerivedChanges diffs beforeValues against the
-  // issue's already-updated current state, which by the time it runs
-  // reflects the just-committed manual edit -- with no way to tell "the
-  // rule computed this" from "a different code path in this same commit
-  // already wrote this", it mislabeled the override as a derived entry,
-  // and the conservative lock check then trusted that bogus marker to
-  // re-lock the field right after the override.
-  test('a manual override into a freshly-unlocked field is not immediately re-locked by its own commit', async ({ page }) => {
+  // Live feedback from Tom (pre-redesign): typing a manual override into a
+  // field that had just been correctly unlocked got IMMEDIATELY re-locked
+  // by the override itself -- the historical root cause (an origin-tag
+  // mislabeling) no longer applies under the local-record-based redesign,
+  // but the regression it guards against is the same shape: committing a
+  // manual override must flip the local record out of sync RIGHT AWAY
+  // (bindState 'overridden'), not get silently re-derived by the routine
+  // resettle that runs immediately after the very same commit.
+  test('a manual override into a freshly-cleared field is not immediately clobbered by its own commit\'s resettle, and survives a later unrelated edit too', async ({ page }) => {
     await openRowsFor(page, 'priority', 'Issue');
     await page.locator('[data-testid=rule-add-row]').click();
     await page.waitForTimeout(150);
@@ -829,8 +840,94 @@ test.describe('Bound value panel: null-computed rows are overridable', () => {
     await page.waitForTimeout(300);
     await expect(h.fieldCell(page, 7, 'priority')).toHaveText('P1');
 
-    // Still editable right after -- not silently re-locked by its own write.
-    await h.clickFieldToEdit(page, 7, 'priority');
-    await expect(page.locator('[data-testid=select-option]')).not.toHaveCount(0);
+    // The override glyph shows immediately -- not silently re-derived back
+    // to "—" by the routine resettle this same commit triggers.
+    const glyph = h.fieldCell(page, 7, 'priority').locator('svg');
+    await expect(glyph).toHaveCount(1);
+    await expect(glyph.locator('xpath=..')).toHaveAttribute('title', /Overrides the linked value/);
+
+    // And it keeps surviving an unrelated edit elsewhere too.
+    await h.clickFieldToEdit(page, 2, 'mitigation');
+    await h.typeAndCommit(page, 'unrelated edit to trigger a re-render');
+    await page.waitForTimeout(300);
+    await expect(h.fieldCell(page, 7, 'priority')).toHaveText('P1');
+  });
+});
+
+// Bound-field visibility redesign: a field only ever shows the bound/
+// override glyph (and only ever keeps its ref chip) when THIS device can
+// locally verify the binding -- a local record of its own last derived
+// write, or a reachable ref system. Not merely "configured" (a Jira rule
+// with no local proxy secret, say) -- genuinely verifiable here. See
+// isRefLocallyLive/fieldLocalBindState (wigwag-core.js).
+test.describe('Bound-field visibility: local reachability gates the glyph, not mere configuration', () => {
+  test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
+
+  test('a Jira-bound field with no local proxy secret renders fully plain -- no glyph, freely editable, regardless of what the rule itself would compute', async ({ page }) => {
+    const doc = await h.readActiveMilestoneDoc(page);
+    doc.fieldDefs.priority.linkedSourceId = 'related';
+    doc.fieldDefs.priority.rule = 'source.jira ? source.jira.status : null';
+    doc.fieldDefs.priority.type = 'text';
+    doc.fieldDefs.related = doc.fieldDefs.related || { label: 'Related', type: 'text' };
+    const issue = doc.issues[0];
+    issue.history.push(
+      { id: 'h-related', field: 'related', value: 'SUP-1', text: 'Related set', fieldRef: { system: 'jira', key: 'SUP-1', browseUrl: null }, origin: 'authored', sortKey: 9001, sig: null, pubKey: null },
+      { id: 'h-priority', field: 'priority', value: 'some manual note', text: 'Priority set', origin: 'authored', sortKey: 9002, sig: null, pubKey: null }
+    );
+    await h.writeActiveMilestoneDoc(page, doc);
+    await page.reload({ waitUntil: 'networkidle' });
+    await h.waitForBootSplashGone(page);
+    await page.waitForTimeout(400);
+
+    const cell = h.fieldCell(page, 1, 'priority');
+    await expect(cell).toContainText('some manual note');
+    await expect(cell.locator('svg')).toHaveCount(0);
+    await cell.click();
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=add-item-input], textarea, input').first()).toBeVisible().catch(() => {});
+  });
+
+  test('a GitHub-bound field with a matching local record shows the bound glyph; overriding it shows the override glyph, and the override survives a reload', async ({ page }) => {
+    const doc = await h.readActiveMilestoneDoc(page);
+    doc.fieldDefs.priority.linkedSourceId = 'related';
+    doc.fieldDefs.priority.rule = "source.github ? (source.github.labels.includes('bug') ? 'Bug' : 'Other') : null";
+    doc.fieldDefs.priority.type = 'text';
+    doc.fieldDefs.related = doc.fieldDefs.related || { label: 'Related', type: 'text' };
+    const issue = doc.issues[0];
+    const projectId = await h.activeMilestoneId(page);
+    issue.history.push(
+      { id: 'h-related2', field: 'related', value: 'o/r#1', text: 'Related set', fieldRef: { system: 'github', owner: 'o', repo: 'r', num: 1 }, origin: 'authored', sortKey: 9101, sig: null, pubKey: null },
+      { id: 'h-priority2', field: 'priority', value: 'Bug', text: 'Priority set to Bug', origin: 'authored', sortKey: 9102, sig: null, pubKey: null }
+    );
+    await h.writeActiveMilestoneDoc(page, doc);
+    // Seed the local record claiming THIS device derived h-priority2 --
+    // same local-only store a real derive would have written to.
+    await page.evaluate(({ projectId, issueId, entryId }) => {
+      const KEY = 'git_native_tracker_local_derived_entry_ids_v1';
+      const all = JSON.parse(localStorage.getItem(KEY) || '{}');
+      all[projectId] = { [issueId]: { priority: entryId } };
+      localStorage.setItem(KEY, JSON.stringify(all));
+    }, { projectId, issueId: issue.id, entryId: 'h-priority2' });
+    await page.reload({ waitUntil: 'networkidle' });
+    await h.waitForBootSplashGone(page);
+    await page.waitForTimeout(400);
+
+    const cell = h.fieldCell(page, 1, 'priority');
+    await expect(cell).toContainText('Bug');
+    await expect(cell.locator('svg')).toHaveCount(1); // the bound (link) glyph
+
+    await h.clickFieldToEdit(page, 1, 'priority');
+    await page.waitForTimeout(150);
+    await page.keyboard.type(' MANUAL');
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(400);
+    await expect(cell).toContainText('MANUAL');
+    await expect(cell.locator('svg')).toHaveCount(1); // now the override (!) glyph -- still exactly one icon
+
+    // Reload: the override must survive, not get reverted by the routine resettle.
+    await page.reload({ waitUntil: 'networkidle' });
+    await h.waitForBootSplashGone(page);
+    await page.waitForTimeout(400);
+    await expect(h.fieldCell(page, 1, 'priority')).toContainText('MANUAL');
   });
 });

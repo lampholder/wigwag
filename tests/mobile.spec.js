@@ -585,6 +585,24 @@ test.describe('M7: row detail', () => {
   });
 
   test('a bound field carries a rule description, is not directly editable, and routes to the rule editor on tap', async ({ page }) => {
+    // Bound-field visibility redesign: "bound" now means THIS device can
+    // locally verify the binding (a local record matching the field's
+    // current latest entry), not merely "has a rule configured" -- a
+    // fresh project with no local derive of its own reads as plain.
+    // Seed the same local-only record a real derive would have written.
+    const projectId = await h.activeMilestoneId(page);
+    const doc = await h.readActiveMilestoneDoc(page);
+    const issue = doc.issues[0];
+    const latestTypeEntry = issue.history.filter(e => e.field === 'type').slice(-1)[0];
+    await page.evaluate(({ projectId, issueId, entryId }) => {
+      const KEY = 'git_native_tracker_local_derived_entry_ids_v1';
+      const all = JSON.parse(localStorage.getItem(KEY) || '{}');
+      all[projectId] = { [issueId]: { type: entryId } };
+      localStorage.setItem(KEY, JSON.stringify(all));
+    }, { projectId, issueId: issue.id, entryId: latestTypeEntry.id });
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
     await page.locator('[data-testid=mobile-row]').first().click();
     await page.waitForTimeout(350);
     const typeField = page.locator('[data-testid=mobile-row-detail-field][data-col=type]');

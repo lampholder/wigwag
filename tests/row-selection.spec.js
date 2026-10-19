@@ -245,7 +245,7 @@ test.describe('Bulk actions: Set field', () => {
     expect(latestTeamsEntry.value).toHaveLength(1);
   });
 
-  test('a field with any selected row deriving it from a linked issue is disabled, with a row-count explanation', async ({ page }) => {
+  test('a field with any selected row currently deriving it from a linked issue is NOT disabled -- clicking it opens the value picker same as any other field, just with an informational row-count note', async ({ page }) => {
     await h.gotoTracker(page);
     const idx = { activeMilestoneId: await h.activeMilestoneId(page) };
     {
@@ -253,20 +253,33 @@ test.describe('Bulk actions: Set field', () => {
       const maxSortKey = Math.max(0, ...doc.issues[0].history.map(h => h.sortKey || 0));
       doc.issues[0].history.push({
         id: 'test-link-force', time: 'now', actor: 'test', email: 'test@example.com', text: 'Linked', field: 'title', value: doc.issues[0].history.slice(-1)[0].value,
-        fieldRef: { system: 'github', owner: 'acme', repo: 'demo', num: 99, labels: [] }, origin: 'authored', sortKey: maxSortKey + 1, sig: null, sigRedacted: null, pubKey: null
+        // "bug" (not the seed's existing "enhancement") so the resettle
+        // below actually produces a CHANGED value -- a no-op recompute
+        // never commits a new entry, so it would never record a local
+        // bind-state either (see logDerivedChanges: it only logs, and
+        // only recordLocalDerivedEntryId's for, fields that actually changed).
+        fieldRef: { system: 'github', owner: 'acme', repo: 'demo', num: 99, labels: ['bug'] }, origin: 'authored', sortKey: maxSortKey + 1, sig: null, sigRedacted: null, pubKey: null
       });
       await h.idbSetProjectDoc(page, idx.activeMilestoneId, doc);
     }
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
 
+    // Boot alone never runs a settle pass (deriveIssueValues just reads
+    // whatever's already in history) -- editing an unrelated field on the
+    // same issue triggers the real commit->settle->log path, which is
+    // what actually records a local bind-state for 'type' against the
+    // fieldRef just forced in above.
+    await h.clickFieldToEdit(page, 1, 'mitigation');
+    await h.typeAndCommit(page, 'unrelated edit to force a real local derive');
+    await page.waitForTimeout(300);
+
     await page.locator('[data-testid=row]').nth(0).locator('[data-testid=row-select-checkbox]').click();
     await page.locator('[data-testid=bulk-set-field-btn]').click();
     const typeRow = page.locator('[data-testid=bulk-field-row][data-col=type]');
-    await expect(typeRow).toHaveCSS('cursor', 'default');
-    await expect(typeRow.locator('[title]')).toHaveAttribute('title', /derives this from a linked issue/);
-
-    await page.locator('[data-testid=bulk-field-row][data-col=priority]').click();
+    await expect(typeRow).toHaveCSS('cursor', 'pointer');
+    await expect(typeRow.locator('[title]')).toHaveAttribute('title', /syncs? this from a linked issue/);
+    await typeRow.click();
     await expect(page.locator('[data-testid=bulk-value-picker]')).toBeVisible();
   });
 });

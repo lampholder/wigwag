@@ -313,7 +313,7 @@ test('evalRule: evaluates against source/values/S, returns undefined on a throwi
   assert.equal(core.evalRule('this is not valid js (((', source, {}), undefined);
 });
 
-test('computeBoundValue / isFieldLocked: unlinked or ruleless fields are never locked, a linked+ruled field resolves and locks', () => {
+test('computeBoundValue: unlinked or ruleless fields are never linked; a linked+ruled field with full source data resolves live', () => {
   const def = { type: 'select', rule: 'source.github.labels.includes("bug") ? "bug" : "enh"', linkedSourceId: 'related' };
   // A fieldRef carrying 'labels' at all is the enriched, in-memory-only
   // shape a fetch/refresh briefly attaches before persisting -- see
@@ -322,66 +322,77 @@ test('computeBoundValue / isFieldLocked: unlinked or ruleless fields are never l
   const bound = core.computeBoundValue(linkedIssue, 'bound', def);
   assert.equal(bound.isLinked, true);
   assert.equal(bound.computed, 'bug');
-  assert.equal(core.isFieldLocked(linkedIssue, 'bound', def), true);
 
   const unlinkedIssue = { values: {}, fieldRefs: {}, history: [] };
   assert.equal(core.computeBoundValue(unlinkedIssue, 'bound', def).isLinked, false);
-  assert.equal(core.isFieldLocked(unlinkedIssue, 'bound', def), false);
 
   const noRuleDef = { type: 'select', linkedSourceId: 'related' };
   assert.equal(core.computeBoundValue(linkedIssue, 'bound', noRuleDef).isLinked, false);
 });
 
-test('isFieldLocked: tracker issue #66 (bfdbe595) -- locked only while the rule has a real (non-null) answer, not merely while the source is linked', () => {
+test('computeBoundValue: tracker issue #66 (bfdbe595) -- a real computed answer can be a confident null/[], distinct from "couldn\'t evaluate at all" (undefined)', () => {
   const def = { type: 'select', rule: 'source.github.labels.includes("bug") ? "bug" : null', linkedSourceId: 'related' };
   const noMatch = { values: { related: 'x' }, fieldRefs: { related: { system: 'github', labels: ['enhancement'] } }, history: [] };
   const bound = core.computeBoundValue(noMatch, 'bound', def);
   assert.equal(bound.isLinked, true); // source IS linked...
-  assert.equal(bound.computed, null); // ...but the rule itself has nothing to say for this issue
-  assert.equal(core.isFieldLocked(noMatch, 'bound', def), false); // so it's open for the user to fill in by hand
+  assert.equal(bound.computed, null); // ...and the rule confidently says "no match" -- a real answer, not undefined
 
   const match = { values: { related: 'x' }, fieldRefs: { related: { system: 'github', labels: ['bug'] } }, history: [] };
-  assert.equal(core.isFieldLocked(match, 'bound', def), true); // a real computed value stays locked, unchanged behavior
+  assert.equal(core.computeBoundValue(match, 'bound', def).computed, 'bug');
 
-  // A multiselect rule deliberately returning [] ("no options") is a real
-  // answer, not null -- must stay locked, not become overridable.
+  // A multiselect rule deliberately returning [] ("no options") is a real answer too.
   const multiDef = { type: 'multiselect', rule: '[]', linkedSourceId: 'related' };
-  assert.equal(core.isFieldLocked(match, 'bound', multiDef), true);
+  assert.deepEqual(core.computeBoundValue(match, 'bound', multiDef).computed, []);
 });
 
-test('computeBoundValue: tracker #112 (b564316d) -- a trimmed (persisted-shape) externally-linked fieldRef can\'t be re-evaluated live; lock state comes from the field\'s own most recent origin:\'derived\' entry instead', () => {
+test('computeBoundValue: a trimmed (real persisted-shape) ref needing full source data is always undefined now -- no history-trust fallback', () => {
   const def = { type: 'select', rule: 'source.github.labels.includes("bug") ? "bug" : "enh"', linkedSourceId: 'related' };
   // No 'labels' key at all -- the real, persisted display-only shape.
   const trimmedRef = { related: { system: 'github', owner: 'o', repo: 'r', num: 1 } };
 
-  // Never refreshed (no history at all for 'bound') -- open, not locked.
   const neverComputed = { values: { related: 'x', bound: null }, fieldRefs: trimmedRef, history: [] };
-  const bound1 = core.computeBoundValue(neverComputed, 'bound', def);
-  assert.equal(bound1.isLinked, true);
-  assert.equal(bound1.computed, undefined);
-  assert.equal(core.isFieldLocked(neverComputed, 'bound', def), false);
+  assert.equal(core.computeBoundValue(neverComputed, 'bound', def).computed, undefined);
 
-  // Most recent entry for 'bound' is origin:'derived' (a refresh actually
-  // computed this) -- locked, and displays that stored value verbatim,
-  // no rule re-evaluation attempted.
-  const derived = {
+  // Even with a real history entry sitting there (old-style origin:
+  // 'derived' or not), computeBoundValue itself no longer consults
+  // history at all for this -- that's now a purely local, separate
+  // concern (see fieldLocalBindState below), fully decoupled from this
+  // function. "Does this still read as bound" is a display-time
+  // question now, not something computeBoundValue answers.
+  const withHistory = {
     values: { related: 'x', bound: 'bug' }, fieldRefs: trimmedRef,
-    history: [{ field: 'bound', value: 'bug', origin: 'derived', sortKey: 1 }]
+    history: [{ id: 'h1', field: 'bound', value: 'bug', origin: 'derived', sortKey: 1 }]
   };
-  assert.equal(core.computeBoundValue(derived, 'bound', def).computed, 'bug');
-  assert.equal(core.isFieldLocked(derived, 'bound', def), true);
+  assert.equal(core.computeBoundValue(withHistory, 'bound', def).computed, undefined);
+});
 
-  // A manual edit lands a NON-derived entry after the derived one --
-  // most-recent wins, so it's unlocked even though an older derived
-  // entry exists further back in history.
-  const overridden = {
-    values: { related: 'x', bound: 'my own note' }, fieldRefs: trimmedRef,
-    history: [
-      { field: 'bound', value: 'bug', origin: 'derived', sortKey: 1 },
-      { field: 'bound', value: 'my own note', sortKey: 2 }
-    ]
-  };
-  assert.equal(core.isFieldLocked(overridden, 'bound', def), false);
+test('isRefLocallyLive: github/wigwag always reachable; jira/salesforce need their own proxy SECRET (never the hint-default ProxyUrl fields); connector needs the real Tauri runtime plus a matching local entry', () => {
+  assert.equal(core.isRefLocallyLive({ system: 'github' }, {}), true);
+  assert.equal(core.isRefLocallyLive({ system: 'wigwag' }, {}), true);
+  assert.equal(core.isRefLocallyLive({ system: 'jira' }, {}), false);
+  assert.equal(core.isRefLocallyLive({ system: 'jira' }, { jiraProxySecret: '  ' }), false);
+  assert.equal(core.isRefLocallyLive({ system: 'jira' }, { jiraProxySecret: 'abc' }), true);
+  assert.equal(core.isRefLocallyLive({ system: 'salesforce' }, { salesforceProxySecret: 'abc' }), true);
+  assert.equal(core.isRefLocallyLive({ system: 'salesforce' }, {}), false);
+  assert.equal(core.isRefLocallyLive({ system: 'connector', connectorId: 'c1' }, { tauriConnectorRuntime: true, connectedSources: [{ id: 'c1' }] }), true);
+  assert.equal(core.isRefLocallyLive({ system: 'connector', connectorId: 'c1' }, { tauriConnectorRuntime: false, connectedSources: [{ id: 'c1' }] }), false);
+  assert.equal(core.isRefLocallyLive({ system: 'connector', connectorId: 'c1' }, { tauriConnectorRuntime: true, connectedSources: [{ id: 'other' }] }), false);
+  assert.equal(core.isRefLocallyLive(null, {}), false);
+});
+
+test('computeBoundValue: ctx reachability gates jira/salesforce/connector refs even when their data would otherwise be full', () => {
+  const def = { type: 'text', rule: 'source.jira.status', linkedSourceId: 'related' };
+  const issue = { values: { related: 'x' }, fieldRefs: { related: { system: 'jira', status: 'Open' } }, history: [] }; // enriched shape, has full data
+  assert.equal(core.computeBoundValue(issue, 'bound', def, {}).computed, undefined); // no secret configured -> never even tries
+  assert.equal(core.computeBoundValue(issue, 'bound', def, { jiraProxySecret: 'tok' }).computed, 'Open'); // secret present -> evaluates live
+});
+
+test('fieldLocalBindState: no local record is plain; a matching record is bound; a stale/missing-match record is overridden', () => {
+  const issue = { history: [{ id: 'h1', field: 'bound', value: 'bug', sortKey: 1 }] };
+  assert.equal(core.fieldLocalBindState(issue, 'bound', undefined), 'plain');
+  assert.equal(core.fieldLocalBindState(issue, 'bound', {}), 'plain');
+  assert.equal(core.fieldLocalBindState(issue, 'bound', { bound: 'h1' }), 'bound');
+  assert.equal(core.fieldLocalBindState(issue, 'bound', { bound: 'some-other-entry' }), 'overridden');
 });
 
 test('applyComputedToField: resolves a select computed value to its option id, leaves non-matches null', () => {
@@ -405,24 +416,78 @@ test('applyLinkedRules: only overwrites fields that are actually bound+linked, l
   assert.equal(alreadyApplied, result); // same reference -- no-op when nothing changed
 });
 
-test('applyLinkedRules: tracker issue #66 (bfdbe595) -- a null-computed field is left completely untouched, so a manual override survives repeated calls', () => {
+test('applyLinkedRules: a pre-existing value with no local derive record of its own (never bound+evaluated by this device before) is overwritten once the rule computes a real answer -- binding a rule for the first time is expected to actually take effect, even over unrelated old data', () => {
   const fieldDefs = {
     type: { type: 'select', options: [{ id: 'bug', label: 'Bug' }], rule: 'source.github.labels.includes("bug") ? "bug" : null', linkedSourceId: 'related' }
   };
-  const issue = { values: { type: 'manually-typed-override', related: 'x' }, fieldRefs: { related: { system: 'github', labels: ['enhancement'] } } };
-  // The rule computes null for this issue (no "bug" label) -- the old
-  // behavior would have clobbered the override back to null every call;
-  // it must now survive completely untouched, repeatedly.
-  const once = core.applyLinkedRules(issue, fieldDefs);
-  assert.equal(once, issue); // not even a new object -- truly untouched
-  assert.equal(once.values.type, 'manually-typed-override');
-  const twice = core.applyLinkedRules(once, fieldDefs);
-  assert.equal(twice.values.type, 'manually-typed-override');
+  const issue = {
+    values: { type: 'some-old-value', related: 'x' },
+    fieldRefs: { related: { system: 'github', labels: ['enhancement'] } },
+    // A real entry, but never derived by any rule -- no local record
+    // anywhere claims this device derived it (bindState 'plain').
+    history: [{ id: 'h1', field: 'type', value: 'some-old-value', sortKey: 1 }]
+  };
+  // No match yet (labels don't include "bug") -- a confidently-empty
+  // answer with no prior local derive is hands-off, the old value survives.
+  const once = core.applyLinkedRules(issue, fieldDefs, {});
+  assert.equal(once, issue);
+  assert.equal(once.values.type, 'some-old-value');
 
-  // Once the source starts computing a real value, the override is
-  // silently discarded on the very next call -- documented, not a bug.
+  // The source starts matching -- a REAL answer always applies, even
+  // though nothing here was ever locally derived before. This is the
+  // "first bind" feature itself: a rule with a genuine answer is expected
+  // to take over the field.
   const nowLinked = { ...issue, fieldRefs: { related: { system: 'github', labels: ['bug'] } } };
-  assert.equal(core.applyLinkedRules(nowLinked, fieldDefs).values.type, 'bug');
+  assert.equal(core.applyLinkedRules(nowLinked, fieldDefs, {}).values.type, 'bug');
+});
+
+test('applyLinkedRules: once this device has actually derived a value here (bindState \'bound\'), a manual override flips the local record out of sync (\'overridden\') and is never auto-reapplied by a routine resettle again, even once the rule\'s answer changes', () => {
+  const fieldDefs = {
+    type: { type: 'select', options: [{ id: 'bug', label: 'Bug' }], rule: 'source.github.labels.includes("bug") ? "bug" : null', linkedSourceId: 'related' }
+  };
+  // This device previously derived "bug" here (h1 recorded as its own
+  // local write) -- then the user manually overrode it to something else
+  // (h2, a newer entry the local record doesn't know about).
+  const issue = {
+    values: { type: 'manually-typed-override', related: 'x' },
+    fieldRefs: { related: { system: 'github', labels: ['bug'] } }, // still matches -- would compute 'bug' again
+    history: [
+      { id: 'h1', field: 'type', value: 'bug', sortKey: 1 },
+      { id: 'h2', field: 'type', value: 'manually-typed-override', sortKey: 2 }
+    ]
+  };
+  const ctx = { localDerivedEntryIds: { type: 'h1' } }; // stale -- h2 is actually latest
+  assert.equal(core.applyLinkedRules(issue, fieldDefs, ctx).values.type, 'manually-typed-override');
+});
+
+test('applyLinkedRules: a value this device itself last derived (local record matches the latest entry) keeps recomputing normally, including clearing to a confident null', () => {
+  const fieldDefs = {
+    type: { type: 'select', options: [{ id: 'bug', label: 'Bug' }], rule: 'source.github.labels.includes("bug") ? "bug" : null', linkedSourceId: 'related' }
+  };
+  const issue = {
+    values: { type: 'bug', related: 'x' },
+    fieldRefs: { related: { system: 'github', labels: ['enhancement'] } }, // no longer matches "bug"
+    history: [{ id: 'h1', field: 'type', value: 'bug', sortKey: 1 }]
+  };
+  const ctx = { localDerivedEntryIds: { type: 'h1' } }; // this device's own last derived write WAS h1
+  assert.equal(core.applyLinkedRules(issue, fieldDefs, ctx).values.type, null); // confidently clears -- safe, it's this device's own binding
+
+  // First-time population (no history at all yet) always proceeds too.
+  const fresh = { values: { type: null, related: 'x' }, fieldRefs: { related: { system: 'github', labels: ['bug'] } }, history: [] };
+  assert.equal(core.applyLinkedRules(fresh, fieldDefs, {}).values.type, 'bug');
+});
+
+test('applyLiveLinkedRules: unconditionally overwrites even a manually-overridden value -- an explicit refresh always lands on top, unlike the routine applyLinkedRules path', () => {
+  const fieldDefs = {
+    type: { type: 'select', options: [{ id: 'bug', label: 'Bug' }, { id: 'enh', label: 'Enh' }], rule: 'source.github.labels.includes("bug") ? "bug" : "enh"', linkedSourceId: 'related' }
+  };
+  const issue = {
+    values: { type: 'manually-typed-override', related: 'x' },
+    fieldRefs: { related: { system: 'github', owner: 'o', repo: 'r', num: 1 } },
+    history: [{ id: 'h1', field: 'type', value: 'manually-typed-override', sortKey: 1 }]
+  };
+  const result = core.applyLiveLinkedRules(issue, fieldDefs, 'related', 'github', { labels: ['bug'] });
+  assert.equal(result.values.type, 'bug'); // a genuine fresh sync always wins, override or not
 });
 
 test('applyLiveLinkedRules: tracker #112 (b564316d) -- recomputes fields bound to sourceColId against a live payload, never touching issue.fieldRefs', () => {
@@ -442,11 +507,27 @@ test('applyLiveLinkedRules: tracker #112 (b564316d) -- recomputes fields bound t
   const result2 = core.applyLiveLinkedRules(iss, withUnrelatedBound, 'related', 'github', liveData);
   assert.equal(result2.values.elsewhere, undefined);
 
-  // A null computed result is hands-off, same as applyLinkedRules.
+  // A null computed result only clears a value with no local derive record
+  // of its own (bindState 'plain', e.g. a genuine manual entry) -- hands
+  // off, same as applyLinkedRules.
   const noMatchData = { labels: ['enhancement'] };
   const fieldDefsNullable = { type: { ...fieldDefs.type, rule: 'source.github.labels.includes("bug") ? "bug" : null' } };
   const preset = { ...iss, values: { ...iss.values, type: 'manual' } };
   assert.equal(core.applyLiveLinkedRules(preset, fieldDefsNullable, 'related', 'github', noMatchData).values.type, 'manual');
+});
+
+test('applyLiveLinkedRules: a null computed result DOES clear a value this device\'s own local record shows it derived itself -- the #66 "stale derived value" behavior, now keyed off the local record instead of a signed origin tag', () => {
+  const fieldDefs = {
+    type: { type: 'select', options: [{ id: 'bug', label: 'Bug' }], rule: 'source.github.labels.includes("bug") ? "bug" : null', linkedSourceId: 'related' }
+  };
+  const iss = {
+    values: { type: 'bug', related: 'y' },
+    fieldRefs: { related: { system: 'github', owner: 'o', repo: 'r', num: 1 } },
+    history: [{ id: 'h1', field: 'type', value: 'bug', sortKey: 1 }]
+  };
+  const ctx = { localDerivedEntryIds: { type: 'h1' } }; // this device's own last derived write WAS h1
+  const noMatchData = { labels: [] };
+  assert.equal(core.applyLiveLinkedRules(iss, fieldDefs, 'related', 'github', noMatchData, ctx).values.type, null);
 });
 
 // --- Tracker #113 (bcee4751): filter-bar field:value tokens + autocomplete ---

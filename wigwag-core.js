@@ -480,6 +480,20 @@ const LAYOUT_PROPOSAL_DEVICE_ID_KEY = 'git_native_tracker_device_id_v1';
 // ruleFallback } } }. See effectiveFieldDefs() below for how this
 // overlays onto the portable fieldDefs at evaluation/render time only.
 const LOCAL_FIELD_BINDINGS_KEY = 'git_native_tracker_local_bindings_v1';
+// Bound-field visibility redesign: which history entry id THIS DEVICE's
+// own rule evaluation most recently wrote for a given field -- never
+// entry content, just the id, same "store ids only, join live against
+// real history" discipline the local-only merge log already uses (see
+// MERGE_LOG_KEY_PREFIX below). Per-browser, per-project, per-issue,
+// per-field -- deliberately never read by persist()/buildSourceText(),
+// same reasoning as LOCAL_FIELD_BINDINGS_KEY above. This is what makes
+// "does this field currently show as bound" a purely local, point-in-
+// time decision rather than something that travels with the synced
+// data: a value that arrived via sync from another device, or one this
+// device typed by hand, simply has no entry here, regardless of what
+// origin tag (if any) the real history entry happens to carry.
+// { [projectId]: { [issueId]: { [colId]: entryId } } }
+const LOCAL_DERIVED_ENTRY_IDS_KEY = 'git_native_tracker_local_derived_entry_ids_v1';
 // Connected Sources (Phase 1): user-defined custom connectors (name,
 // glyph/color, patterns, pasted macro source) -- local-only, same
 // reasoning as LOCAL_FIELD_BINDINGS_KEY above (a connector pointing at
@@ -1983,37 +1997,61 @@ function ruleNeedsSourceData(ruleStr) {
 function isEmptyBoundValue(v) {
   return v == null || v === '' || (Array.isArray(v) && v.length === 0);
 }
-function computeBoundValue(issue, colId, def) {
+// Whether THIS device has a working path to re-evaluate a ref's own
+// system at all -- github/wigwag need nothing (github works unauth'd
+// against the public API; wigwag is an internal cross-project link, not
+// an external system); jira/salesforce need their own proxy SECRET
+// specifically, never the ...ProxyUrl fields -- both of those carry a
+// hardcoded non-blank localhost default (a harmless UX hint for a field
+// with no fallback path, not a "configured" signal -- confirmed via a
+// past regression from treating it as one), so only the secret fields
+// are ever truthy exactly when a user actually configured something;
+// connector needs both the real Tauri connector runtime AND a matching
+// entry in this device's own connectedSources list. A device can have a
+// BINDING configured (rule/linkedSourceId -- already local-only via
+// LOCAL_FIELD_BINDINGS_KEY, but still able to arrive via project import/
+// export even though it's never git-synced) without having the matching
+// credential/connector itself -- that gap is exactly what this closes.
+function isRefLocallyLive(ref, ctx) {
+  if (!ref) return false;
+  ctx = ctx || {};
+  const system = ref.system || 'github';
+  if (system === 'jira') return !!(ctx.jiraProxySecret || '').trim();
+  if (system === 'salesforce') return !!(ctx.salesforceProxySecret || '').trim();
+  if (system === 'connector') return !!ctx.tauriConnectorRuntime && (ctx.connectedSources || []).some(c => c.id === ref.connectorId);
+  return true; // github, wigwag
+}
+function computeBoundValue(issue, colId, def, ctx) {
   if (!def.rule || !def.linkedSourceId) return { isLinked: false, computed: undefined };
   const sourceRef = issue.fieldRefs && issue.fieldRefs[def.linkedSourceId];
   if (!sourceRef) return { isLinked: false, computed: undefined };
-  if (!sourceRefHasFullData(sourceRef) && ruleNeedsSourceData(def.rule)) {
-    // Can't re-run the rule -- trust the last value a live refresh
-    // actually computed, tracked via an explicit origin:'derived' marker
-    // on this field's own most recent entry. Tracker #66's "a null
-    // computation unlocks the field" behavior falls out of this for
-    // free: a field that's never been refreshed, or whose last refresh
-    // confidently computed empty/null (now written for real -- see
-    // applyLinkedRules below), simply isn't treated as locked here.
-    const latest = latestEntryForField(issue, colId);
-    const locked = !!latest && latest.origin === 'derived' && !isEmptyBoundValue(latest.value);
-    return { isLinked: true, computed: locked ? issue.values[colId] : undefined };
-  }
+  // Not locally live, or live but the persisted ref is trimmed and the
+  // rule needs the full payload: nothing to protect by trusting stale
+  // history any more (see fieldLocalBindState below for how "does this
+  // still read as bound" is decided now -- a purely local record lookup,
+  // not a live re-evaluation) -- just hands off, same as "not yet linked".
+  if (!isRefLocallyLive(sourceRef, ctx)) return { isLinked: true, computed: undefined };
+  if (!sourceRefHasFullData(sourceRef) && ruleNeedsSourceData(def.rule)) return { isLinked: true, computed: undefined };
   const source = buildSource(issue, def.linkedSourceId);
   return { isLinked: true, computed: evalRule(def.rule, source, issue.values) };
 }
-// Whether a field is currently rule-derived (and therefore locked from
-// manual/bulk edit) for a specific issue -- every cell builder already
-// inlines this same check; bulk Set-field is the first caller that needs
-// it outside a per-cell render, hence pulling it out to a name.
-// Locked only while the rule has a REAL (non-null) answer -- tracker
-// issue #66 (bfdbe595): a rule that computes null for this issue leaves
-// the field open for the user to fill in by hand instead of permanently
-// blank. computed:[] (a multiselect rule deliberately choosing "no
-// options") is a real answer, not null, and stays locked.
-function isFieldLocked(issue, colId, def) {
-  const bound = computeBoundValue(issue, colId, def);
-  return bound.isLinked && bound.computed != null;
+// Purely local: does THIS DEVICE'S OWN record of its last rule-driven
+// write for this field still match what's actually stored? No record
+// at all -> 'plain', ordinary field -- covers never-bound-here, a value
+// that arrived via sync from another device (that device's write isn't
+// in THIS device's own local store), and a legacy origin:'derived'
+// entry signed before this redesign (deliberately no fallback -- just
+// reads as plain until next touched locally). A record that still
+// matches the field's current latest entry -> 'bound' (the existing
+// link/chip icon). A record that no longer matches -> 'overridden' (a
+// manual edit, almost always) -- the `!` glyph.
+// localDerivedEntryIdsForIssue: already scoped by the caller to the
+// right project+issue, shaped { [colId]: entryId } | undefined.
+function fieldLocalBindState(issue, colId, localDerivedEntryIdsForIssue) {
+  const recordedId = localDerivedEntryIdsForIssue ? localDerivedEntryIdsForIssue[colId] : undefined;
+  if (!recordedId) return 'plain';
+  const latest = latestEntryForField(issue, colId);
+  return (latest && latest.id === recordedId) ? 'bound' : 'overridden';
 }
 // select: computed matched against option id/label -> that option's id (or
 // null if nothing matches). multiselect: computed may be an array or a
@@ -2038,31 +2076,36 @@ function applyComputedToField(values, colId, def, computed) {
   const next = computed == null ? '' : String(computed);
   return next === values[colId] ? values : { ...values, [colId]: next };
 }
-function applyLinkedRules(iss, fieldDefs) {
+// ctx.localDerivedEntryIds, if given, is already scoped by the caller
+// to THIS issue: { [colId]: entryId }.
+function applyLinkedRules(iss, fieldDefs, ctx) {
   let values = iss.values;
   for (const colId in fieldDefs) {
     const def = fieldDefs[colId];
-    const bound = computeBoundValue(iss, colId, def);
+    const bound = computeBoundValue(iss, colId, def, ctx);
     // undefined means "couldn't evaluate this with any confidence" (not
-    // bound, not yet linked, or the conservative can't-safely-re-run
-    // branch) -- hands off, same as ever: don't clear or overwrite
-    // whatever's currently there, whether that's blank (never touched)
-    // or a manual override the user typed in while the rule had nothing
-    // to say. A REAL answer -- including a confident "" / null / [] from
-    // a rule that was actually evaluated against full data -- always
-    // applies, clearing the field if that's what the rule now says. The
-    // moment the rule computes a non-empty value again, this resumes
-    // overwriting on the very next call, same as it always has. A
-    // confident EMPTY result is more careful, though: it only clears a
-    // value that was ITSELF previously computed by this same rule (its
-    // latest entry is origin:'derived', now stale) -- a genuine manual
-    // entry, or a field never yet touched by any binding, is never
-    // auto-cleared just because the rule currently has nothing to say.
+    // bound, not yet linked, not locally live, or the trimmed-ref branch)
+    // -- hands off, don't touch whatever's currently there.
     if (!bound.isLinked || bound.computed === undefined) continue;
-    if (isEmptyBoundValue(bound.computed)) {
-      const latest = latestEntryForField(iss, colId);
-      if (!latest || latest.origin !== 'derived') continue;
-    }
+    // A REAL (non-empty) answer always auto-applies -- binding a field to
+    // a rule for the first time, or a rule starting to match where it
+    // didn't before, is expected to actually take effect, even over
+    // whatever (unrelated, never-derived) value happened to be sitting in
+    // the field already. The ONLY thing this guards against is clobbering
+    // a genuine override: once this device has derived a value here at
+    // least once (bindState 'bound'), a later manual edit flips the local
+    // record out of sync ('overridden') and is never auto-reapplied by a
+    // routine resettle again -- see applyLiveLinkedRules below for the
+    // one path that's still allowed to land on top of an override (an
+    // explicit live refresh, not this routine one). A confidently-EMPTY
+    // answer is narrower: it only clears a value this device knows it
+    // derived itself (bindState 'bound') -- never a value that's merely
+    // sitting there unbound/unseen (bindState 'plain'), so a rule with no
+    // fallback never silently blanks out pre-existing data just because
+    // this row doesn't currently match.
+    const bindState = ctx && ctx.localDerivedEntryIds ? fieldLocalBindState(iss, colId, ctx.localDerivedEntryIds) : 'plain';
+    if (bindState === 'overridden') continue;
+    if (isEmptyBoundValue(bound.computed) && bindState !== 'bound') continue;
     values = applyComputedToField(values, colId, def, bound.computed);
   }
   return values === iss.values ? iss : { ...iss, values };
@@ -2084,7 +2127,7 @@ function applyLinkedRules(iss, fieldDefs) {
 // text, not the common case of a plain value rule) to leave as a
 // documented limitation rather than threading liveData through that path
 // too.
-function applyLiveLinkedRules(iss, fieldDefs, sourceColId, system, liveData) {
+function applyLiveLinkedRules(iss, fieldDefs, sourceColId, system, liveData, ctx) {
   const source = {
     text: iss.values[sourceColId] || '', isLinked: true,
     github: system === 'github' ? pickGithubFields(liveData) : null,
@@ -2109,13 +2152,16 @@ function applyLiveLinkedRules(iss, fieldDefs, sourceColId, system, liveData) {
     // applyLinkedRules. This is always called with a real, freshly-
     // fetched payload (never a trimmed/persisted ref), so a confident ""
     // / null / [] here really does mean "evaluated it, genuinely no
-    // match" -- but same as applyLinkedRules, that only clears a value
-    // that was ITSELF previously computed by this same rule (now stale),
-    // never a genuine manual entry or a field no binding has touched yet.
+    // match". A non-empty answer always wins unconditionally -- this is
+    // the one path that's allowed to land on top of a manual override, a
+    // genuine fresh sync. A confidently-empty answer is narrower, same
+    // rule as applyLinkedRules: only clears a value this device's own
+    // local record shows it derived itself (bindState 'bound'), never a
+    // genuine manual entry or a field no binding has touched yet.
     if (computed === undefined) continue;
     if (isEmptyBoundValue(computed)) {
-      const latest = latestEntryForField(iss, colId);
-      if (!latest || latest.origin !== 'derived') continue;
+      const bindState = ctx && ctx.localDerivedEntryIds ? fieldLocalBindState(iss, colId, ctx.localDerivedEntryIds) : 'plain';
+      if (bindState !== 'bound') continue;
     }
     values = applyComputedToField(values, colId, def, computed);
   }
@@ -2158,11 +2204,11 @@ function computeBoundFieldRef(issue, def) {
 // a pathological/cyclic binding (A bound to B bound to A) can't loop
 // forever -- it just stops after exhausting the budget, same as any
 // other caller of this shared, pure settle-to-fixed-point helper.
-function settleLinkedRules(issue, fieldDefs) {
+function settleLinkedRules(issue, fieldDefs, ctx) {
   let afterIssue = issue;
   const maxHops = Object.keys(fieldDefs).length + 1;
   for (let i = 0; i < maxHops; i++) {
-    const next = applyLinkedRules(afterIssue, fieldDefs);
+    const next = applyLinkedRules(afterIssue, fieldDefs, ctx);
     let fieldRefs = next.fieldRefs;
     for (const colId in fieldDefs) {
       if (!fieldDefs[colId].linkedSourceId) continue;
@@ -3385,8 +3431,6 @@ function computeDerivedChangeEntries(issue, beforeValues, fieldDefs, excludeColI
     const before = beforeValues[colId];
     const after = issue.values[colId];
     const valueChanged = JSON.stringify(before === undefined ? null : before) !== JSON.stringify(after === undefined ? null : after);
-    const srcDef = fieldDefs[def.linkedSourceId];
-    const srcLabel = srcDef ? srcDef.label : def.linkedSourceId;
     // Tracker issue #66 (bfdbe595), Part 2: a "copy field X" bound row
     // carries X's own real fieldRef along with its value -- copied here
     // via commitSignedEntry's normal fieldRef param, so it lands in real
@@ -3419,9 +3463,15 @@ function computeDerivedChangeEntries(issue, beforeValues, fieldDefs, excludeColI
     const fieldRefChanged = hasFieldRefRelationship && JSON.stringify(fieldRef) !== JSON.stringify(beforeFieldRef);
     if (!valueChanged && !fieldRefChanged) continue;
     const displayVal = displayValueForHistory(def, after);
-    const source = buildSource(issue, def.linkedSourceId);
-    const derivedFrom = source.text ? ('state of ' + source.text + ' in column ' + srcLabel) : srcLabel;
-    entries.push({ colId, text: (def.label || colId) + ' set to ' + displayVal + ' (derived from ' + derivedFrom + ')', value: after, fieldRef });
+    // Deliberately no "(derived from state of X in column Y)" suffix any
+    // more -- that named an external system/field to anyone reading raw
+    // history, which is exactly the provenance leak this redesign
+    // removes. The entry now reads the same shape a manual edit's own
+    // text would (see commitFieldValue's own text generation); "was this
+    // derived, and from where" is tracked purely locally now (see
+    // LOCAL_DERIVED_ENTRY_IDS_KEY / fieldLocalBindState above), never in
+    // the exported/signed text itself. srcLabel is no longer used here.
+    entries.push({ colId, text: (def.label || colId) + ' set to ' + displayVal, value: after, fieldRef });
   }
   return entries;
 }
@@ -4445,7 +4495,7 @@ async function probeMatrixRoomAccess({ fetchImpl, homeserverUrl, accessToken, ro
 }
 
 const WigwagCoreExports = {
-  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, xlsxDateTimeSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_NS, storageNamespacePrefix, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LAYOUT_PROPOSAL_DEVICE_ID_KEY, CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, tokenizeFilterQuery, parseFilterQuery, issueMatchesFieldToken, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, formatNow, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, GOOGLE_DRIVE_URL_RE, googleDriveFileIdFromUrl, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, pickConnectorFields, connectorLinkText, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, migrateLegacyComments, deriveFieldDefs, effectiveFieldDefs, PROJECT_NAME_FIELD_ID, deriveProjectName, PROJECT_NOTES_FIELD_ID, deriveProjectNotes, simpleStringHash, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, issueTimestampValue, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, MATRIX_USER_ID_RE, principalKind, identityPrincipal, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, sourceRefHasFullData, evalRule, compileConnectorMacro, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isFieldLocked, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, issueCreatedAt,
+  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, xlsxDateTimeSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_NS, storageNamespacePrefix, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, LAYOUT_PROPOSAL_DEVICE_ID_KEY, CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, tokenizeFilterQuery, parseFilterQuery, issueMatchesFieldToken, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, formatNow, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, GOOGLE_DRIVE_URL_RE, googleDriveFileIdFromUrl, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, pickConnectorFields, connectorLinkText, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, migrateLegacyComments, deriveFieldDefs, effectiveFieldDefs, PROJECT_NAME_FIELD_ID, deriveProjectName, PROJECT_NOTES_FIELD_ID, deriveProjectNotes, simpleStringHash, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, issueTimestampValue, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, MATRIX_USER_ID_RE, principalKind, identityPrincipal, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, sourceRefHasFullData, evalRule, compileConnectorMacro, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, fieldLocalBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, issueCreatedAt,
   importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry,
   squashHistory, displayValueForHistory, buildSourceText, keyRegistryEncoder, rehydrateKeyRef, humanFileSize, parseJsonl, entryKey, commentKey, unionByKey, mergeCommentStreams, mergeIssuePair, computeIssueMerge, mergeHasRealChanges, computeFieldDefsMerge, computeDerivedChangeEntries,
   isPastedTextASingleUrl, wrapSelectionWithMarkdownLink,

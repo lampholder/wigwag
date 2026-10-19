@@ -150,13 +150,22 @@ async function commitProjectHistoryEntry(ctx, doc, { text, field, value, origin 
 // After any manual field edit, re-apply rule-bound fields and log
 // whatever changed as a result -- the same applyLinkedRules +
 // logDerivedChanges sequence every write path in wigwag.html follows.
+// Passes {} for ctx -- the CLI has no connector/proxy-secret concept at
+// all (each invocation reconnects fresh, nothing persists across runs),
+// so jira/salesforce/connector refs are never treated as locally live
+// here; only github/wigwag-sourced rules (always reachable) and
+// copy-field rows actually recompute. No origin tag on the resulting
+// entry any more either -- bound-field provenance is purely local-only
+// state the UI tracks for itself now (see wigwag-core.js's
+// LOCAL_DERIVED_ENTRY_IDS_KEY), never part of the exported/signed data,
+// and the CLI has no such local store to participate in anyway.
 async function applyRulesAndLogDerived(ctx, doc, issueId) {
   const iss = doc.issues.find(i => i.id === issueId);
   const before = iss.values;
-  const applied = core.applyLinkedRules(iss, doc.fieldDefs);
+  const applied = core.applyLinkedRules(iss, doc.fieldDefs, {});
   if (applied !== iss) Object.assign(iss, applied);
   const entries = core.computeDerivedChangeEntries(iss, before, doc.fieldDefs);
-  for (const e of entries) await commitHistoryEntry(ctx, doc, issueId, { text: e.text, field: e.colId, value: e.value, origin: 'derived' });
+  for (const e of entries) await commitHistoryEntry(ctx, doc, issueId, { text: e.text, field: e.colId, value: e.value });
 }
 
 async function cmdNext(doc) {
@@ -246,7 +255,6 @@ async function cmdSetField(ctx, doc, numOrId, fieldLabel, value) {
   const colId = fieldLabelToColId(doc.fieldDefs, fieldLabel);
   if (!colId) throw new Error(`No field labeled "${fieldLabel}". Fields: ` + Object.values(doc.fieldDefs).map(f => f.label).join(', '));
   const def = doc.fieldDefs[colId];
-  if (core.isFieldLocked(issue, colId, def)) throw new Error(`"${def.label}" is rule-bound and can't be set manually.`);
 
   let text, storedValue;
   if (def.type === 'select') {

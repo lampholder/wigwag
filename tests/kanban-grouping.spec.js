@@ -159,25 +159,41 @@ test.describe('Kanban grouping', () => {
     expect(after).toBe(before + 1);
   });
 
-  test('a card whose grouped-by field is genuinely bound (rule resolved, non-null) is not draggable and shows a lock icon + tooltip', async ({ page }) => {
+  // Bound-field visibility redesign: no card is ever non-draggable --
+  // "bound" is purely a local-record-based display annotation now (the
+  // glyph), never an editability/drag gate. A fresh project has no local
+  // derive record for anything yet, so seed one directly (same
+  // local-only store a real derive would write to) to prove a genuinely
+  // bound card still drags exactly like any other.
+  test('every card is draggable regardless of whether its grouped-by field is bound; a bound card still shows the glyph + tooltip', async ({ page }) => {
+    const projectId = await h.activeMilestoneId(page);
+    const doc = await h.readActiveMilestoneDoc(page);
+    const i1 = doc.issues.find(i => i.id === 'i1');
+    const latestTypeEntry = i1.history.filter(e => e.field === 'type').slice(-1)[0];
+    await page.evaluate(({ projectId, issueId, entryId }) => {
+      const KEY = 'git_native_tracker_local_derived_entry_ids_v1';
+      const all = JSON.parse(localStorage.getItem(KEY) || '{}');
+      all[projectId] = { [issueId]: { type: entryId } };
+      localStorage.setItem(KEY, JSON.stringify(all));
+    }, { projectId, issueId: i1.id, entryId: latestTypeEntry.id });
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
     await h.openColumnMenu(page, 'type');
     await page.locator('[data-testid=col-menu-group-by]').click();
     await page.waitForTimeout(300);
 
     const cards = page.locator('[data-testid=kanban-card]');
     const n = await cards.count();
-    let lockedCard = null, unlockedCard = null;
+    expect(n).toBeGreaterThan(1);
     for (let i = 0; i < n; i++) {
-      const draggable = await cards.nth(i).getAttribute('draggable');
-      if (draggable === 'false' && !lockedCard) lockedCard = cards.nth(i);
-      if (draggable === 'true' && !unlockedCard) unlockedCard = cards.nth(i);
+      await expect(cards.nth(i)).toHaveAttribute('draggable', 'true');
     }
-    expect(lockedCard).not.toBeNull();
-    expect(unlockedCard).not.toBeNull();
 
-    await expect(lockedCard).toHaveAttribute('title', /Linked to/i);
-    await expect(lockedCard.locator('svg')).toHaveCount(1);
-    await expect(unlockedCard.locator('svg')).toHaveCount(0);
+    const boundCard = page.locator('[data-testid=kanban-card][title*="Linked to"]');
+    await expect(boundCard).toHaveCount(1);
+    await expect(boundCard.locator('svg')).toHaveCount(1);
+    await expect(boundCard).toHaveAttribute('draggable', 'true');
   });
 
   // Matches existing precedent (tracker #46: "Switching project should

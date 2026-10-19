@@ -19,7 +19,7 @@ const os = require('os');
 const path = require('path');
 const core = require('./wigwag-core.js');
 const { FileProjectStore } = require('./wigwag-file-store.js');
-const { mergeRemoteIntoDoc, cmdPush, makeContext, main } = require('./wigwag-cli.js');
+const { mergeRemoteIntoDoc, cmdPush, makeContext, cmdSetField, main } = require('./wigwag-cli.js');
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'wigwag-cli-test-'));
@@ -245,6 +245,34 @@ test('main: "set-field" auto-publishes to the remote when one is configured, not
 
   const reloaded = store.load();
   assert.equal(reloaded.issues[0].values.status, 'opt_prog');
+});
+
+// Bound-field visibility redesign: isFieldLocked (and the hard "can't be
+// set manually" block it drove) is gone entirely -- the CLI never had a
+// connector/proxy-secret concept to begin with, so a rule-bound field
+// now just behaves like any other settable field here, matching the UI.
+test('cmdSetField: a rule-bound field can be set manually now -- isFieldLocked\'s old hard block is gone', async () => {
+  const identityPath = await fakeIdentityPath();
+  const ctx = await makeContext(identityPath);
+  const doc = {
+    projectId: 'p1', projectName: 'P',
+    fieldDefs: {
+      title: { label: 'Issue', type: 'issue' },
+      related: { label: 'Related', type: 'text' },
+      type: { label: 'Type', type: 'select', options: [{ id: 'bug', label: 'Bug' }], rule: 'source.github.labels.includes("bug") ? "bug" : null', linkedSourceId: 'related' }
+    },
+    issues: [{ id: 'i1', num: 1, fieldRefs: { related: { system: 'github', labels: ['bug'] } }, values: { title: 'x', related: 'o/r#1', type: 'bug' }, comments: [], history: [] }]
+  };
+  await cmdSetField(ctx, doc, 'i1', 'Type', 'Bug');
+  const issue = doc.issues[0];
+  assert.equal(issue.values.type, 'bug');
+  // The entry defaults to origin:'authored' -- the exact same default a
+  // real manual edit gets (commitHistoryEntry's own `origin || 'authored'`
+  // fallback) -- byte-for-byte the same shape, no provenance leaked into
+  // the real signed history (see LOCAL_DERIVED_ENTRY_IDS_KEY in
+  // wigwag-core.js for where that tracking now lives instead).
+  const latest = issue.history[issue.history.length - 1];
+  assert.equal(latest.origin, 'authored');
 });
 
 test('main: "pull"/"push"/"sync" are unaffected -- no redundant double pull for commands that already sync themselves', async () => {

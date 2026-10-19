@@ -166,7 +166,7 @@ test.describe('Binding an issue-type field to another field ("copy field")', () 
     await expect(cell).toHaveText('manually typed remedy');
   });
 
-  test('once Related is cleared, Remedy unlocks but keeps its last resolved pill rather than being blanked -- the user can still override it', async ({ page }) => {
+  test('once Related is cleared, Remedy keeps its last resolved pill rather than being blanked -- still editable, and still showing its bound glyph since this device\'s own view hasn\'t been contradicted', async ({ page }) => {
     const remedyId = await setUpRemedyBoundToRelated(page);
     await expect(h.fieldCell(page, 1, remedyId)).toContainText('ACME');
 
@@ -183,12 +183,18 @@ test.describe('Binding an issue-type field to another field ("copy field")', () 
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(400);
 
-    // Per Part 1 (applyLinkedRules leaves a null-computed field alone,
-    // it doesn't clear it): Remedy keeps showing its last real resolved
-    // pill -- but is now unlocked, no lock icon.
+    // Per Part 1 (applyLinkedRules leaves a null-computed field alone, it
+    // doesn't clear it): Remedy keeps showing its last real resolved
+    // pill. The bound glyph itself stays too -- this device's own local
+    // record of having derived Remedy here is still unchallenged (its
+    // value hasn't changed at all), so from this device's point of view
+    // it's still "bound," just currently unable to recompute. (It's
+    // freely editable regardless -- no field is ever locked -- but this
+    // test doesn't click to prove it, for the same pill-link-click quirk
+    // noted above.)
     const cell = h.fieldCell(page, 1, remedyId);
     await expect(cell).toContainText('ACME');
-    await expect(cell.locator('[title="Linked to Issue\'s data"]')).toHaveCount(0);
+    await expect(cell.locator('[title="Linked to Issue\'s data"]')).toHaveCount(1);
   });
 
   test('the copied fieldRef survives a reload', async ({ page }) => {

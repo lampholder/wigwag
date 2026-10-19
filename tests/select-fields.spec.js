@@ -60,12 +60,15 @@ test.describe('Single-select', () => {
 
   // Regression test: a derived/rule-computed select change used to log the
   // option's raw storage id (e.g. "opt_1786483541502") in its history entry
-  // instead of resolving it to the option's label, and named only the bound
-  // column ("derived from Related") rather than what actually drove the
-  // change. Renaming the option ids to opt_-style values reproduces the
-  // exact shape a user gets from "+ add option" in the real UI (see
-  // addOption, which mints `'opt_' + Date.now()`).
-  test('a derived select change logs the option\'s label, not its raw storage id, and names the linked issue', async ({ page }) => {
+  // instead of resolving it to the option's label. Renaming the option ids
+  // to opt_-style values reproduces the exact shape a user gets from
+  // "+ add option" in the real UI (see addOption, which mints
+  // `'opt_' + Date.now()`). The bound-field visibility redesign later
+  // dropped the "(derived from state of X in column Y)" parenthetical this
+  // test used to also check for -- a derived entry's text is now
+  // indistinguishable from a manual edit's, by design (see
+  // computeDerivedChangeEntries).
+  test('a derived select change logs the option\'s label, not its raw storage id', async ({ page }) => {
     const doc = await h.readActiveMilestoneDoc(page);
     doc.fieldDefs.type.options = doc.fieldDefs.type.options.map((o, i) => ({ ...o, id: 'opt_' + (1000 + i) }));
     // fieldDefs content is derived from projectHistory now -- clearing it
@@ -89,10 +92,9 @@ test.describe('Single-select', () => {
     expect(h.latestFieldValue(doc2.issues.find(i => i.id === 'i3'), 'type')).toBe('opt_1000'); // stored value is still the raw id...
 
     const history = await h.getHistoryEntriesFor(page, 'i3');
-    // ...but the history text reads the label, and names the linked issue
-    // whose state actually drove the computation, not just the column.
+    // ...but the history text reads the label, not the raw id.
     expect(history.some(t => t.includes('opt_'))).toBe(false);
-    expect(history).toContain('Type set to Bug (derived from state of Test issue for the tracker suite in column Related)');
+    expect(history).toContain('Type set to Bug');
   });
 
   // Regression test: a rule field used to lock permanently the instant ANY
@@ -113,11 +115,12 @@ test.describe('Single-select', () => {
     await optionList.getByText('Bug', { exact: true }).click();
     await expect(h.fieldCell(page, 3, 'type')).toHaveText(/Bug/);
 
-    // row 1's title IS GitHub-linked, so its Type rule resolves — it must
-    // stay locked (no popover), unaffected by the above.
+    // row 1's title IS GitHub-linked, so its Type rule resolves too --
+    // but it's ALSO editable regardless, same as row 3; no field is ever
+    // locked under the current design. Clicking it still opens the popover.
     await h.clickFieldToEdit(page, 1, 'type');
     await page.waitForTimeout(200);
-    await expect(page.getByText('Select an item', { exact: true })).toHaveCount(0);
+    await expect(page.getByText('Select an item', { exact: true })).toBeVisible();
   });
 
   // Tracker issue 15f48c0e: the popover only ever listed def.options, so

@@ -99,10 +99,13 @@ test.describe('Bulk-link issues from a multi-line paste', () => {
     // Bound-field auto-population already runs for a single paste via
     // applyGithubLinkToField's own applyLinkedRules/applyLiveLinkedRules --
     // confirm it still fires per bulk-created row too (createIssueFromText
-    // reuses that exact function unchanged).
+    // reuses that exact function unchanged). A derived write is now a
+    // plain history entry, indistinguishable by text/origin from a manual
+    // one -- confirm it actually fired by checking a real entry landed
+    // for the bound field itself, not the (removed) narrative text.
     const doc = await h.idbGetProjectDoc(page, await h.activeMilestoneId(page));
     const createdIssue = doc.issues.find(i => i.num === 10);
-    expect(createdIssue.history.some(hh => hh.text.includes('derived from state of'))).toBe(true);
+    expect(createdIssue.history.some(hh => hh.field === 'type')).toBe(true);
   });
 
   test('cancelling from the review modal creates nothing', async ({ page }) => {

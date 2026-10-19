@@ -498,11 +498,11 @@ so "updated 5 minutes ago" is meaningful. If a stray history entry with
 derived value wins regardless — these fields are computed, not editable,
 full stop.
 
-**Read-only, unconditionally.** Every other field type is read-only only
-in specific circumstances (a bound field currently locked, a row in some
-special state); a timestamp field has no editing affordance at all, ever,
-in the grid or the slide-over — there is no code path that lets a value
-be typed into one.
+**Read-only, unconditionally.** Every other field type — including a bound
+one — is always editable by hand (see "Bound-field visibility" below); a
+timestamp field is the one exception with no editing affordance at all,
+ever, in the grid or the slide-over — there is no code path that lets a
+value be typed into one.
 
 **Hidden by default.** The first time these fields are introduced to a
 project (its fieldDefs didn't already have them before that hydrate),
@@ -620,19 +620,62 @@ refresh produced. This is an intentional trade against the file's
 previous "bound fields are fully reconstructable from the file alone"
 guarantee, made in favor of not persisting the source data at all.
 
-Render-time locking (`isFieldLocked`/`computeBoundValue`) reflects this:
-for a field bound to a plain or `wigwag`-linked source (never given the
-maximalist treatment, so nothing was trimmed) it's still a live rule
-re-evaluation, unchanged. For a field bound to a github/jira/salesforce
-source, it instead checks whether the bound field's own *most recent*
-history entry has `origin: 'derived'` — set only when a refresh's live
-recompute actually produced a real (non-null) value, distinct from a
-plain user edit. This is also what preserves tracker #66's "a rule that
-computes null unlocks the field for manual editing" behavior without
-needing the rule itself at render time: a null result is never written
-(same "hands off" rule `applyLinkedRules` always used), so a field that's
-never been refreshed, or whose last refresh computed null, simply has no
-`derived` entry to find.
+## Bound-field visibility is a purely local, display-only concern
+
+A bound field is **always editable by hand, regardless of anything else**
+— there is no "locked" state any more (`isFieldLocked` is gone entirely).
+What varies is only whether the bound/override glyph shows at all, and
+that's decided by two independent things:
+
+- **Reachability** (`isRefLocallyLive`, write-side only): does THIS
+  device have a working path to re-evaluate the binding right now —
+  github/wigwag always do, jira/salesforce need that system's own proxy
+  secret configured locally, a custom connector needs to exist in this
+  device's own connector list. A field whose rule needs live source data
+  it can't currently reach is simply left alone (`applyLinkedRules`/
+  `applyLiveLinkedRules` hands off, same "undefined means don't touch
+  what's there" rule as always) — critically, this no longer falls back
+  to trusting history the way it once did (see below), so a field a
+  *different* device derived and synced here never gets permanently
+  stuck looking bound on a device that can never verify or refresh it.
+- **Local bind-state** (`fieldLocalBindState`, display-side only): a
+  purely local-record lookup, with zero live rule re-evaluation and zero
+  dependency on any tag inside the signed history itself. `plain` (no
+  icon) when this device has no record of ever having derived a value
+  for this field on this issue; `bound` (the link icon) when it does and
+  the record still matches the field's current latest entry; `overridden`
+  (a `!` icon) when the record exists but no longer matches — almost
+  always because the user typed over it by hand since.
+
+The local record lives in its own localStorage key,
+`LOCAL_DERIVED_ENTRY_IDS_KEY` (`git_native_tracker_local_derived_entry_ids_v1`),
+shaped `{ [projectId]: { [issueId]: { [colId]: entryId } } }` — modeled
+directly on the merge log's own "store entry *ids* only, never content,
+never exported" discipline (see "A binding's rule is local-only" below
+for the sibling `LOCAL_FIELD_BINDINGS_KEY`). It is written whenever a
+derived value is actually committed (both the routine resettle path and
+an explicit live refresh), recording *this device's own* latest entry id
+for that field. An entry signed before this model existed (a legacy
+`origin: 'derived'` tag, see below) gets no special recognition — it
+simply reads as `plain` until the next time this device locally derives
+that field again.
+
+**Write-side**: a routine resettle (`applyLinkedRules`, runs after every
+edit) always applies a real (non-empty) computed answer — binding a field
+for the first time, or a rule starting to match where it didn't before,
+is expected to actually take effect, even over whatever (never-derived)
+value happened to be sitting there already. The only thing it won't do is
+clobber a genuine *override*: once this device has derived a value here
+at least once (`bound`), a later manual edit flips the local record out
+of sync (`overridden`) and is never auto-reapplied by a routine resettle
+again. A confidently-empty answer is narrower still — it only clears a
+value this device's own local record shows it derived itself (`bound`),
+never a value that's merely sitting there unseen. An **explicit live
+refresh** (`applyLiveLinkedRules`) is the one path intentionally left
+unconditional: a genuine fresh sync is allowed to land on top of an
+override, override or not — it also updates the local record to the new
+entry, naturally flipping the display back from `!` to the plain link
+icon since the stored value matches again.
 
 **Known limitation**: a "copy field" bound row's own row *condition*
 (`computeBoundFieldRef`, tracker #66 Part 2) still evaluates against the
@@ -701,26 +744,47 @@ on the row, no `.criteria` array) is treated as a one-criterion row
 migration pass, and self-heal to the current shape the next time that row
 is edited.
 
-### Bound/derived fields are logged too, but tagged
+### Bound/derived fields are logged too — but no longer tagged
 
 `applyLinkedRules` compares a bound field's newly-computed value against
 what it was before. If unchanged, nothing is written (recomputation happens
 on most state changes, and spamming the log on every no-op recompute would
 drown out real activity). If it changed, a history entry is written exactly
-like any other field mutation, but with `origin: "derived"` instead of
-`"authored"`, and narrative text noting where it came from (e.g. `"Type set
-to Bug (derived from Title)"`).
+like any other field mutation — same shape, same `origin: "authored"`
+default, no narrative naming where it came from. This is a deliberate
+reversal of the original design (which tagged these `origin: "derived"`
+and wrote text like `"Type set to Bug (derived from Title)"`): per Tom's
+own call, *how* a field got its value — derived vs. typed, and if derived,
+from where — is "my own view of the project," not something that needs to
+survive in an exported/signed copy at all (see "Bound-field visibility"
+above for where that provenance actually lives instead: a local-only
+record, never exported). A byte-for-byte diff of a derived write and a
+manual edit to the same field is now indistinguishable, by design.
 
-This exists specifically so that someone viewing the exported file without
-live GitHub/Jira access still sees *how* a bound field arrived at its
-current value, instead of just a bare current value with no explanation.
-It also means bound fields are fully reconstructable from the file alone,
-without needing to persist the raw fetched GitHub/Jira object anywhere.
+**Entries signed before this change keep their old `origin: "derived"`
+tag** (`origin` isn't part of a fresh entry's `signablePayload`, so it's
+free to omit going forward, but it IS part of `redactedPayload` — already-
+signed historical entries must keep whatever origin they were signed
+with for their signature to still verify). Nothing currently reads that
+old tag for display any more; see the fallback note under "Bound-field
+visibility" above.
 
-`derived`-origin entries are excluded when detecting a merge notice (see
-below) — two independently computed values disagreeing isn't a human
-authorship overlap, it's just two computations that reconcile themselves
-the moment `applyLinkedRules` re-runs against the merged data.
+**Known gap, not yet resolved**: `mergeIssuePair`/`buildMergeIssueSummary`/
+`buildMergePreviewViewModel` still check `origin !== 'derived'` to decide
+whether a field's divergence between two merging copies is a genuine
+human-authorship overlap (surface a merge notice) or just two independent
+recomputations that reconcile themselves once `applyLinkedRules` re-runs
+(no notice). That check is now permanently blind to a *newly*-derived
+entry from either side (new entries never carry the tag any more) — in
+the worst case, two devices independently re-deriving a bound field to
+different answers and then merging can surface a spurious "both changed
+this" notice where the old behavior would have correctly suppressed it.
+A local device COULD in principle recognize its *own* just-derived entries
+via `LOCAL_DERIVED_ENTRY_IDS_KEY`, but that record is local-only by design
+and tells it nothing about whether the *incoming* side's divergent entry
+was itself derived or hand-typed there — there is no portable signal left
+to answer that symmetrically. Not fixed as part of this redesign; flagged
+for follow-up (not yet filed as its own tracker issue as of this writing).
 
 ### A binding's rule is local-only — it never travels with the portable object
 
@@ -748,9 +812,9 @@ migrated locally regardless of its `sortKey`.
 
 Editing a binding writes **only** to this local store — no
 `projectHistory` entry, since none of label/type/options changed. The
-resulting **computed value** is still logged as an ordinary
-`origin: "derived"` entry exactly as described above; only the rule
-itself stops being portable. One exception: if the field being edited
+resulting **computed value** is still logged as an ordinary history entry
+exactly as described above (no tag distinguishing it from a manual edit);
+only the rule itself stops being portable. One exception: if the field being edited
 still carries a *legacy* embedded rule (bound before this split existed,
 reconstructed by `deriveFieldDefs` from old history), the first local
 edit to it also writes one portable "cleanup" entry containing only the

@@ -80,10 +80,31 @@ test.describe('Responsive column narrowing', () => {
     expect(await h.fieldCell(page, 1, 'rag').innerHTML()).toContain('opacity: 0;');
   });
 
-  test('a bound (locked) select cell shows the lock glyph, not the caret, with the same fade treatment', async ({ page }) => {
+  test('a bound select cell shows the bound glyph alongside the (still-present) caret, with the same fade treatment', async ({ page }) => {
+    // Bound-field visibility redesign: the glyph is purely a local-record
+    // lookup now -- a fresh project has no local derive recorded for
+    // anything yet, so seed one directly (same local-only store a real
+    // derive would write to), matching the established convention.
+    const projectId = await h.activeMilestoneId(page);
+    const doc = await h.readActiveMilestoneDoc(page);
+    const i1 = doc.issues.find(i => i.id === 'i1');
+    const latestTypeEntry = i1.history.filter(e => e.field === 'type').slice(-1)[0];
+    await page.evaluate(({ projectId, issueId, entryId }) => {
+      const KEY = 'git_native_tracker_local_derived_entry_ids_v1';
+      const all = JSON.parse(localStorage.getItem(KEY) || '{}');
+      all[projectId] = { [issueId]: { type: entryId } };
+      localStorage.setItem(KEY, JSON.stringify(all));
+    }, { projectId, issueId: i1.id, entryId: latestTypeEntry.id });
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    // The cell is always editable now, caret included -- the bound glyph
+    // is purely an informational annotation alongside it, not a
+    // replacement for it (unlike the old lock icon, which used to be
+    // the ONE thing shown in place of the caret on a locked cell).
     const html = await h.fieldCell(page, 1, 'type').innerHTML();
     expect(html).toContain('Linked to Issue');
-    expect(html).not.toContain('border-top: 7px solid var(--text-tertiary)');
+    expect(html).toContain('border-top: 7px solid var(--text-tertiary)');
   });
 
   test('multiselect-cell caret fades below 100px width, same as select', async ({ page }) => {

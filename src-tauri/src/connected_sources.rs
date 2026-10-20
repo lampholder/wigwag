@@ -31,18 +31,41 @@ pub struct FetchResponse {
     body: String,
 }
 
+// One Client for the app's whole lifetime, held in Tauri-managed state and
+// handed to main.rs's Builder via .manage() -- reqwest::Client owns the
+// connection pool, DNS cache, and TLS session state, and is cheap to
+// clone (internally Arc'd) specifically so callers share one instead of
+// building a fresh one per request. connected_source_fetch used to call
+// reqwest::Client::new() on every single invocation, throwing all of that
+// away each time -- every paste/refresh/macro-test paid a full TCP+TLS
+// handshake from scratch instead of reusing a warm connection. Tom's own
+// report ("why is the custom connector flow so slow") traced to exactly
+// this.
+pub struct ConnectedSourcesHttp {
+    client: reqwest::Client,
+}
+
+impl Default for ConnectedSourcesHttp {
+    fn default() -> Self {
+        Self {
+            client: reqwest::Client::new(),
+        }
+    }
+}
+
 // Deliberately no capabilities/permission scoping on the URL itself --
 // see the module comment above. The frontend's own fetch shim (wigwag.html)
 // is what a pasted macro actually calls; this command is that shim's
 // transport, not something a macro invokes directly.
 #[tauri::command]
 pub async fn connected_source_fetch(
+    state: tauri::State<'_, ConnectedSourcesHttp>,
     url: String,
     method: Option<String>,
     headers: Option<HashMap<String, String>>,
     body: Option<String>,
 ) -> Result<FetchResponse, String> {
-    let client = reqwest::Client::new();
+    let client = &state.client;
     let method = method.unwrap_or_else(|| "GET".to_string());
     let verb = reqwest::Method::from_bytes(method.as_bytes()).map_err(|e| e.to_string())?;
     let mut req = client.request(verb, &url);

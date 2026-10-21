@@ -1000,6 +1000,60 @@ test.describe('Bulk actions: Refresh -- staged job (2+ rows)', () => {
     await expect(page.locator('[data-testid=header-job-chip-label]')).toContainText('0 ready, 2 failed');
     await expect(page.locator('[data-testid=merge-gate-no-changes]')).toBeVisible();
   });
+
+  // Live-reported (Tom): a bulk refresh of custom-connector-linked rows
+  // "finished immediately with a no changes merge" -- stageFieldRefresh
+  // (the staged/bulk path) never got a system:'connector' branch when
+  // custom connectors were added, so it fell through to the GitHub
+  // branch with undefined owner/repo/num, 404'd for real, and every row
+  // came back failed -- which surfaces as this exact same
+  // merge-gate-no-changes display the test above covers, easy to read
+  // as "nothing happened" rather than "everything failed".
+  test('a bulk refresh of custom-connector-linked rows actually fetches through the connector, not a broken GitHub fallback', async ({ page }) => {
+    await page.addInitScript(() => {
+      window.__TAURI__ = window.__TAURI__ || {};
+      window.__TAURI__.core = window.__TAURI__.core || { invoke: () => Promise.resolve(null) };
+    });
+    await h.gotoTracker(page);
+    await page.evaluate(() => {
+      localStorage.setItem('git_native_tracker_connected_sources_v1', JSON.stringify({ connectors: [
+        { id: 'conn_linear', key: 'linear', name: 'Linear', glyph: 'L', color: 'red', patterns: [],
+          macro: "async (id) => ({ title: 'Fresh ' + id, state: 'In Progress', url: 'https://linear.app/x/' + id })",
+          credentialConfigured: true }
+      ] }));
+    });
+    const pid = await h.activeMilestoneId(page);
+    {
+      const doc = await h.idbGetProjectDoc(page, pid);
+      for (const i of [0, 1]) {
+        const maxSortKey = Math.max(0, ...doc.issues[i].history.map(hh => hh.sortKey || 0));
+        doc.issues[i].history.push({
+          id: 'test-link-' + i, time: 'now', actor: 'test', email: 'test@example.com', text: 'Linked', field: 'title', value: 'Old ' + i,
+          fieldRef: { system: 'connector', connectorId: 'conn_linear', connectorKey: 'linear', matchedId: 'ENG-' + i },
+          origin: 'authored', sortKey: maxSortKey + 1, sig: null, sigRedacted: null, pubKey: null
+        });
+      }
+      await h.idbSetProjectDoc(page, pid, doc);
+    }
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    await page.locator('[data-testid=row]').nth(0).locator('[data-testid=row-select-checkbox]').click();
+    await page.locator('[data-testid=row]').nth(1).locator('[data-testid=row-select-checkbox]').click({ modifiers: ['ControlOrMeta'] });
+    await page.locator('[data-testid=bulk-refresh-btn]').click();
+    await page.waitForTimeout(600);
+
+    await expect(page.locator('[data-testid=merge-card]')).toBeVisible();
+    await expect(page.locator('[data-testid=merge-gate-no-changes]')).toHaveCount(0);
+    const settledTexts = (await page.locator('[data-testid=merge-field-row]').allTextContents()).join(' ');
+    expect(settledTexts).toContain('Fresh ENG-0');
+    expect(settledTexts).toContain('Fresh ENG-1');
+
+    await page.locator('[data-testid=btn-merge-primary]').click();
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=row]').nth(0).locator('[data-testid=title-cell]')).toContainText('Fresh ENG-0');
+    await expect(page.locator('[data-testid=row]').nth(1).locator('[data-testid=title-cell]')).toContainText('Fresh ENG-1');
+  });
 });
 
 test.describe('Bulk actions: Delete', () => {

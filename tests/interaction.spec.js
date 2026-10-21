@@ -1819,6 +1819,70 @@ test.describe('Keep "add an item" reachable: full-height flex shell', () => {
     expect(active.value).toBe(trimmed[0]);
   });
 
+  // Tom's follow-up: "Up works but down doesn't" -- the reverse walk,
+  // plus landing back in the add-item box at the bottom. Autofocus
+  // always leaves the cursor at the END of whichever row's title just
+  // loaded (see the ArrowUp test above), so -- unlike that climb, which
+  // needs an explicit Home before every hop -- a bare repeated ArrowDown
+  // already sits right where it needs to be to keep walking down.
+  test('ArrowDown at the end of a title keeps walking down, row by row, and returns to the add-item box at the bottom', async ({ page }) => {
+    const rows = page.locator('[data-testid=row]');
+    const n = await rows.count();
+    expect(n).toBeGreaterThan(2);
+
+    function editValueFor(iss) {
+      const ref = h.latestFieldRef(iss, 'title');
+      const currentText = h.latestFieldValue(iss, 'title') || '';
+      if (!ref) return currentText;
+      if ((ref.system || 'github') === 'jira') return ref.key;
+      if (ref.system === 'wigwag') return 'wigwag:/project/' + ref.projectId + (ref.issueId ? '/issue/' + ref.issueId : '');
+      if (ref.system === 'connector') return ref.matchedId;
+      return 'https://github.com/' + ref.owner + '/' + ref.repo + '/issues/' + ref.num;
+    }
+    const rowNums = await rows.evaluateAll(els => els.map(el => el.getAttribute('data-row-num')));
+    const doc = await h.readActiveMilestoneDoc(page);
+    const trimmed = rowNums.map(num => {
+      const iss = doc.issues.find(i => String(i.num) === String(num));
+      return iss ? editValueFor(iss) : '';
+    });
+
+    const firstTitleCell = rows.first().locator('[data-testid=title-cell]');
+    await firstTitleCell.dispatchEvent('click');
+    await page.waitForTimeout(120);
+    await firstTitleCell.dispatchEvent('click');
+    await page.waitForTimeout(150);
+
+    let active = await page.evaluate(() => ({ tag: document.activeElement.tagName, value: document.activeElement.value, start: document.activeElement.selectionStart }));
+    expect(active.tag).toBe('INPUT');
+    expect(active.value).toBe(trimmed[0]);
+    expect(active.start).toBe(active.value.length); // autofocus already lands at the end
+
+    // Mid-text: ArrowDown is a plain no-op, same row stays focused.
+    await page.keyboard.press('ArrowLeft');
+    await page.keyboard.press('ArrowDown');
+    await page.waitForTimeout(100);
+    active = await page.evaluate(() => ({ value: document.activeElement.value }));
+    expect(active.value).toBe(trimmed[0]);
+    await page.keyboard.press('End'); // back to the boundary before the real walk
+
+    for (let i = 1; i < n; i++) {
+      await page.keyboard.press('ArrowDown');
+      await page.waitForTimeout(120);
+      active = await page.evaluate(() => ({ tag: document.activeElement.tagName, value: document.activeElement.value, start: document.activeElement.selectionStart }));
+      expect(active.tag).toBe('INPUT');
+      expect(active.value).toBe(trimmed[i]);
+      expect(active.start).toBe(active.value.length);
+    }
+
+    // One more ArrowDown from the bottommost row hands focus back to the
+    // add-item box, opening it if it wasn't already.
+    await page.keyboard.press('ArrowDown');
+    await page.waitForTimeout(150);
+    const addItemInput = page.locator('[data-testid=add-item-input]');
+    const isFocused = await addItemInput.evaluate(el => el === document.activeElement);
+    expect(isFocused).toBe(true);
+  });
+
   test('adding a new row below the fold scrolls the table pane down to it', async ({ page }) => {
     const id = 'tall-project-3';
     await page.addInitScript(({ id }) => {

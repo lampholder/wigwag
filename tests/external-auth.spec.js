@@ -277,6 +277,89 @@ test.describe('Jira linking, not configured (no proxy secret)', () => {
   });
 });
 
+// Live-reported (Tom): a field originally linked via the built-in Jira
+// connector, then "replaced" by clearing Jira's proxy secret (see the
+// describe block above -- that's how Tom actually disables Jira) and
+// adding a custom connector matching the same key shape, kept refreshing
+// through the dead built-in forever: fieldRefs are historical/immutable,
+// so a stored ref's own system never updates itself just because the
+// matching system changed underneath it. refreshField now re-resolves
+// against the currently configured custom connectors whenever the
+// built-in's own secret is unconfigured -- self-healing, since a
+// successful connector fetch writes a fresh system:'connector' ref, so
+// every refresh after the first one takes the ordinary connector branch
+// with no special case needed.
+test.describe('Jira linking: refresh migrates a stale built-in ref to a now-matching connector', () => {
+  test.beforeEach(async ({ page }) => {
+    await h.mockGithubApi(page);
+    await page.addInitScript(() => {
+      window.__TAURI__ = window.__TAURI__ || {};
+      window.__TAURI__.core = window.__TAURI__.core || { invoke: () => Promise.resolve(null) };
+    });
+    await h.gotoTracker(page);
+  });
+
+  test('refreshing a system:"jira" field migrates to the matching custom connector once the Jira secret is unconfigured', async ({ page }) => {
+    await page.evaluate(() => {
+      localStorage.setItem('git_native_tracker_connected_sources_v1', JSON.stringify({ connectors: [
+        { id: 'conn_linear', key: 'linear', name: 'Linear', glyph: 'L', color: 'red',
+          patterns: [{ regex: '[A-Z]+-\\d+', label: 'Linear key' }],
+          macro: "async () => ({ title: 'Fix the thing', state: 'In Progress', url: 'https://linear.app/x/TRK-999' })",
+          credentialConfigured: true }
+      ] }));
+    });
+    const doc = await h.readActiveMilestoneDoc(page);
+    const i3 = doc.issues.find(i => i.num === 3);
+    i3.history.push({
+      id: 'test-stale-jira-ref', time: 'now', actor: 'test', email: 'test@example.com',
+      text: 'Related linked', field: 'linked', value: 'TRK-999',
+      fieldRef: { system: 'jira', key: 'TRK-999', browseUrl: 'https://old.atlassian.net/browse/TRK-999' },
+      origin: 'authored', sortKey: Date.now(), sig: null, pubKey: null
+    });
+    await h.writeActiveMilestoneDoc(page, doc);
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    // jiraProxySecret is unconfigured by default in this describe block --
+    // i.e. "disabled", exactly as Tom described.
+    await h.refreshRow(page, 3);
+    await page.waitForTimeout(400);
+
+    await expect(h.fieldCell(page, 3, 'linked')).toContainText('Fix the thing');
+    const after = await h.readActiveMilestoneDoc(page);
+    const ref = h.latestFieldRef(after.issues.find(i => i.num === 3), 'linked');
+    expect(ref).toMatchObject({ system: 'connector', connectorId: 'conn_linear', matchedId: 'TRK-999' });
+    const history = await h.getHistoryEntriesFor(page, i3.id);
+    expect(history.some(t => t.toLowerCase().includes('fetched from linear'))).toBe(true);
+    expect(history.some(t => t.toLowerCase().includes('could not fetch from jira'))).toBe(false);
+  });
+
+  test('refreshing a still-configured Jira link is unaffected by an unrelated custom connector with an overlapping pattern', async ({ page }) => {
+    await h.mockJiraProxy(page, { 'TRK-999': { title: 'Mocked Jira ticket title', browseUrl: 'https://mock.atlassian.net/browse/TRK-999' } });
+    await h.setJiraProxySecret(page, 'mock-jira-proxy-secret');
+    await page.evaluate(() => {
+      localStorage.setItem('git_native_tracker_connected_sources_v1', JSON.stringify({ connectors: [
+        { id: 'conn_linear', key: 'linear', name: 'Linear', glyph: 'L', color: 'red',
+          patterns: [{ regex: '[A-Z]+-\\d+', label: 'Linear key' }],
+          macro: "async () => ({ title: 'SHOULD NOT BE USED' })",
+          credentialConfigured: true }
+      ] }));
+    });
+    await h.clickFieldToEdit(page, 3, 'linked');
+    await h.pasteText(page, 'TRK-999');
+    await page.keyboard.press('Tab');
+    await h.waitForFieldResolved(page, 3, 'linked');
+    await expect(h.fieldCell(page, 3, 'linked')).toContainText('Mocked Jira ticket title');
+
+    await h.refreshRow(page, 3);
+    await page.waitForTimeout(400);
+
+    await expect(h.fieldCell(page, 3, 'linked')).toContainText('Mocked Jira ticket title');
+    const doc = await h.readActiveMilestoneDoc(page);
+    expect(h.latestFieldRef(doc.issues.find(i => i.num === 3), 'linked')).toMatchObject({ system: 'jira', key: 'TRK-999' });
+  });
+});
+
 // Salesforce shares Jira's core constraint (no permissive browser CORS,
 // real auth required) so it goes through the same local-proxy pattern --
 // see salesforce-proxy.js. Unlike Jira, there's no bare-id paste form: a

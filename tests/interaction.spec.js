@@ -1720,6 +1720,105 @@ test.describe('Keep "add an item" reachable: full-height flex shell', () => {
     await expect(page.locator('[data-testid=row]').filter({ hasText: 'Second keyboard item' })).toHaveCount(1);
   });
 
+  // Tracker 69502216: pressing Up from the add-item composer jumps
+  // straight into editing the bottommost row's title, so a user who's
+  // just typed a new item (or is about to) can reach the row right
+  // above it without touching the mouse.
+  test('pressing ArrowUp in the add-item composer starts editing the bottommost row\'s title, leaving the draft untouched', async ({ page }) => {
+    const lastRow = page.locator('[data-testid=row]').last();
+    const beforeTitle = (await lastRow.locator('[data-testid=title-cell]').textContent()).trim();
+
+    await page.keyboard.down('Control'); await page.keyboard.press('Space'); await page.keyboard.up('Control');
+    await page.waitForTimeout(150);
+    await page.keyboard.type('unsent draft');
+    await page.keyboard.press('ArrowUp');
+    await page.waitForTimeout(150);
+
+    const active = await page.evaluate(() => ({ tag: document.activeElement && document.activeElement.tagName, value: document.activeElement && document.activeElement.value }));
+    expect(active.tag).toBe('INPUT');
+    expect(beforeTitle).toContain(active.value); // the LAST row's own title, not the add-item draft
+
+    // The add-item box's own draft survives untouched -- ArrowUp moves
+    // focus, it doesn't submit or clear anything.
+    await expect(page.locator('[data-testid=add-item-input]')).toHaveValue('unsent draft');
+
+    await h.typeAndCommit(page, 'Retitled via ArrowUp from the composer');
+    await page.waitForTimeout(200);
+    await expect(lastRow.locator('[data-testid=title-cell]')).toContainText('Retitled via ArrowUp from the composer');
+  });
+
+  // Tracker 69502216, follow-up: Tom asked whether this chains like
+  // Element's "edit previous message" -- cursor lands at the end of each
+  // row's title (free: that's already the framework's own autofocus
+  // default, confirmed empirically), ArrowUp only climbs to the row
+  // above once the caret is truly collapsed at the start (mid-text, it's
+  // a plain native no-op, same as any single-line input), and it stops
+  // at the topmost row rather than wrapping or erroring.
+  test('ArrowUp at the start of a title keeps climbing to the row above, row by row, and stops at the top', async ({ page }) => {
+    const rows = page.locator('[data-testid=row]');
+    const n = await rows.count();
+    expect(n).toBeGreaterThan(2); // need real room to climb more than one hop
+
+    // Editing reveals the editable SOURCE, not the resolved display value
+    // (a linked row shows its bare Jira key / GitHub URL / connector id,
+    // same convention as the bound-field edit-reveals-the-link behavior
+    // elsewhere) -- mirror buildTextCell's own editValueForRef logic
+    // against the doc's history in DOM row order, not rendered textContent.
+    function editValueFor(iss) {
+      const ref = h.latestFieldRef(iss, 'title');
+      const currentText = h.latestFieldValue(iss, 'title') || '';
+      if (!ref) return currentText;
+      if ((ref.system || 'github') === 'jira') return ref.key;
+      if (ref.system === 'wigwag') return 'wigwag:/project/' + ref.projectId + (ref.issueId ? '/issue/' + ref.issueId : '');
+      if (ref.system === 'connector') return ref.matchedId;
+      return 'https://github.com/' + ref.owner + '/' + ref.repo + '/issues/' + ref.num;
+    }
+    const rowNums = await rows.evaluateAll(els => els.map(el => el.getAttribute('data-row-num')));
+    const doc = await h.readActiveMilestoneDoc(page);
+    const trimmed = rowNums.map(num => {
+      const iss = doc.issues.find(i => String(i.num) === String(num));
+      return iss ? editValueFor(iss) : '';
+    });
+
+    const lastTitleCell = rows.last().locator('[data-testid=title-cell]');
+    await lastTitleCell.dispatchEvent('click');
+    await page.waitForTimeout(120);
+    await lastTitleCell.dispatchEvent('click');
+    await page.waitForTimeout(150);
+
+    let active = await page.evaluate(() => ({ tag: document.activeElement.tagName, value: document.activeElement.value, start: document.activeElement.selectionStart }));
+    expect(active.tag).toBe('INPUT');
+    expect(active.value).toBe(trimmed[n - 1]);
+    expect(active.start).toBe(active.value.length); // cursor at the end, for free
+
+    // Mid-text: ArrowUp is a plain no-op, same row stays focused.
+    await page.keyboard.press('ArrowLeft');
+    await page.keyboard.press('ArrowUp');
+    await page.waitForTimeout(100);
+    active = await page.evaluate(() => ({ value: document.activeElement.value }));
+    expect(active.value).toBe(trimmed[n - 1]);
+
+    // From the start of the field, ArrowUp climbs one row at a time, all
+    // the way to the top, cursor landing at the end of each row's text.
+    for (let i = n - 1; i >= 1; i--) {
+      await page.keyboard.press('Home');
+      await page.keyboard.press('ArrowUp');
+      await page.waitForTimeout(120);
+      active = await page.evaluate(() => ({ tag: document.activeElement.tagName, value: document.activeElement.value, start: document.activeElement.selectionStart }));
+      expect(active.tag).toBe('INPUT');
+      expect(active.value).toBe(trimmed[i - 1]);
+      expect(active.start).toBe(active.value.length);
+    }
+
+    // No row above the topmost one -- one more Home+ArrowUp is a no-op,
+    // not a crash or a wraparound back to the bottom.
+    await page.keyboard.press('Home');
+    await page.keyboard.press('ArrowUp');
+    await page.waitForTimeout(100);
+    active = await page.evaluate(() => ({ value: document.activeElement.value }));
+    expect(active.value).toBe(trimmed[0]);
+  });
+
   test('adding a new row below the fold scrolls the table pane down to it', async ({ page }) => {
     const id = 'tall-project-3';
     await page.addInitScript(({ id }) => {

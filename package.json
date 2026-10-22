@@ -7,6 +7,7 @@
     "doc": "docs"
   },
   "scripts": {
+    "build": "node sync-wigwag-core.js && node build-wigwag-html.js",
     "test": "playwright test",
     "serve": "node serve.js",
     "jira-proxy": "node bridges/jira-proxy.js",

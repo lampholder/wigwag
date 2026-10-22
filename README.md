@@ -40,9 +40,11 @@ wigwag.
   (history-to-value derivation, merge, signing, the rule engine, GitHub/
   Jira/Salesforce field pickers, markdown rendering, `.xlsx` export) that
   `wigwag.html` and the CLI tools both need to produce identical results
-  from. `wigwag.html` carries its own hand-synced inline copy of the parts
-  it needs (no build step ties the two together — see the comment at the
-  top of `wigwag-core.js`).
+  from. `wigwag.html` carries its own inline copy, kept in sync by
+  `npm run build` (`sync-wigwag-core.js` + `build-wigwag-html.js` — see
+  `docs/EDITING.md`). The *shipped* `wigwag.html` still needs nothing at
+  runtime — this is a dev-time step for whoever's editing the sources
+  under `src/`, not something an end user ever runs.
 
 ## CLI tools
 

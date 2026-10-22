@@ -1,16 +1,20 @@
-// Keeps wigwag.html's inlined window.WigwagCore IIFE (Layer 1, see
-// docs/EDITING.md) byte-for-byte derived from wigwag-core.js -- the
+// Keeps src/wigwag-shell.html's inlined window.WigwagCore IIFE (Layer 1,
+// see docs/EDITING.md) byte-for-byte derived from wigwag-core.js -- the
 // standalone file is the single source of truth; this script is the "build
 // step that ingests it into a portable wigwag.html" (Tom, 2026-10-16).
 //
-// Scope: this ONLY touches Layer 1 (the outer, literal HTML shell). Layer 2
-// (the JSON-escaped text/x-dc Component source -- Settings UI, dispatch
-// logic, rendering) is compiled output from a separate design/prototyping
-// tool and was never sourced from wigwag-core.js; this script does not
-// touch it at all, same boundary docs/EDITING.md itself draws.
+// Scope: this ONLY touches Layer 1 (the outer, literal HTML shell), now
+// split out as src/wigwag-shell.html. Layer 2 (the text/x-dc Component
+// source -- Settings UI, dispatch logic, rendering -- now src/wigwag-app.js
+// + src/wigwag-template.html) is compiled output from a separate design/
+// prototyping tool and was never sourced from wigwag-core.js; this script
+// does not touch it at all, same boundary docs/EDITING.md itself draws.
 //
-// Run this after ANY wigwag-core.js change, before node src-tauri/copy-dist.js
-// and the usual verification pipeline. `node sync-wigwag-core.js`.
+// Pipeline order: this script -> build-wigwag-html.js (splices
+// src/wigwag-shell.html + src/wigwag-template.html + src/wigwag-app.js
+// into wigwag.html) -> the usual verification pipeline -> node
+// src-tauri/copy-dist.js. `npm run build` runs the first two in order;
+// run this alone if you only touched wigwag-core.js.
 //
 // Mechanics: wigwag.html's IIFE shims a `module` object
 // (`var module = { exports: {} };`) specifically so wigwag-core.js's own
@@ -42,7 +46,7 @@
 const fs = require('fs');
 
 const corePath = 'wigwag-core.js';
-const htmlPath = 'wigwag.html';
+const htmlPath = 'src/wigwag-shell.html';
 
 const coreSrc = fs.readFileSync(corePath, 'utf8');
 const html = fs.readFileSync(htmlPath, 'utf8');
@@ -51,10 +55,10 @@ const openMarker = '<script>window.WigwagCore = (function() {\n  var module = { 
 const closeMarker = '\n  return module.exports;\n})();</script>';
 
 const start = html.indexOf(openMarker);
-if (start === -1) throw new Error('open marker not found -- has wigwag.html\'s Layer 1 shell changed?');
+if (start === -1) throw new Error('open marker not found -- has src/wigwag-shell.html changed?');
 const contentStart = start + openMarker.length;
 const end = html.indexOf(closeMarker, contentStart);
-if (end === -1) throw new Error('close marker not found -- has wigwag.html\'s Layer 1 shell changed?');
+if (end === -1) throw new Error('close marker not found -- has src/wigwag-shell.html changed?');
 
 let escapedCore = coreSrc.replace(/<\/script/gi, '<\\u002Fscript');
 if (/<\/script/i.test(escapedCore)) throw new Error('escaping left a literal </script behind in wigwag-core.js content');
@@ -62,8 +66,8 @@ if (/<\/script/i.test(escapedCore)) throw new Error('escaping left a literal </s
 const newHtml = html.slice(0, contentStart) + escapedCore + html.slice(end);
 
 if (newHtml === html) {
-  console.log('sync-wigwag-core: no change -- wigwag.html already matches wigwag-core.js');
+  console.log('sync-wigwag-core: no change -- src/wigwag-shell.html already matches wigwag-core.js');
 } else {
   fs.writeFileSync(htmlPath, newHtml);
-  console.log('sync-wigwag-core: wigwag.html updated from wigwag-core.js (' + escapedCore.length + ' bytes)');
+  console.log('sync-wigwag-core: src/wigwag-shell.html updated from wigwag-core.js (' + escapedCore.length + ' bytes)');
 }

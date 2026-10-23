@@ -8648,7 +8648,7 @@ class Component extends DCLogic {
     const settingsSectionDefs = [
       { id: 'identity', label: 'Identity', title: 'Identity', blurb: 'Who your changes are attributed to.', configured: !!(activeIdentity && activeIdentity.email && activeIdentity.email.trim()) },
       { id: 'connectedDataSources', label: 'Connected data sources', title: 'Connected data sources', blurb: 'Other systems wigwag can reference and pull state from -- GitHub, Jira, Salesforce, or your own custom connector.', configured: IDENTITY_PROXY_FIELDS.filter(f => f.url !== 'pushRelayUrl').some(f => s[f.url] && s[f.url].trim()) || (s.connectedSources || []).length > 0 },
-      { id: 'remoteDataStores', label: 'Remote data stores', title: 'Remote data stores', blurb: 'Where your project data is persisted outside this device -- GitHub today, more stores later.', configured: !!(activeIdentity && activeIdentity.githubToken && activeIdentity.githubToken.trim()) },
+      { id: 'remoteDataStores', label: 'Remote project store', title: 'Remote project store', blurb: 'Where your project data is persisted outside this device -- GitHub today, more stores later.', configured: !!(activeIdentity && activeIdentity.githubToken && activeIdentity.githubToken.trim()) },
       { id: 'notifications', label: 'Notifications', title: 'Notifications', blurb: 'Get notified when someone @mentions you in a comment.', configured: !!s.mentionNotificationsEnabled }
     ];
     const activeSettingsSectionId = s.settingsSection || 'identity';

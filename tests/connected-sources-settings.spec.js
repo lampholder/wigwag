@@ -251,15 +251,26 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
   // 640px-tall "parent" (settings-modal), which has an explicit
   // height:640px. Confirmed exactly: at a typical 1280x800 window,
   // 88vh=704px > 640px. Now pinned to the same height.
-  test('the connector form modal never exceeds the Settings modal\'s own height, even with a long multi-line error', async ({ page }) => {
+  // The custom-connector editor is now a full-screen takeover (see
+  // docs/EDITING.md), not a dialog nested inside the Settings modal's own
+  // fixed 640px height -- so the overflow bug this test used to guard
+  // against (a long error message inflating the modal past its fixed-
+  // height parent) can no longer happen: there's no fixed-height parent
+  // to overflow. Replaced with the layout-regression guard that actually
+  // matters now: the editor really does fill the window (not still
+  // ~720px, which would mean the full-screen chrome silently regressed),
+  // and a long error still doesn't push Save off-screen.
+  test('the connector editor fills the window, even with a long multi-line error', async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 800 });
     await stubTauri(page);
     await h.gotoTracker(page);
     await h.openSettingsSection(page, 'connectedDataSources');
 
-    const settingsModalBox = await page.locator('[data-testid=settings-modal]').boundingBox();
     await page.locator('[data-testid=btn-add-connected-source]').click();
     await expect(page.locator('[data-testid=connector-form-modal]')).toBeVisible();
+
+    const formModalBox = await page.locator('[data-testid=connector-form-modal]').boundingBox();
+    expect(formModalBox.width).toBeGreaterThan(1280 * 0.9);
 
     await page.locator('[data-testid=connector-name-input]').fill('Jira');
     await page.locator('[data-testid=connector-pattern-regex-input]').fill('^https://element-io\\.atlassian\\.net/browse/([A-Z]+-\\d+)$');
@@ -269,9 +280,48 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
     await page.locator('[data-testid=btn-run-connector-test]').click();
     await page.waitForTimeout(300);
 
-    const formModalBox = await page.locator('[data-testid=connector-form-modal]').boundingBox();
-    expect(formModalBox.height).toBeLessThanOrEqual(settingsModalBox.height);
     await expect(page.locator('[data-testid=btn-save-connector]')).toBeVisible();
+  });
+
+  test('Escape closes only the connector editor, not the whole Settings modal', async ({ page }) => {
+    await stubTauri(page);
+    await h.gotoTracker(page);
+    await h.openSettingsSection(page, 'connectedDataSources');
+    await page.locator('[data-testid=btn-add-connected-source]').click();
+    await expect(page.locator('[data-testid=connector-form-overlay]')).toBeVisible();
+
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=connector-form-overlay]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=settings-modal]')).toBeVisible();
+    await expect(page.locator('[data-testid=btn-add-connected-source]')).toBeVisible();
+  });
+
+  test('the back-link discards the draft and returns to the connected-sources list', async ({ page }) => {
+    await stubTauri(page);
+    await h.gotoTracker(page);
+    await h.openSettingsSection(page, 'connectedDataSources');
+    await page.locator('[data-testid=btn-add-connected-source]').click();
+    await page.locator('[data-testid=connector-name-input]').fill('Should be discarded');
+
+    await page.locator('[data-testid=btn-back-to-sources]').click();
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=connector-form-overlay]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=settings-modal]')).toBeVisible();
+    await expect(page.locator('[data-testid=connected-source-row]', { hasText: 'Should be discarded' })).toHaveCount(0);
+  });
+
+  test('editing a built-in still opens the small credential-only modal, unaffected by the custom editor\'s full-screen chrome', async ({ page }) => {
+    await stubTauri(page);
+    await h.gotoTracker(page);
+    await h.openSettingsSection(page, 'connectedDataSources');
+    await page.locator('[data-testid=connected-source-row]', { hasText: 'Jira' }).locator('[data-testid=btn-edit-connected-source]').click();
+    await page.waitForTimeout(150);
+
+    const box = await page.locator('[data-testid=connector-form-modal]').boundingBox();
+    expect(box.width).toBeLessThan(800);
+    await expect(page.locator('[data-testid=connector-builtin-url-input]')).toBeVisible();
+    await expect(page.locator('[data-testid=btn-back-to-sources]')).toHaveCount(0);
   });
 
   // Live-reported (Tom): pasting a full URL into the Test field threw a

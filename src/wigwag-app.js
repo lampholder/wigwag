@@ -1973,7 +1973,7 @@ class Component extends DCLogic {
       if (s.proposeLayoutConfirmOpen && !e.target.closest('[data-testid="propose-layout-menu-wrap"]')) {
         patch = Object.assign(patch || {}, { proposeLayoutConfirmOpen: false });
       }
-      if (s.settingsOpen && !e.target.closest('[data-testid="settings-modal"]')) {
+      if (s.settingsOpen && !e.target.closest('[data-testid="settings-modal"]') && !e.target.closest('[data-testid="connector-form-overlay"]')) {
         patch = Object.assign(patch || {}, { settingsOpen: false });
       }
       if (s.switcherOpen && !e.target.closest('[data-testid="switcher-wrap"]')) {
@@ -2029,6 +2029,7 @@ class Component extends DCLogic {
         if (this.state.fieldEditorColId) { this.closeFieldEditor(); return; }
         if (this.state.openColMenuId) { this.setState({ openColMenuId: null }); return; }
         if (this.state.addFieldOpen) { this.setState({ addFieldOpen: false }); return; }
+        if (this.state.connectorFormOpen || this.state.builtinSourceFormOpen) { this.cancelConnectorForm(); this.closeBuiltinSourceForm(); return; }
         if (this.state.settingsOpen) { this.setState({ settingsOpen: false }); return; }
         if (this.state.switcherOpen) { this.setState({ switcherOpen: false }); return; }
         if (this.state.exportMenuOpen) { clearTimeout(this._sendCopiedTimer); this.setState({ exportMenuOpen: false, sendCopied: false }); return; }
@@ -9298,6 +9299,14 @@ class Component extends DCLogic {
         return {
           rows,
           formVisible: !!form || !!builtinKind,
+          // The custom-connector editor renders as a full-screen takeover
+          // (see docs/EDITING.md) -- it has to escape settings-modal's own
+          // transform (which creates a new containing block AND stacking
+          // context for any position:fixed descendant), so its markup lives
+          // as a sibling of the whole Settings modal, not nested inside it.
+          // This is the gate that block uses instead of formVisible/
+          // isBuiltinForm directly.
+          customFormVisible: !!form && !builtinKind,
           isBuiltinForm: !!builtinKind,
           formTitle: builtinKind ? builtinSpec.title : (form && form.id ? 'Edit source' : 'Add a source'),
           builtinPanelLabel: builtinSpec ? builtinSpec.panelLabel : '',

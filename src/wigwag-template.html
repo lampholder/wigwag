@@ -2789,6 +2789,7 @@
                     <div style="font-size:10.5px; color: var(--text-tertiary); line-height:1.4; max-width:420px;">Run <code>npm run google-drive-proxy</code> locally to link Google Drive files (rendered as named pills, display only -- not a linkable field) — see README. Credentials stay in that process, never in the browser; the secret above just proves it's really this app asking.</div>
 
                     <sc-if value="{{ connectedSourcesSettings.formVisible }}" hint-placeholder-val="{{ false }}">
+                      <sc-if value="{{ connectedSourcesSettings.isBuiltinForm }}" hint-placeholder-val="{{ false }}">
                       <div data-testid="connector-form-overlay" style="position:fixed; inset:0; background: var(--sh11); z-index:210; display:flex; align-items:center; justify-content:center; padding:24px; box-sizing:border-box;">
                         <div data-testid="connector-form-modal" style="background:var(--surface); border-radius:12px; box-shadow:0 14px 38px var(--sh1); width:720px; max-width:94vw; height:640px; max-height:88vh; display:flex; flex-direction:column; overflow:hidden;">
                           <div style="display:flex; align-items:center; justify-content:space-between; padding:16px 20px; border-bottom:1px solid var(--border-subtle); flex-shrink:0;">
@@ -2796,26 +2797,51 @@
                             <span data-testid="btn-close-connector-form" sc-camel-on-click="{{ connectedSourcesSettings.onCancel }}" style="cursor:pointer; font-size:17px; color: var(--text-secondary); padding:2px;">✕</span>
                           </div>
                           <div style="flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; padding:20px; display:flex; gap:16px; flex-wrap:wrap; align-items:flex-start;">
-
-                            <sc-if value="{{ connectedSourcesSettings.isBuiltinForm }}" hint-placeholder-val="{{ false }}">
-                              <div style="box-sizing:border-box; width:420px; display:flex; flex-direction:column; gap:12px;">
-                                <div style="border:1px solid var(--border); border-radius:9px; overflow:hidden;">
-                                  <div style="padding:6px 12px; background: var(--surface-page); border-bottom:1px solid var(--border-subtle); font-size:10px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; color: var(--text-tertiary);">{{ connectedSourcesSettings.builtinPanelLabel }}</div>
-                                  <div style="padding:14px 15px;">
-                                    <div style="font-size:10px; font-weight:650; letter-spacing:0.04em; text-transform:uppercase; color: var(--text-tertiary); margin-bottom:4px;">Proxy URL</div>
-                                    <input data-testid="connector-builtin-url-input" value="{{ connectedSourcesSettings.builtinUrlValue }}" sc-camel-on-change="{{ connectedSourcesSettings.onBuiltinUrlChange }}" placeholder="{{ connectedSourcesSettings.builtinUrlPlaceholder }}" style="width:100%; box-sizing:border-box; padding:6px 8px; border:1px solid var(--border); border-radius:6px; font-size:12.5px; font-family:inherit; background:transparent; margin-bottom:10px;">
-                                    <div style="font-size:10px; font-weight:650; letter-spacing:0.04em; text-transform:uppercase; color: var(--text-tertiary); margin-bottom:4px;">Proxy secret</div>
-                                    <input data-testid="connector-builtin-secret-input" type="password" value="{{ connectedSourcesSettings.builtinSecretValue }}" sc-camel-on-change="{{ connectedSourcesSettings.onBuiltinSecretChange }}" placeholder="{{ connectedSourcesSettings.builtinSecretPlaceholder }}" style="width:100%; box-sizing:border-box; padding:6px 8px; border:1px solid var(--border); border-radius:6px; font-size:12.5px; font-family:inherit; background:transparent;">
-                                    <div style="font-size:10.5px; color: var(--text-tertiary); line-height:1.4; margin-top:8px;">{{ connectedSourcesSettings.builtinHelperText }}</div>
-                                  </div>
+                            <div style="box-sizing:border-box; width:420px; display:flex; flex-direction:column; gap:12px;">
+                              <div style="border:1px solid var(--border); border-radius:9px; overflow:hidden;">
+                                <div style="padding:6px 12px; background: var(--surface-page); border-bottom:1px solid var(--border-subtle); font-size:10px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; color: var(--text-tertiary);">{{ connectedSourcesSettings.builtinPanelLabel }}</div>
+                                <div style="padding:14px 15px;">
+                                  <div style="font-size:10px; font-weight:650; letter-spacing:0.04em; text-transform:uppercase; color: var(--text-tertiary); margin-bottom:4px;">Proxy URL</div>
+                                  <input data-testid="connector-builtin-url-input" value="{{ connectedSourcesSettings.builtinUrlValue }}" sc-camel-on-change="{{ connectedSourcesSettings.onBuiltinUrlChange }}" placeholder="{{ connectedSourcesSettings.builtinUrlPlaceholder }}" style="width:100%; box-sizing:border-box; padding:6px 8px; border:1px solid var(--border); border-radius:6px; font-size:12.5px; font-family:inherit; background:transparent; margin-bottom:10px;">
+                                  <div style="font-size:10px; font-weight:650; letter-spacing:0.04em; text-transform:uppercase; color: var(--text-tertiary); margin-bottom:4px;">Proxy secret</div>
+                                  <input data-testid="connector-builtin-secret-input" type="password" value="{{ connectedSourcesSettings.builtinSecretValue }}" sc-camel-on-change="{{ connectedSourcesSettings.onBuiltinSecretChange }}" placeholder="{{ connectedSourcesSettings.builtinSecretPlaceholder }}" style="width:100%; box-sizing:border-box; padding:6px 8px; border:1px solid var(--border); border-radius:6px; font-size:12.5px; font-family:inherit; background:transparent;">
+                                  <div style="font-size:10.5px; color: var(--text-tertiary); line-height:1.4; margin-top:8px;">{{ connectedSourcesSettings.builtinHelperText }}</div>
                                 </div>
                               </div>
+                            </div>
+                          </div>
+                          <div style="display:flex; align-items:center; gap:8px; padding:13px 20px; border-top:1px solid var(--border-subtle); flex-shrink:0;">
+                            <span style="flex:1;"></span>
+                            <button data-testid="btn-done-builtin-source" sc-camel-on-click="{{ connectedSourcesSettings.onCancel }}" style="border:none; border-radius:6px; background: var(--accent-fill); color:var(--ink-on-accent); font-size:12.5px; font-weight:600; padding:7px 16px; cursor:pointer;">Done</button>
+                          </div>
+                        </div>
+                      </div>
+                      </sc-if>
+                    </sc-if>
+                  </sc-if>
+                </div>
+              </div>
+            </div>
+          </sc-if>
+                      <sc-if value="{{ connectedSourcesSettings.customFormVisible }}" hint-placeholder-val="{{ false }}">
+                      <div data-testid="connector-form-overlay" style="position:fixed; top:50%; left:50%; width:100vw; height:100vh; transform:translate(-50%,-50%); background: var(--surface); z-index:210; display:flex; flex-direction:column; box-sizing:border-box;">
+                        <div data-testid="connector-form-modal" style="flex:1; min-height:0; width:100%; display:flex; flex-direction:column; overflow:hidden;">
+                          <div style="display:flex; align-items:center; gap:10px; padding:14px 24px; border-bottom:1px solid var(--border-subtle); flex-shrink:0;">
+                            <span data-testid="btn-back-to-sources" sc-camel-on-click="{{ connectedSourcesSettings.onCancel }}" style="cursor:pointer; font-size:13px; color: var(--text-tertiary);">← Connected sources</span>
+                            <sc-if value="{{ connectedSourcesSettings.isEditing }}" hint-placeholder-val="{{ false }}">
+                              <span data-testid="btn-delete-connector" sc-camel-on-click="{{ connectedSourcesSettings.onDelete }}" style="font-size:12px; color: var(--c17); cursor:pointer; margin-left:4px;">Delete</span>
                             </sc-if>
-                            <sc-if value="{{ !connectedSourcesSettings.isBuiltinForm }}" hint-placeholder-val="{{ true }}">
+                            <span style="color: var(--border);">/</span>
+                            <span style="font-size:14.5px; font-weight:700;">{{ connectedSourcesSettings.formTitle }}</span>
+                            <span style="flex:1;"></span>
+                            <span data-testid="btn-cancel-connector-form" sc-camel-on-click="{{ connectedSourcesSettings.onCancel }}" style="cursor:pointer; font-size:12.5px; color: var(--text-muted); padding:7px 14px; border-radius:7px; border:1px solid var(--border);" style-hover="background:var(--n55);">Cancel</span>
+                            <button data-testid="btn-save-connector" sc-camel-on-click="{{ connectedSourcesSettings.onSave }}" style="border:none; border-radius:7px; background: {{ connectedSourcesSettings.saveButtonBg }}; color:var(--ink-on-accent); font-size:12.5px; font-weight:600; padding:7px 16px; cursor: {{ connectedSourcesSettings.saveButtonCursor }};">Save</button>
+                          </div>
+                          <div style="flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; padding:24px; display:flex; gap:18px; flex-wrap:wrap; align-items:flex-start; justify-content:center; background: var(--surface-page);">
 
-                            <div style="box-sizing:border-box; width:280px; display:flex; flex-direction:column; gap:12px;">
+                            <div style="box-sizing:border-box; width:340px; display:flex; flex-direction:column; gap:14px;">
 
-                              <div style="border:1px solid var(--border); border-radius:9px; overflow:hidden;">
+                              <div style="border:1px solid var(--border); border-radius:9px; overflow:hidden; background: var(--surface);">
                                 <div style="padding:6px 12px; background: var(--surface-page); border-bottom:1px solid var(--border-subtle); font-size:10px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; color: var(--text-tertiary);">Identity</div>
                                 <div style="padding:14px 15px;">
                                   <div style="display:flex; gap:9px; align-items:center;">
@@ -2842,7 +2868,7 @@
                                 </div>
                               </div>
 
-                              <div style="border:1px solid var(--border); border-radius:9px; overflow:hidden;">
+                              <div style="border:1px solid var(--border); border-radius:9px; overflow:hidden; background: var(--surface);">
                                 <div style="padding:6px 12px; background: var(--surface-page); border-bottom:1px solid var(--border-subtle); font-size:10px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; color: var(--text-tertiary);">Credential</div>
                                 <div style="padding:14px 15px;">
                                   <div style="font-size:10px; font-weight:650; letter-spacing:0.04em; text-transform:uppercase; color: var(--text-tertiary); margin-bottom:4px;">API key / token</div>
@@ -2851,7 +2877,7 @@
                                 </div>
                               </div>
 
-                              <div style="border:1px solid var(--border); border-radius:9px; overflow:hidden;">
+                              <div style="border:1px solid var(--border); border-radius:9px; overflow:hidden; background: var(--surface);">
                                 <div style="padding:6px 12px; background: var(--surface-page); border-bottom:1px solid var(--border-subtle); display:flex; align-items:center; justify-content:space-between;">
                                   <span style="font-size:10px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; color: var(--text-tertiary);">Patterns</span>
                                   <span data-testid="btn-add-connector-pattern" sc-camel-on-click="{{ connectedSourcesSettings.onAddPattern }}" style="font-size:11px; color: var(--accent-ink); cursor:pointer;">+ Add pattern</span>
@@ -2874,22 +2900,22 @@
 
                             </div>
 
-                            <div style="box-sizing:border-box; flex:1; min-width:360px; display:flex; flex-direction:column; gap:12px;">
-                              <div style="border:1px solid var(--border); border-radius:9px; overflow:hidden;">
+                            <div style="box-sizing:border-box; width:780px; max-width:780px; flex:1; min-width:0; display:flex; flex-direction:column; gap:14px;">
+                              <div style="border:1px solid var(--border); border-radius:9px; overflow:hidden; background: var(--surface);">
                                 <div style="padding:6px 12px; background: var(--surface-page); border-bottom:1px solid var(--border-subtle); font-size:10px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; color: var(--text-tertiary);">Macro</div>
                                 <div style="padding:13px 15px 10px;">
                                   <div style="font-size:11px; line-height:1.5; color: var(--text-tertiary); margin-bottom:8px;">A function from <code style="font-size:10px;">(id, credential)</code> to <code style="font-size:10px;">{ title, url, state, labels, assignee, extra }</code>. Runs in the app — <code style="font-size:10px;">fetch</code> is available directly, no proxy needed.</div>
-                                  <textarea data-testid="connector-macro-textarea" value="{{ connectedSourcesSettings.macroValue }}" sc-camel-on-change="{{ connectedSourcesSettings.onMacroChange }}" placeholder="async (id, credential) => { ... }" style="width:100%; box-sizing:border-box; min-height:160px; padding:11px 13px; border:none; border-radius:7px; font-size:11.5px; font-family:ui-monospace,monospace; line-height:1.55; resize:vertical; background: var(--n18); color: var(--n9);"></textarea>
+                                  <textarea data-testid="connector-macro-textarea" value="{{ connectedSourcesSettings.macroValue }}" sc-camel-on-change="{{ connectedSourcesSettings.onMacroChange }}" placeholder="async (id, credential) => { ... }" style="width:100%; box-sizing:border-box; min-height:280px; padding:11px 13px; border:none; border-radius:7px; font-size:11.5px; font-family:ui-monospace,monospace; line-height:1.55; resize:vertical; background: var(--n18); color: var(--n9);"></textarea>
                                 </div>
                               </div>
-                              <div style="border:1px solid var(--border); border-radius:9px; overflow:hidden;">
+                              <div style="border:1px solid var(--border); border-radius:9px; overflow:hidden; background: var(--surface);">
                                 <div style="padding:6px 12px; background: var(--surface-page); border-bottom:1px solid var(--border-subtle); font-size:10px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; color: var(--text-tertiary);">Link text</div>
                                 <div style="padding:13px 15px 10px;">
                                   <div style="font-size:11px; line-height:1.5; color: var(--text-tertiary); margin-bottom:8px;">What a linked field shows underneath the title. Wrap <code style="font-size:10px;">id</code>, <code style="font-size:10px;">title</code>, or <code style="font-size:10px;">state</code> in double curly braces to use it — blank defaults to the title.</div>
                                   <input data-testid="connector-link-text-input" value="{{ connectedSourcesSettings.linkTextTemplateValue }}" sc-camel-on-change="{{ connectedSourcesSettings.onLinkTextTemplateChange }}" placeholder="defaults to the title" style="width:100%; box-sizing:border-box; padding:6px 8px; border:1px solid var(--border); border-radius:6px; font-size:11.5px; font-family:ui-monospace,monospace; background:transparent;">
                                 </div>
                               </div>
-                              <div style="border:1px solid var(--border); border-radius:9px; overflow:hidden;">
+                              <div style="border:1px solid var(--border); border-radius:9px; overflow:hidden; background: var(--surface);">
                                 <div style="padding:6px 12px; background: var(--surface-page); border-bottom:1px solid var(--border-subtle); font-size:10px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; color: var(--text-tertiary);">Test</div>
                                 <div style="padding:12px 15px 15px;">
                                   <div style="display:flex; gap:7px; align-items:center;">
@@ -2908,31 +2934,11 @@
                                 </div>
                               </div>
                             </div>
-                            </sc-if>
 
-                          </div>
-                          <div style="display:flex; align-items:center; gap:8px; padding:13px 20px; border-top:1px solid var(--border-subtle); flex-shrink:0;">
-                            <sc-if value="{{ connectedSourcesSettings.isBuiltinForm }}" hint-placeholder-val="{{ false }}">
-                              <span style="flex:1;"></span>
-                              <button data-testid="btn-done-builtin-source" sc-camel-on-click="{{ connectedSourcesSettings.onCancel }}" style="border:none; border-radius:6px; background: var(--accent-fill); color:var(--ink-on-accent); font-size:12.5px; font-weight:600; padding:7px 16px; cursor:pointer;">Done</button>
-                            </sc-if>
-                            <sc-if value="{{ !connectedSourcesSettings.isBuiltinForm }}" hint-placeholder-val="{{ true }}">
-                            <sc-if value="{{ connectedSourcesSettings.isEditing }}" hint-placeholder-val="{{ false }}">
-                              <span data-testid="btn-delete-connector" sc-camel-on-click="{{ connectedSourcesSettings.onDelete }}" style="font-size:12px; color: var(--c17); cursor:pointer;">Delete source</span>
-                            </sc-if>
-                            <span style="flex:1;"></span>
-                            <span data-testid="btn-cancel-connector-form" sc-camel-on-click="{{ connectedSourcesSettings.onCancel }}" style="cursor:pointer; font-size:12.5px; color: var(--text-muted); padding:7px 12px; border-radius:6px;" style-hover="background:var(--n55);">Cancel</span>
-                            <button data-testid="btn-save-connector" sc-camel-on-click="{{ connectedSourcesSettings.onSave }}" style="border:none; border-radius:6px; background: {{ connectedSourcesSettings.saveButtonBg }}; color:var(--ink-on-accent); font-size:12.5px; font-weight:600; padding:7px 16px; cursor: {{ connectedSourcesSettings.saveButtonCursor }};">Save</button>
-                            </sc-if>
                           </div>
                         </div>
                       </div>
-                    </sc-if>
-                  </sc-if>
-                </div>
-              </div>
-            </div>
-          </sc-if>
+                      </sc-if>
 
   <sc-if value="{{ isDesktopViewport }}" hint-placeholder-val="{{ true }}">
   <sc-if value="{{ pasteMergeOpen }}" hint-placeholder-val="{{ false }}">

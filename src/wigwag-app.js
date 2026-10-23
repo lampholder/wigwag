@@ -232,6 +232,92 @@ const docStore = {
   }
 };
 
+// Starting points for "+ Add source" (see docs/EDITING.md / the
+// connected-sources unification work) -- a template just pre-fills the
+// SAME draft shape openAddConnectorForm already builds; once saved, a
+// template-seeded connector is byte-identical to a hand-built one, no
+// separate discriminant to track or migrate later. Patterns omit their
+// own `^...$` anchoring, same as every other saved connector pattern --
+// the engine wraps each one itself (see customConnectorMatches).
+// Macros are real starting points, not placeholders: Jira's and
+// GitHub's mirror fetchJiraData's/fetchGithubData's own REST shape
+// exactly. Salesforce's object type ("Case") is the one genuinely
+// uncertain part (it varies per org, and fetchSalesforceData itself
+// defers entirely to its proxy rather than assuming a schema) -- left
+// as an obvious placeholder the user swaps for their own object, same
+// spirit as every template here being "a starting point," not a
+// guaranteed-correct default.
+const CONNECTOR_TEMPLATES = {
+  jira: {
+    name: 'Jira', glyph: 'J', color: col('blue').dot,
+    patterns: [
+      { regex: '[A-Za-z][A-Za-z0-9]+-\\d+', label: 'Issue key' },
+      { regex: 'https?://[\\w.-]+/browse/([A-Za-z][A-Za-z0-9]+-\\d+)/?(?:[?#].*)?', label: 'Issue URL' }
+    ],
+    macro: 'async (id, credential) => {\n'
+      + '  const res = await fetch(\n'
+      + '    `https://your-domain.atlassian.net/rest/api/3/issue/${id}`,\n'
+      + '    { headers: { Authorization: \'Basic \' + btoa(credential) } }\n'
+      + '  );\n'
+      + '  const data = await res.json();\n'
+      + '  return {\n'
+      + '    title: data.fields.summary,\n'
+      + '    url: `https://your-domain.atlassian.net/browse/${id}`,\n'
+      + '    state: data.fields.status.name,\n'
+      + '    extra: { assignee: data.fields.assignee ? data.fields.assignee.displayName : \'\', description: data.fields.description }\n'
+      + '  };\n'
+      + '}',
+    linkTextTemplate: ''
+  },
+  github: {
+    name: 'GitHub', glyph: 'G', color: col('gray').dot,
+    patterns: [
+      { regex: 'https?://github\\.com/([\\w.-]+)/([\\w.-]+)/(?:issues|pull)/(\\d+)/?', label: 'Issue/PR URL' },
+      { regex: '[\\w.-]+/[\\w.-]+#\\d+', label: 'owner/repo#123' }
+    ],
+    macro: 'async (id, credential) => {\n'
+      + '  const [owner, repo, num] = id.split(/[/#]/);\n'
+      + '  const res = await fetch(\n'
+      + '    `https://api.github.com/repos/${owner}/${repo}/issues/${num}`,\n'
+      + '    { headers: { Accept: \'application/vnd.github+json\', Authorization: \'Bearer \' + credential } }\n'
+      + '  );\n'
+      + '  const data = await res.json();\n'
+      + '  return {\n'
+      + '    title: data.title,\n'
+      + '    url: data.html_url,\n'
+      + '    state: data.state,\n'
+      + '    extra: { labels: (data.labels || []).map(l => l.name || l), assignees: (data.assignees || []).map(a => a.login) }\n'
+      + '  };\n'
+      + '}',
+    linkTextTemplate: ''
+  },
+  salesforce: {
+    name: 'Salesforce', glyph: 'S', color: col('teal').dot,
+    patterns: [
+      { regex: '[a-zA-Z0-9]{15,18}', label: 'Record Id' },
+      { regex: 'https?://[\\w-]+\\.lightning\\.force\\.com/lightning/r/(?:[\\w]+/)?([a-zA-Z0-9]{15,18})/view/?(?:[?#].*)?', label: 'Lightning URL' }
+    ],
+    // "Case" is a placeholder object type -- swap for whatever object
+    // this connector actually points at (Opportunity, a custom object,
+    // etc.), see the comment above this whole constant.
+    macro: 'async (id, credential) => {\n'
+      + '  const res = await fetch(\n'
+      + '    `https://your-instance.my.salesforce.com/services/data/v59.0/sobjects/Case/${id}`,\n'
+      + '    { headers: { Authorization: \'Bearer \' + credential } }\n'
+      + '  );\n'
+      + '  const data = await res.json();\n'
+      + '  return {\n'
+      + '    title: data.Subject || data.Name || id,\n'
+      + '    url: `https://your-instance.lightning.force.com/lightning/r/${id}/view`,\n'
+      + '    state: data.Status || data.StageName || \'\',\n'
+      + '    extra: { owner: data.Owner ? data.Owner.Name : \'\' }\n'
+      + '  };\n'
+      + '}',
+    linkTextTemplate: ''
+  },
+  blank: { name: '', glyph: '', color: col('red').dot, patterns: [{ regex: '', label: '' }], macro: '', linkTextTemplate: '' }
+};
+
 class Component extends DCLogic {
   constructor(props) {
     super(props);
@@ -2029,6 +2115,7 @@ class Component extends DCLogic {
         if (this.state.fieldEditorColId) { this.closeFieldEditor(); return; }
         if (this.state.openColMenuId) { this.setState({ openColMenuId: null }); return; }
         if (this.state.addFieldOpen) { this.setState({ addFieldOpen: false }); return; }
+        if (this.state.addSourceTypePickerOpen) { this.closeAddSourceTypePicker(); return; }
         if (this.state.connectorFormOpen || this.state.builtinSourceFormOpen) { this.cancelConnectorForm(); this.closeBuiltinSourceForm(); return; }
         if (this.state.settingsOpen) { this.setState({ settingsOpen: false }); return; }
         if (this.state.switcherOpen) { this.setState({ switcherOpen: false }); return; }
@@ -3388,6 +3475,7 @@ class Component extends DCLogic {
     connectorPickerOpen: null,
     connectorFormOpen: null,
     builtinSourceFormOpen: null,
+    addSourceTypePickerOpen: false,
     switcherOpen: false,
     switcherScopeId: null,
     addIdentityOpen: false,
@@ -3867,8 +3955,21 @@ class Component extends DCLogic {
   // connector never mutates this.state.connectedSources directly, only
   // saveConnectorForm commits, mirroring every other immutable-draft
   // form in this codebase (addRuleRow/updateRuleRow/removeRuleRow).
-  openAddConnectorForm() {
-    this.setState({ connectorFormOpen: { id: null, draft: { name: '', glyph: '', color: col('red').dot, patterns: [{ regex: '', label: '' }], macro: '', credentialDraft: '', hasCredential: false, linkTextTemplate: '' }, testId: '', testResult: null, testRunning: false } });
+  openAddSourceTypePicker() { this.setState({ addSourceTypePickerOpen: true }); }
+  closeAddSourceTypePicker() { this.setState({ addSourceTypePickerOpen: false }); }
+  // "+ Add source" opens this picker first (Jira/GitHub/Salesforce/Blank
+  // custom), rather than jumping straight to a blank draft -- each option
+  // seeds the SAME draft shape openAddConnectorForm below builds, just
+  // pre-filled from CONNECTOR_TEMPLATES. "Blank custom" reuses the blank
+  // template so there's one code path, not two.
+  startConnectorFromTemplate(kind) {
+    const tpl = CONNECTOR_TEMPLATES[kind] || CONNECTOR_TEMPLATES.blank;
+    this.setState({
+      addSourceTypePickerOpen: false,
+      connectorFormOpen: { id: null, draft: { name: tpl.name, glyph: tpl.glyph, color: tpl.color,
+        patterns: tpl.patterns.map(p => ({ ...p })), macro: tpl.macro, credentialDraft: '',
+        hasCredential: false, linkTextTemplate: tpl.linkTextTemplate || '' }, testId: '', testResult: null, testRunning: false }
+    });
   }
   openEditConnectorForm(id) {
     const c = (this.state.connectedSources || []).find(x => x.id === id);
@@ -9316,7 +9417,15 @@ class Component extends DCLogic {
           builtinSecretPlaceholder: builtinSpec ? builtinSpec.secretPlaceholder : '',
           builtinHelperText: builtinSpec ? builtinSpec.helperText : '',
           showAddSource: this.isTauriConnectorRuntime(),
-          onAddClick: () => this.openAddConnectorForm(),
+          typePickerVisible: s.addSourceTypePickerOpen,
+          onCloseTypePicker: () => this.closeAddSourceTypePicker(),
+          typeOptions: [
+            { kind: 'jira', name: 'Jira', glyph: 'J', color: col('blue').dot, blurb: 'Issue keys and browse URLs', onPick: () => this.startConnectorFromTemplate('jira') },
+            { kind: 'github', name: 'GitHub', glyph: 'G', color: col('gray').dot, blurb: 'Issue/PR URLs and owner/repo#123', onPick: () => this.startConnectorFromTemplate('github') },
+            { kind: 'salesforce', name: 'Salesforce', glyph: 'S', color: col('teal').dot, blurb: 'Record Ids and Lightning URLs', onPick: () => this.startConnectorFromTemplate('salesforce') },
+            { kind: 'blank', name: 'Blank custom', glyph: '+', color: col('red').dot, blurb: 'Start from scratch', onPick: () => this.startConnectorFromTemplate('blank') }
+          ],
+          onAddClick: () => this.openAddSourceTypePicker(),
           onCancel: () => { this.cancelConnectorForm(); this.closeBuiltinSourceForm(); },
           onSave: () => this.saveConnectorForm(),
           isEditing: !!(form && form.id),

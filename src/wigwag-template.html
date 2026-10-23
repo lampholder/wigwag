@@ -2788,6 +2788,31 @@
                     <input data-testid="settings-google-drive-proxy-secret" type="password" placeholder="printed by google-drive-proxy.js on first run" value="{{ googleDriveProxySecret }}" sc-camel-on-change="{{ onGoogleDriveProxySecretChange }}" style="width:100%; max-width:420px; box-sizing:border-box; padding:6px 8px; border:1px solid var(--border); border-radius:6px; font-size:13px; font-family:inherit; margin-bottom:4px; background:transparent;">
                     <div style="font-size:10.5px; color: var(--text-tertiary); line-height:1.4; max-width:420px;">Run <code>npm run google-drive-proxy</code> locally to link Google Drive files (rendered as named pills, display only -- not a linkable field) — see README. Credentials stay in that process, never in the browser; the secret above just proves it's really this app asking.</div>
 
+                    <sc-if value="{{ connectedSourcesSettings.typePickerVisible }}" hint-placeholder-val="{{ false }}">
+                      <div data-testid="source-type-picker" style="position:fixed; inset:0; background: var(--sh11); z-index:210; display:flex; align-items:center; justify-content:center; padding:24px; box-sizing:border-box;">
+                        <div style="background:var(--surface); border-radius:12px; box-shadow:0 14px 38px var(--sh1); width:480px; max-width:94vw; overflow:hidden;">
+                          <div style="display:flex; align-items:center; justify-content:space-between; padding:16px 20px; border-bottom:1px solid var(--border-subtle);">
+                            <div>
+                              <span style="font-size:14.5px; font-weight:700;">Add a source</span>
+                              <div style="font-size:11.5px; color: var(--text-tertiary); margin-top:4px;">Start from a familiar shape, or build your own from scratch.</div>
+                            </div>
+                            <span data-testid="btn-close-source-type-picker" sc-camel-on-click="{{ connectedSourcesSettings.onCloseTypePicker }}" style="cursor:pointer; font-size:17px; color: var(--text-secondary); padding:2px;">✕</span>
+                          </div>
+                          <div style="padding:10px; display:flex; flex-direction:column;">
+                            <sc-for list="{{ connectedSourcesSettings.typeOptions }}" as="opt" hint-placeholder-count="4">
+                              <div data-testid="source-type-option" data-kind="{{ opt.kind }}" sc-camel-on-click="{{ opt.onPick }}" style="display:flex; align-items:center; gap:12px; padding:11px 12px; border-radius:8px; cursor:pointer;" style-hover="background:var(--surface-page);">
+                                <span style="flex-shrink:0; display:flex; align-items:center; justify-content:center; width:32px; height:32px; border-radius:8px; font-size:13px; font-weight:800; color:#fff; background: {{ opt.color }};">{{ opt.glyph }}</span>
+                                <div style="flex:1; min-width:0;">
+                                  <div style="font-size:13px; font-weight:650;">{{ opt.name }}</div>
+                                  <div style="font-size:11.5px; color: var(--text-tertiary); margin-top:1px;">{{ opt.blurb }}</div>
+                                </div>
+                              </div>
+                            </sc-for>
+                          </div>
+                        </div>
+                      </div>
+                    </sc-if>
+
                     <sc-if value="{{ connectedSourcesSettings.formVisible }}" hint-placeholder-val="{{ false }}">
                       <sc-if value="{{ connectedSourcesSettings.isBuiltinForm }}" hint-placeholder-val="{{ false }}">
                       <div data-testid="connector-form-overlay" style="position:fixed; inset:0; background: var(--sh11); z-index:210; display:flex; align-items:center; justify-content:center; padding:24px; box-sizing:border-box;">

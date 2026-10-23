@@ -24,6 +24,17 @@ async function stubTauri(page) {
   });
 }
 
+// "+ Add source" opens a type picker (Jira/GitHub/Salesforce/Blank
+// custom) before the real form now -- most existing tests just want a
+// blank draft, same as before the picker existed, so this helper
+// reproduces that in one call.
+async function openBlankConnectorForm(page) {
+  await page.locator('[data-testid=btn-add-connected-source]').click();
+  await page.waitForTimeout(100);
+  await page.locator('[data-testid=source-type-option][data-kind=blank]').click();
+  await page.waitForTimeout(100);
+}
+
 test.describe('Connected Sources (Phase 1): Settings UI', () => {
   test('outside Tauri, Connected data sources still appears and shows the 3 built-ins editable, but with no "+ Add source" affordance', async ({ page }) => {
     await h.gotoTracker(page);
@@ -87,7 +98,7 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
     await h.gotoTracker(page);
     await h.openSettingsSection(page, 'connectedDataSources');
 
-    await page.locator('[data-testid=btn-add-connected-source]').click();
+    await openBlankConnectorForm(page);
     await expect(page.locator('[data-testid=connector-form-modal]')).toBeVisible();
     await expect(page.locator('[data-testid=connector-form-modal]')).toContainText('Add a source');
 
@@ -117,11 +128,76 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
     await expect(linearRow).not.toContainText('Built-in');
   });
 
-  test('an invalid pattern shows an inline error and blocks Save, without blocking the rest of the form', async ({ page }) => {
+  test('"+ Add source" opens a type picker with Jira/GitHub/Salesforce/Blank options', async ({ page }) => {
     await stubTauri(page);
     await h.gotoTracker(page);
     await h.openSettingsSection(page, 'connectedDataSources');
     await page.locator('[data-testid=btn-add-connected-source]').click();
+    await expect(page.locator('[data-testid=source-type-picker]')).toBeVisible();
+    const kinds = await page.locator('[data-testid=source-type-option]').evaluateAll(els => els.map(e => e.getAttribute('data-kind')));
+    expect(kinds).toEqual(['jira', 'github', 'salesforce', 'blank']);
+  });
+
+  test('picking the Jira template pre-fills name/patterns/a real macro, and the resulting connector is independent of the legacy built-in Jira row', async ({ page }) => {
+    await stubTauri(page);
+    await h.gotoTracker(page);
+    await h.openSettingsSection(page, 'connectedDataSources');
+    await page.locator('[data-testid=btn-add-connected-source]').click();
+    await page.locator('[data-testid=source-type-option][data-kind=jira]').click();
+    await page.waitForTimeout(100);
+
+    await expect(page.locator('[data-testid=connector-name-input]')).toHaveValue('Jira');
+    await expect(page.locator('[data-testid=connector-glyph-input]')).toHaveValue('J');
+    expect(await page.locator('[data-testid=connector-pattern-regex-input]').count()).toBe(2);
+    const macro = await page.locator('[data-testid=connector-macro-textarea]').inputValue();
+    expect(macro).toContain('rest/api/3/issue');
+
+    await page.locator('[data-testid=btn-save-connector]').click();
+    await page.waitForTimeout(150);
+
+    const rows = page.locator('[data-testid=connected-source-row]', { hasText: 'Jira' });
+    await expect(rows).toHaveCount(2); // the legacy built-in + this new template-seeded one
+    await expect(rows.filter({ hasText: 'Built-in' })).toHaveCount(1);
+    await expect(rows.filter({ hasNotText: 'Built-in' })).toHaveCount(1);
+  });
+
+  test('picking the GitHub or Salesforce template pre-fills a plausible name/pattern/macro too', async ({ page }) => {
+    await stubTauri(page);
+    await h.gotoTracker(page);
+    await h.openSettingsSection(page, 'connectedDataSources');
+
+    await page.locator('[data-testid=btn-add-connected-source]').click();
+    await page.locator('[data-testid=source-type-option][data-kind=github]').click();
+    await page.waitForTimeout(100);
+    await expect(page.locator('[data-testid=connector-name-input]')).toHaveValue('GitHub');
+    expect(await page.locator('[data-testid=connector-macro-textarea]').inputValue()).toContain('api.github.com');
+    await page.locator('[data-testid=btn-cancel-connector-form]').click();
+    await page.waitForTimeout(100);
+
+    await page.locator('[data-testid=btn-add-connected-source]').click();
+    await page.locator('[data-testid=source-type-option][data-kind=salesforce]').click();
+    await page.waitForTimeout(100);
+    await expect(page.locator('[data-testid=connector-name-input]')).toHaveValue('Salesforce');
+    expect(await page.locator('[data-testid=connector-macro-textarea]').inputValue()).toContain('sobjects');
+  });
+
+  test('"Blank custom" reproduces today\'s empty-form behavior exactly', async ({ page }) => {
+    await stubTauri(page);
+    await h.gotoTracker(page);
+    await h.openSettingsSection(page, 'connectedDataSources');
+    await openBlankConnectorForm(page);
+
+    await expect(page.locator('[data-testid=connector-name-input]')).toHaveValue('');
+    await expect(page.locator('[data-testid=connector-glyph-input]')).toHaveValue('');
+    await expect(page.locator('[data-testid=connector-macro-textarea]')).toHaveValue('');
+    expect(await page.locator('[data-testid=connector-pattern-regex-input]').count()).toBe(1);
+  });
+
+  test('an invalid pattern shows an inline error and blocks Save, without blocking the rest of the form', async ({ page }) => {
+    await stubTauri(page);
+    await h.gotoTracker(page);
+    await h.openSettingsSection(page, 'connectedDataSources');
+    await openBlankConnectorForm(page);
 
     await page.locator('[data-testid=connector-name-input]').fill('Broken');
     await page.locator('[data-testid=connector-pattern-regex-input]').first().fill('[unterminated(');
@@ -237,7 +313,7 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
     await stubTauri(page);
     await h.gotoTracker(page);
     await h.openSettingsSection(page, 'connectedDataSources');
-    await page.locator('[data-testid=btn-add-connected-source]').click();
+    await openBlankConnectorForm(page);
     await page.locator('[data-testid=connector-name-input]').fill('Abandoned');
     await page.locator('[data-testid=btn-cancel-connector-form]').click();
     await expect(page.locator('[data-testid=connector-form-modal]')).toBeHidden();
@@ -266,7 +342,7 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
     await h.gotoTracker(page);
     await h.openSettingsSection(page, 'connectedDataSources');
 
-    await page.locator('[data-testid=btn-add-connected-source]').click();
+    await openBlankConnectorForm(page);
     await expect(page.locator('[data-testid=connector-form-modal]')).toBeVisible();
 
     const formModalBox = await page.locator('[data-testid=connector-form-modal]').boundingBox();
@@ -287,7 +363,7 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
     await stubTauri(page);
     await h.gotoTracker(page);
     await h.openSettingsSection(page, 'connectedDataSources');
-    await page.locator('[data-testid=btn-add-connected-source]').click();
+    await openBlankConnectorForm(page);
     await expect(page.locator('[data-testid=connector-form-overlay]')).toBeVisible();
 
     await page.keyboard.press('Escape');
@@ -301,7 +377,7 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
     await stubTauri(page);
     await h.gotoTracker(page);
     await h.openSettingsSection(page, 'connectedDataSources');
-    await page.locator('[data-testid=btn-add-connected-source]').click();
+    await openBlankConnectorForm(page);
     await page.locator('[data-testid=connector-name-input]').fill('Should be discarded');
 
     await page.locator('[data-testid=btn-back-to-sources]').click();
@@ -334,7 +410,7 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
       await stubTauri(page);
       await h.gotoTracker(page);
       await h.openSettingsSection(page, 'connectedDataSources');
-      await page.locator('[data-testid=btn-add-connected-source]').click();
+      await openBlankConnectorForm(page);
 
       await page.locator('[data-testid=connector-name-input]').fill('Jira');
       await page.locator('[data-testid=connector-pattern-regex-input]').fill('^https://element-io\\.atlassian\\.net/browse/([A-Z]+-\\d+)$');
@@ -352,7 +428,7 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
       await stubTauri(page);
       await h.gotoTracker(page);
       await h.openSettingsSection(page, 'connectedDataSources');
-      await page.locator('[data-testid=btn-add-connected-source]').click();
+      await openBlankConnectorForm(page);
 
       await page.locator('[data-testid=connector-name-input]').fill('Jira');
       await page.locator('[data-testid=connector-pattern-regex-input]').fill('^https://element-io\\.atlassian\\.net/browse/([A-Z]+-\\d+)$');

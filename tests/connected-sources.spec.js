@@ -292,4 +292,29 @@ test.describe('Connected Sources (Phase 1): paste dispatch + macro engine', () =
     const html = await cell.innerHTML();
     expect(html).toContain('>SD</span>'); // badge still renders
   });
+
+  // Tracker 54e36073: classifyBulkPasteLines (the bulk-paste REVIEW
+  // preview) checked github/jira/salesforce/wigwag only -- a real custom
+  // connector match fell through to "unlinked" in the preview, even
+  // though confirmBulkPaste's own createIssueFromText-per-line dispatch
+  // already resolved it correctly at confirm time. Also covers refsMatch
+  // itself needing its own 'connector' case for bulk-paste dedup.
+  test('a real custom connector match classifies as linked (not unlinked) in the bulk-paste review preview, and a repeat of the same already-linked id dedupes', async ({ page }) => {
+    await seedConnector(page, LINEAR_CONNECTOR);
+    await stubTauriInvoke(page, { fetchResponse: { title: 'Resolved: ENG-512', url: '', state: '' } });
+    await h.gotoTracker(page);
+
+    await h.clickFieldToEdit(page, 3, 'linked');
+    await h.pasteText(page, 'https://linear.app/wigwag/issue/ENG-512');
+    await page.keyboard.press('Tab');
+    await h.waitForFieldResolved(page, 3, 'linked');
+
+    await h.pasteMultilineIntoAddItem(page, ['https://linear.app/wigwag/issue/ENG-512', 'https://linear.app/wigwag/issue/ENG-999', 'Totally plain text']);
+    await page.locator('[data-testid=bulk-paste-review-btn]').click();
+    await page.waitForTimeout(200);
+
+    await expect(page.locator('[data-testid=bulk-paste-duplicate-count]')).toContainText('1 skipped');
+    await expect(page.locator('[data-testid=bulk-paste-linked-count]')).toContainText('1 will be added, linked');
+    await expect(page.locator('[data-testid=bulk-paste-unlinked-count]')).toContainText('1 will be added, unlinked');
+  });
 });

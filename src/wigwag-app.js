@@ -5781,6 +5781,13 @@ class Component extends DCLogic {
       const sfLink = sfId && this.builtinConnector('salesforce');
       const wgParsed = !gh && !jiraLink && !sfLink && this.wigwagUrlMatch(trimmed);
       const wg = wgParsed && this.resolveWigwagProjectId(wgParsed) ? wgParsed : null;
+      // Tracker 54e36073: a real custom connector match was never
+      // checked here at all -- createIssueFromText's own dispatch order
+      // checks it last, after the 3 built-ins + wigwag, so mirror that
+      // exact order; ambiguous (2+) matches fall through to unlinked,
+      // same as createIssueFromText itself (no picker UI in this flow).
+      const connMatches = (!gh && !jiraLink && !sfLink && !wg) ? this.customConnectorMatches(trimmed) : [];
+      const conn = connMatches.length === 1 ? connMatches[0] : null;
       let ref = null;
       // Jira/Salesforce build the SAME system:'connector' shape the real
       // dispatch now creates (applyConnectorLinkToField) -- comparing
@@ -5791,6 +5798,7 @@ class Component extends DCLogic {
       else if (jiraLink) ref = { system: 'connector', connectorId: jiraLink.id, matchedId: jiraKey };
       else if (sfLink) ref = { system: 'connector', connectorId: sfLink.id, matchedId: sfId };
       else if (wg) ref = { system: 'wigwag', projectId: this.resolveWigwagProjectId(wg), issueId: wg.issueId || null, from: wg.from || null, path: wg.path || null, ref: wg.ref || null };
+      else if (conn) ref = { system: 'connector', connectorId: conn.connector.id, matchedId: conn.matchedId };
       let duplicate;
       if (ref) {
         duplicate = s.issues.some(iss => Object.values(iss.fieldRefs || {}).some(r => this.refsMatch(r, ref))) || seenRefs.some(r => this.refsMatch(r, ref));

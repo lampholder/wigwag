@@ -443,35 +443,78 @@ async function mockGithubApi(page) {
   });
 }
 
-// Mirrors mockGithubApi, for the local Jira proxy the app talks to instead
-// of Jira directly (Jira doesn't allow direct browser CORS requests the way
-// GitHub does — see jira-proxy.js). fixtures maps issue key -> the proxy's
-// normalized response shape ({title, description, labels, browseUrl}).
-async function mockJiraProxy(page, fixtures, proxyUrl = 'http://localhost:8934') {
-  await page.route(proxyUrl + '/issue/*', async (route) => {
-    const key = decodeURIComponent(new URL(route.request().url()).pathname.replace(/^\/issue\//, ''));
-    const fixture = fixtures[key];
-    if (fixture) {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(fixture) });
-    } else {
-      await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: 'not found' }) });
-    }
-  });
+// Jira/Salesforce retired their own proxy-relay bridges in favour of the
+// in-process connector/keychain mechanism (see docs/EDITING.md,
+// ensureBuiltinConnectors) -- this replaces the old mockJiraProxy/
+// mockSalesforceProxy/setJiraProxySecret helpers. Stubs
+// window.__TAURI__.core.invoke so the built-in's own macro (whatever's
+// currently in connectedSources, defaulting to CONNECTOR_TEMPLATES'
+// seeded shape) resolves against canned RAW API responses -- the same
+// shape the macro itself expects (Jira's REST `{fields:{...}}`,
+// Salesforce's flat sobject record), not the old proxy's already-
+// normalized shape -- instead of a real network call.
+// fixturesByUrlSubstring is keyed by any substring of the macro's own
+// fetch URL (a Jira key, a Salesforce record Id, ...), so callers don't
+// need to know the exact placeholder-domain template URL, just the id
+// they pasted. failUrlSubstrings simulates an unreachable/erroring
+// system for matching urls. Must be called BEFORE navigation
+// (addInitScript) so isTauriConnectorRuntime() and any dispatch during
+// boot already see it.
+async function stubTauriConnectorRuntime(page, { fixturesByUrlSubstring = {}, credential = '', failUrlSubstrings = [] } = {}) {
+  await page.addInitScript(({ fixturesByUrlSubstring, credential, failUrlSubstrings }) => {
+    window.__invokeCalls = window.__invokeCalls || [];
+    window.__TAURI__ = window.__TAURI__ || {};
+    window.__TAURI__.core = {
+      invoke: (cmd, args) => {
+        window.__invokeCalls.push({ cmd, args });
+        if (cmd === 'connected_source_get_credential') return Promise.resolve(credential);
+        if (cmd === 'connected_source_set_credential' || cmd === 'connected_source_delete_credential') return Promise.resolve(null);
+        if (cmd === 'connected_source_fetch') {
+          const url = args.url;
+          if (failUrlSubstrings.some(s => url.includes(s))) return Promise.reject(new Error('network down'));
+          const match = Object.keys(fixturesByUrlSubstring).find(k => url.includes(k));
+          if (match) return Promise.resolve({ status: 200, headers: {}, body: JSON.stringify(fixturesByUrlSubstring[match]) });
+          return Promise.resolve({ status: 404, headers: {}, body: JSON.stringify({ error: 'not found' }) });
+        }
+        return Promise.resolve(null);
+      }
+    };
+  }, { fixturesByUrlSubstring, credential, failUrlSubstrings });
 }
 
-// Mirrors mockJiraProxy, for the local Salesforce proxy (salesforce-proxy.js)
-// -- same CORS constraint as Jira. fixtures maps record Id -> the proxy's
-// normalized response shape ({id, objectType, name, status, owner, url, fields}).
-async function mockSalesforceProxy(page, fixtures, proxyUrl = 'http://localhost:8936') {
-  await page.route(proxyUrl + '/record/*', async (route) => {
-    const id = decodeURIComponent(new URL(route.request().url()).pathname.replace(/^\/record\//, ''));
-    const fixture = fixtures[id];
-    if (fixture) {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(fixture) });
-    } else {
-      await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: 'not found' }) });
-    }
-  });
+// Counts connected_source_fetch invoke calls matching a URL substring --
+// for tests asserting a fetch DID or DID NOT happen (e.g. a row-refresh
+// actually re-fetching).
+async function connectorFetchCallCount(page, urlSubstring) {
+  const calls = await page.evaluate(() => window.__invokeCalls || []);
+  return calls.filter(c => c.cmd === 'connected_source_fetch' && c.args.url.includes(urlSubstring)).length;
+}
+
+// Same invoke stub as stubTauriConnectorRuntime, but applied live via
+// page.evaluate instead of addInitScript -- for a test that needs to
+// change the mocked behavior (e.g. start failing) partway through,
+// AFTER the page has already booted once and addInitScript's one-time,
+// next-navigation-only registration is no help.
+async function overrideConnectorFetchResponses(page, { fixturesByUrlSubstring = {}, credential = '', failUrlSubstrings = [] } = {}) {
+  await page.evaluate(({ fixturesByUrlSubstring, credential, failUrlSubstrings }) => {
+    window.__invokeCalls = window.__invokeCalls || [];
+    window.__TAURI__ = window.__TAURI__ || {};
+    window.__TAURI__.core = {
+      invoke: (cmd, args) => {
+        window.__invokeCalls.push({ cmd, args });
+        if (cmd === 'connected_source_get_credential') return Promise.resolve(credential);
+        if (cmd === 'connected_source_set_credential' || cmd === 'connected_source_delete_credential') return Promise.resolve(null);
+        if (cmd === 'connected_source_fetch') {
+          const url = args.url;
+          if (failUrlSubstrings.some(s => url.includes(s))) return Promise.reject(new Error('network down'));
+          const match = Object.keys(fixturesByUrlSubstring).find(k => url.includes(k));
+          if (match) return Promise.resolve({ status: 200, headers: {}, body: JSON.stringify(fixturesByUrlSubstring[match]) });
+          return Promise.resolve({ status: 404, headers: {}, body: JSON.stringify({ error: 'not found' }) });
+        }
+        return Promise.resolve(null);
+      }
+    };
+  }, { fixturesByUrlSubstring, credential, failUrlSubstrings });
 }
 
 // Settings lives behind a per-identity cog in the switcher's own left
@@ -963,42 +1006,6 @@ function mockGithubRepoAccessApi(page, owner, repo, responses) {
   return calls;
 }
 
-// Jira/Salesforce proxy credentials now live behind each built-in's own
-// Edit modal on the Connected data sources page (settings restructure --
-// see /home/dev/.claude/plans/encapsulated-waddling-gizmo.md), not as
-// always-visible fields on a flat "Integrations" page any more. Open the
-// row's modal, fill the field, explicitly click Done to close just that
-// modal, then dismiss Settings itself the same way every other helper
-// here does.
-async function openBuiltinSourceModal(page, name) {
-  await openSettingsSection(page, 'connectedDataSources');
-  await page.locator('[data-testid=connected-source-row]', { hasText: name }).locator('[data-testid=btn-edit-connected-source]').click();
-  await page.waitForTimeout(120);
-}
-async function closeBuiltinSourceModalAndSettings(page) {
-  await page.locator('[data-testid=btn-done-builtin-source]').click();
-  await page.waitForTimeout(120);
-  await page.mouse.click(10, 10); // outside Settings -- its full-screen backdrop closes it from anywhere
-  await page.waitForTimeout(150);
-}
-
-async function setJiraProxyUrl(page, url) {
-  await openBuiltinSourceModal(page, 'Jira');
-  await page.locator('[data-testid=connector-builtin-url-input]').fill(url);
-  await closeBuiltinSourceModalAndSettings(page);
-}
-
-async function setSalesforceProxyUrl(page, url) {
-  await openBuiltinSourceModal(page, 'Salesforce');
-  await page.locator('[data-testid=connector-builtin-url-input]').fill(url);
-  await closeBuiltinSourceModalAndSettings(page);
-}
-
-async function setJiraProxySecret(page, secret) {
-  await openBuiltinSourceModal(page, 'Jira');
-  await page.locator('[data-testid=connector-builtin-secret-input]').fill(secret);
-  await closeBuiltinSourceModalAndSettings(page);
-}
 
 async function pasteText(page, text) {
   await page.evaluate((t) => navigator.clipboard.writeText(t), text);
@@ -1196,8 +1203,9 @@ module.exports = {
   mockGithubRepoAccessApi,
   mockMatrixClientApi,
   gotoFakeWidgetHost,
-  mockJiraProxy,
-  mockSalesforceProxy,
+  stubTauriConnectorRuntime,
+  connectorFetchCallCount,
+  overrideConnectorFetchResponses,
   openSettings,
   openSettingsSection,
   openProjectPanel,
@@ -1205,9 +1213,6 @@ module.exports = {
   selectProjectPanelSection,
   setGithubToken,
   setGithubRepoSync,
-  setJiraProxyUrl,
-  setJiraProxySecret,
-  setSalesforceProxyUrl,
   seedTwoIdentities,
   gotoTrackerFreshIdentity,
   DEMO_IDENTITY_EMAIL,

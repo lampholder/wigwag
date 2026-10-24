@@ -2760,7 +2760,7 @@
                     <div style="font-size:11px; color: var(--text-tertiary); line-height:1.4; max-width:560px; margin-bottom:10px;">Fields can link to any of these. Credentials stay on this device.</div>
                     <div style="border:1px solid var(--border); border-radius:9px; overflow:hidden; max-width:640px;">
                       <sc-for list="{{ connectedSourcesSettings.rows }}" as="src" hint-placeholder-count="4">
-                        <div data-testid="connected-source-row" data-connector-id="{{ src.id }}" style="display:flex; align-items:center; gap:12px; padding:11px 16px; border-top:1px solid var(--border-subtle);">
+                        <div data-testid="connected-source-row" data-connector-id="{{ src.id }}" style="display:flex; align-items:center; gap:12px; padding:11px 16px; border-top:1px solid var(--border-subtle); opacity:{{ src.rowOpacity }};">
                           <span style="flex-shrink:0; display:flex; align-items:center; justify-content:center; width:26px; height:26px; border-radius:7px; font-size:11px; font-weight:800; color:#fff; background: {{ src.color }};">{{ src.glyph }}</span>
                           <div style="flex:1; min-width:0;">
                             <div style="display:flex; align-items:center; gap:7px;">
@@ -2771,8 +2771,11 @@
                             </div>
                             <div style="font-size:11px; color: var(--text-tertiary); margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ src.patternSummaryText }}</div>
                           </div>
-                          <span style="flex-shrink:0; display:flex; align-items:center; gap:6px; font-size:11px; color: {{ src.statusColor }};"><span style="display:block; width:6px; height:6px; border-radius:50%; background: {{ src.statusColor }};"></span>{{ src.statusLabel }}</span>
+                          <sc-if value="{{ src.disabled }}" hint-placeholder-val="{{ false }}">
+                            <span data-testid="connected-source-disabled-note" style="flex-shrink:0; font-size:11px; color: var(--text-tertiary);">{{ src.disabledNote }}</span>
+                          </sc-if>
                           <sc-if value="{{ src.showEdit }}" hint-placeholder-val="{{ true }}">
+                            <span style="flex-shrink:0; display:flex; align-items:center; gap:6px; font-size:11px; color: {{ src.statusColor }};"><span style="display:block; width:6px; height:6px; border-radius:50%; background: {{ src.statusColor }};"></span>{{ src.statusLabel }}</span>
                             <span data-testid="btn-edit-connected-source" sc-camel-on-click="{{ src.onEdit }}" style="flex-shrink:0; font-size:11.5px; color: var(--accent-ink); cursor:pointer; margin-left:4px;">Edit</span>
                           </sc-if>
                         </div>
@@ -3388,13 +3391,9 @@
           <div style="font-size:10.5px; color:var(--n24); line-height:1.5;">Needed for private repos, and for pushing/pulling this tracker's own data if you connect a repo.</div>
         </sc-if>
         <sc-if value="{{ mobile.isSettingsIntegrations }}" hint-placeholder-val="{{ false }}">
-          <div style="font-size:11px; font-weight:600; letter-spacing:0.04em; color:var(--n24); margin-bottom:6px;">JIRA PROXY URL</div>
-          <input value="{{ jiraProxyUrl }}" sc-camel-on-change="{{ onJiraProxyUrlChange }}" style="width:100%; box-sizing:border-box; border:1px solid var(--border); border-radius:8px; padding:11px 12px; font-size:14px; color:var(--n18); margin-bottom:16px; font-family:inherit; background:var(--surface);">
-          <div style="font-size:11px; font-weight:600; letter-spacing:0.04em; color:var(--n24); margin-bottom:6px;">SALESFORCE PROXY URL</div>
-          <input value="{{ salesforceProxyUrl }}" sc-camel-on-change="{{ onSalesforceProxyUrlChange }}" style="width:100%; box-sizing:border-box; border:1px solid var(--border); border-radius:8px; padding:11px 12px; font-size:14px; color:var(--n18); margin-bottom:16px; font-family:inherit; background:var(--surface);">
           <div style="font-size:11px; font-weight:600; letter-spacing:0.04em; color:var(--n24); margin-bottom:6px;">GOOGLE DRIVE PROXY URL</div>
           <input value="{{ googleDriveProxyUrl }}" sc-camel-on-change="{{ onGoogleDriveProxyUrlChange }}" style="width:100%; box-sizing:border-box; border:1px solid var(--border); border-radius:8px; padding:11px 12px; font-size:14px; color:var(--n18); margin-bottom:6px; font-family:inherit; background:var(--surface);">
-          <div style="font-size:10.5px; color:var(--n24); line-height:1.5;">Local proxies for linking issues from other trackers, and for rendering Google Drive links.</div>
+          <div style="font-size:10.5px; color:var(--n24); line-height:1.5;">A local proxy for rendering Google Drive links. Jira/GitHub/Salesforce issue linking lives in the desktop app's own Connected data sources settings now.</div>
         </sc-if>
         <sc-if value="{{ mobile.isSettingsNotifications }}" hint-placeholder-val="{{ false }}">
           <div data-testid="mobile-mention-toggle" sc-camel-on-click="{{ onToggleMentionNotifications }}" style="display:flex; align-items:center; justify-content:space-between; padding:11px 0; cursor:pointer; border-bottom:1px solid var(--border-subtle); margin-bottom:16px;">

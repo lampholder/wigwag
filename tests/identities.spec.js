@@ -59,10 +59,26 @@ test.describe('Single identity: breadcrumb still renders, migration labels it "P
     await expect(scopes.first()).toContainText('no email set');
   });
 
-  test('migration preserves the JIRA PROXY URL default for a user who never set their own (regression: it was silently dropped to empty once the gear popover started reading the migrated identity record)', async ({ page }) => {
+  // Jira/Salesforce's old proxy-URL-default migration concern is retired
+  // along with the proxy mechanism itself (ensureBuiltinConnectors seeds
+  // the built-in Jira connector the same way for every identity now,
+  // fresh or migrated, with no per-identity URL default to preserve) --
+  // the equivalent regression in the new mechanism would be the built-in
+  // connector failing to seed at all for a fresh identity.
+  test('migration still seeds the built-in Jira connector, with its own default template macro intact, for a user who never configured anything', async ({ page }) => {
+    // Editing (not just seeding) requires the real Tauri connector
+    // runtime -- outside it, Jira's row renders disabled with no Edit
+    // affordance at all (see connected-sources-settings.spec.js). Set
+    // live, not via addInitScript: this test's own beforeEach has
+    // already navigated by this point, and isTauriConnectorRuntime() is
+    // checked fresh on every render, not cached at boot.
+    await page.evaluate(() => { window.__TAURI__ = { core: { invoke: () => Promise.resolve(null) } }; });
     await h.openSettingsSection(page, 'connectedDataSources');
-    await page.locator('[data-testid=connected-source-row]', { hasText: 'Jira' }).locator('[data-testid=btn-edit-connected-source]').click();
-    await expect(page.locator('[data-testid=connector-builtin-url-input]')).toHaveValue('http://localhost:8934');
+    const jiraRow = page.locator('[data-testid=connected-source-row]', { hasText: 'Jira' });
+    await expect(jiraRow).toBeVisible();
+    await jiraRow.locator('[data-testid=btn-edit-connected-source]').click();
+    await expect(page.locator('[data-testid=connector-name-input]')).toHaveValue('Jira');
+    await expect(page.locator('[data-testid=connector-macro-textarea]')).not.toHaveValue('');
   });
 });
 
@@ -495,7 +511,7 @@ test.describe('Settings is scoped to the active identity', () => {
     await page.waitForTimeout(400);
   }
 
-  test('YOUR EMAIL/GITHUB TOKEN/JIRA PROXY URL show the active identity\'s own values, and swap when switching identity', async ({ page }) => {
+  test('YOUR EMAIL/GITHUB TOKEN show the active identity\'s own values, and swap when switching identity', async ({ page }) => {
     await h.openSettings(page);
     await expect(page.locator('[data-testid=settings-identity-email]')).toHaveValue('tom@personal.com');
     await page.locator('[data-testid=settings-nav-item][data-section-id=remoteDataStores]').click();

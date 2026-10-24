@@ -155,7 +155,15 @@ const XLSX_PALETTE_HEX = {
 };
 function xlsxFieldHref(ref) {
   if (!ref) return null;
-  if ((ref.system || 'github') === 'jira') return ref.browseUrl || null;
+  const system = ref.system || 'github';
+  if (system === 'jira') return ref.browseUrl || null;
+  // salesforce/connector (custom connectors, plus Jira/Salesforce going
+  // forward via the built-in retirement) carry their own resolved url
+  // directly on the trimmed ref -- was missing a branch here (pre-dating
+  // the retirement for salesforce/custom connectors; now also affects
+  // every new Jira/Salesforce link), falling through to the github-
+  // shaped fallback below and producing a broken link.
+  if (system === 'salesforce' || system === 'connector') return ref.url || null;
   return 'https://github.com/' + ref.owner + '/' + ref.repo + '/issues/' + ref.num;
 }
 function xlsxBuildStyles() {
@@ -921,6 +929,14 @@ function fieldRefSearchText(ref) {
   if (!ref) return '';
   if (ref.system === 'jira') return ref.key || '';
   if (ref.system === 'salesforce') return ref.id || '';
+  // Connected Sources (Phase 1): every NEW Jira/Salesforce link, plus any
+  // real custom connector, is this shape now (ensureBuiltinConnectors) --
+  // matchedId is the pasted id itself (a Jira key, a Salesforce record
+  // Id, ...), same role ref.key/ref.id played above. This branch was
+  // missing since Phase 1 shipped (a real, if narrow, pre-existing gap
+  // for custom connectors); fixed now since Jira/Salesforce's own
+  // retirement makes it immediately visible for them too.
+  if (ref.system === 'connector') return ref.matchedId || '';
   if (ref.system === 'wigwag') return '';
   if (ref.owner && ref.repo && ref.num != null) return ref.owner + '/' + ref.repo + '#' + ref.num;
   return '';
@@ -1913,7 +1929,21 @@ function buildSource(issue, linkedSourceId) {
   // property name here. A rule reading source.linear when the row is
   // bound to something else just gets undefined, same optional-chaining
   // discipline every source.jira/source.github rule already needs.
-  if (system === 'connector' && ref.connectorKey) source[ref.connectorKey] = pickConnectorFields(ref);
+  // Flatten extra's own keys onto source.<key> directly, not just
+  // nested under .extra -- a rule written against a built-in's old
+  // rich shape (source.jira.priority, source.github.resolution,
+  // source.salesforce.owner, ...) keeps working unchanged once that
+  // system's refs redirect through the connector mechanism (see
+  // docs/EDITING.md). The macro's own {title,url,state,extra} contract
+  // stays clean for macro authors; this flattening is purely a
+  // buildSource-side compatibility shim. Dedicated fields (title/url/
+  // state/labels/assignee) take precedence over a same-named extra key,
+  // and .extra itself stays present too (so source.jira.extra.X still
+  // works for anyone who prefers the nested form).
+  if (system === 'connector' && ref.connectorKey) {
+    const picked = pickConnectorFields(ref);
+    source[ref.connectorKey] = { ...picked.extra, ...picked };
+  }
   return source;
 }
 function evalRule(ruleStr, source, values) {
@@ -2000,15 +2030,24 @@ function isEmptyBoundValue(v) {
 // Whether THIS device has a working path to re-evaluate a ref's own
 // system at all -- github/wigwag need nothing (github works unauth'd
 // against the public API; wigwag is an internal cross-project link, not
-// an external system); jira/salesforce need their own proxy SECRET
-// specifically, never the ...ProxyUrl fields -- both of those carry a
-// hardcoded non-blank localhost default (a harmless UX hint for a field
-// with no fallback path, not a "configured" signal -- confirmed via a
-// past regression from treating it as one), so only the secret fields
-// are ever truthy exactly when a user actually configured something;
-// connector needs both the real Tauri connector runtime AND a matching
-// entry in this device's own connectedSources list. A device can have a
-// BINDING configured (rule/linkedSourceId -- already local-only via
+// an external system). jira/salesforce retired their own proxy-relay
+// bridges in favour of the in-process connector/keychain mechanism (see
+// ensureBuiltinConnectors, wigwag.html) -- a system:'jira'/'salesforce'
+// ref only ever exists now as a historical, pre-retirement artifact
+// (new links always get a system:'connector' ref against the fixed
+// '__builtin_jira'/'__builtin_salesforce' id instead), but it's still
+// re-evaluated the SAME way a real connector is: real Tauri connector
+// runtime AND a matching entry in this device's own connectedSources
+// list (always present once ensureBuiltinConnectors has run, so this
+// reduces to "is Tauri" in practice -- the defensive .some check just
+// mirrors the 'connector' branch below rather than assuming that). The
+// old jiraProxySecret/salesforceProxySecret fields are permanently inert
+// now -- checking them here would make every historical Jira/Salesforce
+// link look dead forever on every device, since nothing sets them any
+// more. connector (real custom connectors, same as above) needs both
+// the real Tauri connector runtime AND a matching entry in this
+// device's own connectedSources list. A device can have a BINDING
+// configured (rule/linkedSourceId -- already local-only via
 // LOCAL_FIELD_BINDINGS_KEY, but still able to arrive via project import/
 // export even though it's never git-synced) without having the matching
 // credential/connector itself -- that gap is exactly what this closes.
@@ -2016,8 +2055,8 @@ function isRefLocallyLive(ref, ctx) {
   if (!ref) return false;
   ctx = ctx || {};
   const system = ref.system || 'github';
-  if (system === 'jira') return !!(ctx.jiraProxySecret || '').trim();
-  if (system === 'salesforce') return !!(ctx.salesforceProxySecret || '').trim();
+  if (system === 'jira') return !!ctx.tauriConnectorRuntime && (ctx.connectedSources || []).some(c => c.id === '__builtin_jira');
+  if (system === 'salesforce') return !!ctx.tauriConnectorRuntime && (ctx.connectedSources || []).some(c => c.id === '__builtin_salesforce');
   if (system === 'connector') return !!ctx.tauriConnectorRuntime && (ctx.connectedSources || []).some(c => c.id === ref.connectorId);
   return true; // github, wigwag
 }
@@ -2131,16 +2170,25 @@ function applyLiveLinkedRules(iss, fieldDefs, sourceColId, system, liveData, ctx
   const source = {
     text: iss.values[sourceColId] || '', isLinked: true,
     github: system === 'github' ? pickGithubFields(liveData) : null,
-    jira: system === 'jira' ? pickJiraFields(liveData) : null,
-    salesforce: system === 'salesforce' ? pickSalesforceFields(liveData) : null
+    jira: null, salesforce: null
   };
-  // Connected Sources (Phase 1): the caller passes the connector's own key
-  // (e.g. 'linear') as `system` here -- reserved words github/jira/
-  // salesforce/wigwag can never collide with a real connector key
-  // (slugifyConnectorKey excludes them), so this dynamic branch is safe
-  // to check unconditionally after the three fixed ones above.
-  if (system && !['github', 'jira', 'salesforce', 'wigwag'].includes(system)) {
-    source[system] = pickConnectorFields(liveData);
+  // Connected Sources (Phase 1), extended by the built-in retirement:
+  // the caller passes the connector's own key as `system` here -- for a
+  // real custom connector that's its own slug (e.g. 'linear'); for the
+  // two retired built-ins it's literally 'jira'/'salesforce' (see
+  // ensureBuiltinConnectors/builtinConnector), since both now ALWAYS
+  // dispatch through the same in-process macro mechanism, never the old
+  // proxy-shaped raw JSON pickJiraFields/pickSalesforceFields expected.
+  // 'github' stays on its own fixed branch above (still unmigrated,
+  // still fed fetchGithubData's top-level-shaped result, not a macro's
+  // {title,url,state,extra}); 'wigwag' has no connector-shaped liveData
+  // at all. Same flatten as buildSource's own connector branch -- extra's
+  // keys spread first, so title/url/state/labels/assignee still win on
+  // collision -- keeping a rule's result identical whether it's reading
+  // this just-fetched live value or reloading the persisted ref later.
+  if (system && system !== 'github' && system !== 'wigwag') {
+    const picked = pickConnectorFields(liveData);
+    source[system] = { ...picked.extra, ...picked };
   }
   let values = iss.values;
   for (const colId in fieldDefs) {

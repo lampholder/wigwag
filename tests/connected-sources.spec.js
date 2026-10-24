@@ -188,9 +188,15 @@ test.describe('Connected Sources (Phase 1): paste dispatch + macro engine', () =
   // fields and already had this branch) had never been taught about
   // `ref.system === 'connector'` at all, so it fell through to a bare
   // GitHub-shaped catch-all: wrong icon, "undefined/undefined#undefined".
+  // A full-URL pattern, not a bare "SUP-\d+" shortcode -- that shape
+  // ALSO matches JIRA_KEY_RE (case-insensitive [A-Z][A-Z0-9]+-\d+), and
+  // the built-in Jira connector now correctly wins that collision
+  // whenever this suite's own stubTauriInvoke makes isTauriConnectorRuntime()
+  // true -- same reasoning LINEAR_CONNECTOR's own comment above already
+  // gives for using a full URL instead of a bare shortcode.
   const SUPPORT_CONNECTOR = {
     id: 'conn_test_support', key: 'supportdesk', name: 'SupportDesk', glyph: 'SD', color: 'oklch(0.6 0.15 200)',
-    patterns: [{ regex: 'SUP-\\d+', label: 'Ticket code' }],
+    patterns: [{ regex: 'https://supportdesk\\.test/ticket/([A-Z0-9-]+)', label: 'Ticket URL' }],
     macro: "async (id, credential) => { const res = await fetch('https://api.supportdesk.test/ticket/' + id); const data = await res.json(); return { title: data.title, url: data.url, state: data.state }; }",
     credentialConfigured: true
   };
@@ -201,7 +207,7 @@ test.describe('Connected Sources (Phase 1): paste dispatch + macro engine', () =
     await h.gotoTracker(page);
 
     await h.clickFieldToEdit(page, 3, 'linked');
-    await h.pasteText(page, 'SUP-123');
+    await h.pasteText(page, 'https://supportdesk.test/ticket/SUP-123');
     await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'linked');
 
@@ -221,7 +227,7 @@ test.describe('Connected Sources (Phase 1): paste dispatch + macro engine', () =
     await h.gotoTracker(page);
 
     await page.keyboard.down('Control'); await page.keyboard.press('Space'); await page.keyboard.up('Control');
-    await page.locator('[data-testid=add-item-input]').fill('SUP-123');
+    await page.locator('[data-testid=add-item-input]').fill('https://supportdesk.test/ticket/SUP-123');
     await page.keyboard.press('Enter');
     await page.waitForTimeout(800);
 
@@ -240,7 +246,7 @@ test.describe('Connected Sources (Phase 1): paste dispatch + macro engine', () =
     await h.gotoTracker(page);
 
     await h.clickFieldToEdit(page, 3, 'linked');
-    await h.pasteText(page, 'SUP-123');
+    await h.pasteText(page, 'https://supportdesk.test/ticket/SUP-123');
     await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'linked');
 
@@ -257,7 +263,7 @@ test.describe('Connected Sources (Phase 1): paste dispatch + macro engine', () =
     await h.gotoTracker(page);
 
     await h.clickFieldToEdit(page, 3, 'linked');
-    await h.pasteText(page, 'SUP-123');
+    await h.pasteText(page, 'https://supportdesk.test/ticket/SUP-123');
     await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'linked');
 
@@ -277,7 +283,7 @@ test.describe('Connected Sources (Phase 1): paste dispatch + macro engine', () =
     await h.gotoTracker(page);
 
     await h.clickFieldToEdit(page, 3, 'linked');
-    await h.pasteText(page, 'SUP-123');
+    await h.pasteText(page, 'https://supportdesk.test/ticket/SUP-123');
     await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'linked');
 

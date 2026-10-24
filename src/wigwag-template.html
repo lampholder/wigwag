@@ -2652,7 +2652,7 @@
 
           <sc-if value="{{ settingsOpen }}" hint-placeholder-val="{{ false }}">
             <div data-testid="settings-overlay" sc-camel-on-click="{{ onCloseSettings }}" style="position:fixed; inset:0; background: var(--sh8); z-index:130;"></div>
-            <div data-testid="settings-modal" style="position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); width:820px; max-width:94vw; height:640px; max-height:88vh; background:var(--surface); border-radius:12px; box-shadow:0 24px 60px var(--sh9); z-index:131; display:flex; overflow:hidden; text-align:left;">
+            <div data-testid="settings-modal" style="position:fixed; top:50%; left:50%; transform:translate(-50%,-50%) translateX({{ settingsModalTransformOffset }}); transition:transform 0.28s cubic-bezier(0.2,0.8,0.2,1); width:820px; max-width:94vw; height:640px; max-height:88vh; background:var(--surface); border-radius:12px; box-shadow:0 24px 60px var(--sh9); z-index:131; display:flex; overflow:hidden; text-align:left;">
               <div style="width:212px; flex-shrink:0; background: var(--surface-selected); border-right:1px solid var(--border-subtle); display:flex; flex-direction:column;">
                 <div style="padding:18px 18px 14px;">
                   <div style="font-size:10px; font-weight:700; letter-spacing:0.07em; color: var(--text-tertiary); margin-bottom:9px;">SETTINGS FOR</div>
@@ -2848,9 +2848,9 @@
               </div>
             </div>
           </sc-if>
-                      <sc-if value="{{ connectedSourcesSettings.customFormVisible }}" hint-placeholder-val="{{ false }}">
-                      <div data-testid="connector-form-overlay" style="position:fixed; top:50%; left:50%; width:100vw; height:100vh; transform:translate(-50%,-50%); background: var(--surface); z-index:210; display:flex; flex-direction:column; box-sizing:border-box;">
-                        <div data-testid="connector-form-modal" style="flex:1; min-height:0; width:100%; display:flex; flex-direction:column; overflow:hidden;">
+                      <sc-if value="{{ connectedSourcesSettings.customFormSlotOpen }}" hint-placeholder-val="{{ false }}">
+                      <div data-testid="connector-form-overlay" style="position:fixed; inset:0; background: var(--sh11); z-index:210; box-sizing:border-box;">
+                        <div data-testid="connector-form-modal" style="position:fixed; top:50%; left:50%; width:92vw; max-width:1400px; height:88vh; transform:translate(-50%,-50%) translateX({{ connectedSourcesSettings.connectorEditorSlideOffset }}); transition:transform 0.28s cubic-bezier(0.2,0.8,0.2,1); background:var(--surface); border-radius:12px; box-shadow:0 24px 60px var(--sh9); display:flex; flex-direction:column; overflow:hidden; box-sizing:border-box;">
                           <div style="display:flex; align-items:center; gap:10px; padding:14px 24px; border-bottom:1px solid var(--border-subtle); flex-shrink:0;">
                             <span data-testid="btn-back-to-sources" sc-camel-on-click="{{ connectedSourcesSettings.onCancel }}" style="cursor:pointer; font-size:13px; color: var(--text-tertiary);">← Connected sources</span>
                             <sc-if value="{{ connectedSourcesSettings.isEditing }}" hint-placeholder-val="{{ false }}">

@@ -3474,6 +3474,11 @@ class Component extends DCLogic {
     connectedSources: this.loadConnectedSources(),
     connectorPickerOpen: null,
     connectorFormOpen: null,
+    // Visual half of the slide transition (Settings <-> connector
+    // editor) -- connectorFormOpen is the slot (mounts/unmounts the
+    // editor), this drives the actual transform, same dual-state idiom
+    // as slideOverIssueId/slideOverVisible (see closeSlideOver).
+    connectorFormVisible: false,
     builtinSourceFormOpen: null,
     addSourceTypePickerOpen: false,
     switcherOpen: false,
@@ -3965,16 +3970,22 @@ class Component extends DCLogic {
   startConnectorFromTemplate(kind) {
     const tpl = CONNECTOR_TEMPLATES[kind] || CONNECTOR_TEMPLATES.blank;
     this.setState({
-      addSourceTypePickerOpen: false,
+      addSourceTypePickerOpen: false, connectorFormVisible: false,
       connectorFormOpen: { id: null, draft: { name: tpl.name, glyph: tpl.glyph, color: tpl.color,
         patterns: tpl.patterns.map(p => ({ ...p })), macro: tpl.macro, credentialDraft: '',
         hasCredential: false, linkTextTemplate: tpl.linkTextTemplate || '' }, testId: '', testResult: null, testRunning: false }
     });
+    // Mount off-screen first (connectorFormVisible still false), THEN
+    // flip visible one tick later so the slide-in transform actually
+    // animates from its start position instead of snapping -- same
+    // idiom as openSlideOver (wigwag-app.js, search slideOverVisible).
+    setTimeout(() => this.setState({ connectorFormVisible: true }), 20);
   }
   openEditConnectorForm(id) {
     const c = (this.state.connectedSources || []).find(x => x.id === id);
     if (!c) return;
-    this.setState({ connectorFormOpen: { id, draft: { name: c.name, glyph: c.glyph, color: c.color, patterns: (c.patterns || []).map(p => ({ regex: p.regex, label: p.label })), macro: c.macro, credentialDraft: '', hasCredential: !!c.credentialConfigured, linkTextTemplate: c.linkTextTemplate || '' }, testId: '', testResult: null, testRunning: false } });
+    this.setState({ connectorFormVisible: false, connectorFormOpen: { id, draft: { name: c.name, glyph: c.glyph, color: c.color, patterns: (c.patterns || []).map(p => ({ regex: p.regex, label: p.label })), macro: c.macro, credentialDraft: '', hasCredential: !!c.credentialConfigured, linkTextTemplate: c.linkTextTemplate || '' }, testId: '', testResult: null, testRunning: false } });
+    setTimeout(() => this.setState({ connectorFormVisible: true }), 20);
   }
   updateConnectorDraft(patch) {
     if (!this.state.connectorFormOpen) return;
@@ -4032,7 +4043,14 @@ class Component extends DCLogic {
     }
   }
   cancelConnectorForm() {
-    this.setState({ connectorFormOpen: null });
+    // Reverse of startConnectorFromTemplate/openEditConnectorForm: flip
+    // invisible immediately (the slide-out transform starts), THEN clear
+    // the slot 280ms later -- matching the transition duration -- so the
+    // element stays mounted long enough to actually finish animating out.
+    // The s.connectorFormVisible guard protects against a rapid re-open
+    // during that window (same idiom as closeSlideOver).
+    this.setState({ connectorFormVisible: false });
+    setTimeout(() => this.setState(s => (s.connectorFormVisible ? {} : { connectorFormOpen: null })), 280);
   }
   openBuiltinSourceForm(kind) {
     this.setState({ builtinSourceFormOpen: kind });
@@ -4076,13 +4094,16 @@ class Component extends DCLogic {
     const next = existingRecord ? existing.map(c => c.id === f.id ? record : c) : existing.concat([record]);
     if (credentialTyped) await this.setConnectorCredential(id, credentialTyped);
     this.saveConnectedSources(next);
-    this.setState({ connectorFormOpen: null });
+    // Same slide-out-then-unmount sequencing as cancelConnectorForm.
+    this.setState({ connectorFormVisible: false });
+    setTimeout(() => this.setState(s => (s.connectorFormVisible ? {} : { connectorFormOpen: null })), 280);
   }
   deleteConnectorSource(id) {
     const next = (this.state.connectedSources || []).filter(c => c.id !== id);
     this.saveConnectedSources(next);
     this.deleteConnectorCredential(id);
-    this.setState({ connectorFormOpen: null });
+    this.setState({ connectorFormVisible: false });
+    setTimeout(() => this.setState(s => (s.connectorFormVisible ? {} : { connectorFormOpen: null })), 280);
   }
   // A retryable failure is a timeout, a network-level rejection (no
   // .status at all -- a real fetch() failure, not an HTTP error
@@ -9291,6 +9312,11 @@ class Component extends DCLogic {
       })(),
       settingsOpen: s.settingsOpen,
       toggleSettings: () => this.setState(st => ({ settingsOpen: !st.settingsOpen })),
+      // settings-modal never unmounts for this transition (it just
+      // slides) -- only needs the "visual" half, driven by the same
+      // connectorFormVisible state the connector editor's own slide-in
+      // uses, so both panels move in lockstep.
+      settingsModalTransformOffset: s.connectorFormVisible ? '-100vw' : '0',
       githubToken: s.githubToken,
       onGithubTokenChange: e => this.updateActiveIdentityField('githubToken', e.target.value, 'githubToken'),
       githubOAuthClientId: s.githubOAuthClientId,
@@ -9400,14 +9426,18 @@ class Component extends DCLogic {
         return {
           rows,
           formVisible: !!form || !!builtinKind,
-          // The custom-connector editor renders as a full-screen takeover
-          // (see docs/EDITING.md) -- it has to escape settings-modal's own
-          // transform (which creates a new containing block AND stacking
-          // context for any position:fixed descendant), so its markup lives
-          // as a sibling of the whole Settings modal, not nested inside it.
-          // This is the gate that block uses instead of formVisible/
-          // isBuiltinForm directly.
-          customFormVisible: !!form && !builtinKind,
+          // The custom-connector editor's markup lives as a sibling of
+          // the whole Settings modal, not nested inside it (see
+          // docs/EDITING.md) -- settings-modal's own transform creates a
+          // new containing block AND stacking context for any
+          // position:fixed descendant, which a nested overlay couldn't
+          // out-rank no matter its own z-index. customFormSlotOpen gates
+          // that sibling block's mount/unmount (the "slot" half of the
+          // slide-transition idiom -- see connectorFormVisible/
+          // startConnectorFromTemplate); connectorEditorSlideOffset
+          // drives its actual transform (the "visual" half).
+          customFormSlotOpen: !!form && !builtinKind,
+          connectorEditorSlideOffset: s.connectorFormVisible ? '0' : '100vw',
           isBuiltinForm: !!builtinKind,
           formTitle: builtinKind ? builtinSpec.title : (form && form.id ? 'Edit source' : 'Add a source'),
           builtinPanelLabel: builtinSpec ? builtinSpec.panelLabel : '',

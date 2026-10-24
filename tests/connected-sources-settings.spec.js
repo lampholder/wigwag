@@ -327,26 +327,27 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
   // 640px-tall "parent" (settings-modal), which has an explicit
   // height:640px. Confirmed exactly: at a typical 1280x800 window,
   // 88vh=704px > 640px. Now pinned to the same height.
-  // The custom-connector editor is now a full-screen takeover (see
-  // docs/EDITING.md), not a dialog nested inside the Settings modal's own
-  // fixed 640px height -- so the overflow bug this test used to guard
-  // against (a long error message inflating the modal past its fixed-
-  // height parent) can no longer happen: there's no fixed-height parent
-  // to overflow. Replaced with the layout-regression guard that actually
-  // matters now: the editor really does fill the window (not still
-  // ~720px, which would mean the full-screen chrome silently regressed),
-  // and a long error still doesn't push Save off-screen.
-  test('the connector editor fills the window, even with a long multi-line error', async ({ page }) => {
+  // The custom-connector editor was briefly a full-screen takeover, then
+  // became a bigger (~92vw/88vh) modal with a slide transition per
+  // Tom's follow-up feedback (see docs/EDITING.md) -- either way there's
+  // no fixed-height "parent" for a long error to overflow (the editor
+  // isn't nested inside settings-modal's box at all). This guards that
+  // the editor still renders at its intended large size (not still the
+  // original ~720px small modal, which would mean the resize silently
+  // regressed), and a long error still doesn't push Save off-screen.
+  test('the connector editor renders as a big (not small, not edge-to-edge) modal, even with a long multi-line error', async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 800 });
     await stubTauri(page);
     await h.gotoTracker(page);
     await h.openSettingsSection(page, 'connectedDataSources');
 
     await openBlankConnectorForm(page);
+    await page.waitForTimeout(350); // past the slide-in transition
     await expect(page.locator('[data-testid=connector-form-modal]')).toBeVisible();
 
     const formModalBox = await page.locator('[data-testid=connector-form-modal]').boundingBox();
-    expect(formModalBox.width).toBeGreaterThan(1280 * 0.9);
+    expect(formModalBox.width).toBeGreaterThan(1280 * 0.85); // big...
+    expect(formModalBox.width).toBeLessThan(1280 * 0.98); // ...but not edge-to-edge
 
     await page.locator('[data-testid=connector-name-input]').fill('Jira');
     await page.locator('[data-testid=connector-pattern-regex-input]').fill('^https://element-io\\.atlassian\\.net/browse/([A-Z]+-\\d+)$');
@@ -357,6 +358,36 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
     await page.waitForTimeout(300);
 
     await expect(page.locator('[data-testid=btn-save-connector]')).toBeVisible();
+  });
+
+  // Tom's follow-up feedback on the first (full-screen) version: he
+  // wanted a bigger modal instead, with Settings sliding off to the
+  // left while the editor slides in from the right to replace it (and
+  // reverse on close) -- not an edge-to-edge takeover. Both panels
+  // share one dual-state slide idiom already used elsewhere in this
+  // codebase (slide-over, rule-builder, project-notes panel): opening
+  // mounts off-screen then flips visible a tick later so the transform
+  // actually animates; closing flips invisible immediately (starting
+  // the CSS transition) then unmounts after it finishes.
+  test('opening the editor slides Settings off-screen left while the editor slides in from the right; closing reverses it', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await stubTauri(page);
+    await h.gotoTracker(page);
+    await h.openSettingsSection(page, 'connectedDataSources');
+    const settingsBefore = await page.locator('[data-testid=settings-modal]').boundingBox();
+
+    await openBlankConnectorForm(page);
+    await page.waitForTimeout(350);
+    const settingsDuring = await page.locator('[data-testid=settings-modal]').boundingBox();
+    const editorSettled = await page.locator('[data-testid=connector-form-modal]').boundingBox();
+    expect(settingsDuring.x).toBeLessThan(-100); // shifted fully off-screen left
+    expect(Math.abs(editorSettled.x + editorSettled.width / 2 - 1280 / 2)).toBeLessThan(10); // editor centered
+
+    await page.locator('[data-testid=btn-cancel-connector-form]').click();
+    await page.waitForTimeout(350);
+    const settingsAfter = await page.locator('[data-testid=settings-modal]').boundingBox();
+    expect(Math.abs(settingsAfter.x - settingsBefore.x)).toBeLessThan(5); // back to its original spot
+    await expect(page.locator('[data-testid=connector-form-overlay]')).toHaveCount(0);
   });
 
   test('Escape closes only the connector editor, not the whole Settings modal', async ({ page }) => {
@@ -387,7 +418,7 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
     await expect(page.locator('[data-testid=connected-source-row]', { hasText: 'Should be discarded' })).toHaveCount(0);
   });
 
-  test('editing a built-in still opens the small credential-only modal, unaffected by the custom editor\'s full-screen chrome', async ({ page }) => {
+  test('editing a built-in still opens the small credential-only modal, unaffected by the custom editor\'s bigger chrome', async ({ page }) => {
     await stubTauri(page);
     await h.gotoTracker(page);
     await h.openSettingsSection(page, 'connectedDataSources');

@@ -793,10 +793,13 @@ test.describe('Bound value panel: null-computed rows are overridable', () => {
     // Refresh row 1's linked issue so its GitHub labels now genuinely
     // include "bug" -- the rule starts computing a real value and
     // silently replaces the override, same as any other bound field
-    // re-deriving from a fresh sync.
-    await page.route('https://api.github.com/repos/acme/app/issues/3298', async (route) => {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Sidebar sizing does not stick between application starts', state: 'open', labels: [{ name: 'bug' }] }) });
-    });
+    // re-deriving from a fresh sync. GitHub's own real fetch goes through
+    // the Tauri IPC shim now, not a plain browser fetch -- page.route
+    // can't intercept it; override the Tauri invoke stub's response
+    // instead (fine mid-test, no reload happens before this takes effect).
+    await h.overrideConnectorFetchResponses(page, { responsesByUrlSubstring: {
+      'acme/app/issues/3298': JSON.stringify({ title: 'Sidebar sizing does not stick between application starts', state: 'open', labels: [{ name: 'bug' }] })
+    } });
     await h.refreshRow(page, 1);
     await page.waitForTimeout(400);
     await expect(h.fieldCell(page, 1, 'priority')).toHaveText('P0');
@@ -838,9 +841,12 @@ test.describe('Bound value panel: null-computed rows are overridable', () => {
     await page.waitForTimeout(200);
 
     // Refresh with the label now gone -- a confident, live-data null.
-    await page.route('https://api.github.com/repos/owner/app/issues/3390', route => route.fulfill({
-      status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Multiselect field doesn\'t render colored pills on CSV export', state: 'open', labels: [] })
-    }));
+    // GitHub's own real fetch goes through the Tauri IPC shim now, not a
+    // plain browser fetch -- page.route can't intercept it; override the
+    // Tauri invoke stub's response instead.
+    await h.overrideConnectorFetchResponses(page, { responsesByUrlSubstring: {
+      'owner/app/issues/3390': JSON.stringify({ title: 'Multiselect field doesn\'t render colored pills on CSV export', state: 'open', labels: [] })
+    } });
     await h.refreshRow(page, 7);
     await page.waitForTimeout(400);
 
@@ -877,9 +883,11 @@ test.describe('Bound value panel: null-computed rows are overridable', () => {
     await page.mouse.click(50, 50);
     await page.waitForTimeout(200);
 
-    await page.route('https://api.github.com/repos/owner/app/issues/3390', route => route.fulfill({
-      status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Multiselect field doesn\'t render colored pills on CSV export', state: 'open', labels: [] })
-    }));
+    // GitHub's own real fetch goes through the Tauri IPC shim now, not a
+    // plain browser fetch -- page.route can't intercept it.
+    await h.overrideConnectorFetchResponses(page, { responsesByUrlSubstring: {
+      'owner/app/issues/3390': JSON.stringify({ title: 'Multiselect field doesn\'t render colored pills on CSV export', state: 'open', labels: [] })
+    } });
     await h.refreshRow(page, 7);
     await page.waitForTimeout(400);
     await expect(h.fieldCell(page, 7, 'priority')).toHaveText('—');

@@ -363,15 +363,15 @@ test.describe('Refresh: row / whole table', () => {
     // Deliberately links TWO distinct type:'issue' fields on the same row
     // (title, and 'linked'/"Related" -- paste-linking is gated to that type
     // now, so 'mitigation' no longer qualifies as the second field here).
-    let titleCalls = 0, linkedCalls = 0;
-    await page.route('https://api.github.com/repos/octocat/Hello-World/issues/1', route => {
-      titleCalls++;
-      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Edited README via GitHub' + (titleCalls > 1 ? ' (v2)' : ''), state: 'closed', pull_request: {}, labels: [] }) });
-    });
-    await page.route('https://api.github.com/repos/octocat/Hello-World/issues/2', route => {
-      linkedCalls++;
-      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'README file modified' + (linkedCalls > 1 ? ' (v2)' : ''), state: 'closed', pull_request: {}, labels: [] }) });
-    });
+    // GitHub's own real fetch goes through the Tauri IPC shim now, not a
+    // plain browser fetch -- page.route can't intercept it, and the stub
+    // has no live call-count hook, so the "upstream changed" step is
+    // modeled as a second override call between the initial link and the
+    // refresh (call-count checked after the fact via connectorFetchCallCount).
+    await h.overrideConnectorFetchResponses(page, { responsesByUrlSubstring: {
+      'octocat/Hello-World/issues/1': JSON.stringify({ title: 'Edited README via GitHub', state: 'closed', pull_request: {}, labels: [] }),
+      'octocat/Hello-World/issues/2': JSON.stringify({ title: 'README file modified', state: 'closed', pull_request: {}, labels: [] })
+    } });
 
     // link row 3's title AND linked to two different (mocked) issues
     await h.clickTitleToEdit(page, 3);
@@ -384,12 +384,16 @@ test.describe('Refresh: row / whole table', () => {
     await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'linked');
 
+    await h.overrideConnectorFetchResponses(page, { responsesByUrlSubstring: {
+      'octocat/Hello-World/issues/1': JSON.stringify({ title: 'Edited README via GitHub (v2)', state: 'closed', pull_request: {}, labels: [] }),
+      'octocat/Hello-World/issues/2': JSON.stringify({ title: 'README file modified (v2)', state: 'closed', pull_request: {}, labels: [] })
+    } });
     await h.refreshRow(page, 3);
     await h.waitForTitleResolved(page, 3);
     await h.waitForFieldResolved(page, 3, 'linked');
 
-    expect(titleCalls).toBe(2);
-    expect(linkedCalls).toBe(2);
+    expect(await h.connectorFetchCallCount(page, 'octocat/Hello-World/issues/1')).toBe(2);
+    expect(await h.connectorFetchCallCount(page, 'octocat/Hello-World/issues/2')).toBe(2);
     await expect(h.titleCell(page, 3)).toContainText('(v2)');
     await expect(h.fieldCell(page, 3, 'linked')).toContainText('(v2)');
 
@@ -473,16 +477,23 @@ test.describe('Refresh: row / whole table', () => {
     // not via a log entry that (correctly) might not exist.
     // 'linked' ("Related") is type:'issue' -- paste-to-resolve linking is
     // gated to that type now, so 'mitigation' no longer qualifies.
-    let linkedCalls = 0;
-    await page.route('https://api.github.com/repos/octocat/Hello-World/issues/1', route => {
-      linkedCalls++;
-      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Edited README via GitHub' + (linkedCalls > 1 ? ' (v2)' : ''), state: 'closed', pull_request: {}, labels: [] }) });
-    });
+    // GitHub's own real fetch goes through the Tauri IPC shim now, not a
+    // plain browser fetch -- page.route can't intercept it, and the stub
+    // has no live call-count hook, so the "upstream changed" step is
+    // modeled as a second override call between the initial link and the
+    // refresh (call count checked after the fact via connectorFetchCallCount).
+    await h.overrideConnectorFetchResponses(page, { responsesByUrlSubstring: {
+      'octocat/Hello-World/issues/1': JSON.stringify({ title: 'Edited README via GitHub', state: 'closed', pull_request: {}, labels: [] })
+    } });
 
     await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/1');
     await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'linked');
+
+    await h.overrideConnectorFetchResponses(page, { responsesByUrlSubstring: {
+      'octocat/Hello-World/issues/1': JSON.stringify({ title: 'Edited README via GitHub (v2)', state: 'closed', pull_request: {}, labels: [] })
+    } });
 
     // Tracker #198: refreshing 2+ rows ("every row" here) now stages
     // everything into a job first -- nothing lands until the merge gate
@@ -497,7 +508,7 @@ test.describe('Refresh: row / whole table', () => {
     await page.locator('[data-testid=btn-merge-primary]').click();
     await page.waitForTimeout(400);
 
-    expect(linkedCalls).toBe(2);
+    expect(await h.connectorFetchCallCount(page, 'octocat/Hello-World/issues/1')).toBe(2);
     await expect(h.fieldCell(page, 3, 'linked')).toContainText('(v2)');
 
     const h1 = await h.getHistoryEntriesFor(page, 'i1');
@@ -1111,7 +1122,11 @@ test.describe('Select/multiselect popover flips above the field when there is no
 });
 
 test.describe('Activity history', () => {
-  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+  // One test below pastes a GitHub URL into the add-item box, which now
+  // needs the real Tauri connector runtime to resolve as a link (see
+  // BUILTIN_INTEGRATIONS/ensureBuiltinConnectors) -- mockGithubApi's
+  // addInitScript-based stub must register before the page navigates.
+  test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
 
   test('editing a plain text field logs a history entry', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'mitigation');

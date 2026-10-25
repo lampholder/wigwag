@@ -36,13 +36,11 @@ async function openBlankConnectorForm(page) {
 }
 
 test.describe('Connected Sources (Phase 1): Settings UI', () => {
-  // Jira/Salesforce retired their own proxy-relay bridges in favour of
-  // the in-process connector/keychain mechanism, Tauri-only (same CORS
+  // All 3 built-ins retired their own proxy-relay bridges in favour of
+  // the in-process keychain mechanism, Tauri-only (same CORS/keychain
   // constraint custom connectors already have) -- see
-  // ensureBuiltinConnectors and docs/EDITING.md. GitHub hasn't migrated
-  // yet (its own later commit), so it alone stays fully usable with no
-  // Tauri requirement.
-  test('outside Tauri, all 3 built-ins still show (not hidden) -- GitHub stays editable, Jira/Salesforce show disabled with a note, and there\'s no "+ Add source" affordance', async ({ page }) => {
+  // ensureBuiltinConnectors, BUILTIN_INTEGRATIONS, docs/EDITING.md.
+  test('outside Tauri, all 3 built-ins still show (not hidden), all disabled with a note, and there\'s no "+ Add source" affordance', async ({ page }) => {
     await h.gotoTracker(page);
     await h.openSettingsSection(page, 'connectedDataSources');
 
@@ -51,18 +49,20 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
     await expect(rows.nth(0)).toContainText('GitHub');
     await expect(rows.nth(1)).toContainText('Jira');
     await expect(rows.nth(2)).toContainText('Salesforce');
-    await expect(rows.nth(0)).toContainText('Built-in');
-    await expect(rows.nth(0).locator('[data-testid=btn-edit-connected-source]')).toHaveCount(1);
-    await expect(rows.nth(0).locator('[data-testid=connected-source-disabled-note]')).toHaveCount(0);
-
-    for (const idx of [1, 2]) {
-      await expect(rows.nth(idx).locator('[data-testid=btn-edit-connected-source]')).toHaveCount(0);
-      await expect(rows.nth(idx).locator('[data-testid=connected-source-disabled-note]')).toHaveText('Requires the desktop app');
+    for (let i = 0; i < 3; i++) {
+      await expect(rows.nth(i)).toContainText('Built-in');
+      await expect(rows.nth(i).locator('[data-testid=btn-edit-connected-source]')).toHaveCount(0);
+      await expect(rows.nth(i).locator('[data-testid=connected-source-disabled-note]')).toHaveText('Requires the desktop app');
     }
     await expect(page.locator('[data-testid=btn-add-connected-source]')).toHaveCount(0);
   });
 
-  test('editing the built-in Jira connector opens the SAME full editor a custom connector gets (Identity/Credential/Patterns/Macro/Test, Delete available), and changes persist with the key unchanged', async ({ page }) => {
+  // Built-ins get a homogeneous EDITOR SCREEN with a custom connector
+  // (same sliding-modal chrome, same row shape in the list) but their own
+  // FIELDS -- root URL/username/credential, a real brand logo instead of
+  // a glyph/color picker, no macro/patterns/test/delete (they're real,
+  // hardcoded integrations, not user-authored JS).
+  test('editing the built-in Jira connector opens its own real-config editor (root URL/username/credential, real logo, no macro), and changes persist with the key unchanged', async ({ page }) => {
     await stubTauri(page);
     await h.gotoTracker(page);
     await h.openSettingsSection(page, 'connectedDataSources');
@@ -72,23 +72,40 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
     await jiraRow.locator('[data-testid=btn-edit-connected-source]').click();
     const modal = page.locator('[data-testid=connector-form-modal]');
     await expect(modal).toBeVisible();
-    await expect(page.locator('[data-testid=connector-name-input]')).toHaveValue('Jira');
-    await expect(page.locator('[data-testid=connector-macro-textarea]')).not.toHaveValue('');
-    await expect(page.locator('[data-testid=btn-delete-connector]')).toBeVisible();
-    // No small-modal-only fields on this editor.
-    await expect(page.locator('[data-testid=connector-builtin-url-input]')).toHaveCount(0);
+    await expect(modal).toContainText('Jira');
+    await expect(page.locator('[data-testid=connector-name-input]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=connector-macro-textarea]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=btn-delete-connector]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=builtin-root-url-input]')).toBeVisible();
+    await expect(page.locator('[data-testid=builtin-username-input]')).toBeVisible();
+    await expect(page.locator('[data-testid=builtin-credential-input]')).toBeVisible();
 
-    await page.locator('[data-testid=connector-name-input]').fill('My Jira');
-    await page.locator('[data-testid=connector-credential-input]').fill('a-real-secret');
-    await page.locator('[data-testid=btn-save-connector]').click();
+    await page.locator('[data-testid=builtin-root-url-input]').fill('https://acme.atlassian.net');
+    await page.locator('[data-testid=builtin-username-input]').fill('tom@acme.com');
+    await page.locator('[data-testid=builtin-credential-input]').fill('a-real-secret');
+    await page.locator('[data-testid=btn-save-builtin-source]').click();
     await expect(modal).toBeHidden();
 
     const sources = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_connected_sources_v1')));
     const jira = sources.connectors.find(c => c.id === '__builtin_jira');
-    expect(jira.name).toBe('My Jira');
     expect(jira.key).toBe('jira'); // immutable -- existing source.jira rules must keep resolving
+    expect(jira.rootUrl).toBe('https://acme.atlassian.net');
+    expect(jira.username).toBe('tom@acme.com');
     expect(jira.credentialConfigured).toBe(true);
-    await expect(page.locator('[data-testid=connected-source-row]', { hasText: 'My Jira' })).toContainText('Connected');
+    await expect(page.locator('[data-testid=connected-source-row]', { hasText: 'Jira' })).toContainText('Connected');
+  });
+
+  test('editing the built-in GitHub connector shows no username field (not needed for PAT auth), same homogeneous chrome as Jira/Salesforce', async ({ page }) => {
+    await stubTauri(page);
+    await h.gotoTracker(page);
+    await h.openSettingsSection(page, 'connectedDataSources');
+    await page.locator('[data-testid=connected-source-row]', { hasText: 'GitHub' }).locator('[data-testid=btn-edit-connected-source]').click();
+    await expect(page.locator('[data-testid=connector-form-modal]')).toContainText('GitHub');
+    await expect(page.locator('[data-testid=builtin-root-url-input]')).toBeVisible();
+    await expect(page.locator('[data-testid=builtin-username-input]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=builtin-credential-input]')).toBeVisible();
+    const box = await page.locator('[data-testid=connector-form-modal]').boundingBox();
+    expect(box.width).toBeGreaterThan(800); // the same big modal as Jira/Salesforce/custom, not a small one
   });
 
   test('Google Drive link-rendering settings live on the Connected data sources page, outside the connector list', async ({ page }) => {
@@ -429,23 +446,6 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
     await expect(page.locator('[data-testid=connector-form-overlay]')).toHaveCount(0);
     await expect(page.locator('[data-testid=settings-modal]')).toBeVisible();
     await expect(page.locator('[data-testid=connected-source-row]', { hasText: 'Should be discarded' })).toHaveCount(0);
-  });
-
-  // GitHub alone still keeps the old small credential-only modal (its
-  // own dispatch migration is deferred to a later commit) -- unaffected
-  // by either the bigger-modal redesign or Jira/Salesforce's move to the
-  // full editor above.
-  test('editing the GitHub built-in still opens the small credential-only modal, unaffected by the custom editor\'s bigger chrome', async ({ page }) => {
-    await stubTauri(page);
-    await h.gotoTracker(page);
-    await h.openSettingsSection(page, 'connectedDataSources');
-    await page.locator('[data-testid=connected-source-row]', { hasText: 'GitHub' }).locator('[data-testid=btn-edit-connected-source]').click();
-    await page.waitForTimeout(150);
-
-    const box = await page.locator('[data-testid=connector-form-modal]').boundingBox();
-    expect(box.width).toBeLessThan(800);
-    await expect(page.locator('[data-testid=connector-builtin-url-input]')).toBeVisible();
-    await expect(page.locator('[data-testid=btn-back-to-sources]')).toHaveCount(0);
   });
 
   // Live-reported (Tom): pasting a full URL into the Test field threw a

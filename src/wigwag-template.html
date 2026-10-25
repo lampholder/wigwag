@@ -2761,7 +2761,16 @@
                     <div style="border:1px solid var(--border); border-radius:9px; overflow:hidden; max-width:640px;">
                       <sc-for list="{{ connectedSourcesSettings.rows }}" as="src" hint-placeholder-count="4">
                         <div data-testid="connected-source-row" data-connector-id="{{ src.id }}" style="display:flex; align-items:center; gap:12px; padding:11px 16px; border-top:1px solid var(--border-subtle); opacity:{{ src.rowOpacity }};">
-                          <span style="flex-shrink:0; display:flex; align-items:center; justify-content:center; width:26px; height:26px; border-radius:7px; font-size:11px; font-weight:800; color:#fff; background: {{ src.color }};">{{ src.glyph }}</span>
+                          <sc-if value="{{ src.builtin }}" hint-placeholder-val="{{ false }}">
+                            <span style="flex-shrink:0; display:flex; align-items:center; justify-content:center; width:26px; height:26px; border-radius:7px; background: var(--surface-selected);">
+                              <sc-if value="{{ src.logoKind === 'github' }}" hint-placeholder-val="{{ false }}"><svg width="15" height="15" viewBox="0 0 16 16" style="color:var(--text-secondary);"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg></sc-if>
+                              <sc-if value="{{ src.logoKind === 'jira' }}" hint-placeholder-val="{{ false }}"><svg width="15" height="15" viewBox="0 0 16 16"><path fill="#2684FF" d="M11.5 0.5H7.8c0 1.9 1.5 3.4 3.4 3.4h1.4v1.3c0 1.9 1.5 3.4 3.4 3.4V1.3c0-0.4-0.4-0.8-0.9-0.8z"></path><path fill="#2684FF" d="M7.8 4.3H4.1c0 1.9 1.5 3.4 3.4 3.4H9v1.3c0 1.9 1.5 3.4 3.4 3.4V5.1c0-0.4-0.4-0.8-0.9-0.8z"></path><path fill="#2684FF" d="M4.1 8.1H0.4c0 1.9 1.5 3.4 3.4 3.4h1.4v1.3c0 1.9 1.5 3.4 3.4 3.4V8.9c0-0.4-0.4-0.8-0.9-0.8z"></path></svg></sc-if>
+                              <sc-if value="{{ src.logoKind === 'salesforce' }}" hint-placeholder-val="{{ false }}"><svg width="15" height="15" viewBox="0 0 16 16"><path fill="#00A1E0" d="M6.5 3.5c.7-.7 1.7-1.2 2.8-1.2 1.5 0 2.7.8 3.4 2 .3-.1.6-.2 1-.2 1.5 0 2.8 1.2 2.8 2.8 0 .2 0 .3 0 .5 1 .4 1.5 1.4 1.5 2.5 0 1.5-1.2 2.7-2.7 2.7H3.7C2.2 12.6 1 11.4 1 9.9c0-1.2.8-2.2 1.9-2.6 0-.1 0-.2 0-.3 0-1.6 1.3-2.9 2.9-2.9.3 0 .5 0 .7.1z"></path></svg></sc-if>
+                            </span>
+                          </sc-if>
+                          <sc-if value="{{ !src.builtin }}" hint-placeholder-val="{{ true }}">
+                            <span style="flex-shrink:0; display:flex; align-items:center; justify-content:center; width:26px; height:26px; border-radius:7px; font-size:11px; font-weight:800; color:#fff; background: {{ src.color }};">{{ src.glyph }}</span>
+                          </sc-if>
                           <div style="flex:1; min-width:0;">
                             <div style="display:flex; align-items:center; gap:7px;">
                               <span style="font-size:13px; font-weight:650;">{{ src.name }}</span>
@@ -2816,43 +2825,13 @@
                       </div>
                     </sc-if>
 
-                    <sc-if value="{{ connectedSourcesSettings.formVisible }}" hint-placeholder-val="{{ false }}">
-                      <sc-if value="{{ connectedSourcesSettings.isBuiltinForm }}" hint-placeholder-val="{{ false }}">
-                      <div data-testid="connector-form-overlay" style="position:fixed; inset:0; background: var(--sh11); z-index:210; display:flex; align-items:center; justify-content:center; padding:24px; box-sizing:border-box;">
-                        <div data-testid="connector-form-modal" style="background:var(--surface); border-radius:12px; box-shadow:0 14px 38px var(--sh1); width:720px; max-width:94vw; height:640px; max-height:88vh; display:flex; flex-direction:column; overflow:hidden;">
-                          <div style="display:flex; align-items:center; justify-content:space-between; padding:16px 20px; border-bottom:1px solid var(--border-subtle); flex-shrink:0;">
-                            <span style="font-size:14.5px; font-weight:700;">{{ connectedSourcesSettings.formTitle }}</span>
-                            <span data-testid="btn-close-connector-form" sc-camel-on-click="{{ connectedSourcesSettings.onCancel }}" style="cursor:pointer; font-size:17px; color: var(--text-secondary); padding:2px;">✕</span>
-                          </div>
-                          <div style="flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; padding:20px; display:flex; gap:16px; flex-wrap:wrap; align-items:flex-start;">
-                            <div style="box-sizing:border-box; width:420px; display:flex; flex-direction:column; gap:12px;">
-                              <div style="border:1px solid var(--border); border-radius:9px; overflow:hidden;">
-                                <div style="padding:6px 12px; background: var(--surface-page); border-bottom:1px solid var(--border-subtle); font-size:10px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; color: var(--text-tertiary);">{{ connectedSourcesSettings.builtinPanelLabel }}</div>
-                                <div style="padding:14px 15px;">
-                                  <div style="font-size:10px; font-weight:650; letter-spacing:0.04em; text-transform:uppercase; color: var(--text-tertiary); margin-bottom:4px;">Proxy URL</div>
-                                  <input data-testid="connector-builtin-url-input" value="{{ connectedSourcesSettings.builtinUrlValue }}" sc-camel-on-change="{{ connectedSourcesSettings.onBuiltinUrlChange }}" placeholder="{{ connectedSourcesSettings.builtinUrlPlaceholder }}" style="width:100%; box-sizing:border-box; padding:6px 8px; border:1px solid var(--border); border-radius:6px; font-size:12.5px; font-family:inherit; background:transparent; margin-bottom:10px;">
-                                  <div style="font-size:10px; font-weight:650; letter-spacing:0.04em; text-transform:uppercase; color: var(--text-tertiary); margin-bottom:4px;">Proxy secret</div>
-                                  <input data-testid="connector-builtin-secret-input" type="password" value="{{ connectedSourcesSettings.builtinSecretValue }}" sc-camel-on-change="{{ connectedSourcesSettings.onBuiltinSecretChange }}" placeholder="{{ connectedSourcesSettings.builtinSecretPlaceholder }}" style="width:100%; box-sizing:border-box; padding:6px 8px; border:1px solid var(--border); border-radius:6px; font-size:12.5px; font-family:inherit; background:transparent;">
-                                  <div style="font-size:10.5px; color: var(--text-tertiary); line-height:1.4; margin-top:8px;">{{ connectedSourcesSettings.builtinHelperText }}</div>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-                          <div style="display:flex; align-items:center; gap:8px; padding:13px 20px; border-top:1px solid var(--border-subtle); flex-shrink:0;">
-                            <span style="flex:1;"></span>
-                            <button data-testid="btn-done-builtin-source" sc-camel-on-click="{{ connectedSourcesSettings.onCancel }}" style="border:none; border-radius:6px; background: var(--accent-fill); color:var(--ink-on-accent); font-size:12.5px; font-weight:600; padding:7px 16px; cursor:pointer;">Done</button>
-                          </div>
-                        </div>
-                      </div>
-                      </sc-if>
-                    </sc-if>
                   </sc-if>
                 </div>
               </div>
             </div>
           </sc-if>
                       <sc-if value="{{ connectedSourcesSettings.customFormSlotOpen }}" hint-placeholder-val="{{ false }}">
-                      <div data-testid="connector-form-overlay" style="position:fixed; inset:0; background: var(--sh11); z-index:210; box-sizing:border-box;">
+                      <div data-testid="connector-form-overlay" style="position:fixed; inset:0; z-index:210; box-sizing:border-box;">
                         <div data-testid="connector-form-modal" style="position:fixed; top:50%; left:50%; width:92vw; max-width:1400px; height:88vh; transform:translate(-50%,-50%) translateX({{ connectedSourcesSettings.connectorEditorSlideOffset }}); transition:transform 0.28s cubic-bezier(0.2,0.8,0.2,1); background:var(--surface); border-radius:12px; box-shadow:0 24px 60px var(--sh9); display:flex; flex-direction:column; overflow:hidden; box-sizing:border-box;">
                           <div style="display:flex; align-items:center; gap:10px; padding:14px 24px; border-bottom:1px solid var(--border-subtle); flex-shrink:0;">
                             <span data-testid="btn-back-to-sources" sc-camel-on-click="{{ connectedSourcesSettings.onCancel }}" style="cursor:pointer; font-size:13px; color: var(--text-tertiary);">← Connected sources</span>
@@ -2963,6 +2942,57 @@
                               </div>
                             </div>
 
+                          </div>
+                        </div>
+                      </div>
+                      </sc-if>
+
+                      <sc-if value="{{ connectedSourcesSettings.builtinFormSlotOpen }}" hint-placeholder-val="{{ false }}">
+                      <div data-testid="connector-form-overlay" style="position:fixed; inset:0; z-index:210; box-sizing:border-box;">
+                        <div data-testid="connector-form-modal" style="position:fixed; top:50%; left:50%; width:92vw; max-width:1400px; height:88vh; transform:translate(-50%,-50%) translateX({{ connectedSourcesSettings.connectorEditorSlideOffset }}); transition:transform 0.28s cubic-bezier(0.2,0.8,0.2,1); background:var(--surface); border-radius:12px; box-shadow:0 24px 60px var(--sh9); display:flex; flex-direction:column; overflow:hidden; box-sizing:border-box;">
+                          <div style="display:flex; align-items:center; gap:10px; padding:14px 24px; border-bottom:1px solid var(--border-subtle); flex-shrink:0;">
+                            <span data-testid="btn-back-to-sources" sc-camel-on-click="{{ connectedSourcesSettings.onCancel }}" style="cursor:pointer; font-size:13px; color: var(--text-tertiary);">← Connected sources</span>
+                            <span style="color: var(--border);">/</span>
+                            <span style="font-size:14.5px; font-weight:700;">{{ connectedSourcesSettings.builtinFormTitle }}</span>
+                            <span style="flex:1;"></span>
+                            <span data-testid="btn-cancel-connector-form" sc-camel-on-click="{{ connectedSourcesSettings.onCancel }}" style="cursor:pointer; font-size:12.5px; color: var(--text-muted); padding:7px 14px; border-radius:7px; border:1px solid var(--border);" style-hover="background:var(--n55);">Cancel</span>
+                            <button data-testid="btn-save-builtin-source" sc-camel-on-click="{{ connectedSourcesSettings.onSaveBuiltin }}" style="border:none; border-radius:7px; background: {{ connectedSourcesSettings.saveBuiltinButtonBg }}; color:var(--ink-on-accent); font-size:12.5px; font-weight:600; padding:7px 16px; cursor: {{ connectedSourcesSettings.saveBuiltinButtonCursor }};">Save</button>
+                          </div>
+                          <div style="flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; padding:24px; display:flex; justify-content:center; background: var(--surface-page);">
+                            <div style="box-sizing:border-box; width:420px; display:flex; flex-direction:column; gap:14px;">
+
+                              <div style="border:1px solid var(--border); border-radius:9px; overflow:hidden; background: var(--surface);">
+                                <div style="padding:6px 12px; background: var(--surface-page); border-bottom:1px solid var(--border-subtle); font-size:10px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; color: var(--text-tertiary);">Identity</div>
+                                <div style="padding:14px 15px; display:flex; gap:10px; align-items:center;">
+                                  <span style="flex-shrink:0; display:flex; align-items:center; justify-content:center; width:36px; height:36px; border-radius:8px; background: var(--surface-selected);">
+                                    <sc-if value="{{ connectedSourcesSettings.builtinLogoKind === 'github' }}" hint-placeholder-val="{{ false }}"><svg width="19" height="19" viewBox="0 0 16 16" style="color:var(--text-secondary);"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg></sc-if>
+                                    <sc-if value="{{ connectedSourcesSettings.builtinLogoKind === 'jira' }}" hint-placeholder-val="{{ false }}"><svg width="19" height="19" viewBox="0 0 16 16"><path fill="#2684FF" d="M11.5 0.5H7.8c0 1.9 1.5 3.4 3.4 3.4h1.4v1.3c0 1.9 1.5 3.4 3.4 3.4V1.3c0-0.4-0.4-0.8-0.9-0.8z"></path><path fill="#2684FF" d="M7.8 4.3H4.1c0 1.9 1.5 3.4 3.4 3.4H9v1.3c0 1.9 1.5 3.4 3.4 3.4V5.1c0-0.4-0.4-0.8-0.9-0.8z"></path><path fill="#2684FF" d="M4.1 8.1H0.4c0 1.9 1.5 3.4 3.4 3.4h1.4v1.3c0 1.9 1.5 3.4 3.4 3.4V8.9c0-0.4-0.4-0.8-0.9-0.8z"></path></svg></sc-if>
+                                    <sc-if value="{{ connectedSourcesSettings.builtinLogoKind === 'salesforce' }}" hint-placeholder-val="{{ false }}"><svg width="19" height="19" viewBox="0 0 16 16"><path fill="#00A1E0" d="M6.5 3.5c.7-.7 1.7-1.2 2.8-1.2 1.5 0 2.7.8 3.4 2 .3-.1.6-.2 1-.2 1.5 0 2.8 1.2 2.8 2.8 0 .2 0 .3 0 .5 1 .4 1.5 1.4 1.5 2.5 0 1.5-1.2 2.7-2.7 2.7H3.7C2.2 12.6 1 11.4 1 9.9c0-1.2.8-2.2 1.9-2.6 0-.1 0-.2 0-.3 0-1.6 1.3-2.9 2.9-2.9.3 0 .5 0 .7.1z"></path></svg></sc-if>
+                                  </span>
+                                  <div style="flex:1;">
+                                    <div style="font-size:14px; font-weight:700;">{{ connectedSourcesSettings.builtinFormTitle }}</div>
+                                    <div style="font-size:10.5px; color: var(--text-tertiary); margin-top:2px;">Built-in -- same recognized link shapes as before, now fetched in-process.</div>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div style="border:1px solid var(--border); border-radius:9px; overflow:hidden; background: var(--surface);">
+                                <div style="padding:6px 12px; background: var(--surface-page); border-bottom:1px solid var(--border-subtle); font-size:10px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; color: var(--text-tertiary);">Connection</div>
+                                <div style="padding:14px 15px;">
+                                  <div style="font-size:10px; font-weight:650; letter-spacing:0.04em; text-transform:uppercase; color: var(--text-tertiary); margin-bottom:4px;">{{ connectedSourcesSettings.builtinRootUrlLabel }}</div>
+                                  <input data-testid="builtin-root-url-input" value="{{ connectedSourcesSettings.builtinRootUrlValue }}" sc-camel-on-change="{{ connectedSourcesSettings.onBuiltinRootUrlChange }}" placeholder="{{ connectedSourcesSettings.builtinRootUrlPlaceholder }}" style="width:100%; box-sizing:border-box; padding:6px 8px; border:1px solid var(--border); border-radius:6px; font-size:12.5px; font-family:inherit; background:transparent; margin-bottom:10px;">
+                                  <sc-if value="{{ connectedSourcesSettings.showBuiltinUsername }}" hint-placeholder-val="{{ false }}">
+                                    <div style="font-size:10px; font-weight:650; letter-spacing:0.04em; text-transform:uppercase; color: var(--text-tertiary); margin-bottom:4px;">{{ connectedSourcesSettings.builtinUsernameLabel }}</div>
+                                    <input data-testid="builtin-username-input" value="{{ connectedSourcesSettings.builtinUsernameValue }}" sc-camel-on-change="{{ connectedSourcesSettings.onBuiltinUsernameChange }}" placeholder="{{ connectedSourcesSettings.builtinUsernamePlaceholder }}" style="width:100%; box-sizing:border-box; padding:6px 8px; border:1px solid var(--border); border-radius:6px; font-size:12.5px; font-family:inherit; background:transparent; margin-bottom:10px;">
+                                  </sc-if>
+                                  <div style="font-size:10px; font-weight:650; letter-spacing:0.04em; text-transform:uppercase; color: var(--text-tertiary); margin-bottom:4px;">{{ connectedSourcesSettings.builtinCredentialLabel }}</div>
+                                  <input data-testid="builtin-credential-input" type="password" value="{{ connectedSourcesSettings.builtinCredentialValue }}" sc-camel-on-change="{{ connectedSourcesSettings.onBuiltinCredentialChange }}" placeholder="{{ connectedSourcesSettings.builtinCredentialPlaceholder }}" style="width:100%; box-sizing:border-box; padding:6px 8px; border:1px solid var(--border); border-radius:6px; font-size:12.5px; font-family:ui-monospace,monospace; background:transparent;">
+                                  <div style="font-size:10.5px; color: var(--text-tertiary); line-height:1.45; margin-top:8px;">{{ connectedSourcesSettings.builtinHelperText }}</div>
+                                  <div style="font-size:10.5px; color: var(--text-tertiary); line-height:1.4; margin-top:8px;">Stored in your OS keychain, never in the project file.</div>
+                                </div>
+                              </div>
+
+                            </div>
                           </div>
                         </div>
                       </div>

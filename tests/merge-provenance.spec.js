@@ -843,9 +843,6 @@ test.describe('Merge provenance: the pre-merge gate and Merge History (tracker #
     // Row 0 (i1) is Title-linked to acme/demo#42 with Type bound to it via
     // the demo fixture's own default rule (source.github.labels) -- same
     // seed shape as row-selection.spec.js's own refresh test.
-    await page.route('https://api.github.com/repos/acme/demo/issues/42', route => route.fulfill({
-      status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Fresh title', labels: [{ name: 'bug' }], state: 'open', body: '' })
-    }));
     {
       const doc = await h.idbGetProjectDoc(page, pid);
       const maxSortKey = Math.max(0, ...doc.issues[0].history.map(x => x.sortKey || 0));
@@ -857,6 +854,13 @@ test.describe('Merge provenance: the pre-merge gate and Merge History (tracker #
     }
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
+    // GitHub's own real fetch goes through the Tauri IPC shim now, not a
+    // plain browser fetch -- page.route can't intercept it; override the
+    // Tauri invoke stub's response instead. Applied live (page.evaluate),
+    // so it must come AFTER the reload above, not before.
+    await h.overrideConnectorFetchResponses(page, { responsesByUrlSubstring: {
+      'acme/demo/issues/42': JSON.stringify({ title: 'Fresh title', labels: [{ name: 'bug' }], state: 'open', body: '' })
+    } });
 
     await expect(page.locator('[data-testid=row]').nth(0).locator('[data-testid=field-cell][data-col=type]')).toContainText('Enhancement');
     const historyLenBeforeRefresh = (await h.readActiveMilestoneDoc(page)).issues[0].history.length;

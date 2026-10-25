@@ -2028,24 +2028,17 @@ function isEmptyBoundValue(v) {
   return v == null || v === '' || (Array.isArray(v) && v.length === 0);
 }
 // Whether THIS device has a working path to re-evaluate a ref's own
-// system at all -- github/wigwag need nothing (github works unauth'd
-// against the public API; wigwag is an internal cross-project link, not
-// an external system). jira/salesforce retired their own proxy-relay
-// bridges in favour of the in-process connector/keychain mechanism (see
-// ensureBuiltinConnectors, wigwag.html) -- a system:'jira'/'salesforce'
-// ref only ever exists now as a historical, pre-retirement artifact
-// (new links always get a system:'connector' ref against the fixed
-// '__builtin_jira'/'__builtin_salesforce' id instead), but it's still
-// re-evaluated the SAME way a real connector is: real Tauri connector
-// runtime AND a matching entry in this device's own connectedSources
-// list (always present once ensureBuiltinConnectors has run, so this
-// reduces to "is Tauri" in practice -- the defensive .some check just
-// mirrors the 'connector' branch below rather than assuming that). The
-// old jiraProxySecret/salesforceProxySecret fields are permanently inert
-// now -- checking them here would make every historical Jira/Salesforce
-// link look dead forever on every device, since nothing sets them any
-// more. connector (real custom connectors, same as above) needs both
-// the real Tauri connector runtime AND a matching entry in this
+// system at all -- wigwag needs nothing (an internal cross-project link,
+// not an external system). github/jira/salesforce are the 3 built-ins
+// (bridges/*.js ported in-process -- see ensureBuiltinConnectors,
+// fetchJiraData/fetchSalesforceData/fetchGithubData in wigwag.html):
+// real Tauri connector runtime (keychain access requires it) AND the
+// matching built-in actually configured (a real root URL, plus a real
+// credential except for github, whose real bridge always allowed
+// anonymous access too) -- mirrors builtinConfigured()'s own check,
+// duplicated here since this file has no access to component state,
+// only the ctx bag threaded through. connector (a real custom connector)
+// needs the real Tauri connector runtime AND a matching entry in this
 // device's own connectedSources list. A device can have a BINDING
 // configured (rule/linkedSourceId -- already local-only via
 // LOCAL_FIELD_BINDINGS_KEY, but still able to arrive via project import/
@@ -2055,10 +2048,15 @@ function isRefLocallyLive(ref, ctx) {
   if (!ref) return false;
   ctx = ctx || {};
   const system = ref.system || 'github';
-  if (system === 'jira') return !!ctx.tauriConnectorRuntime && (ctx.connectedSources || []).some(c => c.id === '__builtin_jira');
-  if (system === 'salesforce') return !!ctx.tauriConnectorRuntime && (ctx.connectedSources || []).some(c => c.id === '__builtin_salesforce');
-  if (system === 'connector') return !!ctx.tauriConnectorRuntime && (ctx.connectedSources || []).some(c => c.id === ref.connectorId);
-  return true; // github, wigwag
+  const connectedSources = ctx.connectedSources || [];
+  if (system === 'github' || system === 'jira' || system === 'salesforce') {
+    if (!ctx.tauriConnectorRuntime) return false;
+    const c = connectedSources.find(x => x.id === '__builtin_' + system);
+    if (!c || !(c.rootUrl || '').trim()) return false;
+    return system === 'github' ? true : !!c.credentialConfigured;
+  }
+  if (system === 'connector') return !!ctx.tauriConnectorRuntime && connectedSources.some(c => c.id === ref.connectorId);
+  return true; // wigwag
 }
 function computeBoundValue(issue, colId, def, ctx) {
   if (!def.rule || !def.linkedSourceId) return { isLinked: false, computed: undefined };
@@ -2170,25 +2168,22 @@ function applyLiveLinkedRules(iss, fieldDefs, sourceColId, system, liveData, ctx
   const source = {
     text: iss.values[sourceColId] || '', isLinked: true,
     github: system === 'github' ? pickGithubFields(liveData) : null,
-    jira: null, salesforce: null
+    jira: system === 'jira' ? pickJiraFields(liveData) : null,
+    salesforce: system === 'salesforce' ? pickSalesforceFields(liveData) : null
   };
-  // Connected Sources (Phase 1), extended by the built-in retirement:
-  // the caller passes the connector's own key as `system` here -- for a
-  // real custom connector that's its own slug (e.g. 'linear'); for the
-  // two retired built-ins it's literally 'jira'/'salesforce' (see
-  // ensureBuiltinConnectors/builtinConnector), since both now ALWAYS
-  // dispatch through the same in-process macro mechanism, never the old
-  // proxy-shaped raw JSON pickJiraFields/pickSalesforceFields expected.
-  // 'github' stays on its own fixed branch above (still unmigrated,
-  // still fed fetchGithubData's top-level-shaped result, not a macro's
-  // {title,url,state,extra}); 'wigwag' has no connector-shaped liveData
-  // at all. Same flatten as buildSource's own connector branch -- extra's
-  // keys spread first, so title/url/state/labels/assignee still win on
-  // collision -- keeping a rule's result identical whether it's reading
-  // this just-fetched live value or reloading the persisted ref later.
-  if (system && system !== 'github' && system !== 'wigwag') {
-    const picked = pickConnectorFields(liveData);
-    source[system] = { ...picked.extra, ...picked };
+  // Connected Sources (Phase 1): the caller passes the connector's own key
+  // (e.g. 'linear') as `system` here -- reserved words github/jira/
+  // salesforce/wigwag can never collide with a real connector key
+  // (slugifyConnectorKey excludes them), so this dynamic branch is safe
+  // to check unconditionally after the three fixed ones above. github/
+  // jira/salesforce are real, hardcoded integrations now (bridges/*.js
+  // ported in-process -- see fetchJiraData/fetchSalesforceData/
+  // fetchGithubData in wigwag.html), each handing back the SAME flat
+  // shape pickGithubFields/pickJiraFields/pickSalesforceFields already
+  // expect directly -- not a macro's {title,url,state,extra} shape, so
+  // this dynamic connector branch must stay OUT of their way.
+  if (system && !['github', 'jira', 'salesforce', 'wigwag'].includes(system)) {
+    source[system] = pickConnectorFields(liveData);
   }
   let values = iss.values;
   for (const colId in fieldDefs) {

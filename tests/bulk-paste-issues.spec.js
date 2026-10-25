@@ -23,7 +23,11 @@ function seedLegacyEntries() {
 }
 
 test.describe('Bulk-link issues from a multi-line paste', () => {
-  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); await h.mockGithubApi(page); });
+  // mockGithubApi's own Tauri-stub addInitScript must register BEFORE
+  // the page navigates (gotoTracker) to actually apply -- GitHub's
+  // built-in linking goes through Tauri IPC now, which an addInitScript
+  // added after the page already loaded can't retroactively provide.
+  test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
 
   test('a single-line paste still behaves exactly as before -- no preview, no review, immediate creation', async ({ page }) => {
     await page.keyboard.down('Control'); await page.keyboard.press('Space'); await page.keyboard.up('Control');
@@ -58,10 +62,21 @@ test.describe('Bulk-link issues from a multi-line paste', () => {
     // classifies as linked, same as a single Jira paste inside the real
     // app would; the plain line is unlinked; issues/1 repeats within the
     // SAME paste and must only ever create one row, not two.
+    // mockGithubApi's own addInitScript already stubbed window.__TAURI__
+    // (applies again on this reload too) -- jira also needs a real root
+    // URL + credentialConfigured for jiraKeyMatch to claim ABC-123 at all
+    // now (see builtinConfigured()). A live state mutation needs a
+    // reload to actually take effect -- this.state.connectedSources is
+    // only ever (re)read from localStorage at boot.
     await page.evaluate(() => {
-      window.__TAURI__ = window.__TAURI__ || {};
-      window.__TAURI__.core = window.__TAURI__.core || { invoke: () => Promise.resolve(null) };
+      const raw = JSON.parse(localStorage.getItem('git_native_tracker_connected_sources_v1'));
+      const jira = raw.connectors.find(c => c.id === '__builtin_jira');
+      jira.rootUrl = 'https://mock.atlassian.net';
+      jira.credentialConfigured = true;
+      localStorage.setItem('git_native_tracker_connected_sources_v1', JSON.stringify(raw));
     });
+    await page.reload();
+    await h.waitForBootSplashGone(page);
     const lines = [
       'https://github.com/octocat/Hello-World/issues/1',
       'https://github.com/octocat/Hello-World/issues/2',

@@ -247,6 +247,11 @@ test.describe('Bulk actions: Set field', () => {
 
   test('a field with any selected row currently deriving it from a linked issue is NOT disabled -- clicking it opens the value picker same as any other field, just with an informational row-count note', async ({ page }) => {
     await h.gotoTracker(page);
+    // GitHub reachability now requires the real Tauri connector runtime
+    // (see BUILTIN_INTEGRATIONS/ensureBuiltinConnectors) for the resettle
+    // below to actually recompute Type -- registered here so it's active
+    // by the time the reload fires.
+    await h.mockGithubApi(page);
     const idx = { activeMilestoneId: await h.activeMilestoneId(page) };
     {
       const doc = await h.idbGetProjectDoc(page, idx.activeMilestoneId);
@@ -297,10 +302,13 @@ test.describe('Bulk actions: Refresh', () => {
 
   test('scoped only to the selection, refreshes a linked field and recomputes any field bound to it -- even when the underlying value (e.g. title) is unchanged but other data (e.g. labels) is', async ({ page }) => {
     await h.gotoTracker(page);
+    // GitHub's own real fetch goes through the Tauri IPC shim now, not a
+    // plain browser fetch -- page.route can't intercept it; registered
+    // here (before the reload below) so it's active when the refresh fires.
+    await h.stubTauriConnectorRuntime(page, { responsesByUrlSubstring: {
+      'acme/demo/issues/42': JSON.stringify({ title: 'Fresh title', labels: [{ name: 'bug' }], state: 'open', body: '' })
+    } });
     const idx = { activeMilestoneId: await h.activeMilestoneId(page) };
-    await page.route('https://api.github.com/repos/acme/demo/issues/42', route => route.fulfill({
-      status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Fresh title', labels: [{ name: 'bug' }], state: 'open', body: '' })
-    }));
     {
       const doc = await h.idbGetProjectDoc(page, idx.activeMilestoneId);
       const maxSortKey = Math.max(0, ...doc.issues[0].history.map(h => h.sortKey || 0));
@@ -380,13 +388,15 @@ test.describe('Bulk actions: Refresh -- staged job (2+ rows)', () => {
 
   test('nothing in the grid changes until the job resolves, then the gate shows the real fetched values and applies everything in one shot', async ({ page }) => {
     await h.gotoTracker(page);
-    await page.route('https://api.github.com/repos/acme/demo/issues/1', async route => {
-      await new Promise(r => setTimeout(r, 100));
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Fresh 1', labels: [], state: 'open', body: '' }) });
-    });
-    await page.route('https://api.github.com/repos/acme/demo/issues/2', async route => {
-      await new Promise(r => setTimeout(r, 100));
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Fresh 2', labels: [], state: 'open', body: '' }) });
+    // GitHub's own real fetch goes through the Tauri IPC shim now, not a
+    // plain browser fetch -- page.route can't intercept it; registered
+    // here (before seedTwoLinkedRows' own reload) so it's active for it.
+    await h.stubTauriConnectorRuntime(page, {
+      responsesByUrlSubstring: {
+        'acme/demo/issues/1': JSON.stringify({ title: 'Fresh 1', labels: [], state: 'open', body: '' }),
+        'acme/demo/issues/2': JSON.stringify({ title: 'Fresh 2', labels: [], state: 'open', body: '' })
+      },
+      delayMsByUrlSubstring: { 'acme/demo/issues/1': 100, 'acme/demo/issues/2': 100 }
     });
     await seedTwoLinkedRows(page);
 
@@ -423,10 +433,12 @@ test.describe('Bulk actions: Refresh -- staged job (2+ rows)', () => {
 
   test('a row that never resolves is excluded after retries are exhausted -- the rest still apply, nothing hangs forever', async ({ page }) => {
     await h.gotoTracker(page);
-    await page.route('https://api.github.com/repos/acme/demo/issues/1', route => new Promise(() => {})); // never resolves
-    await page.route('https://api.github.com/repos/acme/demo/issues/2', route => route.fulfill({
-      status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Fresh 2', labels: [], state: 'open', body: '' })
-    }));
+    // GitHub's own real fetch goes through the Tauri IPC shim now, not a
+    // plain browser fetch -- page.route can't intercept it.
+    await h.stubTauriConnectorRuntime(page, {
+      responsesByUrlSubstring: { 'acme/demo/issues/2': JSON.stringify({ title: 'Fresh 2', labels: [], state: 'open', body: '' }) },
+      hangUrlSubstrings: ['acme/demo/issues/1'] // never resolves
+    });
     await seedTwoLinkedRows(page);
 
     await page.locator('[data-testid=row]').nth(0).locator('[data-testid=row-select-checkbox]').click();
@@ -460,13 +472,14 @@ test.describe('Bulk actions: Refresh -- staged job (2+ rows)', () => {
     // comfortable, reliable "still fetching" window for this test to
     // check against, rather than racing the job's own fast completion.
     await page.addInitScript(() => { window.__wigwagRefreshTimeoutMs = 8000; });
-    await page.route('https://api.github.com/repos/acme/demo/issues/1', async route => {
-      await new Promise(r => setTimeout(r, 2000));
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Fresh 1', labels: [], state: 'open', body: '' }) });
-    });
-    await page.route('https://api.github.com/repos/acme/demo/issues/2', async route => {
-      await new Promise(r => setTimeout(r, 2000));
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Fresh 2', labels: [], state: 'open', body: '' }) });
+    // GitHub's own real fetch goes through the Tauri IPC shim now, not a
+    // plain browser fetch -- page.route can't intercept it.
+    await h.stubTauriConnectorRuntime(page, {
+      responsesByUrlSubstring: {
+        'acme/demo/issues/1': JSON.stringify({ title: 'Fresh 1', labels: [], state: 'open', body: '' }),
+        'acme/demo/issues/2': JSON.stringify({ title: 'Fresh 2', labels: [], state: 'open', body: '' })
+      },
+      delayMsByUrlSubstring: { 'acme/demo/issues/1': 2000, 'acme/demo/issues/2': 2000 }
     });
     await seedTwoLinkedRows(page);
 
@@ -489,13 +502,14 @@ test.describe('Bulk actions: Refresh -- staged job (2+ rows)', () => {
   test('clearing the selection mid-job reverts the slot to the add-item row, but the job itself keeps running', async ({ page }) => {
     await h.gotoTracker(page);
     await page.addInitScript(() => { window.__wigwagRefreshTimeoutMs = 8000; });
-    await page.route('https://api.github.com/repos/acme/demo/issues/1', async route => {
-      await new Promise(r => setTimeout(r, 2000));
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Fresh 1', labels: [], state: 'open', body: '' }) });
-    });
-    await page.route('https://api.github.com/repos/acme/demo/issues/2', async route => {
-      await new Promise(r => setTimeout(r, 2000));
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Fresh 2', labels: [], state: 'open', body: '' }) });
+    // GitHub's own real fetch goes through the Tauri IPC shim now, not a
+    // plain browser fetch -- page.route can't intercept it.
+    await h.stubTauriConnectorRuntime(page, {
+      responsesByUrlSubstring: {
+        'acme/demo/issues/1': JSON.stringify({ title: 'Fresh 1', labels: [], state: 'open', body: '' }),
+        'acme/demo/issues/2': JSON.stringify({ title: 'Fresh 2', labels: [], state: 'open', body: '' })
+      },
+      delayMsByUrlSubstring: { 'acme/demo/issues/1': 2000, 'acme/demo/issues/2': 2000 }
     });
     await seedTwoLinkedRows(page);
 
@@ -533,9 +547,12 @@ test.describe('Bulk actions: Refresh -- staged job (2+ rows)', () => {
 
   test('a bound field that also carries a copied fieldRef is refreshed exactly once, and the timeline counts its edits correctly', async ({ page }) => {
     await h.gotoTracker(page);
-    await page.route('https://api.github.com/repos/acme/demo/issues/1', route => route.fulfill({
-      status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Fresh Title', labels: [], state: 'open', body: '' })
-    }));
+    // GitHub's own real fetch goes through the Tauri IPC shim now, not a
+    // plain browser fetch -- page.route can't intercept it; registered
+    // here (before the reload below) so it's active for the refresh.
+    await h.stubTauriConnectorRuntime(page, { responsesByUrlSubstring: {
+      'acme/demo/issues/1': JSON.stringify({ title: 'Fresh Title', labels: [], state: 'open', body: '' })
+    } });
     const pid = await h.activeMilestoneId(page);
     {
       const doc = await h.idbGetProjectDoc(page, pid);
@@ -610,9 +627,12 @@ test.describe('Bulk actions: Refresh -- staged job (2+ rows)', () => {
   // link.
   test('a bound field recomputes from fresh live data even when the root linked field\'s own value and fieldRef are unchanged', async ({ page }) => {
     await h.gotoTracker(page);
-    await page.route('https://api.github.com/repos/acme/demo/issues/1', route => route.fulfill({
-      status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Stable title', labels: [{ name: 'bug' }], state: 'open', body: '' })
-    }));
+    // GitHub's own real fetch goes through the Tauri IPC shim now, not a
+    // plain browser fetch -- page.route can't intercept it; registered
+    // here (before the reload below) so it's active for the refresh.
+    await h.stubTauriConnectorRuntime(page, { responsesByUrlSubstring: {
+      'acme/demo/issues/1': JSON.stringify({ title: 'Stable title', labels: [{ name: 'bug' }], state: 'open', body: '' })
+    } });
     const pid = await h.activeMilestoneId(page);
     {
       const doc = await h.idbGetProjectDoc(page, pid);
@@ -661,9 +681,12 @@ test.describe('Bulk actions: Refresh -- staged job (2+ rows)', () => {
   // next render instead of settling.
   test('a bound field written by a staged refresh is marked origin:derived, same as the single-row/merge-landing path', async ({ page }) => {
     await h.gotoTracker(page);
-    await page.route('https://api.github.com/repos/acme/demo/issues/1', route => route.fulfill({
-      status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Fresh title', labels: [{ name: 'bug' }], state: 'open', body: '' })
-    }));
+    // GitHub's own real fetch goes through the Tauri IPC shim now, not a
+    // plain browser fetch -- page.route can't intercept it; registered
+    // here (before the reload below) so it's active for the refresh.
+    await h.stubTauriConnectorRuntime(page, { responsesByUrlSubstring: {
+      'acme/demo/issues/1': JSON.stringify({ title: 'Fresh title', labels: [{ name: 'bug' }], state: 'open', body: '' })
+    } });
     const pid = await h.activeMilestoneId(page);
     {
       const doc = await h.idbGetProjectDoc(page, pid);
@@ -704,9 +727,12 @@ test.describe('Bulk actions: Refresh -- staged job (2+ rows)', () => {
   // counting it as needing review.
   test('confirming a staged refresh clears its job -- it does not resurface on a later project switch, and the header chip clears too', async ({ page }) => {
     await h.gotoTracker(page);
-    await page.route('https://api.github.com/repos/acme/demo/issues/1', route => route.fulfill({
-      status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Fresh title', labels: [], state: 'open', body: '' })
-    }));
+    // GitHub's own real fetch goes through the Tauri IPC shim now, not a
+    // plain browser fetch -- page.route can't intercept it; registered
+    // here (before the reload below) so it's active for the refresh.
+    await h.stubTauriConnectorRuntime(page, { responsesByUrlSubstring: {
+      'acme/demo/issues/1': JSON.stringify({ title: 'Fresh title', labels: [], state: 'open', body: '' })
+    } });
     const pid = await h.activeMilestoneId(page);
     {
       const doc = await h.idbGetProjectDoc(page, pid);
@@ -758,9 +784,12 @@ test.describe('Bulk actions: Refresh -- staged job (2+ rows)', () => {
   // point) from refresh-only to every applyLinkedRules call site.
   test('a field bound two hops away (bound to a field that is itself bound) cascades fully after a refresh', async ({ page }) => {
     await h.gotoTracker(page);
-    await page.route('https://api.github.com/repos/acme/demo/issues/1', route => route.fulfill({
-      status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Fresh Title', labels: [], state: 'open', body: '' })
-    }));
+    // GitHub's own real fetch goes through the Tauri IPC shim now, not a
+    // plain browser fetch -- page.route can't intercept it; registered
+    // here (before the reload below) so it's active for the refresh.
+    await h.stubTauriConnectorRuntime(page, { responsesByUrlSubstring: {
+      'acme/demo/issues/1': JSON.stringify({ title: 'Fresh Title', labels: [], state: 'open', body: '' })
+    } });
     const pid = await h.activeMilestoneId(page);
     {
       const doc = await h.idbGetProjectDoc(page, pid);
@@ -857,9 +886,12 @@ test.describe('Bulk actions: Refresh -- staged job (2+ rows)', () => {
   // single-row path always has.
   test('a field bound two hops away, whose rule needs LIVE source data (not just values.*), cascades fully via a staged refresh', async ({ page }) => {
     await h.gotoTracker(page);
-    await page.route('https://api.github.com/repos/acme/demo/issues/1', route => route.fulfill({
-      status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Fresh Title', labels: [{ name: 'bug' }], state: 'open', body: '' })
-    }));
+    // GitHub's own real fetch goes through the Tauri IPC shim now, not a
+    // plain browser fetch -- page.route can't intercept it; registered
+    // here (before the reload below) so it's active for the refresh.
+    await h.stubTauriConnectorRuntime(page, { responsesByUrlSubstring: {
+      'acme/demo/issues/1': JSON.stringify({ title: 'Fresh Title', labels: [{ name: 'bug' }], state: 'open', body: '' })
+    } });
     const pid = await h.activeMilestoneId(page);
     {
       const doc = await h.idbGetProjectDoc(page, pid);
@@ -932,12 +964,13 @@ test.describe('Bulk actions: Refresh -- staged job (2+ rows)', () => {
   // header chip just vanished mid-use, indistinguishable from a bug.
   test('a refresh where nothing actually changed still surfaces a completion state, reusing the existing "nothing to merge" gate display', async ({ page }) => {
     await h.gotoTracker(page);
-    await page.route('https://api.github.com/repos/acme/demo/issues/1', route => route.fulfill({
-      status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Same 0', labels: [], state: 'open', body: '' })
-    }));
-    await page.route('https://api.github.com/repos/acme/demo/issues/2', route => route.fulfill({
-      status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Same 1', labels: [], state: 'open', body: '' })
-    }));
+    // GitHub's own real fetch goes through the Tauri IPC shim now, not a
+    // plain browser fetch -- page.route can't intercept it; registered
+    // here (before the reload below) so it's active for the refresh.
+    await h.stubTauriConnectorRuntime(page, { responsesByUrlSubstring: {
+      'acme/demo/issues/1': JSON.stringify({ title: 'Same 0', labels: [], state: 'open', body: '' }),
+      'acme/demo/issues/2': JSON.stringify({ title: 'Same 1', labels: [], state: 'open', body: '' })
+    } });
     const pid = await h.activeMilestoneId(page);
     {
       const doc = await h.idbGetProjectDoc(page, pid);
@@ -975,8 +1008,12 @@ test.describe('Bulk actions: Refresh -- staged job (2+ rows)', () => {
 
   test('a refresh where every row fails also surfaces a completion state, with the failure count visible on the chip', async ({ page }) => {
     await h.gotoTracker(page);
-    await page.route('https://api.github.com/repos/acme/demo/issues/1', route => route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ message: 'Not Found' }) }));
-    await page.route('https://api.github.com/repos/acme/demo/issues/2', route => route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ message: 'Not Found' }) }));
+    // GitHub's own real fetch goes through the Tauri IPC shim now, not a
+    // plain browser fetch -- page.route can't intercept it; registered
+    // here (before the reload below) so it's active for the refresh. No
+    // responsesByUrlSubstring entries -- the stub's own fallback is a 404
+    // for any unmatched URL, which is exactly the failure this test wants.
+    await h.stubTauriConnectorRuntime(page, {});
     const pid = await h.activeMilestoneId(page);
     {
       const doc = await h.idbGetProjectDoc(page, pid);

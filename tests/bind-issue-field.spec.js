@@ -52,7 +52,18 @@ async function setUpRemedyBoundToRelated(page) {
 }
 
 test.describe('Binding an issue-type field to another field ("copy field")', () => {
-  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+  // The demo fixture's own i1 has its title (colId "title", type:'issue',
+  // label "Issue") seeded with a real GitHub fieldRef -- setUpRemedyBoundToRelated
+  // below binds Remedy's own linkedSourceId to THAT field, and even though
+  // its rule only ever reads values.* (never source.*), computeBoundValue
+  // still gates on isRefLocallyLive(sourceRef) for ANY row-based rule
+  // regardless of whether the rule needs source data at all (see its own
+  // comment in wigwag-core.js). Since GitHub reachability now requires the
+  // real Tauri connector runtime (see BUILTIN_INTEGRATIONS/ensureBuiltinConnectors),
+  // this needs a Tauri stub even though no GitHub data is ever actually
+  // fetched here -- mockGithubApi's own addInitScript-based Tauri shim must
+  // register before the page navigates (gotoTracker) to take effect.
+  test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
 
   test('an issue-type field now shows "Set up…" like any other bindable field, not silently unbindable', async ({ page }) => {
     const id = await addField(page, 'Remedy', 'issue');
@@ -250,7 +261,6 @@ test.describe('Binding an issue-type field to another field ("copy field")', () 
   // independently-maintained link that the rule was never responsible
   // for in the first place.
   test('a hand-written-rule bound field that ALSO carries its own independently-pasted link keeps that link after an unrelated edit', async ({ page }) => {
-    await h.mockGithubApi(page);
     const remedyId = await addField(page, 'Remedy', 'issue');
     await h.openFieldEditor(page, remedyId);
     await page.locator('[data-testid=field-editor-source-select]').selectOption({ label: 'Issue' });

@@ -35,7 +35,13 @@ async function addSingleCriterionRow(page, { subject, op, operand }, thenLabel) 
 }
 
 test.describe('Local field bindings: never part of the portable object', () => {
-  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+  // "priority" below binds to "Issue" (title, GitHub-sourced) -- GitHub
+  // reachability now requires the real Tauri connector runtime (see
+  // BUILTIN_INTEGRATIONS/ensureBuiltinConnectors), so recomputing a bound
+  // value needs a Tauri stub even for a rule that only reads source.text.
+  // mockGithubApi's addInitScript-based stub must register before the
+  // page navigates (gotoTracker) to take effect.
+  test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
 
   test('binding a field via the row editor writes no new projectHistory entry, and the exported JSONL field def carries no rule/ruleRows/linkedSourceId', async ({ page }) => {
     const before = await h.readActiveMilestoneDoc(page);

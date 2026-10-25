@@ -65,7 +65,7 @@ test.describe('Single identity: breadcrumb still renders, migration labels it "P
   // fresh or migrated, with no per-identity URL default to preserve) --
   // the equivalent regression in the new mechanism would be the built-in
   // connector failing to seed at all for a fresh identity.
-  test('migration still seeds the built-in Jira connector, with its own default template macro intact, for a user who never configured anything', async ({ page }) => {
+  test('migration still seeds the built-in Jira connector for a user who never configured anything, ready for its own root URL/credential', async ({ page }) => {
     // Editing (not just seeding) requires the real Tauri connector
     // runtime -- outside it, Jira's row renders disabled with no Edit
     // affordance at all (see connected-sources-settings.spec.js). Set
@@ -77,8 +77,9 @@ test.describe('Single identity: breadcrumb still renders, migration labels it "P
     const jiraRow = page.locator('[data-testid=connected-source-row]', { hasText: 'Jira' });
     await expect(jiraRow).toBeVisible();
     await jiraRow.locator('[data-testid=btn-edit-connected-source]').click();
-    await expect(page.locator('[data-testid=connector-name-input]')).toHaveValue('Jira');
-    await expect(page.locator('[data-testid=connector-macro-textarea]')).not.toHaveValue('');
+    await expect(page.locator('[data-testid=connector-form-modal]')).toContainText('Jira');
+    await expect(page.locator('[data-testid=builtin-root-url-input]')).toHaveValue('');
+    await expect(page.locator('[data-testid=builtin-credential-input]')).toHaveValue('');
   });
 });
 

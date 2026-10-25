@@ -427,6 +427,18 @@ const GITHUB_FIXTURES = {
   'octocat/Hello-World/issues/3': { title: 'Test issue for the tracker suite', state: 'open', labels: [{ name: 'bug' }] },
 };
 
+// GitHub built-in linking now routes through the Tauri IPC
+// connected_source_fetch passthrough, not a direct browser fetch (see
+// fetchGithubData, BUILTIN_INTEGRATIONS) -- a plain page.route no longer
+// intercepts it. Serves the SAME GITHUB_FIXTURES table over that IPC
+// path (in addition to the page.route below, kept as a harmless no-op
+// safety net) so every one of this suite's many existing callers keeps
+// working without each needing its own Tauri stub. Only sets up a
+// window.__TAURI__.core.invoke if nothing else already has (checked at
+// call time inside the init script, not here) -- a test that ALSO calls
+// stubTauriConnectorRuntime/seedBuiltinConfig afterward still wins,
+// since addInitScripts apply in registration order and a later one is
+// free to replace window.__TAURI__.core wholesale.
 async function mockGithubApi(page) {
   await page.route('https://api.github.com/repos/**', async (route) => {
     const url = new URL(route.request().url());
@@ -441,27 +453,58 @@ async function mockGithubApi(page) {
       await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ message: 'Not Found' }) });
     }
   });
+  await page.addInitScript((fixtures) => {
+    window.__invokeCalls = window.__invokeCalls || [];
+    window.__TAURI__ = window.__TAURI__ || {};
+    window.__TAURI__.core = window.__TAURI__.core || {
+      invoke: (cmd, args) => {
+        window.__invokeCalls.push({ cmd, args });
+        if (cmd === 'connected_source_get_credential') return Promise.resolve('');
+        if (cmd === 'connected_source_set_credential' || cmd === 'connected_source_delete_credential') return Promise.resolve(null);
+        if (cmd === 'connected_source_fetch') {
+          const m = args.url.match(/\/repos\/([^/]+\/[^/]+\/issues\/\d+)$/);
+          const fixture = m && fixtures[m[1]];
+          if (fixture) return Promise.resolve({ status: 200, headers: {}, body: JSON.stringify(fixture) });
+          return Promise.resolve({ status: 404, headers: {}, body: JSON.stringify({ message: 'Not Found' }) });
+        }
+        // The app's own document-level click handler (componentDidMount's
+        // _onExternalLinkClick) checks window.__TAURI__.core's mere
+        // existence to decide every target="_blank" link should route
+        // through this plugin instead of the browser's native new-tab
+        // behavior -- true in the real desktop app, but also now true for
+        // any test that stubs window.__TAURI__.core for connector-IPC
+        // purposes (same global, different reason). Actually open the
+        // link here so a test clicking a GitHub/Jira/Salesforce browse
+        // link still sees a real new page/tab, same as outside Tauri.
+        if (cmd === 'plugin:opener|open_url') { window.open(args.url, '_blank'); return Promise.resolve(null); }
+        return Promise.resolve(null);
+      }
+    };
+  }, GITHUB_FIXTURES);
 }
 
-// Jira/Salesforce retired their own proxy-relay bridges in favour of the
-// in-process connector/keychain mechanism (see docs/EDITING.md,
-// ensureBuiltinConnectors) -- this replaces the old mockJiraProxy/
-// mockSalesforceProxy/setJiraProxySecret helpers. Stubs
-// window.__TAURI__.core.invoke so the built-in's own macro (whatever's
-// currently in connectedSources, defaulting to CONNECTOR_TEMPLATES'
-// seeded shape) resolves against canned RAW API responses -- the same
-// shape the macro itself expects (Jira's REST `{fields:{...}}`,
-// Salesforce's flat sobject record), not the old proxy's already-
-// normalized shape -- instead of a real network call.
-// fixturesByUrlSubstring is keyed by any substring of the macro's own
-// fetch URL (a Jira key, a Salesforce record Id, ...), so callers don't
-// need to know the exact placeholder-domain template URL, just the id
-// they pasted. failUrlSubstrings simulates an unreachable/erroring
-// system for matching urls. Must be called BEFORE navigation
-// (addInitScript) so isTauriConnectorRuntime() and any dispatch during
-// boot already see it.
-async function stubTauriConnectorRuntime(page, { fixturesByUrlSubstring = {}, credential = '', failUrlSubstrings = [] } = {}) {
-  await page.addInitScript(({ fixturesByUrlSubstring, credential, failUrlSubstrings }) => {
+// GitHub/Jira/Salesforce built-in linking is now a real, hardcoded
+// integration (bridges/*.js ported in-process -- see fetchJiraData/
+// fetchSalesforceData/fetchGithubData, ensureBuiltinConnectors/
+// BUILTIN_INTEGRATIONS), not a macro -- this replaces the old
+// mockJiraProxy/mockSalesforceProxy/setJiraProxySecret helpers (and an
+// earlier, short-lived macro-based version of this same helper). Stubs
+// window.__TAURI__.core.invoke so a built-in's real fetch resolves
+// against a canned RAW response body instead of a real network call.
+// responsesByUrlSubstring maps a URL substring (an id, a path segment)
+// to the EXACT raw string body connectorFetchShim's own `.text()` would
+// see -- callers JSON.stringify their own JSON fixtures explicitly (Jira/
+// GitHub) since Salesforce's SOAP login leg needs a raw XML string
+// instead, and this helper has no way to know which shape a given URL
+// expects. failUrlSubstrings simulates an unreachable/erroring system for
+// matching urls. delayMsByUrlSubstring delays a matching URL's resolution
+// (modeling a slow fetch -- withRetry's own timeout, window.__wigwagRefreshTimeoutMs,
+// still applies on top). hangUrlSubstrings never resolves at all (modeling
+// a request that gets cut off entirely -- withTimeout is what actually
+// ends it, not this). Must be called BEFORE navigation (addInitScript) so
+// isTauriConnectorRuntime() and any dispatch during boot already see it.
+async function stubTauriConnectorRuntime(page, { responsesByUrlSubstring = {}, credential = '', failUrlSubstrings = [], delayMsByUrlSubstring = {}, hangUrlSubstrings = [] } = {}) {
+  await page.addInitScript(({ responsesByUrlSubstring, credential, failUrlSubstrings, delayMsByUrlSubstring, hangUrlSubstrings }) => {
     window.__invokeCalls = window.__invokeCalls || [];
     window.__TAURI__ = window.__TAURI__ || {};
     window.__TAURI__.core = {
@@ -471,15 +514,23 @@ async function stubTauriConnectorRuntime(page, { fixturesByUrlSubstring = {}, cr
         if (cmd === 'connected_source_set_credential' || cmd === 'connected_source_delete_credential') return Promise.resolve(null);
         if (cmd === 'connected_source_fetch') {
           const url = args.url;
+          if (hangUrlSubstrings.some(s => url.includes(s))) return new Promise(() => {});
           if (failUrlSubstrings.some(s => url.includes(s))) return Promise.reject(new Error('network down'));
-          const match = Object.keys(fixturesByUrlSubstring).find(k => url.includes(k));
-          if (match) return Promise.resolve({ status: 200, headers: {}, body: JSON.stringify(fixturesByUrlSubstring[match]) });
-          return Promise.resolve({ status: 404, headers: {}, body: JSON.stringify({ error: 'not found' }) });
+          const match = Object.keys(responsesByUrlSubstring).find(k => url.includes(k));
+          const resp = match ? { status: 200, headers: {}, body: responsesByUrlSubstring[match] } : { status: 404, headers: {}, body: JSON.stringify({ error: 'not found' }) };
+          const delayKey = Object.keys(delayMsByUrlSubstring).find(k => url.includes(k));
+          if (delayKey) return new Promise(r => setTimeout(() => r(resp), delayMsByUrlSubstring[delayKey]));
+          return Promise.resolve(resp);
         }
+        // See mockGithubApi's own comment on this same command -- the
+        // app's document-level click handler routes every target="_blank"
+        // click through here whenever window.__TAURI__.core merely
+        // exists, which this stub now makes true outside Tauri too.
+        if (cmd === 'plugin:opener|open_url') { window.open(args.url, '_blank'); return Promise.resolve(null); }
         return Promise.resolve(null);
       }
     };
-  }, { fixturesByUrlSubstring, credential, failUrlSubstrings });
+  }, { responsesByUrlSubstring, credential, failUrlSubstrings, delayMsByUrlSubstring, hangUrlSubstrings });
 }
 
 // Counts connected_source_fetch invoke calls matching a URL substring --
@@ -495,8 +546,8 @@ async function connectorFetchCallCount(page, urlSubstring) {
 // change the mocked behavior (e.g. start failing) partway through,
 // AFTER the page has already booted once and addInitScript's one-time,
 // next-navigation-only registration is no help.
-async function overrideConnectorFetchResponses(page, { fixturesByUrlSubstring = {}, credential = '', failUrlSubstrings = [] } = {}) {
-  await page.evaluate(({ fixturesByUrlSubstring, credential, failUrlSubstrings }) => {
+async function overrideConnectorFetchResponses(page, { responsesByUrlSubstring = {}, credential = '', failUrlSubstrings = [] } = {}) {
+  await page.evaluate(({ responsesByUrlSubstring, credential, failUrlSubstrings }) => {
     window.__invokeCalls = window.__invokeCalls || [];
     window.__TAURI__ = window.__TAURI__ || {};
     window.__TAURI__.core = {
@@ -507,14 +558,41 @@ async function overrideConnectorFetchResponses(page, { fixturesByUrlSubstring = 
         if (cmd === 'connected_source_fetch') {
           const url = args.url;
           if (failUrlSubstrings.some(s => url.includes(s))) return Promise.reject(new Error('network down'));
-          const match = Object.keys(fixturesByUrlSubstring).find(k => url.includes(k));
-          if (match) return Promise.resolve({ status: 200, headers: {}, body: JSON.stringify(fixturesByUrlSubstring[match]) });
+          const match = Object.keys(responsesByUrlSubstring).find(k => url.includes(k));
+          if (match) return Promise.resolve({ status: 200, headers: {}, body: responsesByUrlSubstring[match] });
           return Promise.resolve({ status: 404, headers: {}, body: JSON.stringify({ error: 'not found' }) });
         }
+        // See mockGithubApi's own comment on this same command -- the
+        // app's document-level click handler routes every target="_blank"
+        // click through here whenever window.__TAURI__.core merely
+        // exists, which this stub now makes true outside Tauri too.
+        if (cmd === 'plugin:opener|open_url') { window.open(args.url, '_blank'); return Promise.resolve(null); }
         return Promise.resolve(null);
       }
     };
-  }, { fixturesByUrlSubstring, credential, failUrlSubstrings });
+  }, { responsesByUrlSubstring, credential, failUrlSubstrings });
+}
+
+// Pre-seeds a built-in's own real config (rootUrl/username/
+// credentialConfigured) directly into connectedSources -- same
+// established "seed via localStorage directly" convention
+// connected-sources.spec.js's own seedConnector uses for custom
+// connectors, so a test doesn't need to click through the Settings UI
+// just to configure a built-in before exercising dispatch. Must be
+// called BEFORE navigation (addInitScript) -- ensureBuiltinConnectors'
+// own idempotent seeding leaves an already-present entry's config alone,
+// so whatever's seeded here survives boot unchanged.
+async function seedBuiltinConfig(page, kind, { rootUrl = '', username = '', credentialConfigured = false } = {}) {
+  await page.addInitScript(({ kind, rootUrl, username, credentialConfigured }) => {
+    const id = '__builtin_' + kind;
+    const names = { github: 'GitHub', jira: 'Jira', salesforce: 'Salesforce' };
+    const raw = localStorage.getItem('git_native_tracker_connected_sources_v1');
+    const parsed = raw ? JSON.parse(raw) : { connectors: [] };
+    const idx = parsed.connectors.findIndex(c => c.id === id);
+    const record = { id, key: kind, name: names[kind], builtin: true, rootUrl, username, credentialConfigured };
+    if (idx === -1) parsed.connectors.push(record); else parsed.connectors[idx] = { ...parsed.connectors[idx], ...record };
+    localStorage.setItem('git_native_tracker_connected_sources_v1', JSON.stringify(parsed));
+  }, { kind, rootUrl, username, credentialConfigured });
 }
 
 // Settings lives behind a per-identity cog in the switcher's own left
@@ -1206,6 +1284,7 @@ module.exports = {
   stubTauriConnectorRuntime,
   connectorFetchCallCount,
   overrideConnectorFetchResponses,
+  seedBuiltinConfig,
   openSettings,
   openSettingsSection,
   openProjectPanel,

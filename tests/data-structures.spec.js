@@ -824,7 +824,13 @@ test.describe('Import / Apply-update: shared project-identity warnings', () => {
 });
 
 test.describe('Merge: union history, auto-resolve, lightweight notice', () => {
-  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+  // Row 1's Type field is bound to Title (GitHub-sourced) -- GitHub
+  // reachability now requires the real Tauri connector runtime (see
+  // BUILTIN_INTEGRATIONS/ensureBuiltinConnectors), so recomputing that
+  // bound value needs a Tauri stub even when no GitHub data is actually
+  // refetched. mockGithubApi's addInitScript-based stub must register
+  // before the page navigates (gotoTracker) to take effect.
+  test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
 
   // Builds an "incoming" fixture by taking a real export of the current
   // working copy and grafting on a new authored history entry for one

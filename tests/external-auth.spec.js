@@ -1,23 +1,31 @@
-// Spec section: Linking to private GitHub repos & Jira
-//   - GitHub: a personal access token, sent straight to api.github.com
-//     (which allows authenticated cross-origin requests) — no proxy needed.
-//   - Jira: Jira doesn't allow direct browser CORS requests, so a small
-//     local proxy (jira-proxy.js) relays requests; the app just needs to
-//     know where it's listening.
-//   - Both credentials must never leak into the tracker's own exportable
-//     state (persisted localStorage blob, "View source", JSONL export).
+// Spec section: Linking to private GitHub repos, Jira, and Salesforce
+//   - All 3 built-in systems are real, hardcoded integrations (the actual
+//     bridges/jira-proxy.js, salesforce-proxy.js, github-data-proxy.js
+//     logic, ported in-process -- see fetchJiraData/fetchSalesforceData/
+//     fetchGithubData, BUILTIN_INTEGRATIONS, src/wigwag-app.js), not a
+//     user-editable macro, and all 3 are Tauri-only now: the credential
+//     lives in the OS keychain, which only Tauri can reach, and the
+//     fetch itself goes through the Tauri IPC connected_source_fetch
+//     passthrough (no CORS restriction), never a direct browser fetch.
+//   - GitHub: root URL (api.github.com by default, or a GitHub
+//     Enterprise Server's own API base) + an optional personal access
+//     token (anonymous access still works, rate-limited).
+//   - Jira: root URL + either an email (Cloud, Basic auth) or nothing
+//     (Server/Data Center, Bearer PAT) + a token/PAT credential.
+//   - Salesforce: a login URL + username + password(+security token),
+//     via the classic SOAP login() call -- no Connected App needed.
+//   - All 3 credentials must never leak into the tracker's own
+//     exportable state (persisted localStorage blob, "View source",
+//     JSONL export) -- they live in the OS keychain exclusively.
 const { test, expect } = require('@playwright/test');
 const h = require('./helpers');
 
-test.describe('GitHub token', () => {
-  test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
-
-  test('no token configured -> the GitHub request carries no Authorization header', async ({ page }) => {
-    let authHeader = 'not captured';
-    await page.route('https://api.github.com/repos/**', async (route) => {
-      authHeader = route.request().headers()['authorization'] || null;
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'x', labels: [] }) });
+test.describe('GitHub built-in linking', () => {
+  test('no credential configured -> the request carries no Authorization header (anonymous access still works)', async ({ page }) => {
+    await h.stubTauriConnectorRuntime(page, {
+      responsesByUrlSubstring: { 'Hello-World/issues/1': JSON.stringify({ title: 'x', labels: [] }) }
     });
+    await h.gotoTracker(page);
     // 'linked' ("Related") is type:'issue' -- paste-to-resolve linking is
     // gated to that type now, so this generic "some editable field" stand-in
     // can no longer be 'mitigation' (type:'text').
@@ -25,22 +33,33 @@ test.describe('GitHub token', () => {
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/1');
     await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'linked');
-    expect(authHeader).toBeNull();
+
+    const fetchCall = (await page.evaluate(() => window.__invokeCalls)).find(c => c.cmd === 'connected_source_fetch');
+    expect(fetchCall).toBeTruthy();
+    expect(fetchCall.args.headers.Authorization).toBeUndefined();
   });
 
-  test('a configured token is sent as a Bearer Authorization header', async ({ page }) => {
-    let authHeader = null;
-    await page.route('https://api.github.com/repos/**', async (route) => {
-      authHeader = route.request().headers()['authorization'] || null;
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ title: 'Private issue', labels: [] }) });
+  test('a configured credential is sent as a Bearer Authorization header', async ({ page }) => {
+    await h.stubTauriConnectorRuntime(page, {
+      responsesByUrlSubstring: { 'Hello-World/issues/1': JSON.stringify({ title: 'Private issue', labels: [] }) },
+      credential: 'ghp_testtoken123'
     });
-    await h.setGithubToken(page, 'ghp_testtoken123');
+    await h.gotoTracker(page);
     await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/1');
     await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'linked');
-    expect(authHeader).toBe('Bearer ghp_testtoken123');
+
+    const fetchCall = (await page.evaluate(() => window.__invokeCalls)).find(c => c.cmd === 'connected_source_fetch');
+    expect(fetchCall.args.headers.Authorization).toBe('Bearer ghp_testtoken123');
   });
+});
+
+// githubToken (Settings > Remote project store) is a SEPARATE concern
+// from built-in GitHub issue-linking's own keychain credential above --
+// it's the repo-sync feature's own token, untouched by any of this.
+test.describe('GitHub repo-sync token (unrelated to built-in issue linking)', () => {
+  test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
 
   test('the token is stored separately and never appears in the tracker\'s own persisted state or "View source"', async ({ page }) => {
     await h.setGithubToken(page, 'ghp_shouldNeverLeak');
@@ -64,15 +83,11 @@ test.describe('GitHub token', () => {
   });
 });
 
-// Jira's REST shape, as the built-in connector's own macro expects it
-// (CONNECTOR_TEMPLATES.jira, src/wigwag-app.js) -- {fields:{...}}, not
-// the old jira-proxy.js's already-normalized {title, description,
-// labels, browseUrl} shape. The macro derives the browse url itself from
-// a fixed placeholder domain (your-domain.atlassian.net) rather than
-// from anything the fixture controls -- a real user swaps that domain in
-// Settings once, same as any other template default.
+// Jira's REST shape, as fetchJiraData expects it (CONNECTOR_TEMPLATES'
+// retired macro equivalent is now this real, hardcoded function) --
+// {fields:{...}}, same shape jira-proxy.js itself always fetched.
 function jiraRawFixture(key, overrides) {
-  return Object.assign({
+  return JSON.stringify({
     key,
     fields: Object.assign({
       summary: 'Mocked Jira ticket title', description: 'A mocked description.',
@@ -81,20 +96,23 @@ function jiraRawFixture(key, overrides) {
       created: '', updated: '', duedate: '', resolution: null, resolutiondate: '',
       components: [], fixVersions: [], project: null
     }, overrides)
-  }, {});
+  });
 }
-const JIRA_BROWSE_URL = (key) => 'https://your-domain.atlassian.net/browse/' + key;
+const JIRA_ROOT = 'https://mock.atlassian.net';
+const JIRA_BROWSE_URL = (key) => JIRA_ROOT + '/browse/' + key;
 
 test.describe('Jira linking', () => {
   test.beforeEach(async ({ page }) => {
     await h.mockGithubApi(page);
+    await h.seedBuiltinConfig(page, 'jira', { rootUrl: JIRA_ROOT, credentialConfigured: true });
     await h.stubTauriConnectorRuntime(page, {
-      fixturesByUrlSubstring: { 'TRK-999': jiraRawFixture('TRK-999') }
+      responsesByUrlSubstring: { 'TRK-999': jiraRawFixture('TRK-999') },
+      credential: 'pat-token'
     });
     await h.gotoTracker(page);
   });
 
-  test('typing a Jira key into an issue-type field resolves it via the built-in connector', async ({ page }) => {
+  test('typing a Jira key into an issue-type field resolves it via the built-in integration', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'TRK-999');
     await page.keyboard.press('Tab');
@@ -104,14 +122,15 @@ test.describe('Jira linking', () => {
     await expect(cell).toContainText('Mocked Jira ticket title');
     const anchor = cell.locator('a');
     await expect(anchor).toHaveAttribute('href', JIRA_BROWSE_URL('TRK-999'));
+    // The real Jira logo (fill #2684FF), not a generic connector badge.
+    expect(await anchor.locator('svg').innerHTML()).toContain('#2684FF');
   });
 
   // Regression: once a field resolves to a Jira issue, its stored value
   // becomes the resolved title text -- the key the user actually typed
   // only survives as the small ref-chip's fieldRef metadata, which the
   // keyword filter never checked, so searching for the key itself found
-  // nothing. (fieldRefSearchText's own 'connector' branch was the actual
-  // fix, this session -- see wigwag-core.js.)
+  // nothing.
   test('the keyword filter matches a linked field\'s Jira key, not just the resolved title text', async ({ page }) => {
     await h.clickTitleToEdit(page, 3);
     await h.pasteText(page, 'TRK-999');
@@ -140,17 +159,16 @@ test.describe('Jira linking', () => {
     await expect(anchor).toHaveAttribute('href', JIRA_BROWSE_URL('TRK-999'));
 
     const doc = await h.readActiveMilestoneDoc(page);
-    expect(h.latestFieldRef(doc.issues.find(i => i.num === 3), 'title')).toMatchObject({ system: 'connector', connectorId: '__builtin_jira', connectorKey: 'jira', matchedId: 'TRK-999' });
+    expect(h.latestFieldRef(doc.issues.find(i => i.num === 3), 'title')).toMatchObject({ system: 'jira', key: 'TRK-999' });
   });
 
   // Tracker #112 (b564316d): the persisted fieldRef is display-only now --
-  // title/url/state (plus the connector/matchedId identity) is all the pill
-  // ever renders. labels/description/etc are used only in-memory at fetch/
-  // refresh time (to recompute any bound field against real data) and
-  // never reach persisted state -- data minimization, so a link can never
-  // accidentally ship unrelated bridged-source material into the shared,
-  // git-synced file.
-  test('the linked field is stored with a system:"connector" tag carrying only display fields, not the full resolved shape', async ({ page }) => {
+  // key/browseUrl is all the pill ever renders. labels/description/etc are
+  // used only in-memory at fetch/refresh time (to recompute any bound
+  // field against real data) and never reach persisted state -- data
+  // minimization, so a link can never accidentally ship unrelated
+  // bridged-source material into the shared, git-synced file.
+  test('the linked field is stored with a system:"jira" tag carrying only display fields, not the full resolved shape', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'TRK-999');
     await page.keyboard.press('Tab');
@@ -158,7 +176,7 @@ test.describe('Jira linking', () => {
 
     const doc = await h.readActiveMilestoneDoc(page);
     const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'linked');
-    expect(ref).toMatchObject({ system: 'connector', connectorId: '__builtin_jira', connectorKey: 'jira', matchedId: 'TRK-999', url: JIRA_BROWSE_URL('TRK-999') });
+    expect(ref).toMatchObject({ system: 'jira', key: 'TRK-999', browseUrl: JIRA_BROWSE_URL('TRK-999') });
     expect(ref).not.toHaveProperty('labels');
     expect(ref).not.toHaveProperty('description');
   });
@@ -208,7 +226,7 @@ test.describe('Jira linking', () => {
     await expect(h.fieldCell(page, 3, 'linked')).toContainText('Mocked Jira ticket title');
     const doc = await h.readActiveMilestoneDoc(page);
     const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'linked');
-    expect(ref).toMatchObject({ system: 'connector', connectorId: '__builtin_jira', matchedId: 'TRK-999' }); // unchanged, not clobbered with an empty fallback fieldRef
+    expect(ref).toMatchObject({ system: 'jira', key: 'TRK-999' }); // unchanged, not clobbered with an empty fallback fieldRef
     const history = await h.getHistoryEntriesFor(page, 'i3');
     expect(history.some(t => t.toLowerCase().includes('could not fetch from jira'))).toBe(true);
   });
@@ -243,19 +261,22 @@ test.describe('Jira linking', () => {
   });
 });
 
-// Jira/Salesforce linking requires the real Tauri connector runtime, same
-// CORS-driven constraint custom connectors already have (no browser
-// equivalent is worth building, so no secret/credential makes a browser
-// context work) -- jiraKeyMatch/salesforceUrlMatch are gated on
-// isTauriConnectorRuntime(), not a configured credential, so a Jira/
-// Salesforce-shaped paste outside Tauri is left exactly as if the string
-// never looked like a Jira/Salesforce id at all.
-test.describe('Jira/Salesforce linking, outside the real app (no Tauri connector runtime)', () => {
+// Jira/Salesforce linking requires the real Tauri connector runtime AND
+// the built-in actually configured (a real root URL, plus a real
+// credential for Jira/Salesforce specifically -- see
+// builtinConfigured()) -- jiraKeyMatch/salesforceUrlMatch are gated on
+// both, so an un-set-up built-in is left exactly as if the string never
+// looked like a Jira/Salesforce id at all (falling through to a matching
+// custom connector, or plain text).
+test.describe('Jira/Salesforce linking, not configured', () => {
   test.beforeEach(async ({ page }) => {
+    await h.stubTauriConnectorRuntime(page, {
+      responsesByUrlSubstring: { 'TRK-999': jiraRawFixture('TRK-999') }
+    });
     await h.gotoTracker(page);
   });
 
-  test('a Jira-shaped paste is kept as plain text, never resolved, outside Tauri', async ({ page }) => {
+  test('a Jira-shaped paste is kept as plain text when no root URL/credential is configured', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'TRK-999');
     await page.keyboard.press('Tab');
@@ -268,10 +289,10 @@ test.describe('Jira/Salesforce linking, outside the real app (no Tauri connector
 
     const doc = await h.readActiveMilestoneDoc(page);
     const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'linked');
-    expect(ref?.system).not.toBe('connector');
+    expect(ref?.system).not.toBe('jira');
   });
 
-  test('a full Jira browse URL is also kept as plain text outside Tauri', async ({ page }) => {
+  test('a full Jira browse URL is also kept as plain text when unconfigured', async ({ page }) => {
     await h.clickTitleToEdit(page, 3);
     await h.pasteText(page, 'https://mock.atlassian.net/browse/TRK-999');
     await page.keyboard.press('Tab');
@@ -281,49 +302,39 @@ test.describe('Jira/Salesforce linking, outside the real app (no Tauri connector
     await expect(cell).not.toContainText('Mocked Jira ticket title');
     const doc = await h.readActiveMilestoneDoc(page);
     const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'title');
-    expect(ref?.system).not.toBe('connector');
-  });
-
-  test('a Salesforce-shaped paste is kept as plain text, never resolved, outside Tauri', async ({ page }) => {
-    const sfUrl = 'https://acme.lightning.force.com/lightning/r/006Nz00000jD3mCIAS/view';
-    await h.clickFieldToEdit(page, 3, 'linked');
-    await h.pasteText(page, sfUrl);
-    await page.keyboard.press('Tab');
-    await page.waitForTimeout(500);
-
-    const doc = await h.readActiveMilestoneDoc(page);
-    const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'linked');
-    expect(ref?.system).not.toBe('connector');
+    expect(ref?.system).not.toBe('jira');
   });
 });
 
 // Live-reported (Tom), before the built-in retirement: a field originally
-// linked via the built-in Jira connector, then migrated to a matching
-// custom connector, kept refreshing through the dead built-in forever.
-// That self-healing migration-on-refresh special case is retired along
-// with the proxy mechanism it existed to work around: refreshField now
-// ALWAYS redirects a system:'jira'/'salesforce' ref through the fixed
-// __builtin_jira/__builtin_salesforce connector entry, unconditionally --
-// no custom-connector pattern-matching fallback, no ambiguity. A matching
-// custom connector is simply never consulted for an old-shaped ref any
-// more, by design (deterministic target, not "whichever currently
-// matches").
-test.describe('Jira linking: refreshing a legacy system:"jira" ref', () => {
+// linked via the built-in Jira connector, then "replaced" by disabling it
+// (clearing its root URL/credential -- how Tom actually disables a
+// built-in now) and adding a custom connector matching the same key
+// shape, kept refreshing through the dead built-in forever: fieldRefs are
+// historical/immutable, so a stored ref's own system never updates itself
+// just because the matching system changed. refreshField re-resolves
+// against the currently configured custom connectors, but only when the
+// built-in itself is unconfigured -- self-healing, since a successful
+// connector fetch writes a fresh system:'connector' ref, so every refresh
+// after the first one takes the ordinary connector branch with no
+// special case needed.
+test.describe('Jira linking: refresh migrates a stale built-in ref to a now-matching connector', () => {
   test.beforeEach(async ({ page }) => {
     await h.mockGithubApi(page);
-    await h.stubTauriConnectorRuntime(page, {
-      fixturesByUrlSubstring: { 'TRK-999': jiraRawFixture('TRK-999', { summary: 'Fixed via built-in' }) }
+    await page.addInitScript(() => {
+      window.__TAURI__ = window.__TAURI__ || {};
+      window.__TAURI__.core = window.__TAURI__.core || { invoke: () => Promise.resolve(null) };
     });
     await h.gotoTracker(page);
   });
 
-  test('redirects through the built-in connector, never a matching custom connector with an overlapping pattern', async ({ page }) => {
+  test('refreshing a system:"jira" field migrates to the matching custom connector once the built-in is unconfigured', async ({ page }) => {
     await page.evaluate(() => {
       const existing = JSON.parse(localStorage.getItem('git_native_tracker_connected_sources_v1'));
       existing.connectors.push({
         id: 'conn_linear', key: 'linear', name: 'Linear', glyph: 'L', color: 'red',
         patterns: [{ regex: '[A-Z]+-\\d+', label: 'Linear key' }],
-        macro: "async () => ({ title: 'SHOULD NOT BE USED' })",
+        macro: "async () => ({ title: 'Fix the thing', state: 'In Progress', url: 'https://linear.app/x/TRK-999' })",
         credentialConfigured: true
       });
       localStorage.setItem('git_native_tracker_connected_sources_v1', JSON.stringify(existing));
@@ -340,43 +351,95 @@ test.describe('Jira linking: refreshing a legacy system:"jira" ref', () => {
     await page.reload();
     await h.waitForBootSplashGone(page);
 
+    // Jira's rootUrl is unconfigured by default in this describe block --
+    // i.e. "disabled", exactly as Tom described.
     await h.refreshRow(page, 3);
     await page.waitForTimeout(400);
 
-    await expect(h.fieldCell(page, 3, 'linked')).toContainText('Fixed via built-in');
+    await expect(h.fieldCell(page, 3, 'linked')).toContainText('Fix the thing');
     const after = await h.readActiveMilestoneDoc(page);
     const ref = h.latestFieldRef(after.issues.find(i => i.num === 3), 'linked');
-    expect(ref).toMatchObject({ system: 'connector', connectorId: '__builtin_jira', matchedId: 'TRK-999' });
+    expect(ref).toMatchObject({ system: 'connector', connectorId: 'conn_linear', matchedId: 'TRK-999' });
     const history = await h.getHistoryEntriesFor(page, i3.id);
-    expect(history.some(t => t.toLowerCase().includes('fetched from linear'))).toBe(false);
+    expect(history.some(t => t.toLowerCase().includes('fetched from linear'))).toBe(true);
+    expect(history.some(t => t.toLowerCase().includes('could not fetch from jira'))).toBe(false);
+  });
+
+  test('refreshing a still-configured Jira link is unaffected by an unrelated custom connector with an overlapping pattern', async ({ page }) => {
+    await h.seedBuiltinConfig(page, 'jira', { rootUrl: JIRA_ROOT, credentialConfigured: true });
+    // addInitScript-based (not overrideConnectorFetchResponses' live
+    // page.evaluate), since this test reloads a few lines down -- a
+    // reload wipes a live page.evaluate override, but addInitScript
+    // re-registers on every navigation including reloads.
+    await h.stubTauriConnectorRuntime(page, { responsesByUrlSubstring: { 'TRK-999': jiraRawFixture('TRK-999') }, credential: 'tok' });
+    await page.evaluate(() => {
+      const existing = JSON.parse(localStorage.getItem('git_native_tracker_connected_sources_v1'));
+      existing.connectors.push({
+        id: 'conn_linear', key: 'linear', name: 'Linear', glyph: 'L', color: 'red',
+        patterns: [{ regex: '[A-Z]+-\\d+', label: 'Linear key' }],
+        macro: "async () => ({ title: 'SHOULD NOT BE USED' })",
+        credentialConfigured: true
+      });
+      localStorage.setItem('git_native_tracker_connected_sources_v1', JSON.stringify(existing));
+    });
+    await page.reload();
+    await h.waitForBootSplashGone(page);
+
+    await h.clickFieldToEdit(page, 3, 'linked');
+    await h.pasteText(page, 'TRK-999');
+    await page.keyboard.press('Tab');
+    await h.waitForFieldResolved(page, 3, 'linked');
+    await expect(h.fieldCell(page, 3, 'linked')).toContainText('Mocked Jira ticket title');
+
+    await h.refreshRow(page, 3);
+    await page.waitForTimeout(400);
+
+    await expect(h.fieldCell(page, 3, 'linked')).toContainText('Mocked Jira ticket title');
+    const doc = await h.readActiveMilestoneDoc(page);
+    expect(h.latestFieldRef(doc.issues.find(i => i.num === 3), 'linked')).toMatchObject({ system: 'jira', key: 'TRK-999' });
   });
 });
 
 // Salesforce shares Jira's core constraint (no permissive browser CORS,
-// real auth required) so it goes through the same in-process connector
-// macro mechanism -- see ensureBuiltinConnectors/CONNECTOR_TEMPLATES.salesforce.
-// Unlike Jira, there's no bare-id paste form: a Salesforce record Id isn't
-// something anyone types from memory the way a short Jira key is, so only
-// a full record URL resolves.
+// real auth required) so it goes through the same in-process,
+// hardcoded integration -- see fetchSalesforceData/salesforceAuth's own
+// classic SOAP login() call (no Connected App needed, just username +
+// password(+security token), exactly what Tom asked for). Unlike Jira,
+// there's no bare-id paste form: a Salesforce record Id isn't something
+// anyone types from memory the way a short Jira key is, so only a full
+// record URL resolves.
 test.describe('Salesforce linking', () => {
   const SF_ID = '006Nz00000jD3mCIAS';
   const SF_URL = 'https://elementnewvectorltd.lightning.force.com/lightning/r/' + SF_ID + '/view';
-  const SF_RESOLVED_URL = 'https://your-instance.lightning.force.com/lightning/r/' + SF_ID + '/view';
-  // Salesforce's own raw sobject shape, as CONNECTOR_TEMPLATES.salesforce's
-  // macro expects it -- flat fields straight off the record, not the old
-  // salesforce-proxy.js's already-normalized {id, objectType, name, ...}.
-  const SF_RAW_FIXTURE = {
-    Subject: 'Mocked Opportunity', Name: 'Mocked Opportunity', Status: null,
-    StageName: 'Negotiation/Review', Owner: { Name: 'Jane Rep' }, LastModifiedDate: '2026-01-01T00:00:00.000Z'
-  };
+  const SF_LOGIN_URL = 'https://login.salesforce.com';
+  const SF_INSTANCE_URL = 'https://acme.my.salesforce.com';
+  const SF_SOAP_RESPONSE = '<?xml version="1.0" encoding="UTF-8"?><soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"><soapenv:Body><loginResponse><result><sessionId>00Dxx!SESSIONID</sessionId><serverUrl>' + SF_INSTANCE_URL + '/services/Soap/u/59.0</serverUrl></result></loginResponse></soapenv:Body></soapenv:Envelope>';
+  function sfRecordFixture(overrides) {
+    return JSON.stringify({
+      apiName: 'Opportunity',
+      fields: Object.assign({ Name: { value: 'Mocked Opportunity' }, StageName: { value: 'Negotiation/Review' }, Owner: { displayValue: 'Jane Rep' } }, overrides),
+      lastModifiedDate: '2026-01-01T00:00:00.000Z'
+    });
+  }
+  const SF_RECORD_URL = SF_INSTANCE_URL + '/lightning/r/Opportunity/' + SF_ID + '/view';
 
   test.beforeEach(async ({ page }) => {
     await h.mockGithubApi(page);
-    await h.stubTauriConnectorRuntime(page, { fixturesByUrlSubstring: { [SF_ID]: SF_RAW_FIXTURE } });
+    await h.seedBuiltinConfig(page, 'salesforce', { rootUrl: SF_LOGIN_URL, username: 'tom@acme.com', credentialConfigured: true });
+    await h.stubTauriConnectorRuntime(page, {
+      responsesByUrlSubstring: {
+        '/services/Soap/': SF_SOAP_RESPONSE,
+        ['/ui-api/records/' + SF_ID]: sfRecordFixture(),
+        // "source.salesforce is null unless..." pastes a GitHub URL as the
+        // non-Salesforce case -- GitHub now also routes through Tauri IPC.
+        'Hello-World/issues/3': JSON.stringify({ title: 'Some GitHub issue', labels: [] })
+      },
+      credential: 'hunter2SECTOKEN'
+    });
     await h.gotoTracker(page);
   });
 
-  test('pasting a Salesforce record link resolves it via the built-in connector', async ({ page }) => {
+  test('pasting a Salesforce record link resolves it via the SOAP login + record fetch', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, SF_URL);
     await page.keyboard.press('Tab');
@@ -385,7 +448,11 @@ test.describe('Salesforce linking', () => {
     const cell = h.fieldCell(page, 3, 'linked');
     await expect(cell).toContainText('Mocked Opportunity');
     const anchor = cell.locator('a');
-    await expect(anchor).toHaveAttribute('href', SF_RESOLVED_URL);
+    await expect(anchor).toHaveAttribute('href', SF_RECORD_URL);
+    expect(await anchor.locator('svg').innerHTML()).toContain('#00A1E0');
+
+    const soapCall = (await page.evaluate(() => window.__invokeCalls)).find(c => c.cmd === 'connected_source_fetch' && c.args.url.includes('/services/Soap/'));
+    expect(soapCall.args.body).toContain('tom@acme.com');
   });
 
   // Tracker #112 (b564316d): same data-minimization change as Jira above --
@@ -394,7 +461,7 @@ test.describe('Salesforce linking', () => {
   // persisted. This matters even more for Salesforce, where "fields" could
   // otherwise ship an entire record's worth of admin-configured data
   // (e.g. revenue figures) into the shared file just because a link exists.
-  test('the linked field is stored with a system:"connector" tag carrying only display fields, not the full resolved shape', async ({ page }) => {
+  test('the linked field is stored with a system:"salesforce" tag carrying only display fields, not the full resolved shape', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, SF_URL);
     await page.keyboard.press('Tab');
@@ -402,7 +469,7 @@ test.describe('Salesforce linking', () => {
 
     const doc = await h.readActiveMilestoneDoc(page);
     const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'linked');
-    expect(ref).toMatchObject({ system: 'connector', connectorId: '__builtin_salesforce', connectorKey: 'salesforce', matchedId: SF_ID, url: SF_RESOLVED_URL });
+    expect(ref).toMatchObject({ system: 'salesforce', id: SF_ID, name: 'Mocked Opportunity', url: SF_RECORD_URL });
     expect(ref).not.toHaveProperty('objectType');
     expect(ref).not.toHaveProperty('status');
     expect(ref).not.toHaveProperty('fields');
@@ -414,15 +481,15 @@ test.describe('Salesforce linking', () => {
     await page.keyboard.press('Tab');
     await h.waitForFieldResolved(page, 3, 'linked');
 
-    const beforeCount = await h.connectorFetchCallCount(page, SF_ID);
+    const beforeCount = await h.connectorFetchCallCount(page, '/ui-api/records/');
     await h.refreshRow(page, 3);
     await page.waitForTimeout(500);
-    const afterCount = await h.connectorFetchCallCount(page, SF_ID);
+    const afterCount = await h.connectorFetchCallCount(page, '/ui-api/records/');
     expect(afterCount).toBeGreaterThan(beforeCount);
   });
 
   test('an unreachable Salesforce fails gracefully — no crash, plain text kept, history records the error', async ({ page }) => {
-    await h.overrideConnectorFetchResponses(page, { failUrlSubstrings: [SF_ID] });
+    await h.overrideConnectorFetchResponses(page, { failUrlSubstrings: ['/services/Soap/'] });
     await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, SF_URL);
     await page.keyboard.press('Tab');
@@ -444,7 +511,7 @@ test.describe('Salesforce linking', () => {
     await h.waitForFieldResolved(page, 3, 'linked');
 
     await h.openFieldEditor(page, 'type');
-    await h.setBoundSourceAndRule(page, 'Related', 'source.salesforce.objectType === "Case" ? "bug" : "chore"');
+    await h.setBoundSourceAndRule(page, 'Related', 'source.salesforce.objectType === "Opportunity" ? "bug" : "chore"');
     await expect(h.fieldCell(page, 3, 'type')).not.toHaveText(/Bug|Enhancement/);
 
     await h.refreshRow(page, 3);
@@ -470,13 +537,23 @@ test.describe('Salesforce linking', () => {
     const row3 = page.locator('[data-testid=rule-preview-row]').nth(2);
     await expect(row3).toContainText('no-sf');
   });
+
+  test('a saved Salesforce built-in config survives a page reload, shown in its own real editor', async ({ page }) => {
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+    await h.openSettingsSection(page, 'connectedDataSources');
+    await page.locator('[data-testid=connected-source-row]', { hasText: 'Salesforce' }).locator('[data-testid=btn-edit-connected-source]').click();
+    await expect(page.locator('[data-testid=builtin-root-url-input]')).toHaveValue(SF_LOGIN_URL);
+    await expect(page.locator('[data-testid=builtin-username-input]')).toHaveValue('tom@acme.com');
+  });
 });
 
 test.describe('Jira linking: expanded field set', () => {
   test.beforeEach(async ({ page }) => {
     await h.mockGithubApi(page);
+    await h.seedBuiltinConfig(page, 'jira', { rootUrl: JIRA_ROOT, credentialConfigured: true });
     await h.stubTauriConnectorRuntime(page, {
-      fixturesByUrlSubstring: {
+      responsesByUrlSubstring: {
         'TRK-999': jiraRawFixture('TRK-999', {
           summary: 'Rich Jira ticket', description: 'A rich description.',
           status: { name: 'In Progress', statusCategory: { key: 'indeterminate' } },
@@ -484,8 +561,13 @@ test.describe('Jira linking: expanded field set', () => {
           assignee: { displayName: 'Priya Sharma' }, reporter: { displayName: 'Jordan Lee' },
           created: '2026-01-01T00:00:00.000Z', updated: '2026-02-01T00:00:00.000Z', duedate: '2026-03-01',
           components: [{ name: 'backend' }, { name: 'api' }], fixVersions: [{ name: 'v2.0' }], project: { key: 'TRK' }
-        })
-      }
+        }),
+        // "source.jira / source.github are null..." pastes a GitHub URL
+        // as the non-Jira case first -- GitHub now also routes through
+        // Tauri IPC.
+        'Hello-World/issues/3': JSON.stringify({ title: 'Some GitHub issue', labels: [] })
+      },
+      credential: 'pat-token'
     });
     await h.gotoTracker(page);
   });
@@ -503,8 +585,8 @@ test.describe('Jira linking: expanded field set', () => {
 
     const doc = await h.readActiveMilestoneDoc(page);
     const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'linked');
-    expect(ref).toMatchObject({ system: 'connector', connectorId: '__builtin_jira', matchedId: 'TRK-999' });
-    for (const key of ['status', 'statusCategory', 'issueType', 'priority', 'assignee', 'reporter', 'dueDate', 'components', 'fixVersions', 'project', 'description', 'extra']) {
+    expect(ref).toMatchObject({ system: 'jira', key: 'TRK-999' });
+    for (const key of ['status', 'statusCategory', 'issueType', 'priority', 'assignee', 'reporter', 'dueDate', 'components', 'fixVersions', 'project', 'description', 'labels']) {
       expect(ref).not.toHaveProperty(key);
     }
   });
@@ -609,12 +691,13 @@ test.describe('Jira linking: expanded field set', () => {
   // refresh time -- confirmed below via a rule that reads a field this
   // old-shaped response never sends at all.
   test('an old-shaped fixture missing the new fields still resolves cleanly (backward compatible)', async ({ page }) => {
-    // A connector someone hasn't touched since this change only ever sends
-    // a bare-minimum fields object -- confirm a rule reading a field the
-    // macro always maps to empty defaults for (status, when the raw
-    // response's own status.name is missing) degrades cleanly, not a crash.
+    // A deployment someone hasn't touched since this change only ever
+    // sends a bare-minimum fields object -- confirm a rule reading a
+    // field the real response simply never set (status) degrades to an
+    // empty default, not a crash.
     await h.overrideConnectorFetchResponses(page, {
-      fixturesByUrlSubstring: { 'TRK-1000': { key: 'TRK-1000', fields: { summary: 'Old-shaped ticket', status: { name: '' } } } }
+      responsesByUrlSubstring: { 'TRK-1000': JSON.stringify({ key: 'TRK-1000', fields: { summary: 'Old-shaped ticket', status: { name: '' } } }) },
+      credential: 'pat-token'
     });
     await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'TRK-1000');
@@ -623,7 +706,7 @@ test.describe('Jira linking: expanded field set', () => {
 
     const doc = await h.readActiveMilestoneDoc(page);
     const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'linked');
-    expect(ref.matchedId).toBe('TRK-1000');
+    expect(ref.key).toBe('TRK-1000');
     expect(ref).not.toHaveProperty('status'); // display-only shape -- never persisted regardless of API response
 
     await h.openFieldEditor(page, 'type');

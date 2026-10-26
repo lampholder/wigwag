@@ -55,7 +55,7 @@ test.describe('GitHub built-in linking', () => {
   });
 });
 
-// githubToken (Settings > Remote project store) is a SEPARATE concern
+// githubToken (Settings > Project sync) is a SEPARATE concern
 // from built-in GitHub issue-linking's own keychain credential above --
 // it's the repo-sync feature's own token, untouched by any of this.
 test.describe('GitHub repo-sync token (unrelated to built-in issue linking)', () => {

@@ -779,7 +779,7 @@ test.describe('M8: settings', () => {
     await page.waitForTimeout(300);
     const rows = page.locator('[data-testid=mobile-settings-row]');
     await expect(rows).toHaveCount(4);
-    await expect(rows).toContainText(['Identity', 'Connected data sources', 'Remote project store', 'Notifications']);
+    await expect(rows).toContainText(['Identity', 'Context connectors', 'Project sync', 'Notifications']);
 
     await rows.filter({ hasText: 'Identity' }).click();
     await page.waitForTimeout(300);
@@ -804,12 +804,12 @@ test.describe('M8: settings', () => {
     await expect(inputs.first()).toHaveValue('Personal');
   });
 
-  test('Connected data sources, Remote project store, and Notifications pages all render without error', async ({ page }) => {
+  test('Context connectors, Project sync, and Notifications pages all render without error', async ({ page }) => {
     await page.locator('[data-testid=btn-overflow]').click();
     await page.waitForTimeout(150);
     await page.locator('[data-testid=mobile-overflow-settings]').click();
     await page.waitForTimeout(300);
-    for (const label of ['Connected data sources', 'Remote project store', 'Notifications']) {
+    for (const label of ['Context connectors', 'Project sync', 'Notifications']) {
       await page.locator('[data-testid=mobile-settings-row]').filter({ hasText: label }).click();
       await page.waitForTimeout(300);
       await expect(page.locator('[data-testid=mobile-settings-page]')).toBeVisible();

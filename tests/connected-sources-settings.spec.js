@@ -1,4 +1,4 @@
-// Connected Sources: the Settings -> Connected data sources UI itself --
+// Connected Sources: the Settings -> Context connectors UI itself --
 // the add/edit form (Identity/Credential/Patterns/Macro/Test panels) for
 // custom connectors, the built-in credential modal for GitHub/Jira/
 // Salesforce, and the combined list. See
@@ -40,28 +40,40 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
   // the in-process keychain mechanism, Tauri-only (same CORS/keychain
   // constraint custom connectors already have) -- see
   // ensureBuiltinConnectors, BUILTIN_INTEGRATIONS, docs/EDITING.md.
-  test('outside Tauri, all 3 built-ins still show (not hidden), all disabled with a note, and there\'s no "+ Add source" affordance', async ({ page }) => {
+  // GitHub is the one built-in that isn't Tauri-gated -- api.github.com
+  // sends CORS headers permitting a direct, anonymous browser fetch
+  // (same reach it always had pre-retirement), so its row stays enabled
+  // with a real Edit affordance even outside Tauri; only Jira/Salesforce
+  // (no general CORS allowance, and both require a keychain credential
+  // to do anything at all) show disabled with the note.
+  test('outside Tauri, all 3 built-ins still show (not hidden); GitHub stays enabled (anonymous access works), Jira/Salesforce are disabled with a note, and there\'s no "+ Add source" affordance', async ({ page }) => {
     await h.gotoTracker(page);
     await h.openSettingsSection(page, 'connectedDataSources');
 
     const rows = page.locator('[data-testid=connected-source-row]');
     await expect(rows).toHaveCount(3);
-    await expect(rows.nth(0)).toContainText('GitHub');
-    await expect(rows.nth(1)).toContainText('Jira');
-    await expect(rows.nth(2)).toContainText('Salesforce');
-    for (let i = 0; i < 3; i++) {
-      await expect(rows.nth(i)).toContainText('Built-in');
-      await expect(rows.nth(i).locator('[data-testid=btn-edit-connected-source]')).toHaveCount(0);
-      await expect(rows.nth(i).locator('[data-testid=connected-source-disabled-note]')).toHaveText('Requires the desktop app');
+    const githubRow = rows.nth(0), jiraRow = rows.nth(1), salesforceRow = rows.nth(2);
+    await expect(githubRow).toContainText('GitHub');
+    await expect(jiraRow).toContainText('Jira');
+    await expect(salesforceRow).toContainText('Salesforce');
+    for (const row of [githubRow, jiraRow, salesforceRow]) await expect(row).toContainText('Built-in');
+
+    await expect(githubRow.locator('[data-testid=btn-edit-connected-source]')).not.toHaveCount(0);
+    await expect(githubRow.locator('[data-testid=connected-source-disabled-note]')).toHaveCount(0);
+
+    for (const row of [jiraRow, salesforceRow]) {
+      await expect(row.locator('[data-testid=btn-edit-connected-source]')).toHaveCount(0);
+      await expect(row.locator('[data-testid=connected-source-disabled-note]')).toHaveText('Requires the desktop app');
     }
     await expect(page.locator('[data-testid=btn-add-connected-source]')).toHaveCount(0);
   });
 
-  // Built-ins get a homogeneous EDITOR SCREEN with a custom connector
-  // (same sliding-modal chrome, same row shape in the list) but their own
-  // FIELDS -- root URL/username/credential, a real brand logo instead of
-  // a glyph/color picker, no macro/patterns/test/delete (they're real,
-  // hardcoded integrations, not user-authored JS).
+  // Built-ins get the same row shape in the list as a custom connector,
+  // but a plain small modal (not the custom connector editor's bigger
+  // sliding chrome -- too little content here to earn that treatment)
+  // with their own FIELDS -- root URL/username/credential, a real brand
+  // logo instead of a glyph/color picker, no macro/patterns/test/delete
+  // (they're real, hardcoded integrations, not user-authored JS).
   test('editing the built-in Jira connector opens its own real-config editor (root URL/username/credential, real logo, no macro), and changes persist with the key unchanged', async ({ page }) => {
     await stubTauri(page);
     await h.gotoTracker(page);
@@ -95,9 +107,8 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
     await expect(page.locator('[data-testid=connected-source-row]', { hasText: 'Jira' })).toContainText('Connected');
   });
 
-  test('editing the built-in GitHub connector shows no username field (not needed for PAT auth), same homogeneous chrome as Jira/Salesforce', async ({ page }) => {
-    await stubTauri(page);
-    await h.gotoTracker(page);
+  test('editing the built-in GitHub connector shows no username field (not needed for PAT auth), same small-modal chrome as Jira/Salesforce', async ({ page }) => {
+    await h.gotoTracker(page); // no Tauri needed -- GitHub's own row is enabled either way
     await h.openSettingsSection(page, 'connectedDataSources');
     await page.locator('[data-testid=connected-source-row]', { hasText: 'GitHub' }).locator('[data-testid=btn-edit-connected-source]').click();
     await expect(page.locator('[data-testid=connector-form-modal]')).toContainText('GitHub');
@@ -105,14 +116,7 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
     await expect(page.locator('[data-testid=builtin-username-input]')).toHaveCount(0);
     await expect(page.locator('[data-testid=builtin-credential-input]')).toBeVisible();
     const box = await page.locator('[data-testid=connector-form-modal]').boundingBox();
-    expect(box.width).toBeGreaterThan(800); // the same big modal as Jira/Salesforce/custom, not a small one
-  });
-
-  test('Google Drive link-rendering settings live on the Connected data sources page, outside the connector list', async ({ page }) => {
-    await h.gotoTracker(page);
-    await h.openSettingsSection(page, 'connectedDataSources');
-    await expect(page.locator('[data-testid=settings-google-drive-proxy-url]')).toBeVisible();
-    await expect(page.locator('[data-testid=settings-google-drive-proxy-secret]')).toBeVisible();
+    expect(box.width).toBeLessThan(600); // small, not the custom connector editor's bigger sliding modal
   });
 
   test('a custom connector only shows up, and "+ Add source" only appears, inside the real Tauri app', async ({ page }) => {

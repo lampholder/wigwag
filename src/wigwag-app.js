@@ -9,7 +9,7 @@
 // names like deriveIssueValues(...), not window.WigwagCore.xxx(...))
 // because this destructure is the only thing that needed to change.
 const {
-  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, columnFilterIsActive, dateFilterPresetRanges, parseFilterQuery, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, isPastedTextASingleUrl, wrapSelectionWithMarkdownLink, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, formatNow, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, GOOGLE_DRIVE_URL_RE, googleDriveFileIdFromUrl, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, migrateLegacyComments, deriveFieldDefs, effectiveFieldDefs, deriveProjectName, PROJECT_NAME_FIELD_ID, deriveProjectNotes, PROJECT_NOTES_FIELD_ID, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, principalKind, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER
+  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, columnFilterIsActive, dateFilterPresetRanges, parseFilterQuery, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, isPastedTextASingleUrl, wrapSelectionWithMarkdownLink, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, formatNow, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, migrateLegacyComments, deriveFieldDefs, effectiveFieldDefs, deriveProjectName, PROJECT_NAME_FIELD_ID, deriveProjectNotes, PROJECT_NOTES_FIELD_ID, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, principalKind, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER
 ,
   buildSource, evalRule, ruleNeedsSourceData, isEmptyBoundValue, fieldLocalBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot,
   CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, pickConnectorFields, connectorLinkText, compileConnectorMacro,
@@ -2142,7 +2142,7 @@ class Component extends DCLogic {
       if (s.proposeLayoutConfirmOpen && !e.target.closest('[data-testid="propose-layout-menu-wrap"]')) {
         patch = Object.assign(patch || {}, { proposeLayoutConfirmOpen: false });
       }
-      if (s.settingsOpen && !e.target.closest('[data-testid="settings-modal"]') && !e.target.closest('[data-testid="connector-form-overlay"]')) {
+      if (s.settingsOpen && !e.target.closest('[data-testid="settings-modal"]') && !e.target.closest('[data-testid="connector-form-overlay"]') && !e.target.closest('[data-testid="connector-form-modal"]')) {
         patch = Object.assign(patch || {}, { settingsOpen: false });
       }
       if (s.switcherOpen && !e.target.closest('[data-testid="switcher-wrap"]')) {
@@ -2199,7 +2199,8 @@ class Component extends DCLogic {
         if (this.state.openColMenuId) { this.setState({ openColMenuId: null }); return; }
         if (this.state.addFieldOpen) { this.setState({ addFieldOpen: false }); return; }
         if (this.state.addSourceTypePickerOpen) { this.closeAddSourceTypePicker(); return; }
-        if (this.state.connectorFormOpen || this.state.builtinFormOpen) { this.cancelConnectorForm(); return; }
+        if (this.state.builtinFormOpen) { this.cancelBuiltinForm(); return; }
+        if (this.state.connectorFormOpen) { this.cancelConnectorForm(); return; }
         if (this.state.settingsOpen) { this.setState({ settingsOpen: false }); return; }
         if (this.state.switcherOpen) { this.setState({ switcherOpen: false }); return; }
         if (this.state.exportMenuOpen) { clearTimeout(this._sendCopiedTimer); this.setState({ exportMenuOpen: false, sendCopied: false }); return; }
@@ -3453,33 +3454,7 @@ class Component extends DCLogic {
         pill.style.cssText = 'font-size:12.5px; color: var(--c13); text-decoration:none; cursor:pointer;' + (resolved.found ? '' : ' opacity:0.6;');
         pill.onclick = e => { e.preventDefault(); if (wg) this.openWigwagRef(wg); };
       });
-      // Real network round-trip (unlike the wigwag-ref-pill loop above,
-      // which is a cheap local lookup safe to redo on every render) -- a
-      // __gdriveState marker per pill stops this from re-firing on every
-      // componentDidUpdate while a fetch is pending, or forever retrying
-      // one that already failed.
-      el.querySelectorAll('.gdrive-file-pill').forEach(pill => {
-        if (pill.__gdriveState) return;
-        const fileId = pill.getAttribute('data-gdrive-id') || '';
-        const cached = this.gdriveCache && this.gdriveCache.get(fileId);
-        if (cached) { pill.__gdriveState = 'done'; this.applyGdrivePillResult(pill, cached); return; }
-        pill.__gdriveState = 'pending';
-        this.fetchGoogleDriveData(fileId).then(data => {
-          pill.__gdriveState = 'done';
-          this.applyGdrivePillResult(pill, data);
-        }).catch(() => { pill.__gdriveState = 'error'; });
-      });
     });
-  }
-  // Fills in a placeholder .gdrive-file-pill (see renderMarkdownInline)
-  // once fetchGoogleDriveData() resolves -- Drive's own iconLink is a
-  // real per-file-type icon (the literal favicon-per-source idea this
-  // whole integrations rework started from), so no icon set of our own
-  // is needed here.
-  applyGdrivePillResult(pill, data) {
-    const icon = data.iconLink ? '<img src="' + escapeHtml(data.iconLink) + '" width="14" height="14" style="flex-shrink:0;">' : '';
-    pill.innerHTML = icon + '<span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + escapeHtml(data.name || pill.getAttribute('data-gdrive-url') || '') + '</span>';
-    pill.style.cssText = 'display:inline-flex; align-items:center; gap:4px; max-width:240px; vertical-align:middle;';
   }
   autoGrowTextareas() {
     const MAX_HEIGHT = 300;
@@ -3746,18 +3721,17 @@ class Component extends DCLogic {
     }
   }
 
-  // Gated on isTauriConnectorRuntime + builtinConfigured('github') -- all
-  // 3 built-ins now dispatch through the in-process Tauri IPC fetch (the
-  // keychain credential it needs is only reachable there), and an
-  // unconfigured built-in steps aside for a matching custom connector
-  // (see customConnectorMatches) rather than claiming the shape and
-  // failing. GitHub's rootUrl has a real default pre-filled at seed time
-  // (api.github.com) and never needs a credential (anonymous access
-  // works, just rate-limited), so in practice this is true as soon as
-  // Tauri is -- same reach GitHub linking always had, just now routed
-  // in-process instead of a direct unauthenticated browser fetch.
+  // Gated on builtinConfigured('github') only -- NOT isTauriConnectorRuntime,
+  // unlike jiraKeyMatch/salesforceUrlMatch below. GitHub's rootUrl has a
+  // real default pre-filled at seed time (api.github.com) and never needs
+  // a credential (anonymous access works, just rate-limited), and
+  // fetchGithubData falls back to a plain browser fetch outside Tauri --
+  // same reach GitHub linking always had pre-retirement, not narrowed by
+  // this correction. builtinConfigured('github') is true as soon as the
+  // built-in exists at all (ensureBuiltinConnectors seeds it for every
+  // user, Tauri or not), so in practice this match is always live.
   githubUrlMatch(text) {
-    if (!this.isTauriConnectorRuntime() || !this.builtinConfigured('github')) return null;
+    if (!this.builtinConfigured('github')) return null;
     const t = (text || '').trim();
     const full = t.match(/^https?:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(?:issues|pull)\/(\d+)\/?$/i);
     if (full) return { owner: full[1], repo: full[2], num: full[3] };
@@ -3765,10 +3739,13 @@ class Component extends DCLogic {
     if (shorthand) return { owner: shorthand[1], repo: shorthand[2], num: shorthand[3] };
     return null;
   }
-  // Gated on isTauriConnectorRuntime + builtinConfigured('jira'), not a
-  // configured secret -- see githubUrlMatch's own comment for the shared
-  // reasoning. An unconfigured (or Tauri-less) Jira steps aside for a
-  // matching custom connector instead of claiming the shape and failing.
+  // Gated on isTauriConnectorRuntime + builtinConfigured('jira'), unlike
+  // githubUrlMatch above -- Jira (self-hosted/enterprise, no general CORS
+  // allowance) genuinely needs Tauri's IPC fetch + a real keychain
+  // credential to do anything at all, so there's no meaningful unmatched
+  // state to fall back to. An unconfigured (or Tauri-less) Jira steps
+  // aside for a matching custom connector instead of claiming the shape
+  // and failing.
   jiraKeyMatch(text) {
     if (!this.isTauriConnectorRuntime() || !this.builtinConfigured('jira')) return null;
     const t = (text || '').trim();
@@ -3781,7 +3758,8 @@ class Component extends DCLogic {
   // so there's no bare-id form to also accept. Handles both the modern
   // Lightning shape (object-name path segment optional -- some orgs' URLs
   // omit it) and the older classic-UI shape. Gated the same way
-  // githubUrlMatch/jiraKeyMatch are now.
+  // jiraKeyMatch is (needs Tauri -- see its own comment); NOT the same as
+  // githubUrlMatch, which doesn't.
   salesforceUrlMatch(text) {
     if (!this.isTauriConnectorRuntime() || !this.builtinConfigured('salesforce')) return null;
     const t = (text || '').trim();
@@ -4017,13 +3995,35 @@ class Component extends DCLogic {
     ];
     const existing = this.state.connectedSources || [];
     const missing = BUILTINS.filter(b => !existing.find(c => c.id === b.id));
-    if (!missing.length) return;
+    // Live-reported bug: a project that already ran under the earlier,
+    // now-superseded macro-based architecture (commits 979593f/e9da646,
+    // corrected by 80f5003) seeded __builtin_jira/__builtin_salesforce/
+    // __builtin_github with real patterns+macro fields -- this function
+    // only ever filled in MISSING ids, never migrated an EXISTING one, so
+    // those stale fields survived the correction untouched. Left alone,
+    // customConnectorMatches (which has no reason to even look at builtin
+    // ids, but doesn't exclude them either) would keep matching a Jira-
+    // shaped paste against the stale __builtin_jira entry's own leftover
+    // patterns as if it were a real custom connector -- showing up in the
+    // "matches more than one connected source" picker even though Jira
+    // itself was never configured under the current model. One-time,
+    // idempotent cleanup: strip the old macro-shape fields from any
+    // EXISTING builtin entry that still carries them, same self-heals-on-
+    // next-boot convention as this codebase's other legacy migrations.
+    const legacyShapeKeys = ['patterns', 'macro', 'glyph', 'color', 'linkTextTemplate'];
+    const migrated = existing.map(c => {
+      if (!c.id.startsWith('__builtin_') || !legacyShapeKeys.some(k => k in c)) return c;
+      const { patterns, macro, glyph, color, linkTextTemplate, ...cleaned } = c;
+      return { ...cleaned, builtin: true, rootUrl: cleaned.rootUrl || '', username: cleaned.username || '' };
+    });
+    const anyMigrated = migrated.some((c, i) => c !== existing[i]);
+    if (!missing.length && !anyMigrated) return;
     const added = missing.map(b => {
       const spec = BUILTIN_INTEGRATIONS[b.kind];
       return { id: b.id, key: spec.key, name: spec.name, builtin: true,
         rootUrl: spec.rootUrlDefault || '', username: '', credentialConfigured: false };
     });
-    const next = existing.concat(added);
+    const next = migrated.concat(added);
     try { localStorage.setItem(CONNECTED_SOURCES_KEY, JSON.stringify({ connectors: next })); }
     catch (e) { console.warn('[tracker] failed to save connected sources:', e); }
     this.state.connectedSources = next;
@@ -4062,13 +4062,23 @@ class Component extends DCLogic {
   // paste handling must never crash because of a malformed pattern
   // saved earlier. First matching pattern per connector wins; a
   // connector is never counted twice even if several of its own
-  // patterns match.
+  // patterns match. Explicitly excludes the 3 fixed builtin ids -- they
+  // dispatch through their own shape-based matchers (githubUrlMatch/
+  // jiraKeyMatch/salesforceUrlMatch), never this pattern engine, and
+  // ensureBuiltinConnectors' own migration can't retroactively guarantee
+  // an already-persisted builtin entry has no stray patterns field left
+  // over from the earlier macro-based architecture -- without this
+  // exclusion a Jira-shaped paste could match the unconfigured built-in
+  // Jira AND a real custom connector, surfacing a confusing "matches
+  // more than one connected source" picker for a source that was never
+  // actually configured at all.
   customConnectorMatches(draft) {
     if (!this.isTauriConnectorRuntime()) return [];
     const t = (draft || '').trim();
     if (!t) return [];
     const matches = [];
     for (const c of this.state.connectedSources || []) {
+      if (c.id.startsWith('__builtin_')) continue;
       for (const p of c.patterns || []) {
         let re;
         try { re = new RegExp('^(?:' + p.regex + ')$'); } catch (e) { continue; }
@@ -4219,29 +4229,34 @@ class Component extends DCLogic {
       this.setState(s => ({ connectorFormOpen: s.connectorFormOpen ? { ...s.connectorFormOpen, testRunning: false, testResult: { ok: false, output: err.message, resolvedId: resolved.id, matchedPattern: resolved.matchedPattern } } : null }));
     }
   }
-  // Closes WHICHEVER editor is open -- a custom connector's
-  // (connectorFormOpen) or a built-in's (builtinFormOpen); only one is
-  // ever open at a time, both share the same sliding-modal chrome and
-  // the same connectorFormVisible visual flag. Reverse of
-  // startConnectorFromTemplate/openEditConnectorForm/openBuiltinSourceForm:
-  // flip invisible immediately (the slide-out transform starts), THEN
-  // clear the slot 280ms later -- matching the transition duration -- so
-  // the element stays mounted long enough to actually finish animating
-  // out. The s.connectorFormVisible guard protects against a rapid
-  // re-open during that window (same idiom as closeSlideOver).
+  // Closes the custom connector editor (connectorFormOpen) -- the big
+  // sliding modal, Settings shifting off-screen left while this slides
+  // in from the right. Built-ins (builtinFormOpen) are a plain small
+  // modal now (see cancelBuiltinForm) -- too little content (root URL/
+  // username/credential) to earn the bigger sliding treatment Tom felt
+  // was silly for them specifically. Flip invisible immediately (the
+  // slide-out transform starts), THEN clear the slot 280ms later --
+  // matching the transition duration -- so the element stays mounted
+  // long enough to actually finish animating out. The s.connectorFormVisible
+  // guard protects against a rapid re-open during that window (same idiom
+  // as closeSlideOver).
   cancelConnectorForm() {
     this.setState({ connectorFormVisible: false });
-    setTimeout(() => this.setState(s => (s.connectorFormVisible ? {} : { connectorFormOpen: null, builtinFormOpen: null })), 280);
+    setTimeout(() => this.setState(s => (s.connectorFormVisible ? {} : { connectorFormOpen: null })), 280);
   }
   // Built-in editor (GitHub/Jira/Salesforce): root URL/username/credential
-  // config, not a macro -- see BUILTIN_INTEGRATIONS. Same slide-transition
-  // idiom as the custom connector editor (openEditConnectorForm) -- the
-  // draft starts from the real, currently-saved config.
+  // config, not a macro -- see BUILTIN_INTEGRATIONS. A plain small modal,
+  // not the custom connector editor's sliding chrome (see
+  // cancelConnectorForm's own comment) -- opens/closes immediately, no
+  // animation state to coordinate. The draft starts from the real,
+  // currently-saved config.
   openBuiltinSourceForm(kind) {
     const c = this.builtinConnector(kind);
     if (!c) return;
-    this.setState({ connectorFormVisible: false, builtinFormOpen: { kind, draft: { rootUrl: c.rootUrl || '', username: c.username || '', credentialDraft: '', hasCredential: !!c.credentialConfigured } } });
-    setTimeout(() => this.setState({ connectorFormVisible: true }), 20);
+    this.setState({ builtinFormOpen: { kind, draft: { rootUrl: c.rootUrl || '', username: c.username || '', credentialDraft: '', hasCredential: !!c.credentialConfigured } } });
+  }
+  cancelBuiltinForm() {
+    this.setState({ builtinFormOpen: null });
   }
   updateBuiltinDraft(patch) {
     if (!this.state.builtinFormOpen) return;
@@ -4258,7 +4273,7 @@ class Component extends DCLogic {
     const next = existing.map(c => c.id === id ? { ...c, rootUrl, username, credentialConfigured: credentialTyped ? true : c.credentialConfigured } : c);
     if (credentialTyped) await this.setConnectorCredential(id, credentialTyped);
     this.saveConnectedSources(next);
-    this.cancelConnectorForm();
+    this.cancelBuiltinForm();
   }
   // Validates (non-blank name/macro, every non-blank pattern actually
   // compiles) and re-checks defensively even though the Save button's
@@ -4343,18 +4358,30 @@ class Component extends DCLogic {
   // (so buildSource's existing pickJiraFields/pickSalesforceFields need
   // no changes at all) -- just running in-process against
   // connectorFetchShim's Tauri IPC (no CORS restriction) instead of a
-  // separate local proxy holding the credentials. Built-in linking is
-  // Tauri-only now (confirmed with Tom): the credential lives in the OS
-  // keychain, which only Tauri can reach, so there's no meaningful
-  // "direct browser fetch" fallback left to offer.
+  // separate local proxy holding the credentials. Jira/Salesforce built-in
+  // linking is Tauri-only (confirmed with Tom): both require a credential
+  // to do anything at all, and that credential lives in the OS keychain,
+  // which only Tauri can reach -- there's no meaningful "direct browser
+  // fetch" fallback left to offer. GitHub is NOT Tauri-only -- see
+  // fetchGithubData's own comment for why.
   requireTauriBuiltin() {
     if (!this.isTauriConnectorRuntime()) throw Object.assign(new Error('Requires the desktop app'), { nonRetryable: true });
   }
+  // Unlike Jira/Salesforce, GitHub's own real pre-retirement behavior
+  // (and bridges/github-data-proxy.js before that) never needed Tauri or
+  // a proxy for the common case: api.github.com sends CORS headers
+  // permitting a direct, anonymous browser fetch (rate-limited, not
+  // blocked) -- there's no credential requirement to gate on. Only a
+  // CONFIGURED credential (optional, for higher rate limits/private
+  // repos) needs Tauri, since it's stored in the OS keychain --
+  // getConnectorCredential already degrades to '' outside Tauri on its
+  // own, so the only other Tauri-specific piece is routing the fetch
+  // itself through connectorFetchShim's IPC instead of a plain fetch()
+  // (mirrors runConnectorMacro's own identical fetchImpl selection).
   async fetchGithubData(owner, repo, num, forceRefresh) {
     const cacheKey = owner + '/' + repo + '#' + num;
     if (!this.githubCache) this.githubCache = new Map();
     if (!forceRefresh && this.githubCache.has(cacheKey)) return this.githubCache.get(cacheKey);
-    this.requireTauriBuiltin();
     const cfg = this.builtinConnector('github');
     const rootUrl = ((cfg && cfg.rootUrl) || 'https://api.github.com').trim().replace(/\/$/, '');
     // GitHub alone allows anonymous, unauthenticated access (rate-limited,
@@ -4362,7 +4389,7 @@ class Component extends DCLogic {
     const credential = await this.getConnectorCredential('__builtin_github');
     const headers = { Accept: 'application/vnd.github+json' };
     if (credential) headers.Authorization = 'Bearer ' + credential;
-    const fetchImpl = this.connectorFetchShim();
+    const fetchImpl = this.isTauriConnectorRuntime() ? this.connectorFetchShim() : window.fetch.bind(window);
     const res = await fetchImpl(rootUrl + '/repos/' + owner + '/' + repo + '/issues/' + num, { headers });
     if (!res.ok) throw Object.assign(new Error('GitHub API returned ' + res.status), { status: res.status });
     const data = await res.json();
@@ -4505,23 +4532,6 @@ class Component extends DCLogic {
       lastModified: body.lastModifiedDate || '',
       fields: flat
     };
-  }
-  async fetchGoogleDriveData(fileId) {
-    if (!this.gdriveCache) this.gdriveCache = new Map();
-    if (this.gdriveCache.has(fileId)) return this.gdriveCache.get(fileId);
-    const proxyUrl = (this.state.googleDriveProxyUrl || '').trim();
-    if (!proxyUrl) throw new Error('no Google Drive proxy URL configured — see Settings');
-    const res = await fetch(proxyUrl.replace(/\/$/, '') + '/file/' + encodeURIComponent(fileId), {
-      headers: { 'X-Wigwag-Proxy-Secret': this.state.googleDriveProxySecret || '' }
-    });
-    if (!res.ok) {
-      let msg = 'proxy returned ' + res.status;
-      try { const body = await res.json(); if (body && body.error) msg = body.error; } catch (e) {}
-      throw new Error(msg);
-    }
-    const result = await res.json();
-    this.gdriveCache.set(fileId, result);
-    return result;
   }
   // Field-scoped counterpart to applyGithubLink — same fetch, same loading/error
   // handling, but keyed per (issue, colId) so any text-like field (not just
@@ -8972,8 +8982,8 @@ class Component extends DCLogic {
     const countLabel = n => n + ' project' + (n === 1 ? '' : 's');
     const settingsSectionDefs = [
       { id: 'identity', label: 'Identity', title: 'Identity', blurb: 'Who your changes are attributed to.', configured: !!(activeIdentity && activeIdentity.email && activeIdentity.email.trim()) },
-      { id: 'connectedDataSources', label: 'Connected data sources', title: 'Connected data sources', blurb: 'Other systems wigwag can reference and pull state from -- GitHub, Jira, Salesforce, or your own custom connector.', configured: (s.googleDriveProxyUrl && s.googleDriveProxyUrl.trim()) || ['github', 'jira', 'salesforce'].some(k => this.builtinConfigured(k)) || (s.connectedSources || []).some(c => !c.id.startsWith('__builtin_')) },
-      { id: 'remoteDataStores', label: 'Remote project store', title: 'Remote project store', blurb: 'Where your project data is persisted outside this device -- GitHub today, more stores later.', configured: !!(activeIdentity && activeIdentity.githubToken && activeIdentity.githubToken.trim()) },
+      { id: 'connectedDataSources', label: 'Context connectors', title: 'Context connectors', blurb: 'Other systems wigwag can reference and pull state from -- GitHub, Jira, Salesforce, or your own custom connector.', configured: ['github', 'jira', 'salesforce'].some(k => this.builtinConfigured(k)) || (s.connectedSources || []).some(c => !c.id.startsWith('__builtin_')) },
+      { id: 'remoteDataStores', label: 'Project sync', title: 'Project sync', blurb: 'Where your project data is persisted outside this device -- GitHub today, more stores later.', configured: !!(activeIdentity && activeIdentity.githubToken && activeIdentity.githubToken.trim()) },
       { id: 'notifications', label: 'Notifications', title: 'Notifications', blurb: 'Get notified when someone @mentions you in a comment.', configured: !!s.mentionNotificationsEnabled }
     ];
     const activeSettingsSectionId = s.settingsSection || 'identity';
@@ -9419,7 +9429,6 @@ class Component extends DCLogic {
       onBackFromSettingsSection: () => this.setState({ mobileSettingsSection: null }),
       isSettingsIdentity: s.mobileSettingsSection === 'identity',
       isSettingsGithub: s.mobileSettingsSection === 'github',
-      isSettingsIntegrations: s.mobileSettingsSection === 'integrations',
       isSettingsNotifications: s.mobileSettingsSection === 'notifications',
       settingsSectionTitle: (settingsSectionDefs.find(d => d.id === s.mobileSettingsSection) || {}).title || ''
     };
@@ -9653,10 +9662,6 @@ class Component extends DCLogic {
       onGithubProxyUrlChange: e => this.updateActiveIdentityField('githubProxyUrl', e.target.value, 'githubProxyUrl'),
       githubProxySecret: s.githubProxySecret,
       onGithubProxySecretChange: e => this.updateActiveIdentityField('githubProxySecret', e.target.value, 'githubProxySecret'),
-      googleDriveProxyUrl: s.googleDriveProxyUrl,
-      onGoogleDriveProxyUrlChange: e => this.updateActiveIdentityField('googleDriveProxyUrl', e.target.value, 'googleDriveProxyUrl'),
-      googleDriveProxySecret: s.googleDriveProxySecret,
-      onGoogleDriveProxySecretChange: e => this.updateActiveIdentityField('googleDriveProxySecret', e.target.value, 'googleDriveProxySecret'),
       settingsIdentityLabel: (s.identities.find(i => i.id === s.activeIdentityId) || {}).label || '',
       onSettingsIdentityLabelChange: e => this.updateActiveIdentityField('label', e.target.value),
       settingsSections: settingsSectionDefs.map(d => ({
@@ -9689,12 +9694,16 @@ class Component extends DCLogic {
         const allConnectedSources = s.connectedSources || [];
         const customConnectors = allConnectedSources.filter(c => !c.id.startsWith('__builtin_'));
         // Disabled (not hidden) outside Tauri, per Tom's call -- the rows
-        // still need to exist to show the note.
+        // still need to exist to show the note. GitHub is the one
+        // exception: unauthenticated access works in any browser (see
+        // fetchGithubData/githubUrlMatch's own comments), so its row
+        // stays enabled outside Tauri too -- only Jira/Salesforce
+        // genuinely need the desktop app to do anything at all.
         const builtinRows = ['github', 'jira', 'salesforce'].map(kind => {
           const c = allConnectedSources.find(x => x.id === '__builtin_' + kind);
           if (!c) return null;
           const configured = this.builtinConfigured(kind);
-          const disabled = !isTauri;
+          const disabled = kind !== 'github' && !isTauri;
           return {
             id: c.id, name: c.name, logoKind: kind, builtin: true,
             patternSummaryText: (c.rootUrl || '').trim() || 'Not configured',
@@ -9742,11 +9751,14 @@ class Component extends DCLogic {
           // settings-modal's own transform creates a new containing block
           // AND stacking context for any position:fixed descendant, which
           // a nested overlay couldn't out-rank no matter its own z-index.
-          // *FormSlotOpen gates each one's own mount/unmount (the "slot"
-          // half of the slide-transition idiom -- see connectorFormVisible/
-          // startConnectorFromTemplate); connectorEditorSlideOffset drives
-          // whichever is mounted's actual transform (the "visual" half) --
-          // only one of the two slots is ever open at a time.
+          // customFormSlotOpen gates the custom connector editor's own
+          // mount/unmount (the "slot" half of its slide-transition idiom
+          // -- see connectorFormVisible/startConnectorFromTemplate);
+          // connectorEditorSlideOffset drives its actual transform (the
+          // "visual" half). builtinFormSlotOpen below is unrelated to any
+          // of that -- the built-in editor is a plain small modal with no
+          // slide animation (see cancelBuiltinForm's own comment), gated
+          // directly on builtinFormOpen with nothing else to coordinate.
           customFormSlotOpen: !!form,
           builtinFormSlotOpen: !!builtinForm,
           connectorEditorSlideOffset: s.connectorFormVisible ? '0' : '100vw',
@@ -9763,7 +9775,16 @@ class Component extends DCLogic {
           builtinCredentialValue: builtinDraft ? builtinDraft.credentialDraft : '', onBuiltinCredentialChange: e => this.updateBuiltinDraft({ credentialDraft: e.target.value }),
           builtinCredentialPlaceholder: (builtinDraft && builtinDraft.hasCredential) ? '•••••••••••••••• (unchanged)' : (builtinSpec ? builtinSpec.credentialPlaceholder : ''),
           builtinHelperText: builtinSpec ? builtinSpec.helperText : '',
+          // GitHub alone can be edited/used outside Tauri (root URL,
+          // anonymous access) -- but a typed token still can't actually
+          // be SAVED without keychain access, so swap the usual storage
+          // note for one saying so, instead of letting it look like a
+          // successful save that silently didn't persist.
+          builtinKeychainNote: (builtinForm && builtinForm.kind === 'github' && !isTauri)
+            ? 'A token needs the desktop app to save (OS keychain access) -- anonymous access already works without one.'
+            : 'Stored in your OS keychain, never in the project file.',
           onSaveBuiltin: () => this.saveBuiltinForm(),
+          onCancelBuiltin: () => this.cancelBuiltinForm(),
           saveBuiltinButtonBg: canSaveBuiltin ? 'var(--accent-fill)' : 'var(--n28)', saveBuiltinButtonCursor: canSaveBuiltin ? 'pointer' : 'not-allowed',
           showAddSource: this.isTauriConnectorRuntime(),
           typePickerVisible: s.addSourceTypePickerOpen,

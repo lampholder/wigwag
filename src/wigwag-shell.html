@@ -3522,7 +3522,17 @@ function computeFieldDefsMerge(localProjectHistory, parsedFields, parsedProjectH
 // trusts the latest 'derived' entry) or wipes/misattributes a plain
 // linked field's own fieldRef. Left unset for callers with no single
 // field to exclude (a cross-project merge, a schema-wide recompute).
-function computeDerivedChangeEntries(issue, beforeValues, fieldDefs, excludeColId) {
+// beforeFieldRefs, when given, is a TRUE pre-settle snapshot (parallel to
+// beforeValues, captured the same way -- before any mutation this commit
+// makes) of each colId's own fieldRef. Needed because `issue` here is
+// otherwise the ONLY source for "before": by the time this runs, the
+// caller's own settleLinkedRules pass has typically already patched
+// issue.fieldRefs in place, so reading beforeFieldRef off `issue` itself
+// trivially always matches a fresh recompute on that SAME (already-
+// patched) object -- real for every caller that doesn't pass this,
+// unchanged from before. Omitting it (undefined) preserves that exact
+// prior behavior.
+function computeDerivedChangeEntries(issue, beforeValues, fieldDefs, excludeColId, beforeFieldRefs) {
   const entries = [];
   for (const colId in fieldDefs) {
     if (colId === excludeColId) continue;
@@ -3539,7 +3549,7 @@ function computeDerivedChangeEntries(issue, beforeValues, fieldDefs, excludeColI
     // bound with this one as its own linkedSourceId can then read
     // source.github/source.jira/etc. from it for real, not just matching
     // text. null for every other bound field type/mode, unaffected.
-    const beforeFieldRef = (issue.fieldRefs && issue.fieldRefs[colId]) || null;
+    const beforeFieldRef = (beforeFieldRefs ? beforeFieldRefs[colId] : (issue.fieldRefs && issue.fieldRefs[colId])) || null;
     // computeBoundFieldRef only ever manages a fieldRef for a ROW-BASED
     // "copy field" rule -- it returns null for a hand-written rule
     // unconditionally, regardless of whether this field ALSO carries its
@@ -3553,7 +3563,25 @@ function computeDerivedChangeEntries(issue, beforeValues, fieldDefs, excludeColI
     // Only a row-based rule's computed fieldRef is ever authoritative
     // here; anything else leaves whatever's already there untouched.
     const isRowBasedRule = Array.isArray(def.ruleRows);
-    const fieldRef = isRowBasedRule ? computeBoundFieldRef(issue, def) : beforeFieldRef;
+    // Live-reported bug: computeBoundFieldRef can transiently return null
+    // even for a genuinely still-matching row (its own linked SOURCE
+    // field momentarily reads as unlinked -- e.g. mid-settle, or any
+    // caller that hasn't yet run a settle pass on `issue` at all) --
+    // treating that bare null as authoritative the same way a REAL
+    // "condition no longer matches" null is would silently overwrite a
+    // perfectly good, already-persisted fieldRef with null the next time
+    // ANYTHING on this issue got committed, permanently losing the link
+    // (its displayed text would still look right -- the VALUE-level copy
+    // has its own, separate non-clobbering guard -- only the pill/
+    // resolved-link rendering would vanish, exactly as reported: looks
+    // like plain text until a manual re-settle happens to fix it in
+    // memory, a fix that itself can never stick for the same reason).
+    // Mirrors settleLinkedRules' own `if (newRef)` guard: a fresh, real
+    // (non-null) recompute always wins (the upgrade case this exists
+    // for), but a null recompute never downgrades an existing real ref
+    // -- it falls back to whatever was already persisted.
+    const freshFieldRef = isRowBasedRule ? computeBoundFieldRef(issue, def) : null;
+    const fieldRef = isRowBasedRule ? (freshFieldRef || beforeFieldRef) : beforeFieldRef;
     // A copy-field's own fieldRef can go stale even when its copied VALUE
     // doesn't change (e.g. refreshing the source Jira/GitHub issue changes
     // its metadata shape -- tracker #112's trimming -- but not its title).

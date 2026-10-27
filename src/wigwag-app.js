@@ -3157,10 +3157,10 @@ class Component extends DCLogic {
     this.checkForNewMentions(mergedIssues);
     this.checkForSubscribedIssueUpdates(mergedIssues);
   }
-  logDerivedChanges(issueId, beforeValues, excludeColId) {
+  logDerivedChanges(issueId, beforeValues, excludeColId, beforeFieldRefs) {
     const iss = this.findIssue(issueId);
     if (!iss) return;
-    const entries = computeDerivedChangeEntries(iss, beforeValues, this.effectiveFieldDefs(), excludeColId);
+    const entries = computeDerivedChangeEntries(iss, beforeValues, this.effectiveFieldDefs(), excludeColId, beforeFieldRefs);
     for (const e of entries) {
       const committed = this.appendSignedHistory(issueId, { text: e.text, field: e.colId, value: e.value, fieldRef: e.fieldRef || null });
       this.recordLocalDerivedEntryId(issueId, e.colId, committed.id);
@@ -5393,6 +5393,15 @@ class Component extends DCLogic {
     const iss0 = this.findIssue(issueId);
     const changed = iss0 && value !== (iss0.values[colId] || '');
     const beforeValues = iss0 ? iss0.values : {};
+    // True PRE-settle snapshot, same spirit as beforeValues -- without
+    // this, computeDerivedChangeEntries's own beforeFieldRef would read
+    // straight off issue.fieldRefs AFTER the settle below has already
+    // run (same object, by the time logDerivedChanges calls findIssue
+    // again), which trivially always matches a fresh recompute on that
+    // SAME already-patched object -- making a stale/missing fieldRef
+    // undetectable as "changed," ever, no matter how many times this
+    // field is committed. See logDerivedChanges's own call below.
+    const beforeFieldRefs = iss0 ? iss0.fieldRefs : {};
     const commit = () => {
       if (changed) {
         this.appendSignedHistory(issueId, {
@@ -5407,7 +5416,19 @@ class Component extends DCLogic {
           fieldLoading: iss.fieldLoading ? { ...iss.fieldLoading, [colId]: false } : iss.fieldLoading
         }, effectiveFieldDefs(s.fieldDefs, s.localFieldBindings), this.liveRuleCtx(issueId)) : iss)
       }));
-      this.logDerivedChanges(issueId, beforeValues, colId);
+      // Live-reported bug: colId is only excluded here to avoid
+      // double-logging/mislabeling ITS OWN change -- correct when
+      // `changed` is true (appendSignedHistory just wrote its own
+      // dedicated entry above), but when the commit was a no-op
+      // (`changed` false, e.g. clicking into a bound field and back out
+      // with nothing typed), nothing was written for colId at all -- not
+      // the direct entry (skipped, nothing changed) and, with the
+      // exclusion, not a derived correction either. That left a bound
+      // field with no way to ever persist its own stale/missing fieldRef
+      // fixing itself back up: the settle just above corrects it in
+      // local render state only, invisible again on the next reload.
+      // Only exclude when colId's own entry actually was written.
+      this.logDerivedChanges(issueId, beforeValues, changed ? colId : undefined, beforeFieldRefs);
     };
     if (changed) this.requireAttribution(commit); else commit();
   }

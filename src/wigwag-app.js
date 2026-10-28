@@ -11,7 +11,7 @@
 const {
   xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, columnFilterIsActive, dateFilterPresetRanges, parseFilterQuery, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, isPastedTextASingleUrl, wrapSelectionWithMarkdownLink, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, migrateLegacyComments, deriveFieldDefs, effectiveFieldDefs, deriveProjectName, PROJECT_NAME_FIELD_ID, deriveProjectNotes, PROJECT_NOTES_FIELD_ID, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, principalKind, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER
 ,
-  buildSource, normalizeRef, evalRule, ruleNeedsSourceData, isEmptyBoundValue, fieldLocalBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot,
+  buildSource, normalizeRef, evalRule, ruleNeedsSourceData, isEmptyBoundValue, fieldLocalBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, builtinKindConfigured, builtinKindReachable,
   CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, pickConnectorFields, connectorLinkText, compileConnectorMacro,
   importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry,
   squashHistory, displayValueForHistory, buildSourceText, humanFileSize, parseJsonl, entryKey, commentKey, unionByKey, mergeCommentStreams, mergeIssuePair, computeIssueMerge, mergeHasRealChanges, computeFieldDefsMerge, computeDerivedChangeEntries, buildGithubContentsUrl, buildGithubContentsHeaders, buildGithubCommitMessage, pullGithubFile, pushGithubFile, probeGithubRepoAccess, issueCreatedAt, computeHeaderMeshTriangles, computeHeaderCompression, cellPaddingForWidth, computeAffordanceFade,
@@ -1105,9 +1105,22 @@ class Component extends DCLogic {
   // Context for the write-side reachability gate (computeBoundValue/
   // applyLinkedRules) AND the per-issue local-record slice -- gathered
   // once per call site rather than threading each field individually.
+  // GitHub needs no configuration at all to be reachable (anonymous
+  // access, rate-limited not blocked -- same tolerance fetchGithubData/
+  // resolveFetchConnector already have): isRefLocallyLive (wigwag-
+  // core.js) is a pure function with no fallback of its own, so a
+  // project with no __builtin_github row at all (every brand-new
+  // install, now that migrateBuiltinConnectors stopped auto-seeding
+  // one) gets the same synthetic stand-in resolveFetchConnector already
+  // uses for fetch/refresh dispatch, appended here so isRefLocallyLive's
+  // own `(ctx.connectedSources||[]).find(...)` lookup finds it.
   liveRuleCtx(issueId) {
+    const connectedSources = this.state.connectedSources || [];
+    const connectedSourcesForRules = connectedSources.some(c => c.id === '__builtin_github')
+      ? connectedSources
+      : connectedSources.concat([this.resolveFetchConnector('__builtin_github')]);
     return {
-      connectedSources: this.state.connectedSources,
+      connectedSources: connectedSourcesForRules,
       tauriConnectorRuntime: this.isTauriConnectorRuntime(),
       localDerivedEntryIds: (this.state.localDerivedEntryIds && this.state.localDerivedEntryIds[issueId]) || {}
     };
@@ -4131,13 +4144,19 @@ class Component extends DCLogic {
   // absent, deleted, or newly-added-but-blank). GitHub is the one exception: its
   // real bridge/app-side fetch always allowed anonymous, unauthenticated
   // access (rate-limited, not blocked), so only its root URL needs to be
-  // real -- a credential is optional, same as it always was.
+  // real -- a credential is optional, same as it always was. Delegates to
+  // builtinKindConfigured (wigwag-core.js) against resolveFetchConnector
+  // (not the bare builtinConnector lookup) -- GitHub must read as
+  // configured even with NO row at all, via resolveFetchConnector's own
+  // synthetic stand-in (real default rootUrl for github, empty for
+  // jira/salesforce), same tolerance every other fetchedVia-based
+  // dispatch site already gets; a plain "does a row exist" check would
+  // wrongly deny this for a fresh install that's never had
+  // migrateBuiltinConnectors seed anything. Signature unchanged --
+  // every existing caller (including githubUrlMatch's own paste-time
+  // gate) keeps working for the grandfathered rows.
   builtinConfigured(key) {
-    const c = this.builtinConnector(key);
-    if (!c) return false;
-    if (!(c.rootUrl || '').trim()) return false;
-    if (key === 'github') return true;
-    return !!c.credentialConfigured;
+    return builtinKindConfigured(this.resolveFetchConnector('__builtin_' + key));
   }
   // Whole-string match, same discipline as githubUrlMatch/jiraKeyMatch/
   // salesforceUrlMatch -- the engine wraps each saved pattern in its own
@@ -4466,15 +4485,16 @@ class Component extends DCLogic {
   // own, so the only other Tauri-specific piece is routing the fetch
   // itself through connectorFetchShim's IPC instead of a plain fetch()
   // (mirrors runConnectorMacro's own identical fetchImpl selection).
-  async fetchGithubData(owner, repo, num, forceRefresh) {
-    const cacheKey = owner + '/' + repo + '#' + num;
+  async fetchGithubData(owner, repo, num, forceRefresh, connectorId) {
+    connectorId = connectorId || '__builtin_github';
+    const cacheKey = connectorId + ':' + owner + '/' + repo + '#' + num;
     if (!this.githubCache) this.githubCache = new Map();
     if (!forceRefresh && this.githubCache.has(cacheKey)) return this.githubCache.get(cacheKey);
-    const cfg = this.builtinConnector('github');
+    const cfg = (this.state.connectedSources || []).find(c => c.id === connectorId);
     const rootUrl = ((cfg && cfg.rootUrl) || 'https://api.github.com').trim().replace(/\/$/, '');
     // GitHub alone allows anonymous, unauthenticated access (rate-limited,
     // not blocked) -- a credential is optional, same as it always was.
-    const credential = await this.getConnectorCredential('__builtin_github');
+    const credential = await this.getConnectorCredential(connectorId);
     const headers = { Accept: 'application/vnd.github+json' };
     if (credential) headers.Authorization = 'Bearer ' + credential;
     const fetchImpl = this.isTauriConnectorRuntime() ? this.connectorFetchShim() : window.fetch.bind(window);
@@ -4507,12 +4527,13 @@ class Component extends DCLogic {
   // Whichever credential pair is present picks Cloud (Basic, API v3) vs.
   // Server/Data Center (Bearer PAT, API v2) -- mirrors jira-proxy.js's own
   // authConfig() exactly.
-  async fetchJiraData(key) {
+  async fetchJiraData(key, connectorId) {
+    connectorId = connectorId || '__builtin_jira';
     this.requireTauriBuiltin();
-    const cfg = this.builtinConnector('jira');
+    const cfg = (this.state.connectedSources || []).find(c => c.id === connectorId);
     const rootUrl = ((cfg && cfg.rootUrl) || '').trim().replace(/\/$/, '');
     if (!rootUrl) throw Object.assign(new Error('no Jira base URL configured — see Settings'), { nonRetryable: true });
-    const credential = await this.getConnectorCredential('__builtin_jira');
+    const credential = await this.getConnectorCredential(connectorId);
     if (!credential) throw Object.assign(new Error('no Jira credential configured — see Settings'), { nonRetryable: true });
     const username = ((cfg && cfg.username) || '').trim();
     const authHeader = username ? 'Basic ' + btoa(username + ':' + credential) : 'Bearer ' + credential;
@@ -4558,13 +4579,15 @@ class Component extends DCLogic {
   // in-memory (per app session, not persisted) until a downstream 401
   // forces a re-authentication -- Salesforce's login call doesn't hand
   // back an expiry.
-  async salesforceAuth(forceRefresh) {
-    if (this._sfAuthCache && !forceRefresh) return this._sfAuthCache;
-    const cfg = this.builtinConnector('salesforce');
+  async salesforceAuth(forceRefresh, connectorId) {
+    connectorId = connectorId || '__builtin_salesforce';
+    if (!this._sfAuthCacheByConnector) this._sfAuthCacheByConnector = {};
+    if (this._sfAuthCacheByConnector[connectorId] && !forceRefresh) return this._sfAuthCacheByConnector[connectorId];
+    const cfg = (this.state.connectedSources || []).find(c => c.id === connectorId);
     const loginUrl = ((cfg && cfg.rootUrl) || 'https://login.salesforce.com').trim().replace(/\/$/, '');
     const username = (cfg && cfg.username || '').trim();
     if (!username) throw Object.assign(new Error('no Salesforce username configured — see Settings'), { nonRetryable: true });
-    const credential = await this.getConnectorCredential('__builtin_salesforce');
+    const credential = await this.getConnectorCredential(connectorId);
     if (!credential) throw Object.assign(new Error('no Salesforce credential configured — see Settings'), { nonRetryable: true });
     const envelope = '<?xml version="1.0" encoding="utf-8"?>' +
       '<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:urn="urn:partner.soap.sforce.com">' +
@@ -4581,8 +4604,8 @@ class Component extends DCLogic {
       const fault = (text.match(/<faultstring>([\s\S]*?)<\/faultstring>/) || [])[1];
       throw new Error('Salesforce login failed' + (fault ? ': ' + fault : ''));
     }
-    this._sfAuthCache = { accessToken: sessionId, instanceUrl: new URL(serverUrl).origin };
-    return this._sfAuthCache;
+    this._sfAuthCacheByConnector[connectorId] = { accessToken: sessionId, instanceUrl: new URL(serverUrl).origin };
+    return this._sfAuthCacheByConnector[connectorId];
   }
   // Compact-layout fields only (the record's admin-configured Compact
   // Layout, same as a record's default card view) -- the real bridge also
@@ -4592,16 +4615,16 @@ class Component extends DCLogic {
   // exactly what the real bridge itself falls back to when its own
   // describe calls fail, so it's a real, intentional mode, not a half
   // implementation.
-  async fetchSalesforceData(id) {
+  async fetchSalesforceData(id, connectorId) {
     this.requireTauriBuiltin();
-    let auth = await this.salesforceAuth(false);
+    let auth = await this.salesforceAuth(false, connectorId);
     const fetchImpl = this.connectorFetchShim();
     const fetchRecord = (a) => fetchImpl(
       a.instanceUrl + '/services/data/v59.0/ui-api/records/' + encodeURIComponent(id) + '?layoutTypes=Compact&modes=View',
       { headers: { Authorization: 'Bearer ' + a.accessToken, Accept: 'application/json' } }
     );
     let res = await fetchRecord(auth);
-    if (res.status === 401) { auth = await this.salesforceAuth(true); res = await fetchRecord(auth); }
+    if (res.status === 401) { auth = await this.salesforceAuth(true, connectorId); res = await fetchRecord(auth); }
     if (!res.ok) throw Object.assign(new Error('Salesforce returned ' + res.status), { status: res.status });
     const body = await res.json();
     const rawFields = body.fields || {};
@@ -4652,13 +4675,42 @@ class Component extends DCLogic {
   // falls back to the raw href itself if no pattern currently
   // matches, same honesty discipline the Test button already has
   // (never silently drop the only identifying string on hand).
+  // Resolves the connector behind a persisted fetchedVia for fetch/
+  // refresh dispatch -- a real connectedSources entry when one exists,
+  // or (for the 3 grandfathered ids specifically) a synthetic stand-in
+  // carrying the right kind/name even when NO row has ever been seeded
+  // for it. GitHub/Jira/Salesforce dispatch has always tolerated this
+  // (fetchGithubData/fetchJiraData/salesforceAuth already degrade
+  // gracefully from a missing/blank cfg on their own, and a project
+  // with nothing configured never had a connectedSources row for them
+  // even before migrateBuiltinConnectors stopped auto-seeding) -- this
+  // is that same tolerance, centralized, so every fetchedVia-based
+  // lookup (matchedIdFromHref, stageFieldRefresh, refreshField,
+  // applyLinkToField) sees one real-or-synthetic connector object
+  // instead of re-deriving kind from the id string itself.
+  resolveFetchConnector(fetchedVia) {
+    const c = (this.state.connectedSources || []).find(x => x.id === fetchedVia);
+    if (c) return c;
+    if (fetchedVia === '__builtin_github' || fetchedVia === '__builtin_jira' || fetchedVia === '__builtin_salesforce') {
+      const kind = fetchedVia.slice('__builtin_'.length);
+      const spec = BUILTIN_INTEGRATIONS[kind];
+      // Carries the exact same default rootUrl migrateBuiltinConnectors
+      // used to seed unconditionally pre-redesign -- real for GitHub
+      // ('https://api.github.com', needing no further setup to be
+      // reachable), empty for Jira/Salesforce (which genuinely need a
+      // user-entered root URL + credential before builtinKindConfigured
+      // calls them configured).
+      return { id: fetchedVia, key: kind, kind, name: spec.name, builtin: true, rootUrl: spec.rootUrlDefault || '', username: '', credentialConfigured: false };
+    }
+    return null;
+  }
   matchedIdFromHref(fetchedVia, href) {
     if (!href) return null;
-    if (fetchedVia === '__builtin_github') return this.parseGithubUrl(href);
-    if (fetchedVia === '__builtin_jira') return this.parseJiraKey(href);
-    if (fetchedVia === '__builtin_salesforce') return this.parseSalesforceId(href);
-    const c = (this.state.connectedSources || []).find(x => x.id === fetchedVia);
+    const c = this.resolveFetchConnector(fetchedVia);
     if (!c) return null;
+    if (c.kind === 'github') return this.parseGithubUrl(href);
+    if (c.kind === 'jira') return this.parseJiraKey(href);
+    if (c.kind === 'salesforce') return this.parseSalesforceId(href);
     for (const p of c.patterns || []) {
       let re;
       try { re = new RegExp('^(?:' + p.regex + ')$'); } catch (e) { continue; }
@@ -4702,14 +4754,15 @@ class Component extends DCLogic {
     const cacheKey = fetchedVia + ':' + JSON.stringify(matchedId);
     if (fetchCache && fetchCache.has(cacheKey)) return fetchCache.get(cacheKey);
     let data, href;
-    if (fetchedVia === '__builtin_github') {
-      data = await this.withRetry(() => this.fetchGithubData(matchedId.owner, matchedId.repo, matchedId.num, true), { onRetry });
+    const kind = connector && connector.kind;
+    if (kind === 'github') {
+      data = await this.withRetry(() => this.fetchGithubData(matchedId.owner, matchedId.repo, matchedId.num, true, connector.id), { onRetry });
       href = 'https://github.com/' + matchedId.owner + '/' + matchedId.repo + '/issues/' + matchedId.num;
-    } else if (fetchedVia === '__builtin_jira') {
-      data = await this.withRetry(() => this.fetchJiraData(matchedId), { onRetry });
+    } else if (kind === 'jira') {
+      data = await this.withRetry(() => this.fetchJiraData(matchedId, connector.id), { onRetry });
       href = data.browseUrl || null;
-    } else if (fetchedVia === '__builtin_salesforce') {
-      data = await this.withRetry(() => this.fetchSalesforceData(matchedId), { onRetry });
+    } else if (kind === 'salesforce') {
+      data = await this.withRetry(() => this.fetchSalesforceData(matchedId, connector.id), { onRetry });
       href = data.url || null;
     } else {
       const credential = await this.getConnectorCredential(connector.id);
@@ -4755,11 +4808,11 @@ class Component extends DCLogic {
     }
     const n = normalizeRef(ref);
     if (!n || !n.fetchedVia) return { failed: true, errorText: 'Could not refresh: link no longer resolvable' };
-    const isBuiltin = n.fetchedVia.startsWith('__builtin_');
-    const connector = isBuiltin ? null : (this.state.connectedSources || []).find(c => c.id === n.fetchedVia);
-    if (!isBuiltin && !connector) return { failed: true, errorText: 'Could not refresh: connector no longer exists' };
-    const kind = isBuiltin ? n.fetchedVia.slice('__builtin_'.length) : null;
-    const systemLabel = isBuiltin ? BUILTIN_INTEGRATIONS[kind].name : connector.name;
+    const connector = this.resolveFetchConnector(n.fetchedVia);
+    if (!connector) return { failed: true, errorText: 'Could not refresh: connector no longer exists' };
+    const kind = connector.kind;
+    const isBuiltin = !!kind;
+    const systemLabel = connector.name;
     const matchedId = n.matchedId !== undefined ? n.matchedId : this.matchedIdFromHref(n.fetchedVia, n.href);
     let fetched;
     try {
@@ -4839,7 +4892,9 @@ class Component extends DCLogic {
       const n = normalizeRef(ref);
       if (n && n.fetchedVia) {
         const matchedId = n.matchedId !== undefined ? n.matchedId : this.matchedIdFromHref(n.fetchedVia, n.href);
-        const isBuiltin = n.fetchedVia.startsWith('__builtin_');
+        const connector = this.resolveFetchConnector(n.fetchedVia);
+        const kind = connector && connector.kind;
+        const isBuiltin = !!kind;
         // Tracker: a field originally linked via a built-in (Jira/
         // Salesforce) that Tom has since disabled (cleared its root
         // URL/credential) in favour of a custom connector matching the
@@ -4859,15 +4914,10 @@ class Component extends DCLogic {
         // case needed. Ambiguous (2+) matches just take the first --
         // this is a background refresh with no picker UI to
         // disambiguate through.
-        const kind = isBuiltin ? n.fetchedVia.slice('__builtin_'.length) : null;
-        const staleBuiltin = isBuiltin && (kind === 'jira' || kind === 'salesforce') && !this.builtinConfigured(kind) && typeof matchedId === 'string';
+        const staleBuiltin = isBuiltin && (kind === 'jira' || kind === 'salesforce') && !builtinKindConfigured(connector) && typeof matchedId === 'string';
         const migratedMatch = staleBuiltin ? this.customConnectorMatches(matchedId)[0] : null;
         if (migratedMatch) await this.applyLinkToField(issueId, colId, migratedMatch);
-        else if (isBuiltin) await this.applyLinkToField(issueId, colId, { fetchedVia: n.fetchedVia, matchedId });
-        else {
-          const c = (this.state.connectedSources || []).find(x => x.id === n.fetchedVia);
-          if (c) await this.applyLinkToField(issueId, colId, { fetchedVia: n.fetchedVia, matchedId, connector: c });
-        }
+        else if (connector) await this.applyLinkToField(issueId, colId, { fetchedVia: n.fetchedVia, matchedId, connector });
       }
     }
     const afterIssue = this.findIssue(issueId);
@@ -4904,14 +4954,18 @@ class Component extends DCLogic {
   // shared write path for every system, now that paste-dispatch
   // (githubUrlMatch/jiraKeyMatch/salesforceUrlMatch/
   // customConnectorMatches) and refresh-dispatch both produce the
-  // same {fetchedVia, matchedId, connector?} shape (connector is only
-  // present for a CUSTOM connector match -- the macro/name a builtin
-  // dispatch doesn't need). Writes fieldRef: {href, fetchedVia}.
-  applyLinkToField(issueId, colId, { fetchedVia, matchedId, connector }) {
-    const isBuiltin = fetchedVia.startsWith('__builtin_');
+  // same {fetchedVia, matchedId} shape. Resolves the live connector
+  // itself from fetchedVia (rather than trusting a caller-passed one)
+  // so every caller -- a builtin shape-match that has never carried a
+  // connector, or a custom-connector match that already has one --
+  // converges on the exact same lookup. Writes fieldRef: {href, fetchedVia}.
+  applyLinkToField(issueId, colId, { fetchedVia, matchedId }) {
+    const connector = this.resolveFetchConnector(fetchedVia);
+    if (!connector) return; // deleted/missing connector -- same silent no-op a vanished custom connector always had
+    const kind = connector.kind;
+    const isBuiltin = !!kind;
     if (!isBuiltin && !this.isTauriConnectorRuntime()) return; // same silent no-op applyConnectorLinkToField always had outside Tauri
-    const kind = isBuiltin ? fetchedVia.slice('__builtin_'.length) : null;
-    const systemLabel = isBuiltin ? BUILTIN_INTEGRATIONS[kind].name : connector.name;
+    const systemLabel = connector.name;
     const linkedToText = kind === 'github' ? 'GitHub #' + matchedId.num
       : kind === 'jira' ? 'Jira ' + matchedId
       : kind === 'salesforce' ? 'Salesforce ' + salesforceObjectTypeFromId(matchedId)
@@ -5066,6 +5120,43 @@ class Component extends DCLogic {
     }
     return list;
   }
+  // Per-kind item-list builders, factored out of subjectGroups so a
+  // second real instance of a kind (keyed by its own .key, named
+  // whatever Tom calls it) gets the exact same rich field list as the
+  // one grandfathered __builtin_<kind> row -- called once below with
+  // ('github','GitHub') etc. for byte-identical output to the old fixed
+  // array, and again per additional kind-tagged connector.
+  githubGroupItems(keyPrefix, displayName) {
+    return [
+      { path: 'source.' + keyPrefix + '?.labels', label: displayName + ': Labels', kind: 'list' },
+      { path: 'source.' + keyPrefix + '?.status', label: displayName + ': Status', kind: 'text' },
+      { path: 'source.' + keyPrefix + '?.issueType', label: displayName + ': Issue type', kind: 'text' },
+      { path: 'source.' + keyPrefix + '?.assignees', label: displayName + ': Assignees', kind: 'list' },
+      { path: 'source.' + keyPrefix + '?.description', label: displayName + ': Description', kind: 'text' },
+      { path: 'source.' + keyPrefix + '?.key', label: displayName + ': Key', kind: 'text' }
+    ];
+  }
+  jiraGroupItems(keyPrefix, displayName) {
+    return [
+      { path: 'source.' + keyPrefix + '?.status', label: displayName + ': Status', kind: 'text' },
+      { path: 'source.' + keyPrefix + '?.statusCategory', label: displayName + ': Status category', kind: 'text' },
+      { path: 'source.' + keyPrefix + '?.priority', label: displayName + ': Priority', kind: 'text' },
+      { path: 'source.' + keyPrefix + '?.labels', label: displayName + ': Labels', kind: 'list' },
+      { path: 'source.' + keyPrefix + '?.issueType', label: displayName + ': Issue type', kind: 'text' },
+      { path: 'source.' + keyPrefix + '?.components', label: displayName + ': Components', kind: 'list' },
+      { path: 'source.' + keyPrefix + '?.description', label: displayName + ': Description', kind: 'text' },
+      { path: 'source.' + keyPrefix + '?.key', label: displayName + ': Key', kind: 'text' }
+    ];
+  }
+  salesforceGroupItems(keyPrefix, displayName) {
+    return [
+      { path: 'source.' + keyPrefix + '?.name', label: displayName + ': Name', kind: 'text' },
+      { path: 'source.' + keyPrefix + '?.objectType', label: displayName + ': Object type', kind: 'text' },
+      { path: 'source.' + keyPrefix + '?.status', label: displayName + ': Status', kind: 'text' },
+      { path: 'source.' + keyPrefix + '?.owner', label: displayName + ': Owner', kind: 'text' },
+      { path: 'source.' + keyPrefix + '?.id', label: displayName + ': Record Id', kind: 'text' }
+    ];
+  }
   // Every path a rule can read, grouped for the subject dropdown. The
   // paths are written with ?. so a row bound to a Jira issue can be
   // interrogated for GitHub labels (and vice versa) without a guard --
@@ -5079,37 +5170,24 @@ class Component extends DCLogic {
         { path: '!!source.jira', label: 'Source is Jira', kind: 'bool' },
         { path: '!!source.salesforce', label: 'Source is Salesforce', kind: 'bool' }
       ] },
-      { label: 'GitHub', items: [
-        { path: 'source.github?.labels', label: 'GitHub: Labels', kind: 'list' },
-        { path: 'source.github?.status', label: 'GitHub: Status', kind: 'text' },
-        { path: 'source.github?.issueType', label: 'GitHub: Issue type', kind: 'text' },
-        { path: 'source.github?.assignees', label: 'GitHub: Assignees', kind: 'list' },
-        { path: 'source.github?.description', label: 'GitHub: Description', kind: 'text' },
-        { path: 'source.github?.key', label: 'GitHub: Key', kind: 'text' }
-      ] },
-      { label: 'Jira', items: [
-        { path: 'source.jira?.status', label: 'Jira: Status', kind: 'text' },
-        { path: 'source.jira?.statusCategory', label: 'Jira: Status category', kind: 'text' },
-        { path: 'source.jira?.priority', label: 'Jira: Priority', kind: 'text' },
-        { path: 'source.jira?.labels', label: 'Jira: Labels', kind: 'list' },
-        { path: 'source.jira?.issueType', label: 'Jira: Issue type', kind: 'text' },
-        { path: 'source.jira?.components', label: 'Jira: Components', kind: 'list' },
-        { path: 'source.jira?.description', label: 'Jira: Description', kind: 'text' },
-        { path: 'source.jira?.key', label: 'Jira: Key', kind: 'text' }
-      ] },
-      { label: 'Salesforce', items: [
-        { path: 'source.salesforce?.name', label: 'Salesforce: Name', kind: 'text' },
-        { path: 'source.salesforce?.objectType', label: 'Salesforce: Object type', kind: 'text' },
-        { path: 'source.salesforce?.status', label: 'Salesforce: Status', kind: 'text' },
-        { path: 'source.salesforce?.owner', label: 'Salesforce: Owner', kind: 'text' },
-        { path: 'source.salesforce?.id', label: 'Salesforce: Record Id', kind: 'text' }
-      ] }
+      { label: 'GitHub', items: this.githubGroupItems('github', 'GitHub') },
+      { label: 'Jira', items: this.jiraGroupItems('jira', 'Jira') },
+      { label: 'Salesforce', items: this.salesforceGroupItems('salesforce', 'Salesforce') }
     ];
-    // __builtin_* entries already have their own fixed, rich-field group
-    // above (Jira/Salesforce/GitHub) -- skip them here so a bound Jira/
-    // Salesforce source doesn't show up twice (once rich, once as this
-    // generic connector's thin title/state/labels/assignee shape).
-    (this.state.connectedSources || []).filter(c => !c.id.startsWith('__builtin_')).forEach(c => {
+    // The 3 grandfathered __builtin_* rows already have their own fixed,
+    // rich-field group above (GitHub/Jira/Salesforce) -- skip them here
+    // so a bound source doesn't show up twice. A SECOND real instance of
+    // a kind (not one of the 3 fixed ids) gets its own rich group too,
+    // keyed by its own .key and named after it.
+    (this.state.connectedSources || []).filter(c => c.kind && !c.id.startsWith('__builtin_')).forEach(c => {
+      const items = c.kind === 'github' ? this.githubGroupItems(c.key, c.name)
+        : c.kind === 'jira' ? this.jiraGroupItems(c.key, c.name)
+        : this.salesforceGroupItems(c.key, c.name);
+      groups.push({ label: c.name, items });
+    });
+    // A true macro connector (no .kind) only ever gets the generic thin
+    // title/state/labels/assignee shape pickConnectorFields exposes.
+    (this.state.connectedSources || []).filter(c => !c.kind).forEach(c => {
       groups.push({ label: c.name, items: [
         { path: '!!source.' + c.key, label: 'Source is ' + c.name, kind: 'bool' },
         { path: 'source.' + c.key + '?.title', label: c.name + ': Title', kind: 'text' },
@@ -8080,7 +8158,8 @@ class Component extends DCLogic {
     if (ref.system === 'wigwag') return 'wigwag:/project/' + ref.projectId + (ref.issueId ? '/issue/' + ref.issueId : '');
     const n = normalizeRef(ref);
     if (!n) return currentText;
-    if (n.fetchedVia === '__builtin_github') return n.href || currentText;
+    const connector = n.fetchedVia ? this.resolveFetchConnector(n.fetchedVia) : null;
+    if (connector && connector.kind === 'github') return n.href || currentText;
     const matchedId = this.resolveMatchedIdForDisplay(ref, n);
     return matchedId != null ? matchedId : currentText;
   }
@@ -8107,10 +8186,13 @@ class Component extends DCLogic {
     // nothing stopping it from running underneath it. This reserves a
     // matching right-hand gutter on the TEXT side only, wide enough for
     // the glyph (12px) plus its offset from the edge in every context
-    // that renders it (0-12px) plus a little breathing room -- harmless
-    // to over-reserve slightly in the tighter-offset contexts, since this
-    // only ever applies when the glyph is actually showing.
-    const boundGlyphGutterStyle = showBoundGlyph ? 'padding-right:26px;' : '';
+    // that renders it (0-12px) plus breathing room -- harmless to over-
+    // reserve slightly in the tighter-offset contexts, since this only
+    // ever applies when the glyph is actually showing. Live-reported:
+    // 26px (2px of breathing room past the glyph's own 24px footprint)
+    // still read as cramped against long text -- widened to 34px (10px
+    // of clearance) for real visual separation.
+    const boundGlyphGutterStyle = showBoundGlyph ? 'padding-right:34px;' : '';
     const isBoundField = !!(def && def.linkedSourceId);
     const titleFontWeight = (isBoundField && ref) ? '600' : '400';
     // Editing always shows the editable SOURCE, not a derived/fetched value:
@@ -8174,11 +8256,11 @@ class Component extends DCLogic {
       const n = normalizeRef(ref);
       const fetchedVia = n ? n.fetchedVia : null;
       const matchedId = this.resolveMatchedIdForDisplay(ref, n);
-      const connDef = fetchedVia && !fetchedVia.startsWith('__builtin_') ? (this.state.connectedSources || []).find(c => c.id === fetchedVia) : null;
-      const isGithubRef = fetchedVia === '__builtin_github';
-      const isJiraRef = fetchedVia === '__builtin_jira';
-      const isSalesforceRef = fetchedVia === '__builtin_salesforce';
-      const isConnectorRef = !!connDef;
+      const connDef = fetchedVia ? (this.state.connectedSources || []).find(c => c.id === fetchedVia) : null;
+      const isGithubRef = fetchedVia === '__builtin_github' || (connDef && connDef.kind === 'github');
+      const isJiraRef = fetchedVia === '__builtin_jira' || (connDef && connDef.kind === 'jira');
+      const isSalesforceRef = fetchedVia === '__builtin_salesforce' || (connDef && connDef.kind === 'salesforce');
+      const isConnectorRef = !!connDef && !connDef.kind;
       const href = n ? n.href : null;
       const refLabel = isGithubRef ? (matchedId ? matchedId.owner + '/' + matchedId.repo + '#' + matchedId.num : (href || ''))
         : isConnectorRef ? connectorLinkText(connDef.linkTextTemplate, currentText, matchedId)

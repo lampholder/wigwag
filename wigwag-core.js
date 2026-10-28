@@ -1958,10 +1958,25 @@ function buildSource(issue, linkedSourceId, connectedSources) {
   // over a same-named extra key, and .extra itself stays present too
   // (so source.jira.extra.X still works for anyone who prefers the
   // nested form).
+  // Connector management: a connectedSources entry's `.key` is now the
+  // uniform way ANY instance exposes itself as source.<key>, not just a
+  // custom (macro) connector -- the 3 dedicated slots above already
+  // populated source.github/source.jira/source.salesforce for the
+  // ORIGINAL instance of each kind (checked via source[src.key] ===
+  // undefined below, so this is a no-op for it, never a double-pick);
+  // an ADDITIONAL instance of the same kind (a 2nd configured Jira, its
+  // own unique .key like 'jira2') populates its own source.<key> here
+  // instead, using the SAME real field-picker (pickGithubFields/
+  // pickJiraFields/pickSalesforceFields) a dedicated slot would have
+  // used -- it's still the real bridge, not a macro, just not the
+  // FIRST/grandfathered instance of its kind.
   const src = n && n.fetchedVia ? (connectedSources || []).find(c => c.id === n.fetchedVia) : null;
-  if (src && !src.builtin && src.key) {
-    const picked = pickConnectorFields(ref);
-    source[src.key] = { ...picked.extra, ...picked };
+  if (src && src.key && source[src.key] === undefined) {
+    const picked = src.kind === 'github' ? pickGithubFields(ref)
+      : src.kind === 'jira' ? pickJiraFields(ref)
+      : src.kind === 'salesforce' ? pickSalesforceFields(ref)
+      : pickConnectorFields(ref);
+    source[src.key] = src.kind ? picked : { ...picked.extra, ...picked };
   }
   return source;
 }
@@ -2126,6 +2141,25 @@ function isEmptyBoundValue(v) {
 // builtin would need updating both places, same as today.
 const BUILTIN_TAURI_GATED = { github: false, jira: true, salesforce: true };
 const BUILTIN_CREDENTIAL_REQUIRED = { github: false, jira: true, salesforce: true };
+// `.kind` ('github'/'jira'/'salesforce', undefined for a plain macro
+// connector) is the single source of truth for which real integration
+// backs a connectedSources entry, replacing id-slicing/exact-id-
+// comparison -- see /home/dev/.claude/plans/encapsulated-waddling-
+// gizmo.md. Split out of isRefLocallyLive (and exported) so the same
+// "is this instance usable right now" question can be asked from
+// outside a ref's own reachability check too -- e.g. connectorMatches'
+// paste-time gating, which has no ref yet to normalize.
+function builtinKindConfigured(c) {
+  if (!c || !c.kind) return false;
+  if (!(c.rootUrl || '').trim()) return false;
+  if (c.kind === 'github') return true;
+  return !!c.credentialConfigured;
+}
+function builtinKindReachable(c, ctx) {
+  if (!c || !c.kind) return false;
+  if (BUILTIN_TAURI_GATED[c.kind] && !(ctx && ctx.tauriConnectorRuntime)) return false;
+  return builtinKindConfigured(c);
+}
 function isRefLocallyLive(ref, ctx) {
   if (!ref) return false;
   if (ref.system === 'wigwag') return true;
@@ -2134,12 +2168,11 @@ function isRefLocallyLive(ref, ctx) {
   ctx = ctx || {};
   const c = (ctx.connectedSources || []).find(x => x.id === n.fetchedVia);
   if (!c) return false;
-  if (c.builtin) {
-    const kind = c.id.slice('__builtin_'.length);
-    if (BUILTIN_TAURI_GATED[kind] && !ctx.tauriConnectorRuntime) return false;
-    if (!(c.rootUrl || '').trim()) return false;
-    return BUILTIN_CREDENTIAL_REQUIRED[kind] ? !!c.credentialConfigured : true;
-  }
+  // A deactivated connector (new: keeps all its config/credentials, but
+  // acts as if it weren't there at all) behaves exactly like a deleted
+  // one for reachability -- same as `!c` just above.
+  if (c.enabled === false) return false;
+  if (c.kind) return builtinKindReachable(c, ctx);
   return !!ctx.tauriConnectorRuntime;
 }
 function computeBoundValue(issue, colId, def, ctx) {
@@ -4650,7 +4683,7 @@ async function probeMatrixRoomAccess({ fetchImpl, homeserverUrl, accessToken, ro
 }
 
 const WigwagCoreExports = {
-  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, xlsxDateTimeSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_NS, storageNamespacePrefix, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, LAYOUT_PROPOSAL_DEVICE_ID_KEY, CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, tokenizeFilterQuery, parseFilterQuery, issueMatchesFieldToken, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, pickConnectorFields, connectorLinkText, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, migrateLegacyComments, deriveFieldDefs, effectiveFieldDefs, PROJECT_NAME_FIELD_ID, deriveProjectName, PROJECT_NOTES_FIELD_ID, deriveProjectNotes, simpleStringHash, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, issueTimestampValue, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, MATRIX_USER_ID_RE, principalKind, identityPrincipal, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, normalizeRef, sourceRefHasFullData, evalRule, compileConnectorMacro, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, fieldLocalBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, issueCreatedAt,
+  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, xlsxDateTimeSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_NS, storageNamespacePrefix, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, LAYOUT_PROPOSAL_DEVICE_ID_KEY, CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, tokenizeFilterQuery, parseFilterQuery, issueMatchesFieldToken, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, pickConnectorFields, connectorLinkText, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, migrateLegacyComments, deriveFieldDefs, effectiveFieldDefs, PROJECT_NAME_FIELD_ID, deriveProjectName, PROJECT_NOTES_FIELD_ID, deriveProjectNotes, simpleStringHash, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, issueTimestampValue, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, MATRIX_USER_ID_RE, principalKind, identityPrincipal, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, normalizeRef, sourceRefHasFullData, evalRule, compileConnectorMacro, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, builtinKindConfigured, builtinKindReachable, fieldLocalBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, issueCreatedAt,
   importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry,
   squashHistory, displayValueForHistory, buildSourceText, keyRegistryEncoder, rehydrateKeyRef, humanFileSize, parseJsonl, entryKey, commentKey, unionByKey, mergeCommentStreams, mergeIssuePair, computeIssueMerge, mergeHasRealChanges, computeFieldDefsMerge, computeDerivedChangeEntries,
   isPastedTextASingleUrl, wrapSelectionWithMarkdownLink,

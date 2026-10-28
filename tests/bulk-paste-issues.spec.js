@@ -69,16 +69,11 @@ test.describe('Bulk-link issues from a multi-line paste', () => {
     // mockGithubApi's own addInitScript already stubbed window.__TAURI__
     // (applies again on this reload too) -- jira also needs a real root
     // URL + credentialConfigured for jiraKeyMatch to claim ABC-123 at all
-    // now (see builtinConfigured()). A live state mutation needs a
-    // reload to actually take effect -- this.state.connectedSources is
-    // only ever (re)read from localStorage at boot.
-    await page.evaluate(() => {
-      const raw = JSON.parse(localStorage.getItem('git_native_tracker_connected_sources_v1'));
-      const jira = raw.connectors.find(c => c.id === '__builtin_jira');
-      jira.rootUrl = 'https://mock.atlassian.net';
-      jira.credentialConfigured = true;
-      localStorage.setItem('git_native_tracker_connected_sources_v1', JSON.stringify(raw));
-    });
+    // now (see builtinConfigured()). migrateBuiltinConnectors no longer
+    // auto-seeds a __builtin_jira row at all, so this seeds one directly
+    // (seedBuiltinConfig's own addInitScript takes effect on the NEXT
+    // navigation, hence the reload right after).
+    await h.seedBuiltinConfig(page, 'jira', { rootUrl: 'https://mock.atlassian.net', credentialConfigured: true });
     await page.reload();
     await h.waitForBootSplashGone(page);
     const lines = [

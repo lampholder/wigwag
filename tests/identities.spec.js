@@ -59,27 +59,17 @@ test.describe('Single identity: breadcrumb still renders, migration labels it "P
     await expect(scopes.first()).toContainText('no email set');
   });
 
-  // Jira/Salesforce's old proxy-URL-default migration concern is retired
-  // along with the proxy mechanism itself (ensureBuiltinConnectors seeds
-  // the built-in Jira connector the same way for every identity now,
-  // fresh or migrated, with no per-identity URL default to preserve) --
-  // the equivalent regression in the new mechanism would be the built-in
-  // connector failing to seed at all for a fresh identity.
-  test('migration still seeds the built-in Jira connector for a user who never configured anything, ready for its own root URL/credential', async ({ page }) => {
-    // Editing (not just seeding) requires the real Tauri connector
-    // runtime -- outside it, Jira's row renders disabled with no Edit
-    // affordance at all (see connected-sources-settings.spec.js). Set
-    // live, not via addInitScript: this test's own beforeEach has
-    // already navigated by this point, and isTauriConnectorRuntime() is
-    // checked fresh on every render, not cached at boot.
-    await page.evaluate(() => { window.__TAURI__ = { core: { invoke: () => Promise.resolve(null) } }; });
+  // Superseded by the connector-management redesign (/home/dev/.claude/
+  // plans/encapsulated-waddling-gizmo.md): migrateBuiltinConnectors no
+  // longer seeds anything for a fresh identity -- Tom explicitly wants
+  // Context connectors to list only what's actually configured, not one
+  // row per built-in regardless of state. The equivalent regression
+  // under the new design is the opposite of this test's old name: a
+  // fresh identity's connector list staying genuinely EMPTY, not
+  // getting a Jira row for free.
+  test('a fresh identity with nothing configured shows no built-in connector rows at all', async ({ page }) => {
     await h.openSettingsSection(page, 'connectedDataSources');
-    const jiraRow = page.locator('[data-testid=connected-source-row]', { hasText: 'Jira' });
-    await expect(jiraRow).toBeVisible();
-    await jiraRow.locator('[data-testid=btn-edit-connected-source]').click();
-    await expect(page.locator('[data-testid=connector-form-modal]')).toContainText('Jira');
-    await expect(page.locator('[data-testid=builtin-root-url-input]')).toHaveValue('');
-    await expect(page.locator('[data-testid=builtin-credential-input]')).toHaveValue('');
+    await expect(page.locator('[data-testid=connected-source-row]')).toHaveCount(0);
   });
 });
 
@@ -429,7 +419,13 @@ test.describe('Settings modal: section navigation', () => {
 
     await page.locator('[data-testid=settings-nav-item][data-section-id=connectedDataSources]').click();
     await page.waitForTimeout(120);
-    await expect(page.locator('[data-testid=connected-source-row]', { hasText: 'Jira' })).toBeVisible();
+    // migrateBuiltinConnectors no longer auto-seeds a Jira row for a
+    // fresh identity (see identities.spec.js's "Single identity" describe
+    // above), and "+ Add source" is Tauri-only (hidden here, outside
+    // Tauri) -- the SOURCES label itself is the one thing always there
+    // regardless of config/runtime, so it's what confirms this section
+    // actually rendered.
+    await expect(page.locator('text=SOURCES')).toBeVisible();
     await expect(page.locator('[data-testid=settings-github-token]')).toHaveCount(0);
   });
 

@@ -63,7 +63,11 @@ test.describe('Binding an issue-type field to another field ("copy field")', () 
   // this needs a Tauri stub even though no GitHub data is ever actually
   // fetched here -- mockGithubApi's own addInitScript-based Tauri shim must
   // register before the page navigates (gotoTracker) to take effect.
-  test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
+  test.beforeEach(async ({ page }) => {
+    await h.mockGithubApi(page);
+    await h.seedBuiltinConfig(page, 'github', { rootUrl: 'https://api.github.com' });
+    await h.gotoTracker(page);
+  });
 
   test('an issue-type field now shows "Set up…" like any other bindable field, not silently unbindable', async ({ page }) => {
     const id = await addField(page, 'Remedy', 'issue');

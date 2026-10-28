@@ -579,9 +579,13 @@ async function overrideConnectorFetchResponses(page, { responsesByUrlSubstring =
 // connected-sources.spec.js's own seedConnector uses for custom
 // connectors, so a test doesn't need to click through the Settings UI
 // just to configure a built-in before exercising dispatch. Must be
-// called BEFORE navigation (addInitScript) -- ensureBuiltinConnectors'
-// own idempotent seeding leaves an already-present entry's config alone,
-// so whatever's seeded here survives boot unchanged.
+// called BEFORE navigation (addInitScript) -- migrateBuiltinConnectors'
+// own idempotent migration leaves an already-present entry's config
+// alone, so whatever's seeded here survives boot unchanged. Also the
+// one place `kind` (the field every dispatch site now reads instead of
+// slicing the id, see /home/dev/.claude/plans/encapsulated-waddling-
+// gizmo.md) gets set for a hand-seeded row -- a real add/edit through
+// the app always sets it too, this is only for tests bypassing that UI.
 async function seedBuiltinConfig(page, kind, { rootUrl = '', username = '', credentialConfigured = false } = {}) {
   await page.addInitScript(({ kind, rootUrl, username, credentialConfigured }) => {
     const id = '__builtin_' + kind;
@@ -589,10 +593,19 @@ async function seedBuiltinConfig(page, kind, { rootUrl = '', username = '', cred
     const raw = localStorage.getItem('git_native_tracker_connected_sources_v1');
     const parsed = raw ? JSON.parse(raw) : { connectors: [] };
     const idx = parsed.connectors.findIndex(c => c.id === id);
-    const record = { id, key: kind, name: names[kind], builtin: true, rootUrl, username, credentialConfigured };
+    const record = { id, key: kind, kind, name: names[kind], builtin: true, rootUrl, username, credentialConfigured };
     if (idx === -1) parsed.connectors.push(record); else parsed.connectors[idx] = { ...parsed.connectors[idx], ...record };
     localStorage.setItem('git_native_tracker_connected_sources_v1', JSON.stringify(parsed));
   }, { kind, rootUrl, username, credentialConfigured });
+}
+
+// The 3 built-ins no longer auto-seed on a fresh boot (migrateBuiltinConnectors
+// only ever migrates what's already there) -- any test whose whole point
+// predates that change and just wants "all 3 rows exist, unconfigured,
+// same as the old always-seeded default" calls this once instead of 3
+// separate seedBuiltinConfig calls.
+async function seedAllBuiltinConnectors(page) {
+  for (const kind of ['github', 'jira', 'salesforce']) await seedBuiltinConfig(page, kind, {});
 }
 
 // Settings lives behind a per-identity cog in the switcher's own left
@@ -1285,6 +1298,7 @@ module.exports = {
   connectorFetchCallCount,
   overrideConnectorFetchResponses,
   seedBuiltinConfig,
+  seedAllBuiltinConnectors,
   openSettings,
   openSettingsSection,
   openProjectPanel,

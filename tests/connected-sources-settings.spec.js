@@ -47,6 +47,7 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
   // (no general CORS allowance, and both require a keychain credential
   // to do anything at all) show disabled with the note.
   test('outside Tauri, all 3 built-ins still show (not hidden); GitHub stays enabled (anonymous access works), Jira/Salesforce are disabled with a note, and there\'s no "+ Add source" affordance', async ({ page }) => {
+    await h.seedAllBuiltinConnectors(page);
     await h.gotoTracker(page);
     await h.openSettingsSection(page, 'connectedDataSources');
 
@@ -76,6 +77,7 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
   // (they're real, hardcoded integrations, not user-authored JS).
   test('editing the built-in Jira connector opens its own real-config editor (root URL/username/credential, real logo, no macro), and changes persist with the key unchanged', async ({ page }) => {
     await stubTauri(page);
+    await h.seedAllBuiltinConnectors(page);
     await h.gotoTracker(page);
     await h.openSettingsSection(page, 'connectedDataSources');
 
@@ -108,6 +110,7 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
   });
 
   test('editing the built-in GitHub connector shows no username field (not needed for PAT auth), same small-modal chrome as Jira/Salesforce', async ({ page }) => {
+    await h.seedAllBuiltinConnectors(page);
     await h.gotoTracker(page); // no Tauri needed -- GitHub's own row is enabled either way
     await h.openSettingsSection(page, 'connectedDataSources');
     await page.locator('[data-testid=connected-source-row]', { hasText: 'GitHub' }).locator('[data-testid=btn-edit-connected-source]').click();
@@ -121,6 +124,7 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
 
   test('a custom connector only shows up, and "+ Add source" only appears, inside the real Tauri app', async ({ page }) => {
     await stubTauri(page);
+    await h.seedAllBuiltinConnectors(page);
     await h.gotoTracker(page);
     await h.openSettingsSection(page, 'connectedDataSources');
     await expect(page.locator('[data-testid=btn-add-connected-source]')).toBeVisible();
@@ -129,6 +133,7 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
 
   test('adding a connector: fill every panel, test the real macro, save, and see it appear in the list', async ({ page }) => {
     await stubTauri(page);
+    await h.seedAllBuiltinConnectors(page);
     await h.gotoTracker(page);
     await h.openSettingsSection(page, 'connectedDataSources');
 
@@ -174,6 +179,7 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
 
   test('picking the Jira template pre-fills name/patterns/a real macro, and the resulting connector is independent of the legacy built-in Jira row', async ({ page }) => {
     await stubTauri(page);
+    await h.seedAllBuiltinConnectors(page);
     await h.gotoTracker(page);
     await h.openSettingsSection(page, 'connectedDataSources');
     await page.locator('[data-testid=btn-add-connected-source]').click();
@@ -321,8 +327,16 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
 
   test('deleting a custom connector removes it from the list and closes the form', async ({ page }) => {
     await stubTauri(page);
+    await h.seedAllBuiltinConnectors(page);
+    // Merges with whatever seedAllBuiltinConnectors's own addInitScript
+    // calls already wrote (registered first, runs first on the same
+    // navigation) -- a blind overwrite here would wipe the 3 builtin
+    // rows it just seeded.
     await page.addInitScript((c) => {
-      localStorage.setItem('git_native_tracker_connected_sources_v1', JSON.stringify({ connectors: [c] }));
+      const raw = localStorage.getItem('git_native_tracker_connected_sources_v1');
+      const existing = raw ? JSON.parse(raw) : { connectors: [] };
+      existing.connectors.push(c);
+      localStorage.setItem('git_native_tracker_connected_sources_v1', JSON.stringify(existing));
     }, {
       id: 'conn_test_delete', key: 'deltest', name: 'DeleteMe', glyph: 'D', color: 'oklch(0.55 0.13 20)',
       patterns: [{ regex: '^DM-\\d+$', label: 'Short ID' }],
@@ -345,6 +359,7 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
 
   test('Cancel discards an in-progress draft without saving anything', async ({ page }) => {
     await stubTauri(page);
+    await h.seedAllBuiltinConnectors(page);
     await h.gotoTracker(page);
     await h.openSettingsSection(page, 'connectedDataSources');
     await openBlankConnectorForm(page);

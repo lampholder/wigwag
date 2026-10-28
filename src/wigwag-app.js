@@ -625,7 +625,7 @@ class Component extends DCLogic {
     this.ingestEmbeddedSnapshotIfPresent();
     this.loadSecrets();
     this.hydrateActiveIdentitySecrets();
-    this.ensureBuiltinConnectors();
+    this.migrateBuiltinConnectors();
     this._lastPersistedProjectIndexJson = JSON.stringify({ activeMilestoneId: this.state.projectId, milestones: this.state.projects });
     return this.finishBootSequenceAsync();
   }
@@ -4032,96 +4032,103 @@ class Component extends DCLogic {
     catch (e) { console.warn('[tracker] failed to save connected sources:', e); }
     this.setState({ connectedSources: connectors });
   }
-  // Promotes the 3 built-in systems (GitHub/Jira/Salesforce) into real
-  // connectedSources entries, using fixed well-known ids and keys that
-  // are literally 'github'/'jira'/'salesforce' -- not slugifyConnectorKey-
-  // derived, and not colliding with anything a user could ever create
-  // themselves (these three names are in CONNECTED_SOURCE_RESERVED_KEYS,
-  // wigwag-core.js). Each entry is config, not a macro -- {rootUrl,
+  // Keeps the 3 original fixed-id built-in rows (GitHub/Jira/Salesforce,
+  // ids/keys literally 'github'/'jira'/'salesforce' -- not
+  // slugifyConnectorKey-derived, and permanently reserved against
+  // collision with anything a user could create themselves, see
+  // CONNECTED_SOURCE_RESERVED_KEYS, wigwag-core.js) in good shape --
+  // does NOT seed them for a fresh install any more (see /home/dev/
+  // .claude/plans/encapsulated-waddling-gizmo.md: Tom wants the
+  // Connected Sources list to show only what's actually configured, and
+  // to support more than one instance per system -- an unconditional
+  // "always exactly 3 rows" seed is incompatible with both). A project
+  // that already has one or more of these 3 ids (from before this
+  // change, or from the one legacy-credential migration below) keeps
+  // it; a brand-new install's connectedSources starts empty and the
+  // user adds GitHub/Jira/Salesforce (or more than one of any of them)
+  // explicitly via "+ Add source", same as a custom connector always
+  // had to be.
+  //
+  // Each kind-tagged entry is config, not a macro -- {rootUrl,
   // username, credentialConfigured} -- matching BUILTIN_INTEGRATIONS'
   // own per-system field set (see its own comment for why the field set
   // differs per system). The actual fetch logic lives in
   // fetchJiraData/fetchSalesforceData/fetchGithubData, hardcoded ports of
   // the real bridges/*.js scripts, not a compiled user macro.
-  //
-  // Idempotent via existence check (also doubles as "already migrated,
-  // don't re-run"), seeds all 3 for every user regardless of runtime so
-  // the "always 3 built-in rows visible" UX survives unchanged --
-  // outside Tauri they render disabled (see connectedSourcesSettings).
-  // githubToken is the ONE real pre-existing credential worth migrating
-  // (it WAS literally the user's GitHub PAT, used directly by the app's
-  // own fetch) -- jiraProxySecret/salesforceProxySecret were never real
-  // Jira/Salesforce credentials at all, only a shared secret between
-  // this app and a separate local proxy process holding the REAL
-  // credentials in its own environment, invisible to this app -- so
-  // there is nothing real to migrate for Jira/Salesforce; both start
-  // unconfigured and need their root URL/username/credential entered
-  // fresh. Migration (copying githubToken into the new entry's OS
-  // keychain slot) only runs inside Tauri, since keychain access
-  // requires it, and is fired without awaiting -- same non-blocking
-  // pattern as warmProjectSummaries -- so a slow keychain round-trip
-  // never delays boot. That part runs well after mount (a promise
-  // callback), so IT goes through the normal saveConnectedSources/
-  // setState path -- but the seeding itself runs inside runBootSequence,
-  // pre-mount, where (per runBootSequence's own comment) this.state must
-  // be mutated directly, never via setState.
-  ensureBuiltinConnectors() {
-    const BUILTINS = [
-      { id: '__builtin_github', kind: 'github', legacySecret: this.state.githubToken },
-      { id: '__builtin_jira', kind: 'jira', legacySecret: '' },
-      { id: '__builtin_salesforce', kind: 'salesforce', legacySecret: '' }
-    ];
+  migrateBuiltinConnectors() {
     const existing = this.state.connectedSources || [];
-    const missing = BUILTINS.filter(b => !existing.find(c => c.id === b.id));
     // Live-reported bug: a project that already ran under the earlier,
     // now-superseded macro-based architecture (commits 979593f/e9da646,
     // corrected by 80f5003) seeded __builtin_jira/__builtin_salesforce/
     // __builtin_github with real patterns+macro fields -- this function
     // only ever filled in MISSING ids, never migrated an EXISTING one, so
     // those stale fields survived the correction untouched. Left alone,
-    // customConnectorMatches (which has no reason to even look at builtin
-    // ids, but doesn't exclude them either) would keep matching a Jira-
-    // shaped paste against the stale __builtin_jira entry's own leftover
-    // patterns as if it were a real custom connector -- showing up in the
-    // "matches more than one connected source" picker even though Jira
-    // itself was never configured under the current model. One-time,
-    // idempotent cleanup: strip the old macro-shape fields from any
-    // EXISTING builtin entry that still carries them, same self-heals-on-
-    // next-boot convention as this codebase's other legacy migrations.
+    // connectorMatches would keep matching a Jira-shaped paste against
+    // the stale __builtin_jira entry's own leftover patterns as if it
+    // were a real custom connector -- showing up in the "matches more
+    // than one connected source" picker even though Jira itself was
+    // never configured under the current model. One-time, idempotent
+    // cleanup: strip the old macro-shape fields from any EXISTING
+    // builtin entry that still carries them, same self-heals-on-next-
+    // boot convention as this codebase's other legacy migrations. Also
+    // backfills the new `.kind` field onto any of the 3 fixed ids that
+    // predate it -- the single source of truth every dispatch site now
+    // reads, replacing id-slicing (see the plan above).
     const legacyShapeKeys = ['patterns', 'macro', 'glyph', 'color', 'linkTextTemplate'];
     const migrated = existing.map(c => {
-      if (!c.id.startsWith('__builtin_') || !legacyShapeKeys.some(k => k in c)) return c;
-      const { patterns, macro, glyph, color, linkTextTemplate, ...cleaned } = c;
-      return { ...cleaned, builtin: true, rootUrl: cleaned.rootUrl || '', username: cleaned.username || '' };
+      if (!c.id.startsWith('__builtin_')) return c;
+      const kind = c.id.slice('__builtin_'.length);
+      const stripped = legacyShapeKeys.some(k => k in c)
+        ? (() => { const { patterns, macro, glyph, color, linkTextTemplate, ...cleaned } = c; return { ...cleaned, builtin: true, rootUrl: cleaned.rootUrl || '', username: cleaned.username || '' }; })()
+        : c;
+      return stripped.kind ? stripped : { ...stripped, kind };
     });
     const anyMigrated = migrated.some((c, i) => c !== existing[i]);
-    if (!missing.length && !anyMigrated) return;
-    const added = missing.map(b => {
-      const spec = BUILTIN_INTEGRATIONS[b.kind];
-      return { id: b.id, key: spec.key, name: spec.name, builtin: true,
-        rootUrl: spec.rootUrlDefault || '', username: '', credentialConfigured: false };
-    });
+    // githubToken is the ONE real pre-existing credential still worth
+    // migrating (it WAS literally the user's GitHub PAT, used directly
+    // by the app's own fetch, from before connectedSources existed at
+    // all) -- jiraProxySecret/salesforceProxySecret were never real
+    // Jira/Salesforce credentials, only a shared secret with a separate
+    // local proxy process holding the real ones, invisible to this app,
+    // so there's nothing real to migrate for those two. This is the one
+    // case that still CREATES a row -- migrating real user data, not
+    // seeding an empty placeholder -- gated on "no github-kind entry
+    // exists yet" so it only ever fires once, same as the old seeding
+    // logic's own idempotency, and is a true no-op for a fresh install
+    // (no githubToken, nothing to migrate, nothing created).
+    const legacyToken = (this.state.githubToken || '').trim();
+    const added = (!migrated.some(c => c.kind === 'github') && legacyToken) ? [{
+      id: '__builtin_github', key: 'github', kind: 'github', name: BUILTIN_INTEGRATIONS.github.name, builtin: true,
+      rootUrl: BUILTIN_INTEGRATIONS.github.rootUrlDefault || '', username: '', credentialConfigured: false
+    }] : [];
+    if (!anyMigrated && !added.length) return;
     const next = migrated.concat(added);
     try { localStorage.setItem(CONNECTED_SOURCES_KEY, JSON.stringify({ connectors: next })); }
     catch (e) { console.warn('[tracker] failed to save connected sources:', e); }
     this.state.connectedSources = next;
-    if (!this.isTauriConnectorRuntime()) return;
-    missing.forEach((b, i) => {
-      const secret = (b.legacySecret || '').trim();
-      if (!secret) return;
-      const newId = added[i].id;
-      this.setConnectorCredential(newId, secret).then(() => {
-        this.saveConnectedSources((this.state.connectedSources || []).map(c => c.id === newId ? { ...c, credentialConfigured: true } : c));
-      }).catch(e => console.warn('[tracker] failed to migrate legacy credential for', newId, e));
-    });
+    if (!added.length || !this.isTauriConnectorRuntime()) return;
+    // Migration (copying githubToken into the new entry's OS keychain
+    // slot) only runs inside Tauri, since keychain access requires it,
+    // and is fired without awaiting -- same non-blocking pattern as
+    // warmProjectSummaries -- so a slow keychain round-trip never delays
+    // boot. This part runs well after mount (a promise callback), so IT
+    // goes through the normal saveConnectedSources/setState path -- but
+    // the migration above runs inside runBootSequence, pre-mount, where
+    // (per runBootSequence's own comment) this.state must be mutated
+    // directly, never via setState.
+    this.setConnectorCredential('__builtin_github', legacyToken).then(() => {
+      this.saveConnectedSources((this.state.connectedSources || []).map(c => c.id === '__builtin_github' ? { ...c, credentialConfigured: true } : c));
+    }).catch(e => console.warn('[tracker] failed to migrate legacy credential for __builtin_github', e));
   }
-  // Looks up one of the 3 fixed-id built-in entries ensureBuiltinConnectors
-  // seeds for every user (Tauri or not).
+  // Looks up one of the 3 fixed-id built-in entries migrateBuiltinConnectors
+  // preserves, if it still exists (deleting one is now possible -- see
+  // deleteConnectorSource -- so unlike before this can legitimately be
+  // absent).
   builtinConnector(key) { return (this.state.connectedSources || []).find(c => c.id === '__builtin_' + key); }
   // A built-in is actually usable (claims a paste pattern / is "Connected"
   // in Settings) only once it has a real root URL AND a real credential --
-  // existence alone (always true, since ensureBuiltinConnectors seeds all
-  // 3 unconditionally) means nothing. GitHub is the one exception: its
+  // existence alone means nothing (a fixed-id row can now be entirely
+  // absent, deleted, or newly-added-but-blank). GitHub is the one exception: its
   // real bridge/app-side fetch always allowed anonymous, unauthenticated
   // access (rate-limited, not blocked), so only its root URL needs to be
   // real -- a credential is optional, same as it always was.
@@ -4143,7 +4150,7 @@ class Component extends DCLogic {
   // patterns match. Explicitly excludes the 3 fixed builtin ids -- they
   // dispatch through their own shape-based matchers (githubUrlMatch/
   // jiraKeyMatch/salesforceUrlMatch), never this pattern engine, and
-  // ensureBuiltinConnectors' own migration can't retroactively guarantee
+  // migrateBuiltinConnectors' own migration can't retroactively guarantee
   // an already-persisted builtin entry has no stray patterns field left
   // over from the earlier macro-based architecture -- without this
   // exclusion a Jira-shaped paste could match the unconfigured built-in

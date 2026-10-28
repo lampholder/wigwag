@@ -27,7 +27,11 @@ test.describe('Bulk-link issues from a multi-line paste', () => {
   // the page navigates (gotoTracker) to actually apply -- GitHub's
   // built-in linking goes through Tauri IPC now, which an addInitScript
   // added after the page already loaded can't retroactively provide.
-  test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
+  test.beforeEach(async ({ page }) => {
+    await h.mockGithubApi(page);
+    await h.seedBuiltinConfig(page, 'github', { rootUrl: 'https://api.github.com' });
+    await h.gotoTracker(page);
+  });
 
   test('a single-line paste still behaves exactly as before -- no preview, no review, immediate creation', async ({ page }) => {
     await page.keyboard.down('Control'); await page.keyboard.press('Space'); await page.keyboard.up('Control');

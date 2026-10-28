@@ -22,6 +22,7 @@ const h = require('./helpers');
 
 test.describe('GitHub built-in linking', () => {
   test('no credential configured -> the request carries no Authorization header (anonymous access still works)', async ({ page }) => {
+    await h.seedBuiltinConfig(page, 'github', { rootUrl: 'https://api.github.com' });
     await h.stubTauriConnectorRuntime(page, {
       responsesByUrlSubstring: { 'Hello-World/issues/1': JSON.stringify({ title: 'x', labels: [] }) }
     });
@@ -40,6 +41,7 @@ test.describe('GitHub built-in linking', () => {
   });
 
   test('a configured credential is sent as a Bearer Authorization header', async ({ page }) => {
+    await h.seedBuiltinConfig(page, 'github', { rootUrl: 'https://api.github.com', credentialConfigured: true });
     await h.stubTauriConnectorRuntime(page, {
       responsesByUrlSubstring: { 'Hello-World/issues/1': JSON.stringify({ title: 'Private issue', labels: [] }) },
       credential: 'ghp_testtoken123'
@@ -331,7 +333,12 @@ test.describe('Jira linking: refresh migrates a stale built-in ref to a now-matc
 
   test('refreshing a system:"jira" field migrates to the matching custom connector once the built-in is unconfigured', async ({ page }) => {
     await page.evaluate(() => {
-      const existing = JSON.parse(localStorage.getItem('git_native_tracker_connected_sources_v1'));
+      // migrateBuiltinConnectors no longer seeds an (empty or otherwise)
+      // shell for a project with nothing configured -- this key can be
+      // genuinely absent now, where it used to always exist at least as
+      // {connectors: []} (or the 3 auto-seeded rows).
+      const raw = localStorage.getItem('git_native_tracker_connected_sources_v1');
+      const existing = raw ? JSON.parse(raw) : { connectors: [] };
       existing.connectors.push({
         id: 'conn_linear', key: 'linear', name: 'Linear', glyph: 'L', color: 'red',
         patterns: [{ regex: '[A-Z]+-\\d+', label: 'Linear key' }],
@@ -374,7 +381,12 @@ test.describe('Jira linking: refresh migrates a stale built-in ref to a now-matc
     // re-registers on every navigation including reloads.
     await h.stubTauriConnectorRuntime(page, { responsesByUrlSubstring: { 'TRK-999': jiraRawFixture('TRK-999') }, credential: 'tok' });
     await page.evaluate(() => {
-      const existing = JSON.parse(localStorage.getItem('git_native_tracker_connected_sources_v1'));
+      // seedBuiltinConfig's own addInitScript hasn't run yet at this point
+      // in the test (it takes effect on the NEXT navigation, below) --
+      // and migrateBuiltinConnectors no longer seeds even an empty shell,
+      // so this key can be genuinely absent here.
+      const raw = localStorage.getItem('git_native_tracker_connected_sources_v1');
+      const existing = raw ? JSON.parse(raw) : { connectors: [] };
       existing.connectors.push({
         id: 'conn_linear', key: 'linear', name: 'Linear', glyph: 'L', color: 'red',
         patterns: [{ regex: '[A-Z]+-\\d+', label: 'Linear key' }],
@@ -426,6 +438,10 @@ test.describe('Salesforce linking', () => {
 
   test.beforeEach(async ({ page }) => {
     await h.mockGithubApi(page);
+    // "source.salesforce is null unless..." (below) pastes a GitHub URL
+    // as its own non-Salesforce case -- needs a real github-kind row to
+    // resolve at all, now that nothing auto-seeds one.
+    await h.seedBuiltinConfig(page, 'github', { rootUrl: 'https://api.github.com' });
     await h.seedBuiltinConfig(page, 'salesforce', { rootUrl: SF_LOGIN_URL, username: 'tom@acme.com', credentialConfigured: true });
     await h.stubTauriConnectorRuntime(page, {
       responsesByUrlSubstring: {
@@ -552,6 +568,10 @@ test.describe('Salesforce linking', () => {
 test.describe('Jira linking: expanded field set', () => {
   test.beforeEach(async ({ page }) => {
     await h.mockGithubApi(page);
+    // "source.jira / source.github are null unless..." (below) pastes a
+    // GitHub URL as its own non-Jira case -- needs a real github-kind
+    // row to resolve at all, now that nothing auto-seeds one.
+    await h.seedBuiltinConfig(page, 'github', { rootUrl: 'https://api.github.com' });
     await h.seedBuiltinConfig(page, 'jira', { rootUrl: JIRA_ROOT, credentialConfigured: true });
     await h.stubTauriConnectorRuntime(page, {
       responsesByUrlSubstring: {

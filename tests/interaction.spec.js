@@ -308,7 +308,11 @@ test.describe('Title: click to peek vs. click to edit', () => {
 });
 
 test.describe('Remote lookups persist with the data', () => {
-  test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
+  test.beforeEach(async ({ page }) => {
+    await h.mockGithubApi(page);
+    await h.seedBuiltinConfig(page, 'github', { rootUrl: 'https://api.github.com' });
+    await h.gotoTracker(page);
+  });
 
   test('a resolved field survives a page reload (state, not a re-fetch)', async ({ page }) => {
     // 'linked' ("Related") is type:'issue' -- paste-to-resolve linking is
@@ -352,7 +356,11 @@ test.describe('Remote lookups persist with the data', () => {
 });
 
 test.describe('Refresh: row / whole table', () => {
-  test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
+  test.beforeEach(async ({ page }) => {
+    await h.mockGithubApi(page);
+    await h.seedBuiltinConfig(page, 'github', { rootUrl: 'https://api.github.com' });
+    await h.gotoTracker(page);
+  });
 
   test('row: refreshing re-pulls every GitHub-linked field on that row, not just one', async ({ page }) => {
     // The fixtures are deterministic (mockGithubApi always returns the same
@@ -1130,10 +1138,15 @@ test.describe('Select/multiselect popover flips above the field when there is no
 
 test.describe('Activity history', () => {
   // One test below pastes a GitHub URL into the add-item box, which now
-  // needs the real Tauri connector runtime to resolve as a link (see
-  // BUILTIN_INTEGRATIONS/ensureBuiltinConnectors) -- mockGithubApi's
-  // addInitScript-based stub must register before the page navigates.
-  test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
+  // needs a real github-kind connector row to resolve as a link (see
+  // BUILTIN_INTEGRATIONS/migrateBuiltinConnectors -- nothing auto-seeds
+  // one any more) -- mockGithubApi's addInitScript-based stub must
+  // register before the page navigates.
+  test.beforeEach(async ({ page }) => {
+    await h.mockGithubApi(page);
+    await h.seedBuiltinConfig(page, 'github', { rootUrl: 'https://api.github.com' });
+    await h.gotoTracker(page);
+  });
 
   test('editing a plain text field logs a history entry', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'mitigation');

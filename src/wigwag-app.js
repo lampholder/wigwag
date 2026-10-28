@@ -5462,6 +5462,24 @@ class Component extends DCLogic {
     // Salesforce URL, so someone can't end up with a partially-linked
     // column they later can't bind to.
     if (commitDef && commitDef.type === 'issue') {
+      // A genuine no-op check BEFORE any paste-match recognition runs --
+      // editValueForRef is exactly what populated `draft` in the first
+      // place when this field already has a link; if the user changed
+      // nothing, draft is still EXACTLY that same string. The match
+      // functions below are gated on CURRENT reachability (Tauri runtime
+      // + the builtin actually configured), which is a real, live-
+      // reported, DESTRUCTIVE bug: if the system that originally
+      // resolved this link is no longer configured (e.g. Jira's proxy
+      // URL cleared since), re-submitting the unedited text silently
+      // fails to re-recognize it as a link at all, falls through to the
+      // plain-text branch below, and overwrites the resolved value with
+      // the bare key/identifier -- wiping the real fieldRef to null in
+      // the process, as a normal signed "field set to X" entry. Checking
+      // unchanged-ness directly here, independent of whether a match
+      // would currently be recognized, is what actually prevents that.
+      const iss0 = this.findIssue(issueId);
+      const currentRef0 = iss0 && iss0.fieldRefs && iss0.fieldRefs[colId];
+      if (currentRef0 && draft === this.editValueForRef(currentRef0, iss0.values[colId])) { this.cancelEdit(); return; }
       const gh = this.githubUrlMatch(draft);
       const jira = !gh && this.jiraKeyMatch(draft);
       const sf = !gh && !jira && this.salesforceUrlMatch(draft);

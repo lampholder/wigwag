@@ -1264,7 +1264,7 @@ test.describe('Activity history', () => {
     }
   });
 
-  test('new history/comment entries carry a real timestamp, not a static "Now"/"Just now" placeholder', async ({ page }) => {
+  test('new history/comment entries carry a real timestamp (sortKey), not a static "Now"/"Just now" placeholder', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'priority');
     await page.waitForTimeout(150);
     const optionList = page.locator('div[style*="max-height: 220px"]');
@@ -1272,12 +1272,20 @@ test.describe('Activity history', () => {
     await page.waitForTimeout(150);
 
     const doc = await h.readActiveMilestoneDoc(page);
-    const times = doc.issues.find(i => i.id === 'i3').history.map(hh => hh.time);
-    const newest = times[times.length - 1];
-    expect(newest).not.toBe('Now');
-    expect(newest).not.toBe('Just now');
-    // real timestamps look like "Aug 6, 8:48 AM" -- a month abbreviation, a day number, and a time.
-    expect(newest).toMatch(/^[A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2}\s?(AM|PM)$/);
+    const history = doc.issues.find(i => i.id === 'i3').history;
+    const newest = history[history.length - 1];
+    // A new entry's real timestamp lives SOLELY in its numeric sortKey
+    // (epoch ms) now -- Tom: "if the real ts is in the sortKey, why
+    // store a formatted version at all in the file? Don't do that."
+    // There's no separate `time` field at all any more for an entry
+    // created from here on (the UI derives its own human-readable label
+    // from sortKey at render time instead, see timeLabelFor); an old
+    // entry's pre-existing `time` string (anything signed before this
+    // change) keeps reading correctly forever, read-forward only.
+    expect(newest.time).toBeUndefined();
+    expect(typeof newest.sortKey).toBe('number');
+    expect(newest.sortKey).toBeGreaterThan(Date.now() - 60000);
+    expect(newest.sortKey).toBeLessThanOrEqual(Date.now());
   });
 });
 

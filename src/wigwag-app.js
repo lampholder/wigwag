@@ -9,7 +9,7 @@
 // names like deriveIssueValues(...), not window.WigwagCore.xxx(...))
 // because this destructure is the only thing that needed to change.
 const {
-  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, columnFilterIsActive, dateFilterPresetRanges, parseFilterQuery, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, isPastedTextASingleUrl, wrapSelectionWithMarkdownLink, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, formatNow, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, migrateLegacyComments, deriveFieldDefs, effectiveFieldDefs, deriveProjectName, PROJECT_NAME_FIELD_ID, deriveProjectNotes, PROJECT_NOTES_FIELD_ID, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, principalKind, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER
+  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, columnFilterIsActive, dateFilterPresetRanges, parseFilterQuery, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, isPastedTextASingleUrl, wrapSelectionWithMarkdownLink, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, migrateLegacyComments, deriveFieldDefs, effectiveFieldDefs, deriveProjectName, PROJECT_NAME_FIELD_ID, deriveProjectNotes, PROJECT_NOTES_FIELD_ID, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, principalKind, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER
 ,
   buildSource, normalizeRef, evalRule, ruleNeedsSourceData, isEmptyBoundValue, fieldLocalBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot,
   CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, pickConnectorFields, connectorLinkText, compileConnectorMacro,
@@ -1112,9 +1112,45 @@ class Component extends DCLogic {
       localDerivedEntryIds: (this.state.localDerivedEntryIds && this.state.localDerivedEntryIds[issueId]) || {}
     };
   }
-  overrideTitle(def) {
+  // `ref`, when given, is this field's OWN current fieldRef -- only ever
+  // possible for a type:'issue' field (select/multiselect can't hold a
+  // pasted external link at all, see commitEdit's own type gating), and
+  // only reachable when `isOverridden` is already true. Live-reported:
+  // the glyph/tooltip's wording ("Overrides the linked value...")
+  // implied a manual hand-edit even when what actually happened was an
+  // independently-pasted link to a DIFFERENT source -- a field that's
+  // schema-bound via a copy-field rule but ALSO carries its own real
+  // link diverges from the rule's computed answer exactly the same way
+  // a hand-edit would (fieldLocalBindState can't and shouldn't try to
+  // tell those apart, see its own comment), but the two are different
+  // enough in practice that the tooltip was actively misleading for the
+  // link case -- confirmed via a real linked field on wigwag's own
+  // tracker (#70's Remedy, independently linked to Jeera) showing this
+  // exact wording despite never having been typed over.
+  overrideTitle(def, ref) {
     const src = this.state.fieldDefs[def.linkedSourceId];
-    return "Overrides the linked value from " + (src ? src.label : def.linkedSourceId) + "'s data";
+    const srcLabel = src ? src.label : def.linkedSourceId;
+    if (ref) return "Independently linked -- not derived from " + srcLabel + "'s data";
+    return "Overrides the linked value from " + srcLabel + "'s data";
+  }
+  // Every Activity/History-feed render prop builder (slideover, project
+  // panel notes, mobile sheet -- comments and history entries alike)
+  // needs a human-readable timestamp label. A new entry carries no
+  // separate `time` field at all any more (Tom: "if the real ts is in
+  // the sortKey, why store a formatted version at all in the file?
+  // Don't do that.") -- `sortKey` (epoch ms) is already the entry's
+  // real, canonical timestamp, so this derives the label fresh every
+  // render straight from it, via the same formatDateLabel() convention
+  // already used elsewhere (e.g. buildMergeTimelineView's own
+  // fullTime) -- same hasRealSortKey guard that already exists there,
+  // for a legacy/backfilled entry whose sortKey predates real epoch-ms
+  // tracking (falls back to whatever's literally in `time`, which only
+  // ever exists on an entry signed before this change -- a permanent
+  // read-forward adapter, not a migration, same discipline as every
+  // other format evolution in this file).
+  timeLabelFor(entry) {
+    const hasRealSortKey = !!(entry.sortKey && entry.sortKey > 946684800000);
+    return hasRealSortKey ? formatDateLabel(new Date(entry.sortKey)) : (entry.time || '');
   }
   effectiveFieldDefs() { return effectiveFieldDefs(this.state.fieldDefs, this.state.localFieldBindings); }
   effectiveDef(colId) { return this.effectiveFieldDefs()[colId]; }
@@ -1939,7 +1975,7 @@ class Component extends DCLogic {
   buildUnsignedProjectNameEntry(value) {
     return {
       id: crypto.randomUUID ? crypto.randomUUID() : 'ph-' + Date.now() + '-' + Math.random().toString(36).slice(2),
-      time: formatNow(), actor: this.displayName(), email: this.state.identityEmail || '',
+      actor: this.displayName(), email: this.state.identityEmail || '',
       text: 'Named project "' + value + '"', field: PROJECT_NAME_FIELD_ID, value,
       origin: 'authored', sortKey: this.nextSortKey(), sig: null, sigRedacted: null, pubKey: null
     };
@@ -3182,7 +3218,7 @@ class Component extends DCLogic {
     const entries = [];
     for (const id in fieldDefs) {
       entries.push({
-        id: crypto.randomUUID(), time: formatNow(), actor, email,
+        id: crypto.randomUUID(), actor, email,
         text: 'Created field "' + (fieldDefs[id].label || id) + '"',
         field: id, value: fieldDefs[id], origin: 'authored',
         sortKey: this.nextSortKey(), sig: null, sigRedacted: null, pubKey: null
@@ -3194,7 +3230,7 @@ class Component extends DCLogic {
     const s = this.state;
     const entryBase = {
       id: crypto.randomUUID ? crypto.randomUUID() : 'ph-' + Date.now() + '-' + Math.random().toString(36).slice(2),
-      time: formatNow(), actor: this.displayName(), email: s.identityEmail || '',
+      actor: this.displayName(), email: s.identityEmail || '',
       text, field: field || null, value: field ? value : undefined,
       origin: origin || 'authored',
       sortKey: this.nextSortKey()
@@ -3221,7 +3257,7 @@ class Component extends DCLogic {
     const s = this.state;
     const entryBase = {
       id: crypto.randomUUID ? crypto.randomUUID() : 'h-' + Date.now() + '-' + Math.random().toString(36).slice(2),
-      time: formatNow(), actor: this.displayName(), email: s.identityEmail || '',
+      actor: this.displayName(), email: s.identityEmail || '',
       text, field: field || null, value: field ? value : undefined,
       fieldRef: (field && fieldRef !== undefined) ? fieldRef : undefined,
       origin: origin || 'authored',
@@ -5430,11 +5466,34 @@ class Component extends DCLogic {
       const jira = !gh && this.jiraKeyMatch(draft);
       const sf = !gh && !jira && this.salesforceUrlMatch(draft);
       const match = gh || jira || sf || null;
-      if (match) { this.requireAttribution(() => this.applyLinkToField(issueId, colId, match)); return; }
+      // editValueForRef is what populated `draft` in the first place when
+      // this field already has a link -- clicking in and clicking back out
+      // with no real edit re-submits the EXACT SAME text, which re-matches
+      // here (expected: that's what lets the same link stay editable) and
+      // would otherwise unconditionally kick off a real fetch/macro call
+      // and the loading-shimmer flicker every single time, even though
+      // nothing changed. Live-reported: this made it look like the field
+      // was being freshly (re-)linked/bound on every click-in/click-out.
+      // sameRef is the same "is this a refresh of what's already there"
+      // check applyLinkToField uses internally -- checked here first so a
+      // genuine no-op never starts the fetch at all.
+      if (match) {
+        const iss = this.findIssue(issueId);
+        const currentRef = iss && iss.fieldRefs && iss.fieldRefs[colId];
+        if (this.sameRef(currentRef, match.fetchedVia, match.matchedId)) { this.cancelEdit(); return; }
+        this.requireAttribution(() => this.applyLinkToField(issueId, colId, match));
+        return;
+      }
       const wg = this.wigwagUrlMatch(draft);
       if (wg && this.resolveWigwagProjectId(wg)) { this.requireAttribution(() => this.applyWigwagLinkToField(issueId, colId, wg)); return; }
       const connMatches = this.customConnectorMatches(draft);
-      if (connMatches.length === 1) { this.requireAttribution(() => this.applyLinkToField(issueId, colId, connMatches[0])); return; }
+      if (connMatches.length === 1) {
+        const iss = this.findIssue(issueId);
+        const currentRef = iss && iss.fieldRefs && iss.fieldRefs[colId];
+        if (this.sameRef(currentRef, connMatches[0].fetchedVia, connMatches[0].matchedId)) { this.cancelEdit(); return; }
+        this.requireAttribution(() => this.applyLinkToField(issueId, colId, connMatches[0]));
+        return;
+      }
       if (connMatches.length > 1) { this.setState({ connectorPickerOpen: { issueId, colId, matches: connMatches } }); return; }
       draft = this.translateWigwagLinksInText(draft);
     } else if (commitDef && commitDef.type === 'text') {
@@ -6589,7 +6648,7 @@ class Component extends DCLogic {
     this.requireAttribution(() => {
       const issueId = this.state.slideOverIssueId;
       const entryBase = {
-        id, author: this.displayName(), email: this.state.identityEmail || '', time: formatNow(), text,
+        id, author: this.displayName(), email: this.state.identityEmail || '', text,
         sortKey: this.nextSortKey()
       };
       commitSignedEntry(entryBase, {
@@ -6625,7 +6684,7 @@ class Component extends DCLogic {
     this.requireAttribution(() => {
       const entryBase = {
         id: crypto.randomUUID ? crypto.randomUUID() : 'c-' + Date.now() + '-' + Math.random().toString(36).slice(2),
-        author: this.displayName(), email: this.state.identityEmail || '', time: formatNow(), text,
+        author: this.displayName(), email: this.state.identityEmail || '', text,
         sortKey: this.nextSortKey()
       };
       commitSignedEntry(entryBase, {
@@ -6681,7 +6740,7 @@ class Component extends DCLogic {
       const projectId = this.state.projectId;
       const entryBase = {
         id: crypto.randomUUID ? crypto.randomUUID() : 'pc-' + Date.now() + '-' + Math.random().toString(36).slice(2),
-        author: this.displayName(), email: this.state.identityEmail || '', time: formatNow(), text,
+        author: this.displayName(), email: this.state.identityEmail || '', text,
         sortKey: this.nextSortKey()
       };
       commitSignedEntry(entryBase, {
@@ -7112,7 +7171,7 @@ class Component extends DCLogic {
     this.requireAttribution(() => {
       const projectId = this.state.projectId;
       const entryBase = {
-        id, author: this.displayName(), email: this.state.identityEmail || '', time: formatNow(), text,
+        id, author: this.displayName(), email: this.state.identityEmail || '', text,
         sortKey: this.nextSortKey()
       };
       commitSignedEntry(entryBase, {
@@ -8011,11 +8070,23 @@ class Component extends DCLogic {
     // computed once here and merged into every return branch below.
     const bindState = def && def.linkedSourceId ? fieldLocalBindState(issue, colId, this.liveRuleCtx(issue.id).localDerivedEntryIds) : 'plain';
     const isBoundLive = bindState === 'bound', isOverridden = bindState === 'overridden';
-    const boundGlyphTitle = isOverridden ? this.overrideTitle(def) : (isBoundLive ? this.lockTitle(def) : '');
-    const showBoundGlyph = isBoundLive || isOverridden;
-    const isBoundField = !!(def && def.linkedSourceId);
     const rawRef = issue.fieldRefs && issue.fieldRefs[colId];
     const ref = rawRef;
+    const boundGlyphTitle = isOverridden ? this.overrideTitle(def, ref) : (isBoundLive ? this.lockTitle(def) : '');
+    const showBoundGlyph = isBoundLive || isOverridden;
+    // The glyph itself is an absolutely-positioned overlay (stays fixed
+    // in the cell's corner regardless of content, same spot across every
+    // rendering context this cell feeds -- the main grid, a slideover
+    // "other field" row, the slideover description) -- it was never
+    // included in the text's own layout flow, so long/wrapped text had
+    // nothing stopping it from running underneath it. This reserves a
+    // matching right-hand gutter on the TEXT side only, wide enough for
+    // the glyph (12px) plus its offset from the edge in every context
+    // that renders it (0-12px) plus a little breathing room -- harmless
+    // to over-reserve slightly in the tighter-offset contexts, since this
+    // only ever applies when the glyph is actually showing.
+    const boundGlyphGutterStyle = showBoundGlyph ? 'padding-right:26px;' : '';
+    const isBoundField = !!(def && def.linkedSourceId);
     const titleFontWeight = (isBoundField && ref) ? '600' : '400';
     // Editing always shows the editable SOURCE, not a derived/fetched value:
     // the reconstructed URL if resolved (or the bare key for Jira, which is
@@ -8062,7 +8133,7 @@ class Component extends DCLogic {
         displayText: currentText || '—', textColor: currentText ? 'var(--text-primary)' : placeholderColor,
         onClick: textClick, onCellClick: gatedClick,
         hasRef: true, refLabel: this.resolveWigwagRef(ref).label, refHref: '#', hasHref: true, noHref: false,
-        onRefLinkClick: onBoundAwareRefClick(() => this.openWigwagRef(ref)), cellHighlight, isBoundLive, isOverridden, showBoundGlyph, boundGlyphTitle, titleFontWeight };
+        onRefLinkClick: onBoundAwareRefClick(() => this.openWigwagRef(ref)), cellHighlight, isBoundLive, isOverridden, showBoundGlyph, boundGlyphTitle, boundGlyphGutterStyle, titleFontWeight };
     }
     // Every other ref system (github/jira/salesforce/connector, new-shape
     // or legacy) collapses to one branch via normalizeRef -- branding is
@@ -8093,7 +8164,7 @@ class Component extends DCLogic {
         displayText: currentText || '—', textColor: currentText ? 'var(--text-primary)' : placeholderColor,
         onClick: textClick, onCellClick: gatedClick,
         hasRef: true, refLabel, refHref: href || null, hasHref: !!href, noHref: !href,
-        onRefLinkClick: onBoundAwareRefClick(null), cellHighlight, isBoundLive, isOverridden, showBoundGlyph, boundGlyphTitle, titleFontWeight };
+        onRefLinkClick: onBoundAwareRefClick(null), cellHighlight, isBoundLive, isOverridden, showBoundGlyph, boundGlyphTitle, boundGlyphGutterStyle, titleFontWeight };
     }
     // The static "this plain text merely looks like a link" fallback is
     // also gated to type:'issue' -- only issue-type fields hold/show
@@ -8115,11 +8186,11 @@ class Component extends DCLogic {
       return { isText: true, isEditing: false, isDisplay: true, isLoading: false, isRef: false, isPlain: false,
         isMarkdownText: true, isEmptyMarkdown: !currentText, hasMarkdown: !!currentText, rawText: currentText,
         markdownClampStyle: this.markdownClampStyleFor(colId),
-        onClick: textClick, onCellClick: gatedClick, cellHighlight, isBoundLive, isOverridden, showBoundGlyph, boundGlyphTitle };
+        onClick: textClick, onCellClick: gatedClick, cellHighlight, isBoundLive, isOverridden, showBoundGlyph, boundGlyphTitle, boundGlyphGutterStyle };
     }
     return { isText: true, isEditing: false, isDisplay: true, isLoading: false, isRef: false, isPlain: true, hasRef: false,
       displayText: currentText || '—', textColor: currentText ? 'var(--text-primary)' : placeholderColor,
-      onClick: textClick, onCellClick: gatedClick, cellHighlight, isBoundLive, isOverridden, showBoundGlyph, boundGlyphTitle, titleFontWeight: '400' };
+      onClick: textClick, onCellClick: gatedClick, cellHighlight, isBoundLive, isOverridden, showBoundGlyph, boundGlyphTitle, boundGlyphGutterStyle, titleFontWeight: '400' };
   }
 
   buildSelectCell(issue, colId, def, readOnly, width) {
@@ -8830,7 +8901,7 @@ class Component extends DCLogic {
           const isEditing = s.editingCommentFieldId === fieldId && s.editingCommentId === c.id;
           const canEdit = !!(s.identityEmail && c.email && c.email === s.identityEmail);
           return { isComment: true, isHistory: false, actor: c.author, initial: (c.author || '?')[0].toUpperCase(),
-            time: c.time, text: c.text, sortKey: c.sortKey, wasEdited: c.wasEdited, isRedacted: !!c.redacted,
+            time: this.timeLabelFor(c), text: c.text, sortKey: c.sortKey, wasEdited: c.wasEdited, isRedacted: !!c.redacted,
             isEditing, isNotEditing: !isEditing, showCommentBody: !isEditing && !c.redacted,
             showEditBtn: canEdit && !isEditing && !!c.id && !c.redacted,
             showRedactBtn: !isEditing && !!c.id && !c.redacted,
@@ -8852,7 +8923,7 @@ class Component extends DCLogic {
         const slideOverHistoryEntries = issue.history.filter(h => h.origin !== 'legacy-backfill').map(h => {
           const pill = this.buildActivityPill(h, fieldDefs);
           const fieldLabelParts = !pill ? this.buildActivityFieldLabel(h, fieldDefs) : null;
-          return { isComment: false, isHistory: true, actor: h.actor, time: h.time, text: h.text, sortKey: h.sortKey,
+          return { isComment: false, isHistory: true, actor: h.actor, time: this.timeLabelFor(h), text: h.text, sortKey: h.sortKey,
             pill, hasPill: !!pill, fieldLabelParts, hasFieldLabel: !!fieldLabelParts, noPill: !pill && !h.redacted && !fieldLabelParts, isRedacted: !!h.redacted,
             showRedactBtn: !!h.id && !h.redacted && h.text !== 'Created',
             onRedact: () => this.redactHistoryEntry(issue.id, h.id) };
@@ -8925,7 +8996,7 @@ class Component extends DCLogic {
         const isEditing = s.editingProjectCommentId === c.id;
         const canEdit = !!(s.identityEmail && c.email && c.email === s.identityEmail);
         return { isComment: true, isHistory: false,
-          id: c.id, initial: (c.author || '?')[0].toUpperCase(), author: c.author, actor: c.author, time: c.time, rawText: c.text, sortKey: c.sortKey || 0,
+          id: c.id, initial: (c.author || '?')[0].toUpperCase(), author: c.author, actor: c.author, time: this.timeLabelFor(c), rawText: c.text, sortKey: c.sortKey || 0,
           wasEdited: c.wasEdited, isRedacted: !!c.redacted,
           isEditing, showCommentBody: !isEditing && !c.redacted,
           showEditBtn: canEdit && !isEditing && !!c.id && !c.redacted,
@@ -8935,7 +9006,7 @@ class Component extends DCLogic {
       }).sort((a, b) => b.sortKey - a.sortKey);
       const noteHistoryEntries = s.projectHistory.filter(h => h.origin !== 'legacy-backfill').map(h => ({
         isComment: false, isHistory: true,
-        actor: h.actor, time: h.time, text: h.text, sortKey: h.sortKey || 0, isRedacted: !!h.redacted,
+        actor: h.actor, time: this.timeLabelFor(h), text: h.text, sortKey: h.sortKey || 0, isRedacted: !!h.redacted,
         showHistoryText: !h.redacted,
         showRedactBtn: !!h.id && !h.redacted,
         onRedact: () => this.redactProjectHistoryEntry(h.id)
@@ -9324,12 +9395,12 @@ class Component extends DCLogic {
       if (issue) {
         const mobileDescriptionColId = Object.keys(fieldDefs).find(id => id !== 'title' && fieldDefs[id].type === 'text' && (fieldDefs[id].label || '').trim().toLowerCase() === 'description');
         const mobileCommentEntries = latestCommentsById((issue.commentStreams && issue.commentStreams.comments) || []).map(c => ({
-          actor: c.author || 'Someone', initial: (c.author || '?')[0].toUpperCase(), time: c.time, text: c.text, isRedacted: !!c.redacted, sortKey: c.sortKey || 0
+          actor: c.author || 'Someone', initial: (c.author || '?')[0].toUpperCase(), time: this.timeLabelFor(c), text: c.text, isRedacted: !!c.redacted, sortKey: c.sortKey || 0
         })).sort((a, b) => b.sortKey - a.sortKey);
         const mobileHistoryEntries = issue.history.filter(h => h.origin !== 'legacy-backfill').map(h => {
           const pill = this.buildActivityPill(h, fieldDefs);
           const fieldLabelParts = !pill ? this.buildActivityFieldLabel(h, fieldDefs) : null;
-          return { actor: h.actor, time: h.time, text: h.text, sortKey: h.sortKey || 0, pill, hasPill: !!pill, fieldLabelParts, hasFieldLabel: !!fieldLabelParts, noPill: !pill && !fieldLabelParts, isRedacted: !!h.redacted };
+          return { actor: h.actor, time: this.timeLabelFor(h), text: h.text, sortKey: h.sortKey || 0, pill, hasPill: !!pill, fieldLabelParts, hasFieldLabel: !!fieldLabelParts, noPill: !pill && !fieldLabelParts, isRedacted: !!h.redacted };
         }).sort((a, b) => b.sortKey - a.sortKey);
         const mobileActiveActivity = s.activityTab === 'history' ? mobileHistoryEntries : mobileCommentEntries;
         const mobilePickerColId = s.activeCell && s.activeCell.issueId === issue.id ? s.activeCell.colId : null;

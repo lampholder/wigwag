@@ -915,10 +915,6 @@ function relativeAge(ms) {
   if (hours < 24) return hours + 'h ago';
   return Math.round(hours / 24) + 'd ago';
 }
-function formatNow() {
-  const d = new Date();
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ', ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-}
 // The short identifier shown in a linked field's own ref chip (a Jira key,
 // a GitHub owner/repo#num, a Salesforce record Id) -- once a field links
 // to one of these, its stored value becomes the resolved display text
@@ -1417,7 +1413,6 @@ function backfillIssueHistoryFromValues(issue, fieldDefs) {
     if (h.fieldRef !== undefined) fieldsWithFieldRefHistory.add(h.field);
   }
   const oldestSortKey = (issue.history && issue.history.length) ? Math.min.apply(null, issue.history.map(function (h) { return h.sortKey || 0; })) : 0;
-  const earliestTime = (issue.history && issue.history.length) ? issue.history[0].time : formatNow();
   const backfillEntries = [];
   for (const colId in fieldDefs) {
     const hasFieldRef = issue.fieldRefs && issue.fieldRefs[colId];
@@ -1429,7 +1424,7 @@ function backfillIssueHistoryFromValues(issue, fieldDefs) {
         if (!isDefaultish) {
           backfillEntries.push({
             id: 'backfill-' + issue.id + '-' + colId,
-            time: earliestTime, actor: 'system', email: '',
+            actor: 'system', email: '',
             text: (def.label || colId) + ' (backfilled from existing data)',
             field: colId, value: storedValue,
             fieldRef: hasFieldRef ? issue.fieldRefs[colId] : undefined,
@@ -1449,7 +1444,7 @@ function backfillIssueHistoryFromValues(issue, fieldDefs) {
       const def = fieldDefs[colId];
       backfillEntries.push({
         id: 'backfill-ref-' + issue.id + '-' + colId,
-        time: earliestTime, actor: 'system', email: '',
+        actor: 'system', email: '',
         text: (def.label || colId) + ' link (backfilled from existing data)',
         field: colId, value: undefined,
         fieldRef: issue.fieldRefs[colId],
@@ -1659,7 +1654,6 @@ function backfillProjectHistory(fieldDefs, projectHistory, projectNotes) {
   const fieldsWithHistory = new Set();
   for (const h of (projectHistory || [])) { if (h.field) fieldsWithHistory.add(h.field); }
   const oldestSortKey = (projectHistory && projectHistory.length) ? Math.min.apply(null, projectHistory.map(function (h) { return h.sortKey || 0; })) : 0;
-  const earliestTime = (projectHistory && projectHistory.length) ? projectHistory[0].time : formatNow();
   const backfillEntries = [];
   if (projectNotes && !fieldsWithHistory.has(PROJECT_NOTES_FIELD_ID)) {
     backfillEntries.push({
@@ -1671,7 +1665,7 @@ function backfillProjectHistory(fieldDefs, projectHistory, projectNotes) {
       // them as "the same entry" and drop one side's content outright
       // on the very first merge between them.
       id: 'backfill-field-' + PROJECT_NOTES_FIELD_ID + '-' + simpleStringHash(projectNotes),
-      time: earliestTime, actor: 'system', email: '',
+      actor: 'system', email: '',
       text: 'Notes (backfilled from existing data)',
       field: PROJECT_NOTES_FIELD_ID, value: projectNotes,
       origin: 'legacy-backfill', sortKey: oldestSortKey - 1,
@@ -1682,7 +1676,7 @@ function backfillProjectHistory(fieldDefs, projectHistory, projectNotes) {
     if (fieldsWithHistory.has(colId)) continue;
     backfillEntries.push({
       id: 'backfill-field-' + colId,
-      time: earliestTime, actor: 'system', email: '',
+      actor: 'system', email: '',
       text: (fieldDefs[colId].label || colId) + ' (backfilled from existing data)',
       field: colId, value: fieldDefs[colId],
       origin: 'legacy-backfill', sortKey: oldestSortKey - 1,
@@ -4656,7 +4650,7 @@ async function probeMatrixRoomAccess({ fetchImpl, homeserverUrl, accessToken, ro
 }
 
 const WigwagCoreExports = {
-  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, xlsxDateTimeSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_NS, storageNamespacePrefix, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, LAYOUT_PROPOSAL_DEVICE_ID_KEY, CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, tokenizeFilterQuery, parseFilterQuery, issueMatchesFieldToken, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, formatNow, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, pickConnectorFields, connectorLinkText, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, migrateLegacyComments, deriveFieldDefs, effectiveFieldDefs, PROJECT_NAME_FIELD_ID, deriveProjectName, PROJECT_NOTES_FIELD_ID, deriveProjectNotes, simpleStringHash, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, issueTimestampValue, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, MATRIX_USER_ID_RE, principalKind, identityPrincipal, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, normalizeRef, sourceRefHasFullData, evalRule, compileConnectorMacro, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, fieldLocalBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, issueCreatedAt,
+  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, xlsxDateTimeSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_NS, storageNamespacePrefix, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, LAYOUT_PROPOSAL_DEVICE_ID_KEY, CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, tokenizeFilterQuery, parseFilterQuery, issueMatchesFieldToken, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, pickConnectorFields, connectorLinkText, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, migrateLegacyComments, deriveFieldDefs, effectiveFieldDefs, PROJECT_NAME_FIELD_ID, deriveProjectName, PROJECT_NOTES_FIELD_ID, deriveProjectNotes, simpleStringHash, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, issueTimestampValue, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, MATRIX_USER_ID_RE, principalKind, identityPrincipal, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, normalizeRef, sourceRefHasFullData, evalRule, compileConnectorMacro, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, fieldLocalBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, issueCreatedAt,
   importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry,
   squashHistory, displayValueForHistory, buildSourceText, keyRegistryEncoder, rehydrateKeyRef, humanFileSize, parseJsonl, entryKey, commentKey, unionByKey, mergeCommentStreams, mergeIssuePair, computeIssueMerge, mergeHasRealChanges, computeFieldDefsMerge, computeDerivedChangeEntries,
   isPastedTextASingleUrl, wrapSelectionWithMarkdownLink,

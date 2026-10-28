@@ -334,7 +334,7 @@ test.describe('Remote lookups persist with the data', () => {
 
     const doc = await h.readActiveMilestoneDoc(page);
     const issue = doc.issues.find(i => i.id === 'i3');
-    expect(h.latestFieldRef(issue, 'linked')).toMatchObject({ owner: 'octocat', repo: 'Hello-World', num: '1' });
+    expect(h.latestFieldRef(issue, 'linked')).toMatchObject({ fetchedVia: '__builtin_github', href: 'https://github.com/octocat/Hello-World/issues/1' });
   });
 
   test('the exported/viewed JSONL source carries fieldRefs too (regression: it used to read a removed property and silently drop this)', async ({ page }) => {
@@ -347,7 +347,7 @@ test.describe('Remote lookups persist with the data', () => {
     const i3Line = sourceText.split('\n').find(l => l.includes('"id":"i3"'));
     expect(i3Line).toBeTruthy();
     const parsed = JSON.parse(i3Line);
-    expect(h.latestFieldRef(parsed, 'linked')).toMatchObject({ owner: 'octocat', repo: 'Hello-World', num: '1' });
+    expect(h.latestFieldRef(parsed, 'linked')).toMatchObject({ fetchedVia: '__builtin_github', href: 'https://github.com/octocat/Hello-World/issues/1' });
   });
 });
 
@@ -759,7 +759,14 @@ test.describe('Detail slide-over', () => {
     const doc = await h.idbGetProjectDoc(page, projectId);
     doc.issues[2].history.push({
       id: 'h-jira-align-test', field: 'title', value: 'TRK-1 A Jira-linked title',
-      fieldRef: { system: 'jira', key: 'TRK-1', href: 'https://example.atlassian.net/browse/TRK-1' },
+      // Legacy jira shape uses `browseUrl`, not `href` -- `href` is the
+      // sentinel key normalizeRef's new-shape detection looks for, so a
+      // ref that happens to carry both `system` and a key literally
+      // named `href` gets misread as already-new-shape and loses its
+      // branding entirely (confirmed regression: this fixture used
+      // `href` before the fieldRef-unification redesign existed, when
+      // the two never collided).
+      fieldRef: { system: 'jira', key: 'TRK-1', browseUrl: 'https://example.atlassian.net/browse/TRK-1' },
       text: 'Title set', actor: 'test', email: '', time: 'now', sortKey: 999999999
     });
     await h.idbSetProjectDoc(page, projectId, doc);

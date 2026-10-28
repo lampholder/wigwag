@@ -3721,6 +3721,20 @@ class Component extends DCLogic {
     }
   }
 
+  // Pure shape recognition, no gating -- the inverse used both by the
+  // public gated matcher below (new paste-dispatch, where reachability
+  // genuinely matters) and by matchedIdFromHref (re-deriving an
+  // EXISTING ref's own matchedId for refresh/sameRef comparison, which
+  // must work regardless of current configuration -- comparing
+  // identity, not deciding reachability).
+  parseGithubUrl(text) {
+    const t = (text || '').trim();
+    const full = t.match(/^https?:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(?:issues|pull)\/(\d+)\/?$/i);
+    if (full) return { owner: full[1], repo: full[2], num: full[3] };
+    const shorthand = t.match(/^([\w.-]+)\/([\w.-]+)#(\d+)$/);
+    if (shorthand) return { owner: shorthand[1], repo: shorthand[2], num: shorthand[3] };
+    return null;
+  }
   // Gated on builtinConfigured('github') only -- NOT isTauriConnectorRuntime,
   // unlike jiraKeyMatch/salesforceUrlMatch below. GitHub's rootUrl has a
   // real default pre-filled at seed time (api.github.com) and never needs
@@ -3730,14 +3744,16 @@ class Component extends DCLogic {
   // this correction. builtinConfigured('github') is true as soon as the
   // built-in exists at all (ensureBuiltinConnectors seeds it for every
   // user, Tauri or not), so in practice this match is always live.
+  // Returns the shared {fetchedVia, matchedId, href} paste-dispatch
+  // shape (see /home/dev/.claude/plans/encapsulated-waddling-gizmo.md)
+  // -- href is fully knowable upfront for GitHub (unlike Jira/
+  // Salesforce, whose real browse/record URL only comes back from the
+  // fetch itself).
   githubUrlMatch(text) {
     if (!this.builtinConfigured('github')) return null;
-    const t = (text || '').trim();
-    const full = t.match(/^https?:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(?:issues|pull)\/(\d+)\/?$/i);
-    if (full) return { owner: full[1], repo: full[2], num: full[3] };
-    const shorthand = t.match(/^([\w.-]+)\/([\w.-]+)#(\d+)$/);
-    if (shorthand) return { owner: shorthand[1], repo: shorthand[2], num: shorthand[3] };
-    return null;
+    const matchedId = this.parseGithubUrl(text);
+    if (!matchedId) return null;
+    return { fetchedVia: '__builtin_github', matchedId, href: 'https://github.com/' + matchedId.owner + '/' + matchedId.repo + '/issues/' + matchedId.num };
   }
   // Gated on isTauriConnectorRuntime + builtinConfigured('jira'), unlike
   // githubUrlMatch above -- Jira (self-hosted/enterprise, no general CORS
@@ -3746,27 +3762,53 @@ class Component extends DCLogic {
   // state to fall back to. An unconfigured (or Tauri-less) Jira steps
   // aside for a matching custom connector instead of claiming the shape
   // and failing.
-  jiraKeyMatch(text) {
-    if (!this.isTauriConnectorRuntime() || !this.builtinConfigured('jira')) return null;
+  parseJiraKey(text) {
     const t = (text || '').trim();
     if (JIRA_KEY_RE.test(t)) return t.toUpperCase();
     const urlMatch = t.match(/^https?:\/\/[\w.-]+\/browse\/([A-Z][A-Z0-9]+-\d+)\/?(?:[?#].*)?$/i);
     return urlMatch ? urlMatch[1].toUpperCase() : null;
   }
+  // href is null here -- unlike GitHub, Jira's real browse URL depends
+  // on this device's own configured root URL, only knowable for real
+  // once a fetch actually returns one (data.browseUrl).
+  jiraKeyMatch(text) {
+    if (!this.isTauriConnectorRuntime() || !this.builtinConfigured('jira')) return null;
+    const matchedId = this.parseJiraKey(text);
+    if (!matchedId) return null;
+    return { fetchedVia: '__builtin_jira', matchedId, href: null };
+  }
   // URL-only, unlike jiraKeyMatch -- a Salesforce Id (006Nz00000jD3mCIAS)
   // isn't something anyone types from memory the way a short Jira key is,
   // so there's no bare-id form to also accept. Handles both the modern
   // Lightning shape (object-name path segment optional -- some orgs' URLs
-  // omit it) and the older classic-UI shape. Gated the same way
-  // jiraKeyMatch is (needs Tauri -- see its own comment); NOT the same as
-  // githubUrlMatch, which doesn't.
-  salesforceUrlMatch(text) {
-    if (!this.isTauriConnectorRuntime() || !this.builtinConfigured('salesforce')) return null;
+  // omit it) and the older classic-UI shape.
+  // The Lightning pattern is deliberately domain-agnostic on the host
+  // (matches the path shape anywhere, not just *.lightning.force.com) --
+  // a PASTED link is typically on the org's own lightning.force.com
+  // domain, but fetchSalesforceData's own constructed `url` (what
+  // actually gets persisted as href, and what matchedIdFromHref later
+  // re-parses on refresh) builds the SAME /lightning/r/<Type>/<id>/view
+  // path on the SOAP login's returned instanceUrl instead, which is
+  // typically *.my.salesforce.com -- restricting the host here used to
+  // make a real refresh's own id re-derivation silently fail (confirmed
+  // regression, caught by external-auth.spec.js's own bound-source-
+  // rules-read-after-refresh coverage).
+  parseSalesforceId(text) {
     const t = (text || '').trim();
-    let m = t.match(/^https?:\/\/[\w-]+\.lightning\.force\.com\/lightning\/r\/(?:[\w]+\/)?([a-zA-Z0-9]{15,18})\/view\/?(?:[?#].*)?$/i);
+    let m = t.match(/\/lightning\/r\/(?:[\w]+\/)?([a-zA-Z0-9]{15,18})\/view\/?(?:[?#].*)?$/i);
     if (m) return m[1];
     m = t.match(/^https?:\/\/[\w-]+\.(?:my\.)?salesforce\.com\/([a-zA-Z0-9]{15,18})\/?(?:[?#].*)?$/i);
     return m ? m[1] : null;
+  }
+  // Gated the same way jiraKeyMatch is (needs Tauri -- see its own
+  // comment); NOT the same as githubUrlMatch, which doesn't. href is
+  // null for the same reason as Jira's own match -- the record's real
+  // Lightning URL only comes back from the fetch itself.
+  salesforceUrlMatch(text) {
+    if (!this.isTauriConnectorRuntime() || !this.builtinConfigured('salesforce')) return null;
+    const matchedId = this.parseSalesforceId(text);
+    if (!matchedId) return null;
+    return { fetchedVia: '__builtin_salesforce', matchedId, href: null };
   }
   // Matches EITHER a raw local-instance deep link (any scheme/origin/path,
   // since "local instance path" varies machine to machine -- only the
@@ -4083,7 +4125,10 @@ class Component extends DCLogic {
         let re;
         try { re = new RegExp('^(?:' + p.regex + ')$'); } catch (e) { continue; }
         const m = re.exec(t);
-        if (m) { matches.push({ connector: c, matchedId: (m[1] || m[0]) }); break; }
+        // href is left null here, same as jiraKeyMatch/salesforceUrlMatch
+        // -- a connector's real record URL only comes back from the
+        // macro's own fetch result (data.url), not knowable upfront.
+        if (m) { matches.push({ connector: c, fetchedVia: c.id, matchedId: (m[1] || m[0]), href: null }); break; }
       }
     }
     return matches;
@@ -4533,27 +4578,111 @@ class Component extends DCLogic {
       fields: flat
     };
   }
-  // Field-scoped counterpart to applyGithubLink — same fetch, same loading/error
-  // handling, but keyed per (issue, colId) so any text-like field (not just
-  // Title) can independently carry its own GitHub link and fetched value.
-  // forceRefresh re-fetches even when this field is already linked to the
-  // same issue — re-submitting an unchanged, already-linked field re-pulls
-  // fresh data instead of being a no-op.
-  sameLink(ref, gh) { return !!ref && ref.owner === gh.owner && ref.repo === gh.repo && String(ref.num) === String(gh.num); }
-  // Re-fetches a single field's EXISTING GitHub link, if it has one — a no-op
-  // if it isn't linked. The row/column/whole-table refresh actions below are
-  // all just this, applied over a wider set of (issue, colId) pairs.
-  // Tracker #196: snapshots this issue's latest-entry-id-per-field before
-  // dispatching, then again after, and reports every field whose latest
-  // entry id actually changed -- explicit (the linked field itself) or
-  // derived (a bound field recomputed as a side effect). Returns null when
+  // Replaces sameLink/sameJiraLink/sameSalesforceLink/sameConnectorLink
+  // -- one comparison for every system now that they all persist the
+  // same {href, fetchedVia} shape. href isn't always directly
+  // comparable pre-fetch (jira/salesforce/a custom connector only
+  // learn their real href FROM the fetch -- see githubUrlMatch's own
+  // comment), so this compares matchedId instead, re-deriving the
+  // existing ref's own matchedId from its persisted href via
+  // matchedIdFromHref when it isn't carried directly on the ref
+  // itself (a legacy connector ref, or a failed-fetch error-path
+  // write for any system, still carries its own bare matchedId
+  // precisely so a retry is recognized as a retry, not a brand-new
+  // link -- see applyLinkToField's own catch block).
+  sameRef(ref, fetchedVia, matchedId) {
+    const n = normalizeRef(ref);
+    if (!n || n.fetchedVia !== fetchedVia) return false;
+    const existingMatchedId = n.matchedId !== undefined ? n.matchedId : this.matchedIdFromHref(fetchedVia, n.href);
+    return JSON.stringify(existingMatchedId) === JSON.stringify(matchedId);
+  }
+  // Given a normalized ref's fetchedVia + href, re-derives the
+  // "matchedId" a fresh paste/refresh would use to re-fetch this same
+  // link -- the inverse of each builtin's own shape-recognition regex
+  // (parseGithubUrl/parseJiraKey/parseSalesforceId, reused directly --
+  // deliberately UNGATED, since re-deriving an EXISTING ref's own
+  // identity must work regardless of current Tauri/configuration
+  // state, unlike the public gated matchers used for NEW paste-
+  // dispatch). For a custom connector, re-runs ITS OWN current
+  // patterns against href (patterns can change after the fact; the
+  // connector itself, not a stale capture, is the source of truth) --
+  // falls back to the raw href itself if no pattern currently
+  // matches, same honesty discipline the Test button already has
+  // (never silently drop the only identifying string on hand).
+  matchedIdFromHref(fetchedVia, href) {
+    if (!href) return null;
+    if (fetchedVia === '__builtin_github') return this.parseGithubUrl(href);
+    if (fetchedVia === '__builtin_jira') return this.parseJiraKey(href);
+    if (fetchedVia === '__builtin_salesforce') return this.parseSalesforceId(href);
+    const c = (this.state.connectedSources || []).find(x => x.id === fetchedVia);
+    if (!c) return null;
+    for (const p of c.patterns || []) {
+      let re;
+      try { re = new RegExp('^(?:' + p.regex + ')$'); } catch (e) { continue; }
+      const m = re.exec(href);
+      if (m) return m[1] || m[0];
+    }
+    return href; // no pattern currently matches -- fall back to the raw href
+  }
+  // Best-known matchedId for DISPLAY purposes only (buildTextCell's
+  // refLabel, editValueForRef's edit-affordance value) -- NOT used for
+  // sameRef/retry comparison, which has its own narrower matchedId-via-
+  // href-only derivation (matchedIdFromHref alone). A legacy jira/
+  // salesforce ref that was NEVER successfully resolved (no browseUrl/
+  // url yet) has no href for matchedIdFromHref to re-parse, but its own
+  // bare key/id IS sitting right there on the raw ref, unused --
+  // confirmed regression, caught by external-auth.spec.js's own "legacy
+  // seed Jira reference (never live-fetched) still renders as a plain
+  // unlinked chip" coverage, which needs the bare key shown even with
+  // no href at all.
+  resolveMatchedIdForDisplay(ref, n) {
+    if (!n) return null;
+    if (n.matchedId !== undefined) return n.matchedId;
+    const viaHref = this.matchedIdFromHref(n.fetchedVia, n.href);
+    if (viaHref != null) return viaHref;
+    return ref.key || ref.id || null;
+  }
+  // Shared fetch core for applyLinkToField (single-row write) and
+  // stageFieldRefresh (staged/bulk, pure compute) below -- given a
+  // resolved fetchedVia + matchedId (+ the live connector object
+  // itself for a custom connector -- callers resolve it by id first
+  // so they can report "no longer exists" distinctly before even
+  // attempting a fetch), returns the live fetch result plus the href
+  // to persist. github/jira/salesforce are withRetry-wrapped (the
+  // retryable-error handling both call sites already needed); a
+  // custom connector's own macro is NOT (an arbitrary macro can't be
+  // assumed idempotent -- runConnectorMacro's own 15s timeout is the
+  // only guard, same as always). fetchCache, when given, dedupes a
+  // repeat fetch of the exact same identity within one bulk-refresh
+  // job.
+  async fetchLinkData(fetchedVia, matchedId, connector, { onRetry, fetchCache } = {}) {
+    const cacheKey = fetchedVia + ':' + JSON.stringify(matchedId);
+    if (fetchCache && fetchCache.has(cacheKey)) return fetchCache.get(cacheKey);
+    let data, href;
+    if (fetchedVia === '__builtin_github') {
+      data = await this.withRetry(() => this.fetchGithubData(matchedId.owner, matchedId.repo, matchedId.num, true), { onRetry });
+      href = 'https://github.com/' + matchedId.owner + '/' + matchedId.repo + '/issues/' + matchedId.num;
+    } else if (fetchedVia === '__builtin_jira') {
+      data = await this.withRetry(() => this.fetchJiraData(matchedId), { onRetry });
+      href = data.browseUrl || null;
+    } else if (fetchedVia === '__builtin_salesforce') {
+      data = await this.withRetry(() => this.fetchSalesforceData(matchedId), { onRetry });
+      href = data.url || null;
+    } else {
+      const credential = await this.getConnectorCredential(connector.id);
+      data = await this.runConnectorMacro(connector.macro, matchedId, credential);
+      href = data.url || null;
+    }
+    const result = { data, href };
+    if (fetchCache) fetchCache.set(cacheKey, result);
+    return result;
+  }
   // Tracker #198: pure fetch+compute for ONE linked field against a
   // plain SNAPSHOT issue (never this.state directly) -- returns what
   // WOULD be written, writes nothing itself. Mirrors
-  // applyGithubLinkToField/applyConnectorLinkToField/
-  // applyWigwagLinkToField's own success-path value/no-op logic exactly.
-  // Used by the staged refresh job path (2+ rows); the 1-row direct-apply
-  // path still uses the original apply*LinkToField functions unchanged.
+  // applyLinkToField/applyWigwagLinkToField's own success-path
+  // value/no-op logic exactly. Used by the staged refresh job path
+  // (2+ rows); the 1-row direct-apply path still uses applyLinkToField.
   // Fetches and applies live data for ONE linked field against the
   // accumulating issue a row-level refresh is building up (never live
   // this.state) -- returns the updated issue plus (for a field that
@@ -4568,46 +4697,9 @@ class Component extends DCLogic {
   // its source's), so a multi-hop chain doesn't multiply real network
   // calls/rate-limit exposure per hop.
   async stageFieldRefresh(issue, colId, ref, fieldDefsForRules, onRetry, fetchCache) {
-    const system = ref.system || 'github';
-    const connectorForRef = system === 'connector' ? (this.state.connectedSources || []).find(c => c.id === ref.connectorId) : null;
-    const systemLabel = system === 'jira' ? 'Jira' : system === 'salesforce' ? 'Salesforce' : system === 'wigwag' ? 'wigwag' : system === 'connector' ? ((connectorForRef && connectorForRef.name) || 'connector') : 'GitHub';
     const fieldLabel = (fieldDefsForRules[colId] && fieldDefsForRules[colId].label) || colId;
     const isBound = !!(fieldDefsForRules[colId] && fieldDefsForRules[colId].linkedSourceId);
-    // Tracker: a custom-connector-linked field fell through to the
-    // GitHub branch below (undefined owner/repo/num -> a real 404),
-    // marking every such row failed in a bulk (2+ row) refresh -- the
-    // staged path never got a connector branch when custom connectors
-    // were added, even though the single-row refreshField did. Mirrors
-    // applyConnectorLinkToField's own fetch/fieldRef shape; deliberately
-    // not withRetry-wrapped, same reasoning as runConnectorMacro's own
-    // doc comment (an arbitrary macro can't be assumed idempotent) --
-    // runConnectorMacro's own 15s timeout is the only guard.
-    if (system === 'connector') {
-      if (!connectorForRef) return { failed: true, errorText: 'Could not refresh: connector no longer exists' };
-      const identityKey = 'connector:' + connectorForRef.id + ':' + ref.matchedId;
-      let cdata;
-      if (fetchCache && fetchCache.has(identityKey)) {
-        cdata = fetchCache.get(identityKey);
-      } else {
-        try {
-          const credential = await this.getConnectorCredential(connectorForRef.id);
-          cdata = await this.runConnectorMacro(connectorForRef.macro, ref.matchedId, credential);
-        } catch (err) {
-          return { failed: true, errorText: 'Could not fetch from ' + connectorForRef.name + ' (' + err.message + ')' };
-        }
-        if (fetchCache) fetchCache.set(identityKey, cdata);
-      }
-      const fieldRef = { system: 'connector', connectorId: connectorForRef.id, connectorKey: connectorForRef.key, matchedId: ref.matchedId, title: cdata.title || '', url: cdata.url || '', state: cdata.state || '' };
-      const value = cdata.title;
-      const beforeValue = issue.values[colId];
-      const beforeFieldRef = issue.fieldRefs && issue.fieldRefs[colId];
-      const unchanged = value === beforeValue && JSON.stringify(fieldRef) === JSON.stringify(beforeFieldRef);
-      const rootEntry = (!isBound && !unchanged) ? { field: colId, text: fieldLabel + ' refreshed from ' + connectorForRef.name, value, fieldRef } : null;
-      const patchedIssue = { ...issue, values: { ...issue.values, [colId]: value }, fieldRefs: { ...issue.fieldRefs, [colId]: fieldRef } };
-      const afterIssue = settleLinkedRules(applyLiveLinkedRules(patchedIssue, fieldDefsForRules, colId, connectorForRef.key, cdata, this.liveRuleCtx(issue.id)), fieldDefsForRules, this.liveRuleCtx(issue.id));
-      return { failed: false, afterIssue, rootEntry };
-    }
-    if (system === 'wigwag') {
+    if (ref.system === 'wigwag') {
       const resolved = this.resolveWigwagRef(ref);
       const fieldRef = { system: 'wigwag', projectId: this.resolveWigwagProjectId(ref), issueId: ref.issueId || null, from: ref.from || null, path: ref.path || null, ref: ref.ref || null };
       const beforeFieldRef = issue.fieldRefs && issue.fieldRefs[colId];
@@ -4618,30 +4710,47 @@ class Component extends DCLogic {
       const afterIssue = settleLinkedRules(patchedIssue, fieldDefsForRules, this.liveRuleCtx(issue.id));
       return { failed: false, afterIssue, rootEntry };
     }
-    const identityKey = system + ':' + (system === 'jira' ? ref.key : system === 'salesforce' ? ref.id : (ref.owner + '/' + ref.repo + '#' + ref.num));
-    let data;
-    if (fetchCache && fetchCache.has(identityKey)) {
-      data = fetchCache.get(identityKey);
-    } else {
-      try {
-        if (system === 'jira') data = await this.withRetry(() => this.fetchJiraData(ref.key), { onRetry });
-        else if (system === 'salesforce') data = await this.withRetry(() => this.fetchSalesforceData(ref.id), { onRetry });
-        else data = await this.withRetry(() => this.fetchGithubData(ref.owner, ref.repo, ref.num, true), { onRetry });
-      } catch (err) {
-        return { failed: true, errorText: 'Could not fetch from ' + systemLabel + ' (' + err.message + ')' };
-      }
-      if (fetchCache) fetchCache.set(identityKey, data);
+    const n = normalizeRef(ref);
+    if (!n || !n.fetchedVia) return { failed: true, errorText: 'Could not refresh: link no longer resolvable' };
+    const isBuiltin = n.fetchedVia.startsWith('__builtin_');
+    const connector = isBuiltin ? null : (this.state.connectedSources || []).find(c => c.id === n.fetchedVia);
+    if (!isBuiltin && !connector) return { failed: true, errorText: 'Could not refresh: connector no longer exists' };
+    const kind = isBuiltin ? n.fetchedVia.slice('__builtin_'.length) : null;
+    const systemLabel = isBuiltin ? BUILTIN_INTEGRATIONS[kind].name : connector.name;
+    const matchedId = n.matchedId !== undefined ? n.matchedId : this.matchedIdFromHref(n.fetchedVia, n.href);
+    let fetched;
+    try {
+      fetched = await this.fetchLinkData(n.fetchedVia, matchedId, connector, { onRetry, fetchCache });
+    } catch (err) {
+      return { failed: true, errorText: 'Could not fetch from ' + systemLabel + ' (' + err.message + ')' };
     }
-    let fieldRef, value;
-    if (system === 'jira') { fieldRef = { system: 'jira', key: ref.key, browseUrl: data.browseUrl || null }; value = data.title; }
-    else if (system === 'salesforce') { fieldRef = { system: 'salesforce', id: ref.id, name: data.name || '', url: data.url || null }; value = data.name; }
-    else { fieldRef = { system: 'github', owner: ref.owner, repo: ref.repo, num: ref.num }; value = data.title; }
+    const { data, href } = fetched;
+    // See applyLinkToField's own fieldRef comment -- matchedId is kept
+    // for a custom connector (identity, not rich per-system data) since
+    // its href has no guaranteed relationship to its own paste pattern.
+    const fieldRef = isBuiltin ? { href, fetchedVia: n.fetchedVia } : { href, fetchedVia: n.fetchedVia, matchedId };
+    const value = kind === 'salesforce' ? data.name : data.title;
     const beforeValue = issue.values[colId];
     const beforeFieldRef = issue.fieldRefs && issue.fieldRefs[colId];
-    const unchanged = value === beforeValue && JSON.stringify(fieldRef) === JSON.stringify(beforeFieldRef);
+    // Compares against the NORMALIZED before-ref, not the raw one -- a
+    // legacy-shaped ref migrating to the new {href, fetchedVia} shape
+    // with the exact same identity/value is purely a representation
+    // change, not real news from the source system, so it must not
+    // surface as a spurious "refreshed" entry (confirmed: this was a
+    // real regression caught by row-selection.spec.js's own no-op-
+    // refresh coverage -- every pre-existing legacy-shaped link would
+    // otherwise show as "changed" on its first touch after this
+    // redesign). When unchanged, no entry is appended at all (append-
+    // only history is the only thing that actually persists state), so
+    // a legacy ref that never changes simply keeps its legacy shape on
+    // disk forever, read correctly via normalizeRef every time -- it
+    // only actually migrates to the new shape the next time a REAL
+    // value/href change gives it something worth writing anyway.
+    const unchanged = value === beforeValue && JSON.stringify(fieldRef) === JSON.stringify(normalizeRef(beforeFieldRef));
     const rootEntry = (!isBound && !unchanged) ? { field: colId, text: fieldLabel + ' refreshed from ' + systemLabel, value, fieldRef } : null;
     const patchedIssue = { ...issue, values: { ...issue.values, [colId]: value }, fieldRefs: { ...issue.fieldRefs, [colId]: fieldRef } };
-    const afterIssue = settleLinkedRules(applyLiveLinkedRules(patchedIssue, fieldDefsForRules, colId, system, data, this.liveRuleCtx(issue.id)), fieldDefsForRules, this.liveRuleCtx(issue.id));
+    const liveKey = isBuiltin ? kind : connector.key;
+    const afterIssue = settleLinkedRules(applyLiveLinkedRules(patchedIssue, fieldDefsForRules, colId, liveKey, data, this.liveRuleCtx(issue.id)), fieldDefsForRules, this.liveRuleCtx(issue.id));
     return { failed: false, afterIssue, rootEntry };
   }
   // Stages every linked field on ONE issue (snapshot, never live state).
@@ -4681,30 +4790,43 @@ class Component extends DCLogic {
     const ref = iss && iss.fieldRefs && iss.fieldRefs[colId];
     if (!ref) return null;
     const beforeIds = latestEntryIdsByField(iss);
-    const system = ref.system || 'github';
-    // Tracker: a field originally linked via a built-in (Jira/Salesforce)
-    // that Tom has since disabled (cleared its root URL/credential) in
-    // favour of a custom connector matching the same identifier would
-    // otherwise keep dispatching to the dead built-in on every refresh
-    // forever -- fieldRefs are historical/immutable, so ref.system never
-    // updates itself just because the matching system changed. Re-resolve
-    // against the currently configured custom connectors, but only when
-    // the built-in itself is unconfigured (so a still-working built-in is
-    // never second-guessed). Self-healing: once applyConnectorLinkToField
-    // runs, it writes a fresh system:'connector' ref, so every refresh
-    // after this first one takes the ordinary connector branch below with
-    // no special case needed. Ambiguous (2+) matches just take the first
-    // -- this is a background refresh with no picker UI to disambiguate
-    // through.
-    const staleBuiltin = (system === 'jira' && !this.builtinConfigured('jira'))
-      || (system === 'salesforce' && !this.builtinConfigured('salesforce'));
-    const migratedMatch = staleBuiltin ? this.customConnectorMatches(system === 'jira' ? ref.key : ref.id)[0] : null;
-    if (migratedMatch) await this.applyConnectorLinkToField(issueId, colId, migratedMatch);
-    else if (system === 'jira') await this.applyJiraLinkToField(issueId, colId, ref.key);
-    else if (system === 'salesforce') await this.applySalesforceLinkToField(issueId, colId, ref.id);
-    else if (ref.system === 'connector') { const c = (this.state.connectedSources || []).find(x => x.id === ref.connectorId); if (c) await this.applyConnectorLinkToField(issueId, colId, { connector: c, matchedId: ref.matchedId }); }
-    else if (ref.system === 'wigwag') this.applyWigwagLinkToField(issueId, colId, { projectId: ref.projectId, issueId: ref.issueId, from: ref.from, path: ref.path, ref: ref.ref });
-    else await this.applyGithubLinkToField(issueId, colId, { owner: ref.owner, repo: ref.repo, num: ref.num });
+    if (ref.system === 'wigwag') {
+      this.applyWigwagLinkToField(issueId, colId, { projectId: ref.projectId, issueId: ref.issueId, from: ref.from, path: ref.path, ref: ref.ref });
+    } else {
+      const n = normalizeRef(ref);
+      if (n && n.fetchedVia) {
+        const matchedId = n.matchedId !== undefined ? n.matchedId : this.matchedIdFromHref(n.fetchedVia, n.href);
+        const isBuiltin = n.fetchedVia.startsWith('__builtin_');
+        // Tracker: a field originally linked via a built-in (Jira/
+        // Salesforce) that Tom has since disabled (cleared its root
+        // URL/credential) in favour of a custom connector matching the
+        // same identifier would otherwise keep dispatching to the dead
+        // built-in on every refresh forever -- fieldRefs are
+        // historical/immutable, so a ref's own fetchedVia never
+        // updates itself just because the matching system changed.
+        // Re-resolve against the currently configured custom
+        // connectors, but only when the built-in itself is
+        // unconfigured (so a still-working built-in is never second-
+        // guessed) and matchedId is a plain string (github's own
+        // {owner,repo,num} object was never a candidate for this --
+        // nothing "migrates off" a working github link this way).
+        // Self-healing: once applyLinkToField runs, it writes a fresh
+        // fetchedVia-tagged ref, so every refresh after this first one
+        // takes the ordinary connector branch below with no special
+        // case needed. Ambiguous (2+) matches just take the first --
+        // this is a background refresh with no picker UI to
+        // disambiguate through.
+        const kind = isBuiltin ? n.fetchedVia.slice('__builtin_'.length) : null;
+        const staleBuiltin = isBuiltin && (kind === 'jira' || kind === 'salesforce') && !this.builtinConfigured(kind) && typeof matchedId === 'string';
+        const migratedMatch = staleBuiltin ? this.customConnectorMatches(matchedId)[0] : null;
+        if (migratedMatch) await this.applyLinkToField(issueId, colId, migratedMatch);
+        else if (isBuiltin) await this.applyLinkToField(issueId, colId, { fetchedVia: n.fetchedVia, matchedId });
+        else {
+          const c = (this.state.connectedSources || []).find(x => x.id === n.fetchedVia);
+          if (c) await this.applyLinkToField(issueId, colId, { fetchedVia: n.fetchedVia, matchedId, connector: c });
+        }
+      }
+    }
     const afterIssue = this.findIssue(issueId);
     if (!afterIssue) return null;
     const afterIds = latestEntryIdsByField(afterIssue);
@@ -4734,183 +4856,120 @@ class Component extends DCLogic {
       }
     }
   }
-  applyGithubLinkToField(issueId, colId, gh) {
+  // Replaces applyGithubLinkToField/applyJiraLinkToField/
+  // applySalesforceLinkToField/applyConnectorLinkToField -- one
+  // shared write path for every system, now that paste-dispatch
+  // (githubUrlMatch/jiraKeyMatch/salesforceUrlMatch/
+  // customConnectorMatches) and refresh-dispatch both produce the
+  // same {fetchedVia, matchedId, connector?} shape (connector is only
+  // present for a CUSTOM connector match -- the macro/name a builtin
+  // dispatch doesn't need). Writes fieldRef: {href, fetchedVia}.
+  applyLinkToField(issueId, colId, { fetchedVia, matchedId, connector }) {
+    const isBuiltin = fetchedVia.startsWith('__builtin_');
+    if (!isBuiltin && !this.isTauriConnectorRuntime()) return; // same silent no-op applyConnectorLinkToField always had outside Tauri
+    const kind = isBuiltin ? fetchedVia.slice('__builtin_'.length) : null;
+    const systemLabel = isBuiltin ? BUILTIN_INTEGRATIONS[kind].name : connector.name;
+    const linkedToText = kind === 'github' ? 'GitHub #' + matchedId.num
+      : kind === 'jira' ? 'Jira ' + matchedId
+      : kind === 'salesforce' ? 'Salesforce ' + salesforceObjectTypeFromId(matchedId)
+      : systemLabel;
     const fieldLabel = (this.state.fieldDefs[colId] && this.state.fieldDefs[colId].label) || colId;
     const iss0 = this.findIssue(issueId);
-    const isRefreshStart = iss0 && this.sameLink(iss0.fieldRefs && iss0.fieldRefs[colId], gh);
-    const beforeTitle = iss0 ? iss0.values[colId] : undefined;
-    this.setState({
-      activeCell: null, editDraft: '',
-      issues: this.state.issues.map(i => i.id === issueId ? { ...i, fieldLoading: { ...(i.fieldLoading || {}), [colId]: true } } : i)
-    });
-    if (!isRefreshStart) this.appendSignedHistory(issueId, { text: 'Linked ' + fieldLabel + ' to GitHub #' + gh.num });
-    return this.withRetry(() => this.fetchGithubData(gh.owner, gh.repo, gh.num, true)).then(data => {
-      const issNow = this.findIssue(issueId);
-      const isRefresh = issNow && this.sameLink(issNow.fieldRefs && issNow.fieldRefs[colId], gh);
-      const beforeValues = (issNow && issNow.values) || {};
-      // Tracker #112 (b564316d): the persisted fieldRef is display-only
-      // -- owner/repo/num is all buildTextCell's ref rendering ever
-      // reads. pickGithubFields(data)'s full picked set is used ONLY
-      // in-memory, right below, to recompute any bound field while real
-      // data is in hand -- it never reaches appendSignedHistory/disk.
-      const fieldRef = { system: 'github', owner: gh.owner, repo: gh.repo, num: gh.num };
-      const beforeFieldRef = issNow && issNow.fieldRefs && issNow.fieldRefs[colId];
-      if (!isRefresh) this.appendSignedHistory(issueId, { text: fieldLabel + ' fetched from GitHub', field: colId, value: data.title, fieldRef });
-      else if (data.title !== beforeTitle || JSON.stringify(fieldRef) !== JSON.stringify(beforeFieldRef)) this.appendSignedHistory(issueId, { text: fieldLabel + ' refreshed from GitHub', field: colId, value: data.title, fieldRef });
-      this.setState(s => ({
-        issues: s.issues.map(iss => iss.id === issueId ? settleLinkedRules(applyLiveLinkedRules({ ...iss, fieldLoading: { ...(iss.fieldLoading || {}), [colId]: false } }, effectiveFieldDefs(s.fieldDefs, s.localFieldBindings), colId, 'github', data, this.liveRuleCtx(issueId)), effectiveFieldDefs(s.fieldDefs, s.localFieldBindings), this.liveRuleCtx(issueId)) : iss)
-      }));
-      this.logDerivedChanges(issueId, beforeValues, colId);
-    }).catch(err => {
-      const fallback = gh.owner + '/' + gh.repo + '#' + gh.num;
-      const issNow = this.findIssue(issueId);
-      const isRefresh = issNow && this.sameLink(issNow.fieldRefs && issNow.fieldRefs[colId], gh);
-      const errorText = 'Could not fetch from GitHub (' + err.message + ')';
-      if (isRefresh) {
-        const fieldHistory = ((issNow && issNow.history) || []).filter(hh => hh.field === colId);
-        const lastEntry = fieldHistory.length ? fieldHistory.reduce((a, b) => (b.sortKey > a.sortKey ? b : a)) : null;
-        const alreadyLoggedThisFailure = lastEntry && lastEntry.value === undefined && lastEntry.text === errorText;
-        if (!alreadyLoggedThisFailure) this.appendSignedHistory(issueId, { text: errorText, field: colId });
-      } else {
-        this.appendSignedHistory(issueId, { text: errorText, field: colId, value: fallback, fieldRef: { system: 'github', owner: gh.owner, repo: gh.repo, num: gh.num } });
-      }
-      this.setState(s => ({
-        issues: s.issues.map(iss => iss.id === issueId ? { ...iss, fieldLoading: { ...(iss.fieldLoading || {}), [colId]: false } } : iss)
-      }));
-    });
-  }
-  sameConnectorLink(ref, connectorId, matchedId) { return !!ref && ref.system === 'connector' && ref.connectorId === connectorId && ref.matchedId === matchedId; }
-  async applyConnectorLinkToField(issueId, colId, { connector, matchedId }) {
-    if (!this.isTauriConnectorRuntime()) return;
-    console.time('[diag] connector-link-total ' + matchedId);
-    const fieldLabel = (this.state.fieldDefs[colId] && this.state.fieldDefs[colId].label) || colId;
-    const iss0 = this.findIssue(issueId);
-    const isRefreshStart = iss0 && this.sameConnectorLink(iss0.fieldRefs && iss0.fieldRefs[colId], connector.id, matchedId);
+    const isRefreshStart = iss0 && this.sameRef(iss0.fieldRefs && iss0.fieldRefs[colId], fetchedVia, matchedId);
     const beforeTitle = iss0 ? iss0.values[colId] : undefined;
     this.setState({
       activeCell: null, editDraft: '', connectorPickerOpen: null,
       issues: this.state.issues.map(i => i.id === issueId ? { ...i, fieldLoading: { ...(i.fieldLoading || {}), [colId]: true } } : i)
     });
-    if (!isRefreshStart) this.appendSignedHistory(issueId, { text: 'Linked ' + fieldLabel + ' to ' + connector.name });
-    try {
-      const credential = await this.getConnectorCredential(connector.id);
-      const data = await this.runConnectorMacro(connector.macro, matchedId, credential);
+    if (!isRefreshStart) this.appendSignedHistory(issueId, { text: 'Linked ' + fieldLabel + ' to ' + linkedToText });
+    if (!isBuiltin) console.time('[diag] connector-link-total ' + matchedId);
+    return this.fetchLinkData(fetchedVia, matchedId, connector).then(({ data, href }) => {
       const issNow = this.findIssue(issueId);
-      const isRefresh = issNow && this.sameConnectorLink(issNow.fieldRefs && issNow.fieldRefs[colId], connector.id, matchedId);
+      const isRefresh = issNow && this.sameRef(issNow.fieldRefs && issNow.fieldRefs[colId], fetchedVia, matchedId);
       const beforeValues = (issNow && issNow.values) || {};
-      // Trimmed, display-only persisted fieldRef -- same tracker #112
-      // pattern as github/jira/salesforce: labels/assignee/extra are
-      // held in-memory only (pickConnectorFields, right below), never
-      // written to disk.
-      const fieldRef = { system: 'connector', connectorId: connector.id, connectorKey: connector.key, matchedId, title: data.title || '', url: data.url || '', state: data.state || '' };
+      // Tracker #112 (b564316d): the persisted fieldRef is display-only
+      // -- {href, fetchedVia[, matchedId]} is all buildTextCell's ref
+      // rendering ever reads. The live `data`'s own full picked set is
+      // used ONLY in-memory, right below, to recompute any bound field
+      // while real data is in hand -- it never reaches
+      // appendSignedHistory/disk.
+      // matchedId is persisted for a CUSTOM connector specifically (not
+      // github/jira/salesforce, whose href already deterministically
+      // encodes it, confirmed by matchedIdFromHref's own builtin
+      // branches) because a connector's own fetched `url` has no
+      // guaranteed relationship to the shape its paste-pattern matched
+      // (e.g. a pasted ticket URL vs. the system's own canonical record
+      // URL) -- without it, re-deriving the id from href for display
+      // (connectorLinkText's {{id}}) or duplicate-detection (sameRef) is
+      // unreliable. This is identity, not the "rich per-system fields"
+      // (labels/status/assignee/...) Tom categorically ruled out.
+      const fieldRef = isBuiltin ? { href, fetchedVia } : { href, fetchedVia, matchedId };
+      const value = kind === 'salesforce' ? data.name : data.title;
       const beforeFieldRef = issNow && issNow.fieldRefs && issNow.fieldRefs[colId];
-      if (!isRefresh) this.appendSignedHistory(issueId, { text: fieldLabel + ' fetched from ' + connector.name, field: colId, value: data.title, fieldRef });
-      else if (data.title !== beforeTitle || JSON.stringify(fieldRef) !== JSON.stringify(beforeFieldRef)) this.appendSignedHistory(issueId, { text: fieldLabel + ' refreshed from ' + connector.name, field: colId, value: data.title, fieldRef });
+      if (!isRefresh) this.appendSignedHistory(issueId, { text: fieldLabel + ' fetched from ' + systemLabel, field: colId, value, fieldRef });
+      // Deliberately RAW beforeFieldRef here (unlike stageFieldRefresh's
+      // own equivalent comparison below applyLinkToField in this file --
+      // see its comment) -- this is the single-row immediate-refresh
+      // path, which writes straight to signed history/Merge History, not
+      // a staged job's pre-confirm gate. Merge History bundles the root
+      // field's entry together with whatever it derives (tracker #196),
+      // so a legacy ref's first post-redesign touch must still produce a
+      // real entry here -- confirmed by merge-provenance.spec.js's own
+      // "refresh... records a revertible bundle... covering the derived
+      // field" coverage, which needs BOTH fields' entries even when the
+      // root field's visible value didn't change. The pre-confirm GATE
+      // (stageFieldRefresh, used by the 2+-row staged job) is the one
+      // place that must stay quiet about a pure shape migration -- it has
+      // its own, separate, normalized comparison for exactly that reason.
+      else if (value !== beforeTitle || JSON.stringify(fieldRef) !== JSON.stringify(beforeFieldRef)) this.appendSignedHistory(issueId, { text: fieldLabel + ' refreshed from ' + systemLabel, field: colId, value, fieldRef });
+      const liveKey = isBuiltin ? kind : connector.key;
+      // fieldRefs[colId] is patched to the clean fieldRef here IN-MEMORY,
+      // not just via appendSignedHistory's own rehydration -- when
+      // nothing really changed (unchanged, above) no entry gets written
+      // at all, so this is the only place a legacy ref's stale embedded
+      // rich data (e.g. old labels) actually gets cleared before
+      // settleLinkedRules's own applyLinkedRules pass runs immediately
+      // below. Without this, settleLinkedRules would still see the OLD
+      // legacy ref, sourceRefHasFullData would call it "has full data"
+      // (the embedded, now-stale labels), and re-derive every field
+      // bound to colId from that STALE snapshot -- clobbering the
+      // correct value applyLiveLinkedRules just computed from the
+      // genuinely fresh `data` a moment ago (confirmed regression,
+      // caught by row-selection.spec.js's own "recomputes from fresh
+      // live data even when ... unchanged" coverage).
       this.setState(s => ({
-        issues: s.issues.map(iss => iss.id === issueId ? settleLinkedRules(applyLiveLinkedRules({ ...iss, fieldLoading: { ...(iss.fieldLoading || {}), [colId]: false } }, effectiveFieldDefs(s.fieldDefs, s.localFieldBindings), colId, connector.key, data, this.liveRuleCtx(issueId)), effectiveFieldDefs(s.fieldDefs, s.localFieldBindings), this.liveRuleCtx(issueId)) : iss)
+        issues: s.issues.map(iss => {
+          if (iss.id !== issueId) return iss;
+          const patched = { ...iss, fieldLoading: { ...(iss.fieldLoading || {}), [colId]: false }, fieldRefs: { ...iss.fieldRefs, [colId]: fieldRef } };
+          const defs = effectiveFieldDefs(s.fieldDefs, s.localFieldBindings);
+          return settleLinkedRules(applyLiveLinkedRules(patched, defs, colId, liveKey, data, this.liveRuleCtx(issueId)), defs, this.liveRuleCtx(issueId));
+        })
       }));
       this.logDerivedChanges(issueId, beforeValues, colId);
-      console.timeEnd('[diag] connector-link-total ' + matchedId);
-    } catch (err) {
-      console.timeEnd('[diag] connector-link-total ' + matchedId);
-      const errorText = 'Could not fetch from ' + connector.name + ' (' + err.message + ')';
-      const issNow = this.findIssue(issueId);
-      const isRefresh = issNow && this.sameConnectorLink(issNow.fieldRefs && issNow.fieldRefs[colId], connector.id, matchedId);
-      if (isRefresh) {
-        const fieldHistory = ((issNow && issNow.history) || []).filter(hh => hh.field === colId);
-        const lastEntry = fieldHistory.length ? fieldHistory.reduce((a, b) => (b.sortKey > a.sortKey ? b : a)) : null;
-        const alreadyLoggedThisFailure = lastEntry && lastEntry.value === undefined && lastEntry.text === errorText;
-        if (!alreadyLoggedThisFailure) this.appendSignedHistory(issueId, { text: errorText, field: colId });
-      } else {
-        this.appendSignedHistory(issueId, { text: errorText, field: colId, value: matchedId, fieldRef: { system: 'connector', connectorId: connector.id, connectorKey: connector.key, matchedId } });
-      }
-      this.setState(s => ({
-        issues: s.issues.map(iss => iss.id === issueId ? { ...iss, fieldLoading: { ...(iss.fieldLoading || {}), [colId]: false } } : iss)
-      }));
-    }
-  }
-  sameJiraLink(ref, key) { return !!ref && ref.system === 'jira' && ref.key === key; }
-  sameSalesforceLink(ref, id) { return !!ref && ref.system === 'salesforce' && ref.id === id; }
-  // Field-scoped Salesforce counterpart -- same loading/history/error
-  // orchestration as applyGithubLinkToField/applyConnectorLinkToField
-  // above, just keyed by the record's 15/18-char Id instead of a
-  // repo#num or a Jira key.
-  applySalesforceLinkToField(issueId, colId, id) {
-    const fieldLabel = (this.state.fieldDefs[colId] && this.state.fieldDefs[colId].label) || colId;
-    const iss0 = this.findIssue(issueId);
-    const isRefreshStart = iss0 && this.sameSalesforceLink(iss0.fieldRefs && iss0.fieldRefs[colId], id);
-    const beforeTitle = iss0 ? iss0.values[colId] : undefined;
-    this.setState({
-      activeCell: null, editDraft: '',
-      issues: this.state.issues.map(i => i.id === issueId ? { ...i, fieldLoading: { ...(i.fieldLoading || {}), [colId]: true } } : i)
-    });
-    if (!isRefreshStart) this.appendSignedHistory(issueId, { text: 'Linked ' + fieldLabel + ' to Salesforce ' + salesforceObjectTypeFromId(id) });
-    return this.withRetry(() => this.fetchSalesforceData(id)).then(data => {
-      const issNow = this.findIssue(issueId);
-      const isRefresh = issNow && this.sameSalesforceLink(issNow.fieldRefs && issNow.fieldRefs[colId], id);
-      const beforeValues = (issNow && issNow.values) || {};
-      // Tracker #112 (b564316d): display-only persisted fieldRef -- see
-      // the GitHub counterpart above for the full rationale.
-      const fieldRef = { system: 'salesforce', id, name: data.name || '', url: data.url || null };
-      const beforeFieldRef = issNow && issNow.fieldRefs && issNow.fieldRefs[colId];
-      if (!isRefresh) this.appendSignedHistory(issueId, { text: fieldLabel + ' fetched from Salesforce', field: colId, value: data.name, fieldRef });
-      else if (data.name !== beforeTitle || JSON.stringify(fieldRef) !== JSON.stringify(beforeFieldRef)) this.appendSignedHistory(issueId, { text: fieldLabel + ' refreshed from Salesforce', field: colId, value: data.name, fieldRef });
-      this.setState(s => ({
-        issues: s.issues.map(iss => iss.id === issueId ? settleLinkedRules(applyLiveLinkedRules({ ...iss, fieldLoading: { ...(iss.fieldLoading || {}), [colId]: false } }, effectiveFieldDefs(s.fieldDefs, s.localFieldBindings), colId, 'salesforce', data, this.liveRuleCtx(issueId)), effectiveFieldDefs(s.fieldDefs, s.localFieldBindings), this.liveRuleCtx(issueId)) : iss)
-      }));
-      this.logDerivedChanges(issueId, beforeValues, colId);
+      if (!isBuiltin) console.timeEnd('[diag] connector-link-total ' + matchedId);
     }).catch(err => {
+      if (!isBuiltin) console.timeEnd('[diag] connector-link-total ' + matchedId);
       const issNow = this.findIssue(issueId);
-      const isRefresh = issNow && this.sameSalesforceLink(issNow.fieldRefs && issNow.fieldRefs[colId], id);
-      const errorText = 'Could not fetch from Salesforce (' + err.message + ')';
+      const isRefresh = issNow && this.sameRef(issNow.fieldRefs && issNow.fieldRefs[colId], fetchedVia, matchedId);
+      const errorText = 'Could not fetch from ' + systemLabel + ' (' + err.message + ')';
       if (isRefresh) {
         const fieldHistory = ((issNow && issNow.history) || []).filter(hh => hh.field === colId);
         const lastEntry = fieldHistory.length ? fieldHistory.reduce((a, b) => (b.sortKey > a.sortKey ? b : a)) : null;
         const alreadyLoggedThisFailure = lastEntry && lastEntry.value === undefined && lastEntry.text === errorText;
         if (!alreadyLoggedThisFailure) this.appendSignedHistory(issueId, { text: errorText, field: colId });
       } else {
-        this.appendSignedHistory(issueId, { text: errorText, field: colId, value: id, fieldRef: { system: 'salesforce', id, name: '', url: null } });
-      }
-      this.setState(s => ({
-        issues: s.issues.map(iss => iss.id === issueId ? { ...iss, fieldLoading: { ...(iss.fieldLoading || {}), [colId]: false } } : iss)
-      }));
-    });
-  }
-  applyJiraLinkToField(issueId, colId, key) {
-    const fieldLabel = (this.state.fieldDefs[colId] && this.state.fieldDefs[colId].label) || colId;
-    const iss0 = this.findIssue(issueId);
-    const isRefreshStart = iss0 && this.sameJiraLink(iss0.fieldRefs && iss0.fieldRefs[colId], key);
-    const beforeTitle = iss0 ? iss0.values[colId] : undefined;
-    this.setState({
-      activeCell: null, editDraft: '',
-      issues: this.state.issues.map(i => i.id === issueId ? { ...i, fieldLoading: { ...(i.fieldLoading || {}), [colId]: true } } : i)
-    });
-    if (!isRefreshStart) this.appendSignedHistory(issueId, { text: 'Linked ' + fieldLabel + ' to Jira ' + key });
-    return this.withRetry(() => this.fetchJiraData(key)).then(data => {
-      const issNow = this.findIssue(issueId);
-      const isRefresh = issNow && this.sameJiraLink(issNow.fieldRefs && issNow.fieldRefs[colId], key);
-      const beforeValues = (issNow && issNow.values) || {};
-      // Tracker #112 (b564316d): display-only persisted fieldRef -- see
-      // the GitHub counterpart above for the full rationale.
-      const fieldRef = { system: 'jira', key, browseUrl: data.browseUrl || null };
-      const beforeFieldRef = issNow && issNow.fieldRefs && issNow.fieldRefs[colId];
-      if (!isRefresh) this.appendSignedHistory(issueId, { text: fieldLabel + ' fetched from Jira', field: colId, value: data.title, fieldRef });
-      else if (data.title !== beforeTitle || JSON.stringify(fieldRef) !== JSON.stringify(beforeFieldRef)) this.appendSignedHistory(issueId, { text: fieldLabel + ' refreshed from Jira', field: colId, value: data.title, fieldRef });
-      this.setState(s => ({
-        issues: s.issues.map(iss => iss.id === issueId ? settleLinkedRules(applyLiveLinkedRules({ ...iss, fieldLoading: { ...(iss.fieldLoading || {}), [colId]: false } }, effectiveFieldDefs(s.fieldDefs, s.localFieldBindings), colId, 'jira', data, this.liveRuleCtx(issueId)), effectiveFieldDefs(s.fieldDefs, s.localFieldBindings), this.liveRuleCtx(issueId)) : iss)
-      }));
-      this.logDerivedChanges(issueId, beforeValues, colId);
-    }).catch(err => {
-      const issNow = this.findIssue(issueId);
-      const isRefresh = issNow && this.sameJiraLink(issNow.fieldRefs && issNow.fieldRefs[colId], key);
-      const errorText = 'Could not fetch from Jira (' + err.message + ')';
-      if (isRefresh) {
-        const fieldHistory = ((issNow && issNow.history) || []).filter(hh => hh.field === colId);
-        const lastEntry = fieldHistory.length ? fieldHistory.reduce((a, b) => (b.sortKey > a.sortKey ? b : a)) : null;
-        const alreadyLoggedThisFailure = lastEntry && lastEntry.value === undefined && lastEntry.text === errorText;
-        if (!alreadyLoggedThisFailure) this.appendSignedHistory(issueId, { text: errorText, field: colId });
-      } else {
-        this.appendSignedHistory(issueId, { text: errorText, field: colId, value: key, fieldRef: { system: 'jira', key, browseUrl: null } });
+        // href is unknown on a failed first attempt for every system
+        // except github (whose href is deterministic from matchedId
+        // alone, known upfront -- see githubUrlMatch's own comment).
+        // matchedId is persisted here specifically so a RETRY is
+        // correctly recognized as a retry (sameRef) rather than looking
+        // like a brand-new link on the second attempt -- for a builtin,
+        // overwritten by the clean {href, fetchedVia}-only shape the
+        // moment a fetch actually succeeds; for a custom connector, kept
+        // on success too (see the success-path fieldRef comment above).
+        const fallbackHref = kind === 'github' ? ('https://github.com/' + matchedId.owner + '/' + matchedId.repo + '/issues/' + matchedId.num) : null;
+        const fallbackValue = kind === 'github' ? (matchedId.owner + '/' + matchedId.repo + '#' + matchedId.num) : matchedId;
+        this.appendSignedHistory(issueId, { text: errorText, field: colId, value: fallbackValue, fieldRef: { href: fallbackHref, fetchedVia, matchedId } });
       }
       this.setState(s => ({
         issues: s.issues.map(iss => iss.id === issueId ? { ...iss, fieldLoading: { ...(iss.fieldLoading || {}), [colId]: false } } : iss)
@@ -5368,15 +5427,14 @@ class Component extends DCLogic {
     // column they later can't bind to.
     if (commitDef && commitDef.type === 'issue') {
       const gh = this.githubUrlMatch(draft);
-      if (gh) { this.requireAttribution(() => this.applyGithubLinkToField(issueId, colId, gh)); return; }
-      const jiraKey = this.jiraKeyMatch(draft);
-      if (jiraKey) { this.requireAttribution(() => this.applyJiraLinkToField(issueId, colId, jiraKey)); return; }
-      const sfId = this.salesforceUrlMatch(draft);
-      if (sfId) { this.requireAttribution(() => this.applySalesforceLinkToField(issueId, colId, sfId)); return; }
+      const jira = !gh && this.jiraKeyMatch(draft);
+      const sf = !gh && !jira && this.salesforceUrlMatch(draft);
+      const match = gh || jira || sf || null;
+      if (match) { this.requireAttribution(() => this.applyLinkToField(issueId, colId, match)); return; }
       const wg = this.wigwagUrlMatch(draft);
       if (wg && this.resolveWigwagProjectId(wg)) { this.requireAttribution(() => this.applyWigwagLinkToField(issueId, colId, wg)); return; }
       const connMatches = this.customConnectorMatches(draft);
-      if (connMatches.length === 1) { this.requireAttribution(() => this.applyConnectorLinkToField(issueId, colId, connMatches[0])); return; }
+      if (connMatches.length === 1) { this.requireAttribution(() => this.applyLinkToField(issueId, colId, connMatches[0])); return; }
       if (connMatches.length > 1) { this.setState({ connectorPickerOpen: { issueId, colId, matches: connMatches } }); return; }
       draft = this.translateWigwagLinksInText(draft);
     } else if (commitDef && commitDef.type === 'text') {
@@ -6043,17 +6101,18 @@ class Component extends DCLogic {
     const trimmed = (text || '').trim();
     if (!trimmed) return;
     const gh = this.githubUrlMatch(trimmed);
-    const jiraKey = !gh && this.jiraKeyMatch(trimmed);
-    const sfId = !gh && !jiraKey && this.salesforceUrlMatch(trimmed);
-    const wgParsed = !gh && !jiraKey && !sfId && this.wigwagUrlMatch(trimmed);
+    const jira = !gh && this.jiraKeyMatch(trimmed);
+    const sf = !gh && !jira && this.salesforceUrlMatch(trimmed);
+    const wgParsed = !gh && !jira && !sf && this.wigwagUrlMatch(trimmed);
     const wg = wgParsed && this.resolveWigwagProjectId(wgParsed) ? wgParsed : null;
-    const connMatches = (!gh && !jiraKey && !sfId && !wg) ? this.customConnectorMatches(trimmed) : [];
+    const connMatches = (!gh && !jira && !sf && !wg) ? this.customConnectorMatches(trimmed) : [];
     const conn = connMatches.length === 1 ? connMatches[0] : null; // ambiguous (>1) deliberately falls through to plain text -- no picker UI exists in this flow
+    const match = gh || jira || sf || conn || null;
     const id = crypto.randomUUID ? crypto.randomUUID() : 'i-' + Date.now() + '-' + Math.random().toString(36).slice(2);
     this.setState(s => {
       const num = Math.max(0, ...s.issues.map(i => i.num)) + 1;
       const values = this.buildDefaultValues();
-      values.title = (gh || jiraKey || sfId || conn) ? 'Fetching…' : (wg ? this.resolveWigwagRef(wg).label : trimmed);
+      values.title = match ? 'Fetching…' : (wg ? this.resolveWigwagRef(wg).label : trimmed);
       return {
         addItemOpen: true, addItemDraft: '',
         issues: [...s.issues, { id, num, fieldRefs: {}, fieldLoading: {}, values,
@@ -6065,11 +6124,8 @@ class Component extends DCLogic {
       if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
     });
     this.appendSignedHistory(id, { text: 'Created' });
-    if (gh) this.applyGithubLinkToField(id, 'title', gh);
-    else if (jiraKey) this.applyJiraLinkToField(id, 'title', jiraKey);
-    else if (sfId) this.applySalesforceLinkToField(id, 'title', sfId);
+    if (match) this.applyLinkToField(id, 'title', match);
     else if (wg) this.applyWigwagLinkToField(id, 'title', wg);
-    else if (conn) this.applyConnectorLinkToField(id, 'title', conn);
     else this.appendSignedHistory(id, { text: 'Title set to "' + truncate(trimmed, 60) + '"', field: 'title', value: trimmed });
     for (const colId in this.state.fieldDefs) {
       if (colId === 'title') continue;
@@ -6088,58 +6144,57 @@ class Component extends DCLogic {
     this.requireAttribution(() => this.createIssueFromText(text));
   };
   // Tracker #191: cross-system ref equality for duplicate detection --
-  // deliberately separate from sameLink/sameConnectorLink (which each
-  // only ever compare one parsed ref against ONE issue's own
-  // current ref, to distinguish "first link" from "refresh" -- there's no
-  // existing generic/cross-issue equivalent).
-  refsMatch(a, b) {
-    if (!a || !b || a.system !== b.system) return false;
-    if (a.system === 'github') return a.owner === b.owner && a.repo === b.repo && String(a.num) === String(b.num);
-    if (a.system === 'jira') return a.key === b.key;
-    if (a.system === 'salesforce') return a.id === b.id;
-    if (a.system === 'connector') return a.connectorId === b.connectorId && a.matchedId === b.matchedId;
-    if (a.system === 'wigwag') return a.projectId === b.projectId && a.issueId === b.issueId;
-    return false;
+  // delegates to sameRef (normalizeRef + fetchedVia/matchedId compare)
+  // for every github/jira/salesforce/connector match. wigwag refs stay
+  // out of scope for the fieldRef-shape unification (see the plan's own
+  // "explicitly out of scope" section), so they keep their own, separate
+  // equality here.
+  sameWigwagRef(ref, projectId, issueId) {
+    return !!ref && ref.system === 'wigwag' && ref.projectId === projectId && (ref.issueId || null) === (issueId || null);
   }
   // Same precedence/parsing as createIssueFromText, plus duplicate
   // detection against (a) every existing issue's already-hydrated
   // fieldRefs (any column, not just title -- a ref could be bound to a
   // different field) or exact title text, and (b) anything already
-  // accepted EARLIER in this same paste (seenRefs/seenTitles) -- so an
-  // accidental repeated line within one paste only ever creates one row,
-  // not two, same as it would if it existed as a real prior row.
+  // accepted EARLIER in this same paste (seenMatches/seenWigwag/
+  // seenTitles) -- so an accidental repeated line within one paste only
+  // ever creates one row, not two, same as it would if it existed as a
+  // real prior row.
   classifyBulkPasteLines(lines, s) {
-    const seenRefs = [];
+    const seenMatches = [];
+    const seenWigwag = [];
     const seenTitles = [];
     return lines.map(text => {
       const trimmed = (text || '').trim();
       const gh = this.githubUrlMatch(trimmed);
-      const jiraKey = !gh && this.jiraKeyMatch(trimmed);
-      const sfId = !gh && !jiraKey && this.salesforceUrlMatch(trimmed);
-      const wgParsed = !gh && !jiraKey && !sfId && this.wigwagUrlMatch(trimmed);
+      const jira = !gh && this.jiraKeyMatch(trimmed);
+      const sf = !gh && !jira && this.salesforceUrlMatch(trimmed);
+      const wgParsed = !gh && !jira && !sf && this.wigwagUrlMatch(trimmed);
       const wg = wgParsed && this.resolveWigwagProjectId(wgParsed) ? wgParsed : null;
       // Tracker 54e36073: a real custom connector match was never
       // checked here at all -- createIssueFromText's own dispatch order
       // checks it last, after the 3 built-ins + wigwag, so mirror that
       // exact order; ambiguous (2+) matches fall through to unlinked,
       // same as createIssueFromText itself (no picker UI in this flow).
-      const connMatches = (!gh && !jiraKey && !sfId && !wg) ? this.customConnectorMatches(trimmed) : [];
+      const connMatches = (!gh && !jira && !sf && !wg) ? this.customConnectorMatches(trimmed) : [];
       const conn = connMatches.length === 1 ? connMatches[0] : null;
-      let ref = null;
-      if (gh) ref = { system: 'github', owner: gh.owner, repo: gh.repo, num: gh.num };
-      else if (jiraKey) ref = { system: 'jira', key: jiraKey };
-      else if (sfId) ref = { system: 'salesforce', id: sfId };
-      else if (wg) ref = { system: 'wigwag', projectId: this.resolveWigwagProjectId(wg), issueId: wg.issueId || null, from: wg.from || null, path: wg.path || null, ref: wg.ref || null };
-      else if (conn) ref = { system: 'connector', connectorId: conn.connector.id, matchedId: conn.matchedId };
+      const match = gh || jira || sf || conn || null;
       let duplicate;
-      if (ref) {
-        duplicate = s.issues.some(iss => Object.values(iss.fieldRefs || {}).some(r => this.refsMatch(r, ref))) || seenRefs.some(r => this.refsMatch(r, ref));
-        if (!duplicate) seenRefs.push(ref);
+      if (match) {
+        duplicate = s.issues.some(iss => Object.values(iss.fieldRefs || {}).some(r => this.sameRef(r, match.fetchedVia, match.matchedId)))
+          || seenMatches.some(m => m.fetchedVia === match.fetchedVia && JSON.stringify(m.matchedId) === JSON.stringify(match.matchedId));
+        if (!duplicate) seenMatches.push(match);
+      } else if (wg) {
+        const wgProjectId = this.resolveWigwagProjectId(wg);
+        const wgIssueId = wg.issueId || null;
+        duplicate = s.issues.some(iss => Object.values(iss.fieldRefs || {}).some(r => this.sameWigwagRef(r, wgProjectId, wgIssueId)))
+          || seenWigwag.some(w => w.projectId === wgProjectId && w.issueId === wgIssueId);
+        if (!duplicate) seenWigwag.push({ projectId: wgProjectId, issueId: wgIssueId });
       } else {
         duplicate = s.issues.some(iss => iss.values && iss.values.title === trimmed) || seenTitles.includes(trimmed);
         if (!duplicate) seenTitles.push(trimmed);
       }
-      return { text: trimmed, linked: !!ref, duplicate };
+      return { text: trimmed, linked: !!(match || wg), duplicate };
     });
   }
   buildBulkPasteViewModel(s) {
@@ -7937,12 +7992,13 @@ class Component extends DCLogic {
   // has exactly one implementation -- see buildTextCell's own comment
   // on why editing always surfaces the source, not the resolved value.
   editValueForRef(ref, currentText) {
-    return ref
-      ? ((ref.system || 'github') === 'jira' ? ref.key
-        : ref.system === 'wigwag' ? ('wigwag:/project/' + ref.projectId + (ref.issueId ? '/issue/' + ref.issueId : ''))
-        : ref.system === 'connector' ? ref.matchedId
-        : ('https://github.com/' + ref.owner + '/' + ref.repo + '/issues/' + ref.num))
-      : currentText;
+    if (!ref) return currentText;
+    if (ref.system === 'wigwag') return 'wigwag:/project/' + ref.projectId + (ref.issueId ? '/issue/' + ref.issueId : '');
+    const n = normalizeRef(ref);
+    if (!n) return currentText;
+    if (n.fetchedVia === '__builtin_github') return n.href || currentText;
+    const matchedId = this.resolveMatchedIdForDisplay(ref, n);
+    return matchedId != null ? matchedId : currentText;
   }
   buildTextCell(issue, colId, currentText, placeholderColor, readOnly, suppressTitlePeek) {
     const s = this.state;
@@ -8001,20 +8057,6 @@ class Component extends DCLogic {
     if (issue.fieldLoading && issue.fieldLoading[colId]) {
       return { isText: true, isEditing: false, isDisplay: true, isLoading: true, isRef: false, isPlain: false, cellHighlight: '', reservesRefLine: !!ref, isBoundLive, isOverridden, showBoundGlyph, boundGlyphTitle };
     }
-    if (ref && (ref.system || 'github') === 'jira') {
-      return { isText: true, isEditing: false, isDisplay: true, isLoading: false, isRef: false, isPlain: true, isJiraRef: true, isConnectorRef: false, connectorGlyph: '', connectorColor: '',
-        displayText: currentText || '—', textColor: currentText ? 'var(--text-primary)' : placeholderColor,
-        onClick: textClick, onCellClick: gatedClick,
-        hasRef: true, refLabel: ref.key, refHref: ref.browseUrl || null, hasHref: !!ref.browseUrl, noHref: !ref.browseUrl,
-        onRefLinkClick: onBoundAwareRefClick(null), cellHighlight, isBoundLive, isOverridden, showBoundGlyph, boundGlyphTitle, titleFontWeight };
-    }
-    if (ref && ref.system === 'salesforce') {
-      return { isText: true, isEditing: false, isDisplay: true, isLoading: false, isRef: false, isPlain: true, isSalesforceRef: true, isConnectorRef: false, connectorGlyph: '', connectorColor: '',
-        displayText: currentText || '—', textColor: currentText ? 'var(--text-primary)' : placeholderColor,
-        onClick: textClick, onCellClick: gatedClick,
-        hasRef: true, refLabel: ref.name || ref.id, refHref: ref.url || null, hasHref: !!ref.url, noHref: !ref.url,
-        onRefLinkClick: onBoundAwareRefClick(null), cellHighlight, isBoundLive, isOverridden, showBoundGlyph, boundGlyphTitle, titleFontWeight };
-    }
     if (ref && ref.system === 'wigwag') {
       return { isText: true, isEditing: false, isDisplay: true, isLoading: false, isRef: false, isPlain: true, isWigwagRef: true, isConnectorRef: false, connectorGlyph: '', connectorColor: '',
         displayText: currentText || '—', textColor: currentText ? 'var(--text-primary)' : placeholderColor,
@@ -8022,21 +8064,35 @@ class Component extends DCLogic {
         hasRef: true, refLabel: this.resolveWigwagRef(ref).label, refHref: '#', hasHref: true, noHref: false,
         onRefLinkClick: onBoundAwareRefClick(() => this.openWigwagRef(ref)), cellHighlight, isBoundLive, isOverridden, showBoundGlyph, boundGlyphTitle, titleFontWeight };
     }
-    if (ref && ref.system === 'connector') {
-      const connDef = (this.state.connectedSources || []).find(c => c.id === ref.connectorId);
-      return { isText: true, isEditing: false, isDisplay: true, isLoading: false, isRef: false, isPlain: true, isConnectorRef: true,
-        connectorGlyph: connDef ? connDef.glyph : '?', connectorColor: connDef ? connDef.color : 'var(--text-tertiary)',
-        displayText: currentText || '—', textColor: currentText ? 'var(--text-primary)' : placeholderColor,
-        onClick: textClick, onCellClick: gatedClick,
-        hasRef: true, refLabel: connectorLinkText(connDef && connDef.linkTextTemplate, ref), refHref: ref.url || null, hasHref: !!ref.url, noHref: !ref.url,
-        onRefLinkClick: onBoundAwareRefClick(null), cellHighlight, isBoundLive, isOverridden, showBoundGlyph, boundGlyphTitle, titleFontWeight };
-    }
+    // Every other ref system (github/jira/salesforce/connector, new-shape
+    // or legacy) collapses to one branch via normalizeRef -- branding is
+    // derived LIVE from the current connectedSources entry for fetchedVia,
+    // never from a persisted system/kind tag (see the plan's confirmed
+    // decision #2: a deleted connector's ref falls back to this branch's
+    // own unbranded-pill shape, all isXRef flags false, rather than a
+    // crash). matchedId is read straight off the ref when the legacy
+    // shape (or a failed-fetch error-path write) carries it directly;
+    // otherwise it's re-derived from the persisted href via
+    // matchedIdFromHref, same helper refreshField/sameRef use.
     if (ref) {
-      const href = 'https://github.com/' + ref.owner + '/' + ref.repo + '/issues/' + ref.num;
-      return { isText: true, isEditing: false, isDisplay: true, isLoading: false, isRef: false, isPlain: true, isGithubRef: true, isConnectorRef: false, connectorGlyph: '', connectorColor: '',
+      const n = normalizeRef(ref);
+      const fetchedVia = n ? n.fetchedVia : null;
+      const matchedId = this.resolveMatchedIdForDisplay(ref, n);
+      const connDef = fetchedVia && !fetchedVia.startsWith('__builtin_') ? (this.state.connectedSources || []).find(c => c.id === fetchedVia) : null;
+      const isGithubRef = fetchedVia === '__builtin_github';
+      const isJiraRef = fetchedVia === '__builtin_jira';
+      const isSalesforceRef = fetchedVia === '__builtin_salesforce';
+      const isConnectorRef = !!connDef;
+      const href = n ? n.href : null;
+      const refLabel = isGithubRef ? (matchedId ? matchedId.owner + '/' + matchedId.repo + '#' + matchedId.num : (href || ''))
+        : isConnectorRef ? connectorLinkText(connDef.linkTextTemplate, currentText, matchedId)
+        : (matchedId != null ? String(matchedId) : (href || ''));
+      return { isText: true, isEditing: false, isDisplay: true, isLoading: false, isRef: false, isPlain: true,
+        isGithubRef, isJiraRef, isSalesforceRef, isWigwagRef: false, isConnectorRef,
+        connectorGlyph: isConnectorRef ? connDef.glyph : '', connectorColor: isConnectorRef ? connDef.color : '',
         displayText: currentText || '—', textColor: currentText ? 'var(--text-primary)' : placeholderColor,
         onClick: textClick, onCellClick: gatedClick,
-        hasRef: true, refLabel: ref.owner + '/' + ref.repo + '#' + ref.num, refHref: href, hasHref: true, noHref: false,
+        hasRef: true, refLabel, refHref: href || null, hasHref: !!href, noHref: !href,
         onRefLinkClick: onBoundAwareRefClick(null), cellHighlight, isBoundLive, isOverridden, showBoundGlyph, boundGlyphTitle, titleFontWeight };
     }
     // The static "this plain text merely looks like a link" fallback is
@@ -9869,7 +9925,7 @@ class Component extends DCLogic {
         // Same requireAttribution gate every other apply*LinkToField call
         // site goes through (the single-match path in commitEdit included)
         // -- a write triggered from the picker is still a write.
-        onPick: () => this.requireAttribution(() => this.applyConnectorLinkToField(s.connectorPickerOpen.issueId, s.connectorPickerOpen.colId, m))
+        onPick: () => this.requireAttribution(() => this.applyLinkToField(s.connectorPickerOpen.issueId, s.connectorPickerOpen.colId, m))
       })) : [],
       connectorPickerVisible: !!s.connectorPickerOpen,
       onDismissConnectorPicker: () => this.setState({ connectorPickerOpen: null }),

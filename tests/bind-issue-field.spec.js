@@ -289,6 +289,6 @@ test.describe('Binding an issue-type field to another field ("copy field")', () 
     await expect(h.fieldCell(page, 1, remedyId).locator('a')).toHaveCount(1); // still a real pill
     const doc = await h.readActiveMilestoneDoc(page);
     const iss = doc.issues.find(i => i.id === 'i1');
-    expect(h.latestFieldRef(iss, remedyId)).toEqual({ system: 'github', owner: 'octocat', repo: 'Hello-World', num: '1' });
+    expect(h.latestFieldRef(iss, remedyId)).toEqual({ fetchedVia: '__builtin_github', href: 'https://github.com/octocat/Hello-World/issues/1' });
   });
 });

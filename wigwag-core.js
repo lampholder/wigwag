@@ -927,6 +927,25 @@ function formatNow() {
 // unless it's checked here too.
 function fieldRefSearchText(ref) {
   if (!ref) return '';
+  if (ref.system === 'wigwag') return '';
+  // Unified {href, fetchedVia} shape: matchedId (when carried -- only on
+  // a failed-fetch error-path write or a still-pending custom-connector
+  // match, see applyLinkToField/customConnectorMatches) is the bare
+  // pasted identifier and the best search text available. Otherwise
+  // fall back to href itself -- a github href encodes owner/repo/num
+  // positionally so it gets its own regex; everything else (jira's
+  // .../browse/KEY, salesforce's lightning record URL, a connector's own
+  // URL) carries its identifying bit in the last path segment(s), close
+  // enough for substring search without needing each system's own
+  // pattern here.
+  if ('href' in ref) {
+    if (ref.matchedId != null) return typeof ref.matchedId === 'string' ? ref.matchedId : JSON.stringify(ref.matchedId);
+    if (!ref.href) return '';
+    const gh = /\/([^/]+)\/([^/]+)\/issues\/(\d+)$/.exec(ref.href);
+    if (gh) return gh[1] + '/' + gh[2] + '#' + gh[3];
+    const segs = ref.href.replace(/^[a-z]+:\/\//i, '').split('/').filter(Boolean);
+    return segs.slice(-2).join('/');
+  }
   if (ref.system === 'jira') return ref.key || '';
   if (ref.system === 'salesforce') return ref.id || '';
   // Connected Sources (Phase 1): every NEW Jira/Salesforce link, plus any
@@ -937,7 +956,6 @@ function fieldRefSearchText(ref) {
   // for custom connectors); fixed now since Jira/Salesforce's own
   // retirement makes it immediately visible for them too.
   if (ref.system === 'connector') return ref.matchedId || '';
-  if (ref.system === 'wigwag') return '';
   if (ref.owner && ref.repo && ref.num != null) return ref.owner + '/' + ref.repo + '#' + ref.num;
   return '';
 }
@@ -1065,12 +1083,21 @@ function pickConnectorFields(obj) {
 // resolved result is still blank (e.g. a template referencing only a
 // field the macro never populated), falls back to title then matchedId
 // so the chip is never left with empty link text.
-function connectorLinkText(template, ref) {
+// Signature dropped `ref` (the connector's old {matchedId,title,state} ref
+// object) in favor of `currentText`/`matchedId` directly -- the unified
+// {href, fetchedVia} shape never persists title/state, and the caller
+// already has both values in scope regardless (currentText is the
+// field's own stored value; matchedId is re-derived via
+// matchedIdFromHref when not carried on the ref itself). `{{state}}`
+// keeps matching but always substitutes blank now, rather than starting
+// to render literally, so an existing saved template using it degrades
+// quietly instead of showing "{{state}}" to the user.
+function connectorLinkText(template, currentText, matchedId) {
   const t = (template || '').trim() || '{{title}}';
   const out = t.replace(/\{\{\s*(id|title|state)\s*\}\}/g, (m, key) =>
-    key === 'id' ? (ref.matchedId || '') : key === 'title' ? (ref.title || '') : (ref.state || '')
+    key === 'id' ? (matchedId || '') : key === 'title' ? (currentText || '') : ''
   ).trim();
-  return out || ref.title || ref.matchedId || '';
+  return out || currentText || matchedId || '';
 }
 // The template engine HTML-escapes every {{ }} interpolation (confirmed by
 // testing: typing "<b>" into a title renders as literal text, not a bold

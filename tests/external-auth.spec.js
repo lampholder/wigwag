@@ -159,16 +159,17 @@ test.describe('Jira linking', () => {
     await expect(anchor).toHaveAttribute('href', JIRA_BROWSE_URL('TRK-999'));
 
     const doc = await h.readActiveMilestoneDoc(page);
-    expect(h.latestFieldRef(doc.issues.find(i => i.num === 3), 'title')).toMatchObject({ system: 'jira', key: 'TRK-999' });
+    expect(h.latestFieldRef(doc.issues.find(i => i.num === 3), 'title')).toMatchObject({ fetchedVia: '__builtin_jira', href: JIRA_BROWSE_URL('TRK-999') });
   });
 
-  // Tracker #112 (b564316d): the persisted fieldRef is display-only now --
-  // key/browseUrl is all the pill ever renders. labels/description/etc are
+  // Tracker #112 (b564316d), now superseded by the fieldRef-unification
+  // redesign: the persisted fieldRef is display-only -- {href,
+  // fetchedVia} is all the pill ever renders. labels/description/etc are
   // used only in-memory at fetch/refresh time (to recompute any bound
   // field against real data) and never reach persisted state -- data
   // minimization, so a link can never accidentally ship unrelated
   // bridged-source material into the shared, git-synced file.
-  test('the linked field is stored with a system:"jira" tag carrying only display fields, not the full resolved shape', async ({ page }) => {
+  test('the linked field is stored with the unified {href, fetchedVia} shape, not the full resolved shape', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'TRK-999');
     await page.keyboard.press('Tab');
@@ -176,7 +177,7 @@ test.describe('Jira linking', () => {
 
     const doc = await h.readActiveMilestoneDoc(page);
     const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'linked');
-    expect(ref).toMatchObject({ system: 'jira', key: 'TRK-999', browseUrl: JIRA_BROWSE_URL('TRK-999') });
+    expect(ref).toMatchObject({ fetchedVia: '__builtin_jira', href: JIRA_BROWSE_URL('TRK-999') });
     expect(ref).not.toHaveProperty('labels');
     expect(ref).not.toHaveProperty('description');
   });
@@ -226,7 +227,7 @@ test.describe('Jira linking', () => {
     await expect(h.fieldCell(page, 3, 'linked')).toContainText('Mocked Jira ticket title');
     const doc = await h.readActiveMilestoneDoc(page);
     const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'linked');
-    expect(ref).toMatchObject({ system: 'jira', key: 'TRK-999' }); // unchanged, not clobbered with an empty fallback fieldRef
+    expect(ref).toMatchObject({ fetchedVia: '__builtin_jira', href: JIRA_BROWSE_URL('TRK-999') }); // unchanged, not clobbered with an empty fallback fieldRef
     const history = await h.getHistoryEntriesFor(page, 'i3');
     expect(history.some(t => t.toLowerCase().includes('could not fetch from jira'))).toBe(true);
   });
@@ -359,7 +360,7 @@ test.describe('Jira linking: refresh migrates a stale built-in ref to a now-matc
     await expect(h.fieldCell(page, 3, 'linked')).toContainText('Fix the thing');
     const after = await h.readActiveMilestoneDoc(page);
     const ref = h.latestFieldRef(after.issues.find(i => i.num === 3), 'linked');
-    expect(ref).toMatchObject({ system: 'connector', connectorId: 'conn_linear', matchedId: 'TRK-999' });
+    expect(ref).toMatchObject({ fetchedVia: 'conn_linear', matchedId: 'TRK-999' });
     const history = await h.getHistoryEntriesFor(page, i3.id);
     expect(history.some(t => t.toLowerCase().includes('fetched from linear'))).toBe(true);
     expect(history.some(t => t.toLowerCase().includes('could not fetch from jira'))).toBe(false);
@@ -396,7 +397,7 @@ test.describe('Jira linking: refresh migrates a stale built-in ref to a now-matc
 
     await expect(h.fieldCell(page, 3, 'linked')).toContainText('Mocked Jira ticket title');
     const doc = await h.readActiveMilestoneDoc(page);
-    expect(h.latestFieldRef(doc.issues.find(i => i.num === 3), 'linked')).toMatchObject({ system: 'jira', key: 'TRK-999' });
+    expect(h.latestFieldRef(doc.issues.find(i => i.num === 3), 'linked')).toMatchObject({ fetchedVia: '__builtin_jira', href: JIRA_BROWSE_URL('TRK-999') });
   });
 });
 
@@ -461,7 +462,7 @@ test.describe('Salesforce linking', () => {
   // persisted. This matters even more for Salesforce, where "fields" could
   // otherwise ship an entire record's worth of admin-configured data
   // (e.g. revenue figures) into the shared file just because a link exists.
-  test('the linked field is stored with a system:"salesforce" tag carrying only display fields, not the full resolved shape', async ({ page }) => {
+  test('the linked field is stored with the unified {href, fetchedVia} shape, not the full resolved shape', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, SF_URL);
     await page.keyboard.press('Tab');
@@ -469,7 +470,7 @@ test.describe('Salesforce linking', () => {
 
     const doc = await h.readActiveMilestoneDoc(page);
     const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'linked');
-    expect(ref).toMatchObject({ system: 'salesforce', id: SF_ID, name: 'Mocked Opportunity', url: SF_RECORD_URL });
+    expect(ref).toMatchObject({ fetchedVia: '__builtin_salesforce', href: SF_RECORD_URL });
     expect(ref).not.toHaveProperty('objectType');
     expect(ref).not.toHaveProperty('status');
     expect(ref).not.toHaveProperty('fields');
@@ -585,7 +586,7 @@ test.describe('Jira linking: expanded field set', () => {
 
     const doc = await h.readActiveMilestoneDoc(page);
     const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'linked');
-    expect(ref).toMatchObject({ system: 'jira', key: 'TRK-999' });
+    expect(ref).toMatchObject({ fetchedVia: '__builtin_jira', href: JIRA_BROWSE_URL('TRK-999') });
     for (const key of ['status', 'statusCategory', 'issueType', 'priority', 'assignee', 'reporter', 'dueDate', 'components', 'fixVersions', 'project', 'description', 'labels']) {
       expect(ref).not.toHaveProperty(key);
     }
@@ -706,7 +707,7 @@ test.describe('Jira linking: expanded field set', () => {
 
     const doc = await h.readActiveMilestoneDoc(page);
     const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'linked');
-    expect(ref.key).toBe('TRK-1000');
+    expect(ref).toMatchObject({ fetchedVia: '__builtin_jira', href: JIRA_BROWSE_URL('TRK-1000') });
     expect(ref).not.toHaveProperty('status'); // display-only shape -- never persisted regardless of API response
 
     await h.openFieldEditor(page, 'type');

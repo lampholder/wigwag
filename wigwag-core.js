@@ -1890,38 +1890,57 @@ function compileRuleRows(rows, fallback, def) {
 // (applyLinkedRules read this.state.fieldDefs directly; the rest called
 // only sibling pure methods). Moved verbatim except for that one
 // signature change (applyLinkedRules now takes fieldDefs explicitly).
-function buildSource(issue, linkedSourceId) {
+// connectedSources, if given, is this device's own current connector
+// list -- needed to know WHICH subject name (source.github/source.jira/
+// source.salesforce, or a custom connector's own source.<key>) a ref's
+// fetchedVia resolves to. A ref that normalizes without a fetchedVia at
+// all (a legacy wigwag ref, or -- theoretically -- an unrecognized
+// future shape) simply can't populate any of these; omitting
+// connectedSources entirely (undefined) is equivalent to "nothing
+// configured," matching this function's own existing isLinked-only
+// fallback for every caller that genuinely has no connector list handy.
+function buildSource(issue, linkedSourceId, connectedSources) {
   if (!linkedSourceId) return { text: '', isLinked: false, github: null, jira: null, salesforce: null };
   const ref = issue.fieldRefs && issue.fieldRefs[linkedSourceId];
-  const system = ref ? (ref.system || 'github') : null;
+  const n = normalizeRef(ref);
+  // normalizeRef's own job is reducing ANY shape down to {href,
+  // fetchedVia} -- deliberately throwing away rich fields in the
+  // process (that's the whole point of it). The pick* functions below
+  // need the OPPOSITE: whatever rich data the RAW ref (or a live,
+  // transient, in-memory-only enriched object passed through this same
+  // path at fetch time) actually still has, if any -- so they read
+  // `ref` directly, never `n`. `n` is consulted ONLY to decide WHICH
+  // subject key this ref's fetchedVia maps to.
   const source = {
     text: issue.values[linkedSourceId] || '',
     isLinked: !!ref,
-    github: system === 'github' ? pickGithubFields(ref) : null,
-    jira: system === 'jira' ? pickJiraFields(ref) : null,
-    salesforce: system === 'salesforce' ? pickSalesforceFields(ref) : null
+    github: n && n.fetchedVia === '__builtin_github' ? pickGithubFields(ref) : null,
+    jira: n && n.fetchedVia === '__builtin_jira' ? pickJiraFields(ref) : null,
+    salesforce: n && n.fetchedVia === '__builtin_salesforce' ? pickSalesforceFields(ref) : null
   };
-  // Connected Sources (Phase 1): a custom connector's own fieldRef carries
-  // its connectorKey (the immutable slug set at creation -- see
-  // slugifyConnectorKey -- surviving a later rename so existing rules
-  // referencing source.<key> never silently break), used as a DYNAMIC
-  // property name here. A rule reading source.linear when the row is
-  // bound to something else just gets undefined, same optional-chaining
-  // discipline every source.jira/source.github rule already needs.
-  // Flatten extra's own keys onto source.<key> directly, not just
-  // nested under .extra -- a rule written against a built-in's old
-  // rich shape (source.jira.priority, source.github.resolution,
-  // source.salesforce.owner, ...) keeps working unchanged once that
-  // system's refs redirect through the connector mechanism (see
-  // docs/EDITING.md). The macro's own {title,url,state,extra} contract
-  // stays clean for macro authors; this flattening is purely a
-  // buildSource-side compatibility shim. Dedicated fields (title/url/
-  // state/labels/assignee) take precedence over a same-named extra key,
-  // and .extra itself stays present too (so source.jira.extra.X still
-  // works for anyone who prefers the nested form).
-  if (system === 'connector' && ref.connectorKey) {
+  // Connected Sources (Phase 1): a custom connector's own identity is
+  // looked up by fetchedVia now (its connectedSources entry's own
+  // immutable .key -- see slugifyConnectorKey -- surviving a later
+  // rename so existing rules referencing source.<key> never silently
+  // break), used as a DYNAMIC property name here. A rule reading
+  // source.linear when the row is bound to something else just gets
+  // undefined, same optional-chaining discipline every source.jira/
+  // source.github rule already needs. Flatten extra's own keys onto
+  // source.<key> directly, not just nested under .extra -- a rule
+  // written against a built-in's old rich shape (source.jira.priority,
+  // source.github.resolution, source.salesforce.owner, ...) keeps
+  // working unchanged once that system's refs redirect through the
+  // connector mechanism (see docs/EDITING.md). The macro's own {title,
+  // url, state, extra} contract stays clean for macro authors; this
+  // flattening is purely a buildSource-side compatibility shim.
+  // Dedicated fields (title/url/state/labels/assignee) take precedence
+  // over a same-named extra key, and .extra itself stays present too
+  // (so source.jira.extra.X still works for anyone who prefers the
+  // nested form).
+  const src = n && n.fetchedVia ? (connectedSources || []).find(c => c.id === n.fetchedVia) : null;
+  if (src && !src.builtin && src.key) {
     const picked = pickConnectorFields(ref);
-    source[ref.connectorKey] = { ...picked.extra, ...picked };
+    source[src.key] = { ...picked.extra, ...picked };
   }
   return source;
 }
@@ -1950,6 +1969,44 @@ function evalRule(ruleStr, source, values) {
 function compileConnectorMacro(macroSource) {
   return new Function('fetch', 'return (' + macroSource + ');');
 }
+// Unifies the 4 external-system fieldRef shapes persisted up through
+// this point (github: {system,owner,repo,num}; jira: {system,key,
+// browseUrl}; salesforce: {system,id,name,url}; connector: {system,
+// connectorId,connectorKey,matchedId,title,url,state}) into one
+// consistent {href, fetchedVia} view -- href is the canonical
+// identifying string (a real URL for github/jira/salesforce, possibly
+// a bare id for a custom connector depending on its own pattern),
+// fetchedVia is the connectedSources entry id (a fixed builtin id like
+// '__builtin_jira', or a custom connector's own id) that actually
+// resolved this link. This is a PERMANENT read-time adapter, not a
+// one-time migration -- old signed history is immutable and keeps its
+// legacy shape forever (same discipline as the pre-tracker-#112
+// maximalist-shape retirement: trimming/unifying what gets WRITTEN
+// can't retroactively rewrite what's already on disk). Every reader of
+// a fieldRef (buildSource, isRefLocallyLive, buildTextCell, refresh/
+// paste dispatch) goes through this first. system:'wigwag' is a wholly
+// separate, untouched system (an internal cross-project link, resolved
+// purely locally -- never touches connectedSources/fetch/credential
+// machinery at all) and is passed through as-is, never normalized.
+//
+// A legacy GitHub ref never carried an explicit `system` tag at all --
+// every other caller across this codebase defaults a missing `.system`
+// to 'github' (`ref.system || 'github'`, the universal pattern predating
+// Jira/Salesforce/connector support), so "new unified shape" can't be
+// detected by the mere ABSENCE of `.system` -- it's detected by the
+// PRESENCE of `.href` (a key no legacy shape, including legacy github's
+// own owner/repo/num, ever has).
+function normalizeRef(ref) {
+  if (!ref) return null;
+  if (ref.system === 'wigwag') return ref;
+  if ('href' in ref) return ref; // already the new {href, fetchedVia} shape
+  const system = ref.system || 'github';
+  if (system === 'github') return { href: 'https://github.com/' + ref.owner + '/' + ref.repo + '/issues/' + ref.num, fetchedVia: '__builtin_github' };
+  if (system === 'jira') return { href: ref.browseUrl || null, fetchedVia: '__builtin_jira' };
+  if (system === 'salesforce') return { href: ref.url || null, fetchedVia: '__builtin_salesforce' };
+  if (system === 'connector') return { href: ref.url || null, fetchedVia: ref.connectorId, matchedId: ref.matchedId };
+  return ref; // unknown/future shape -- pass through rather than drop
+}
 // Tracker #112 (b564316d): a persisted fieldRef for an externally-linked
 // source (github/jira/salesforce) only ever carries display fields now
 // (owner/repo/num, key/browseUrl, id/name/url) -- never the maximalist
@@ -1964,14 +2021,22 @@ function compileConnectorMacro(macroSource) {
 // before anything is persisted -- see applyGithubLinkToField and its
 // Jira/Salesforce counterparts) is told apart from the real, trimmed one:
 // the enriched ref legitimately has all those keys, so this same
-// function safely takes the live-eval path for it.
+// function safely takes the live-eval path for it. A ref carrying
+// `.href` is the new, fully-unified {href, fetchedVia} shape (see
+// normalizeRef above) -- it structurally never carries rich data at
+// all, by construction, so it's always "trimmed." A legacy GitHub ref
+// never carried an explicit `system` tag (same universal `ref.system
+// || 'github'` default normalizeRef's own comment explains) -- checked
+// LAST, after the unambiguous `.href` check, so it can't misfire on a
+// new-shape ref that happens to have no `.system` key either.
 function sourceRefHasFullData(ref) {
   if (!ref) return true; // no ref at all -- nothing to trim, buildSource's isLinked gate handles this
-  if (ref.system === 'github') return 'labels' in ref;
+  if (ref.system === 'wigwag') return true; // wigwag was never given the maximalist treatment
+  if ('href' in ref) return false; // the new {href, fetchedVia} shape -- never has rich data, by construction
   if (ref.system === 'jira') return 'status' in ref;
   if (ref.system === 'salesforce') return 'fields' in ref;
   if (ref.system === 'connector') return 'labels' in ref; // same trimmed-persist pattern as github/jira/salesforce
-  return true; // wigwag (or any other system) was never given the maximalist treatment
+  return 'labels' in ref; // github, explicit or defaulted (ref.system || 'github')
 }
 // The history entry (if any) that most recently set colId's value --
 // used to tell a rule-derived value apart from a manual one when the
@@ -2057,7 +2122,7 @@ function computeBoundValue(issue, colId, def, ctx) {
   // not a live re-evaluation) -- just hands off, same as "not yet linked".
   if (!isRefLocallyLive(sourceRef, ctx)) return { isLinked: true, computed: undefined };
   if (!sourceRefHasFullData(sourceRef) && ruleNeedsSourceData(def.rule)) return { isLinked: true, computed: undefined };
-  const source = buildSource(issue, def.linkedSourceId);
+  const source = buildSource(issue, def.linkedSourceId, ctx && ctx.connectedSources);
   return { isLinked: true, computed: evalRule(def.rule, source, issue.values) };
 }
 // Purely local: does THIS DEVICE'S OWN record of its last rule-driven
@@ -2210,10 +2275,10 @@ function applyLiveLinkedRules(iss, fieldDefs, sourceColId, system, liveData, ctx
 // winning row. Returns null for advanced/hand-written mode (no ruleRows
 // at all), no match, or a row that isn't a field-copy -- the normal
 // literal/expression path, unaffected.
-function computeBoundFieldRef(issue, def) {
+function computeBoundFieldRef(issue, def, ctx) {
   const rows = Array.isArray(def.ruleRows) ? def.ruleRows : null;
   if (!rows || !def.linkedSourceId) return null;
-  const source = buildSource(issue, def.linkedSourceId);
+  const source = buildSource(issue, def.linkedSourceId, ctx && ctx.connectedSources);
   if (!source.isLinked) return null;
   for (const r of rows) {
     if (!ruleRowCriteria(r).length) continue;
@@ -2243,7 +2308,7 @@ function settleLinkedRules(issue, fieldDefs, ctx) {
     let fieldRefs = next.fieldRefs;
     for (const colId in fieldDefs) {
       if (!fieldDefs[colId].linkedSourceId) continue;
-      const newRef = computeBoundFieldRef(next, fieldDefs[colId]);
+      const newRef = computeBoundFieldRef(next, fieldDefs[colId], ctx);
       if (newRef && JSON.stringify(fieldRefs[colId]) !== JSON.stringify(newRef)) fieldRefs = { ...fieldRefs, [colId]: newRef };
     }
     const withRefs = fieldRefs === next.fieldRefs ? next : { ...next, fieldRefs };
@@ -4554,7 +4619,7 @@ async function probeMatrixRoomAccess({ fetchImpl, homeserverUrl, accessToken, ro
 }
 
 const WigwagCoreExports = {
-  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, xlsxDateTimeSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_NS, storageNamespacePrefix, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, LAYOUT_PROPOSAL_DEVICE_ID_KEY, CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, tokenizeFilterQuery, parseFilterQuery, issueMatchesFieldToken, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, formatNow, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, pickConnectorFields, connectorLinkText, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, migrateLegacyComments, deriveFieldDefs, effectiveFieldDefs, PROJECT_NAME_FIELD_ID, deriveProjectName, PROJECT_NOTES_FIELD_ID, deriveProjectNotes, simpleStringHash, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, issueTimestampValue, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, MATRIX_USER_ID_RE, principalKind, identityPrincipal, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, sourceRefHasFullData, evalRule, compileConnectorMacro, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, fieldLocalBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, issueCreatedAt,
+  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, xlsxDateTimeSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_NS, storageNamespacePrefix, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, LAYOUT_PROPOSAL_DEVICE_ID_KEY, CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, tokenizeFilterQuery, parseFilterQuery, issueMatchesFieldToken, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, formatNow, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, pickConnectorFields, connectorLinkText, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, migrateLegacyComments, deriveFieldDefs, effectiveFieldDefs, PROJECT_NAME_FIELD_ID, deriveProjectName, PROJECT_NOTES_FIELD_ID, deriveProjectNotes, simpleStringHash, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, issueTimestampValue, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, MATRIX_USER_ID_RE, principalKind, identityPrincipal, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, normalizeRef, sourceRefHasFullData, evalRule, compileConnectorMacro, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, fieldLocalBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, issueCreatedAt,
   importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry,
   squashHistory, displayValueForHistory, buildSourceText, keyRegistryEncoder, rehydrateKeyRef, humanFileSize, parseJsonl, entryKey, commentKey, unionByKey, mergeCommentStreams, mergeIssuePair, computeIssueMerge, mergeHasRealChanges, computeFieldDefsMerge, computeDerivedChangeEntries,
   isPastedTextASingleUrl, wrapSelectionWithMarkdownLink,

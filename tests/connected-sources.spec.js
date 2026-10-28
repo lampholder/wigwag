@@ -169,7 +169,14 @@ test.describe('Connected Sources (Phase 1): paste dispatch + macro engine', () =
         values: { linear: 'Fix it' },
         fieldRefs: { linear: { system: 'connector', connectorId: 'conn_test_linear', connectorKey: 'linear', title: 'Fix it', url: '', state: 'In Progress', labels: ['bug'], assignee: 'jane' } }
       };
-      const source = core.buildSource(issue, 'linear');
+      // buildSource now looks up a custom connector's own .key LIVE via
+      // connectedSources (its immutable id, fetchedVia -- see
+      // normalizeRef), not off the legacy ref's own embedded
+      // connectorKey directly -- a real app always has this list in
+      // hand (this.state.connectedSources); this unit-level test must
+      // supply the matching entry itself.
+      const connectedSources = [{ id: 'conn_test_linear', key: 'linear', builtin: false }];
+      const source = core.buildSource(issue, 'linear', connectedSources);
       return { isLinked: source.isLinked, state: source.linear && source.linear.state, undefinedForOtherKey: source.zendesk };
     });
     expect(result.isLinked).toBe(true);

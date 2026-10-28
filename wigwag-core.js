@@ -2121,22 +2121,32 @@ function isEmptyBoundValue(v) {
 // project import/export even though it's never git-synced) without
 // having the matching credential/connector itself -- that gap is exactly
 // what this closes.
+// Builtin-specific gating, as small lookup tables rather than per-system
+// if/else branches -- github needs neither the Tauri connector runtime
+// nor a credential (anonymous access works, just rate-limited); jira/
+// salesforce need both. Duplicated here (not derived from
+// BUILTIN_INTEGRATIONS, which lives in src/wigwag-app.js and is the
+// single source of truth for every OTHER per-kind difference) since this
+// file has no access to component state -- same precedent this function
+// already followed before the fieldRef-unification redesign; a 4th
+// builtin would need updating both places, same as today.
+const BUILTIN_TAURI_GATED = { github: false, jira: true, salesforce: true };
+const BUILTIN_CREDENTIAL_REQUIRED = { github: false, jira: true, salesforce: true };
 function isRefLocallyLive(ref, ctx) {
   if (!ref) return false;
+  if (ref.system === 'wigwag') return true;
+  const n = normalizeRef(ref);
+  if (!n || !n.fetchedVia) return false;
   ctx = ctx || {};
-  const system = ref.system || 'github';
-  const connectedSources = ctx.connectedSources || [];
-  if (system === 'github') {
-    const c = connectedSources.find(x => x.id === '__builtin_github');
-    return !!c && !!(c.rootUrl || '').trim();
+  const c = (ctx.connectedSources || []).find(x => x.id === n.fetchedVia);
+  if (!c) return false;
+  if (c.builtin) {
+    const kind = c.id.slice('__builtin_'.length);
+    if (BUILTIN_TAURI_GATED[kind] && !ctx.tauriConnectorRuntime) return false;
+    if (!(c.rootUrl || '').trim()) return false;
+    return BUILTIN_CREDENTIAL_REQUIRED[kind] ? !!c.credentialConfigured : true;
   }
-  if (system === 'jira' || system === 'salesforce') {
-    if (!ctx.tauriConnectorRuntime) return false;
-    const c = connectedSources.find(x => x.id === '__builtin_' + system);
-    return !!c && !!(c.rootUrl || '').trim() && !!c.credentialConfigured;
-  }
-  if (system === 'connector') return !!ctx.tauriConnectorRuntime && connectedSources.some(c => c.id === ref.connectorId);
-  return true; // wigwag
+  return !!ctx.tauriConnectorRuntime;
 }
 function computeBoundValue(issue, colId, def, ctx) {
   if (!def.rule || !def.linkedSourceId) return { isLinked: false, computed: undefined };

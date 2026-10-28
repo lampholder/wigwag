@@ -584,41 +584,83 @@ re-exporting from).
 A linked text/issue-type field's `fieldRef` (carried on the history entry
 that set its value — see "History is the sole source of truth" above) is
 a read-only pointer at an external system (GitHub issue/PR, Jira ticket,
-or Salesforce record) — **display-only, not a cache of the record**
-(tracker #112, b564316d): `{system, owner, repo, num}` for GitHub,
-`{system, key, browseUrl}` for Jira, `{system, id, name, url}` for
-Salesforce. That's deliberately all buildTextCell's own pill rendering
-ever reads. Earlier, `fieldRef` additionally carried a "maximalist" picked
-field set (GitHub/Jira: `labels`, `description`, `status`, `statusCategory`,
-`issueType`, assignee(s), `reporter`, dates, resolution, `fixVersions`,
-`project`, plus Jira's own `priority`/`dueDate`/`components`; Salesforce:
-`objectType`, a best-effort `status`/`owner`, `lastModified`, and `fields`
-— the record's entire admin-configured Compact Layout flattened to a
-plain `{ApiName: displayValue}` map) so a *bound* field's rule could read
-`source.<system>.foo`. That data is never persisted now — it's used only
-in-memory, at the moment of a fetch/refresh, and is gone again the instant
-that finishes. Keeping it out of the file entirely means a link can never
+Salesforce record, or a custom connector's own record) — **display-only,
+not a cache of the record** (tracker #112, b564316d, since generalized by
+the fieldRef-shape unification). Every field linked from here on gets
+exactly one shape, regardless of system:
+
+```
+{ href, fetchedVia }
+```
+
+- `href` — the canonical URL/identifier (the real browse/record URL for
+  GitHub/Jira/Salesforce; for a custom connector, whatever its own macro
+  returns as `url`, or `null` if a fetch hasn't resolved one yet). `null`
+  is a real, normal state — a field that's been pasted/matched but whose
+  first fetch hasn't completed or succeeded yet.
+- `fetchedVia` — the `connectedSources` entry id that actually resolved
+  this link: `__builtin_github`/`__builtin_jira`/`__builtin_salesforce`
+  for the three fixed built-ins, or a custom connector's own id. This is
+  what a pattern-matched-but-never-actually-fetched piece of text can't
+  fake — deciding "does this look like a GitHub URL" and "was this
+  genuinely resolved through a configured connector" are different
+  questions, and only the second one is ever persisted.
+
+A custom connector's own ref additionally carries `matchedId` (the bare
+identifier its pattern captured, e.g. a ticket key) on success, same as
+GitHub/Jira/Salesforce's own refresh-retry error path already did — this
+is identity, not content: a connector's fetched `url` has no guaranteed
+relationship to the shape its own paste-pattern matched (a pasted ticket
+URL vs. the system's own canonical record URL), so without persisting
+`matchedId` directly there would be no reliable way to re-derive it from
+`href` alone for display or duplicate-detection. GitHub/Jira/Salesforce
+don't need this on a successful write — their `href` is deterministically
+re-parseable back into the same identifying pieces (`matchedIdFromHref`).
+
+Nothing richer than this is ever persisted — no labels, no status, no
+assignee, no Salesforce Compact Layout. That data is used only in-memory,
+at the moment of a fetch/refresh, and is gone again the instant that
+finishes. Keeping it out of the file entirely means a link can never
 *accidentally* ship unrelated bridged-source material (an Opportunity's
 other fields, an issue's assignee list, ...) into the shared, git-synced
 file just because someone pasted a reference — only what a bound field's
 rule actually asked for, and only for as long as a refresh has it in hand.
+
+**`normalizeRef` is a permanent read-time adapter, not a one-time
+migration.** History is signed and immutable, so every field linked
+before this redesign shipped keeps its old per-system shape forever:
+`{system:'github', owner, repo, num}`, `{system:'jira', key, browseUrl}`,
+`{system:'salesforce', id, name, url}`, or `{system:'connector',
+connectorId, connectorKey, matchedId, title, url, state}` — each
+possibly also still carrying that earlier maximalist picked field set
+(`labels`, `description`, `status`, ...) from before tracker #112
+trimmed even THAT. Every reader (`buildSource`, `buildTextCell`,
+`isRefLocallyLive`, refresh dispatch, ...) runs every ref through
+`normalizeRef` first, which maps any of those 4 legacy shapes (or an
+already-new-shape ref, or `null`) into one consistent `{href,
+fetchedVia[, matchedId]}` view before doing anything else with it — a
+legacy ref self-heals into the new shape the next time it's actually
+refreshed with something genuinely new to say (a pure shape-only
+migration, with no real identity/value change, deliberately does **not**
+write a new history entry just to relabel itself — see
+`stageFieldRefresh`'s own `unchanged` comparison).
 
 **Consequence: a bound field can no longer recompute live, on every
 render, from an already-linked source** — the persisted fieldRef no
 longer carries what the rule would need. Recomputation happens only when
 the *source* field itself is fetched or refreshed, using the real payload
 already in hand for that operation (`applyLiveLinkedRules`, called from
-`applyGithubLinkToField`/`applyJiraLinkToField`/`applySalesforceLinkToField`
-right after `pickGithubFields`/`pickJiraFields`/`pickSalesforceFields`
-build the transient in-memory object) — never from a bare rule edit, and
-never from a merge or a page load bringing in someone else's already-
-synced (and therefore already-trimmed) fieldRef. A collaborator with no
-GitHub/Jira/Salesforce credentials of their own can no longer
-independently verify or reconstruct *why* a bound field has its current
-value from the file alone — only see whatever result someone else's
-refresh produced. This is an intentional trade against the file's
-previous "bound fields are fully reconstructable from the file alone"
-guarantee, made in favor of not persisting the source data at all.
+`applyLinkToField` right after `pickGithubFields`/`pickJiraFields`/
+`pickSalesforceFields`/`pickConnectorFields` build the transient
+in-memory object) — never from a bare rule edit, and never from a merge
+or a page load bringing in someone else's already-synced (and therefore
+already-trimmed) fieldRef. A collaborator with no GitHub/Jira/Salesforce
+credentials of their own can no longer independently verify or
+reconstruct *why* a bound field has its current value from the file
+alone — only see whatever result someone else's refresh produced. This
+is an intentional trade against the file's previous "bound fields are
+fully reconstructable from the file alone" guarantee, made in favor of
+not persisting the source data at all.
 
 ## Bound-field visibility is a purely local, display-only concern
 
@@ -695,14 +737,23 @@ redaction mechanism for an already-signed fieldRef (distinct from the
 existing comment/history-entry redaction, which blanks `text` but has no
 notion of `fieldRef`) is out of scope here.
 
+The later fieldRef-shape unification (collapsing all 4 per-system shapes
+into the single `{href, fetchedVia[, matchedId]}` form above) is the same
+story again, this time with real existing data: `normalizeRef` is what
+makes that safe — every one of the legacy shapes above (the already-
+trimmed one from this paragraph, or the earlier maximalist one from
+before it) still reads correctly forever, forward-adapted at read time,
+never rewritten in place.
+
 Each system's picker (`pickGithubFields`/`pickJiraFields`/
-`pickSalesforceFields`) safely defaults every field (`''`/`[]`/`{}`), so
-an old-shaped live payload missing newer fields (e.g. a local proxy that
-hasn't been restarted since this expansion shipped) still lets a rule
-reading one of those fields resolve to an empty default rather than
-crashing — confirmed by a dedicated backward-compatibility test. A
-field's `fieldRef` is only ever overwritten wholesale by a refresh pull (a
-fresh history entry with a fresh `fieldRef`), never merged piecemeal.
+`pickSalesforceFields`/`pickConnectorFields`) safely defaults every field
+(`''`/`[]`/`{}`), so an old-shaped live payload missing newer fields (e.g.
+a local proxy that hasn't been restarted since this expansion shipped)
+still lets a rule reading one of those fields resolve to an empty default
+rather than crashing — confirmed by a dedicated backward-compatibility
+test. A field's `fieldRef` is only ever overwritten wholesale by a
+refresh pull (a fresh history entry with a fresh `fieldRef`), never
+merged piecemeal.
 
 A field can additionally be **bound**: `fieldDefs[colId].linkedSourceId`
 names another field to read from, and `fieldDefs[colId].rule` is a small JS

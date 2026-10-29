@@ -11,7 +11,7 @@
 const {
   xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, columnFilterIsActive, dateFilterPresetRanges, parseFilterQuery, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, isPastedTextASingleUrl, wrapSelectionWithMarkdownLink, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, migrateLegacyComments, deriveFieldDefs, effectiveFieldDefs, deriveProjectName, PROJECT_NAME_FIELD_ID, deriveProjectNotes, PROJECT_NOTES_FIELD_ID, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, principalKind, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER
 ,
-  buildSource, normalizeRef, evalRule, ruleNeedsSourceData, isEmptyBoundValue, fieldLocalBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, builtinKindConfigured, builtinKindReachable,
+  buildSource, normalizeRef, evalRule, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, fieldLocalBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, builtinKindConfigured, builtinKindReachable,
   CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, pickConnectorFields, connectorLinkText, compileConnectorMacro,
   importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry,
   squashHistory, displayValueForHistory, buildSourceText, humanFileSize, parseJsonl, entryKey, commentKey, unionByKey, mergeCommentStreams, mergeIssuePair, computeIssueMerge, mergeHasRealChanges, computeFieldDefsMerge, computeDerivedChangeEntries, buildGithubContentsUrl, buildGithubContentsHeaders, buildGithubCommitMessage, pullGithubFile, pushGithubFile, probeGithubRepoAccess, issueCreatedAt, computeHeaderMeshTriangles, computeHeaderCompression, cellPaddingForWidth, computeAffordanceFade,
@@ -4652,6 +4652,44 @@ class Component extends DCLogic {
     }
     return href; // no pattern currently matches -- fall back to the raw href
   }
+  // Is this connector object currently usable for a background fetch
+  // (refresh), as opposed to merely existing? Deactivated (enabled ===
+  // false) always fails this, same as "weren't there at all" everywhere
+  // else; a kind-tagged entry additionally needs builtinKindReachable
+  // (Tauri-gated for jira/salesforce, configured); an untagged (macro)
+  // entry needs the real Tauri connector runtime, same as it always has.
+  isConnectorReachableForRefresh(connector) {
+    if (!connector || connector.enabled === false) return false;
+    if (connector.kind) return builtinKindReachable(connector, { tauriConnectorRuntime: this.isTauriConnectorRuntime() });
+    return this.isTauriConnectorRuntime();
+  }
+  // Resolves what to ACTUALLY fetch when refreshing an existing ref --
+  // the originally-matched connector when it's still usable, or (when
+  // it's not: unconfigured, deactivated, or deleted outright) whatever
+  // currently matches the same bare identifier instead, in ANY
+  // direction and between ANY two connectors (builtin<->custom,
+  // builtin<->builtin, custom<->custom) -- e.g. a ref that matched a
+  // custom connector which has since been deactivated in favor of a
+  // newly-configured/re-enabled builtin Jira follows that migration on
+  // refresh, not just the other way around. fieldRefs are historical/
+  // immutable, so a ref's own fetchedVia never updates itself just
+  // because the matching system changed -- this is what makes that
+  // self-healing happen anyway, on the next refresh. Self-healing: once
+  // applyLinkToField/stageFieldRefresh actually writes a fresh
+  // fetchedVia-tagged ref, every refresh after this first one takes the
+  // ordinary branch with no re-matching needed. Only re-matches when
+  // matchedId is a plain string -- github's own {owner,repo,num} object
+  // was never a candidate for migrating to a DIFFERENT system's shape.
+  // Ambiguous (2+) matches just take the first -- refresh (single-row
+  // or staged) has no picker UI to disambiguate through.
+  resolveRefreshDispatch(n) {
+    const matchedId = n.matchedId !== undefined ? n.matchedId : this.matchedIdFromHref(n.fetchedVia, n.href);
+    const original = this.resolveFetchConnector(n.fetchedVia);
+    if (this.isConnectorReachableForRefresh(original)) return { connector: original, matchedId };
+    if (typeof matchedId !== 'string') return { connector: null, matchedId };
+    const migrated = this.connectorMatches(matchedId)[0];
+    return migrated ? { connector: migrated.connector, matchedId: migrated.matchedId } : { connector: null, matchedId };
+  }
   // Best-known matchedId for DISPLAY purposes only (buildTextCell's
   // refLabel, editValueForRef's edit-affordance value) -- NOT used for
   // sameRef/retry comparison, which has its own narrower matchedId-via-
@@ -4741,15 +4779,17 @@ class Component extends DCLogic {
     }
     const n = normalizeRef(ref);
     if (!n || !n.fetchedVia) return { failed: true, errorText: 'Could not refresh: link no longer resolvable' };
-    const connector = this.resolveFetchConnector(n.fetchedVia);
-    if (!connector) return { failed: true, errorText: 'Could not refresh: connector no longer exists' };
+    const dispatch = this.resolveRefreshDispatch(n);
+    if (!dispatch.connector) return { failed: true, errorText: 'Could not refresh: connector no longer exists' };
+    const connector = dispatch.connector;
+    const matchedId = dispatch.matchedId;
+    const fetchedVia = connector.id;
     const kind = connector.kind;
     const isBuiltin = !!kind;
     const systemLabel = connector.name;
-    const matchedId = n.matchedId !== undefined ? n.matchedId : this.matchedIdFromHref(n.fetchedVia, n.href);
     let fetched;
     try {
-      fetched = await this.fetchLinkData(n.fetchedVia, matchedId, connector, { onRetry, fetchCache });
+      fetched = await this.fetchLinkData(fetchedVia, matchedId, connector, { onRetry, fetchCache });
     } catch (err) {
       return { failed: true, errorText: 'Could not fetch from ' + systemLabel + ' (' + err.message + ')' };
     }
@@ -4757,7 +4797,7 @@ class Component extends DCLogic {
     // See applyLinkToField's own fieldRef comment -- matchedId is kept
     // for a custom connector (identity, not rich per-system data) since
     // its href has no guaranteed relationship to its own paste pattern.
-    const fieldRef = isBuiltin ? { href, fetchedVia: n.fetchedVia } : { href, fetchedVia: n.fetchedVia, matchedId };
+    const fieldRef = isBuiltin ? { href, fetchedVia } : { href, fetchedVia, matchedId };
     const value = kind === 'salesforce' ? data.name : data.title;
     const beforeValue = issue.values[colId];
     const beforeFieldRef = issue.fieldRefs && issue.fieldRefs[colId];
@@ -4824,38 +4864,12 @@ class Component extends DCLogic {
     } else {
       const n = normalizeRef(ref);
       if (n && n.fetchedVia) {
-        const matchedId = n.matchedId !== undefined ? n.matchedId : this.matchedIdFromHref(n.fetchedVia, n.href);
-        const connector = this.resolveFetchConnector(n.fetchedVia);
-        const kind = connector && connector.kind;
-        const isBuiltin = !!kind;
-        // Tracker: a field originally linked via a built-in (Jira/
-        // Salesforce) that Tom has since disabled (cleared its root
-        // URL/credential) in favour of a custom connector matching the
-        // same identifier would otherwise keep dispatching to the dead
-        // built-in on every refresh forever -- fieldRefs are
-        // historical/immutable, so a ref's own fetchedVia never
-        // updates itself just because the matching system changed.
-        // Re-resolve against the currently configured custom
-        // connectors, but only when the built-in itself is
-        // unconfigured (so a still-working built-in is never second-
-        // guessed) and matchedId is a plain string (github's own
-        // {owner,repo,num} object was never a candidate for this --
-        // nothing "migrates off" a working github link this way).
-        // Self-healing: once applyLinkToField runs, it writes a fresh
-        // fetchedVia-tagged ref, so every refresh after this first one
-        // takes the ordinary connector branch below with no special
-        // case needed. Ambiguous (2+) matches just take the first --
-        // this is a background refresh with no picker UI to
-        // disambiguate through.
-        const staleBuiltin = isBuiltin && (kind === 'jira' || kind === 'salesforce') && !builtinKindConfigured(connector) && typeof matchedId === 'string';
-        // Filtered to true macro connectors only (no .kind) -- deliberately
-        // narrower than connectorMatches' own full result, matching this
-        // self-healing migration's original intent: re-resolve against a
-        // CUSTOM connector specifically, never a different kind-tagged
-        // instance (that's a distinct, not-yet-asked-for migration path).
-        const migratedMatch = staleBuiltin ? this.connectorMatches(matchedId).filter(m => !m.connector.kind)[0] : null;
-        if (migratedMatch) await this.applyLinkToField(issueId, colId, migratedMatch);
-        else if (connector) await this.applyLinkToField(issueId, colId, { fetchedVia: n.fetchedVia, matchedId, connector });
+        // resolveRefreshDispatch handles the self-healing migration in
+        // either direction (builtin<->custom, builtin<->builtin,
+        // custom<->custom) when the originally-matched connector is no
+        // longer reachable -- see its own comment.
+        const dispatch = this.resolveRefreshDispatch(n);
+        if (dispatch.connector) await this.applyLinkToField(issueId, colId, { fetchedVia: dispatch.connector.id, matchedId: dispatch.matchedId });
       }
     }
     const afterIssue = this.findIssue(issueId);
@@ -8097,8 +8111,49 @@ class Component extends DCLogic {
     const bindState = def && def.linkedSourceId ? fieldLocalBindState(issue, colId, this.liveRuleCtx(issue.id).localDerivedEntryIds) : 'plain';
     const isBoundLive = bindState === 'bound', isOverridden = bindState === 'overridden';
     const rawRef = issue.fieldRefs && issue.fieldRefs[colId];
-    const ref = rawRef;
-    const boundGlyphTitle = isOverridden ? this.overrideTitle(def, ref) : (isBoundLive ? this.lockTitle(def) : '');
+    // Live-reported (Tom): a bound issue-type field must render like its
+    // source issue -- title + link, exactly as if the link had been
+    // pasted in directly -- not just when its OWN persisted fieldRef
+    // happens to still be a real copy of it. computeBoundFieldRef (the
+    // same row-condition-match logic that WRITES the copied ref in the
+    // first place -- see its own comment, wigwag-core.js) is re-run here
+    // live, at render time, so display is resilient to the copy ever
+    // going stale/missing on THIS field's own history (a plain-value
+    // commit -- bulk Set field, an old client, anything -- can still
+    // wipe fieldRefs[colId] to null without touching the row condition
+    // or the field it actually copies from) as long as the underlying
+    // condition/source field it copies FROM is still real and linked.
+    //
+    // Also applies while isOverridden, but ONLY when the override's own
+    // value is identical to what the rule would compute RIGHT NOW --
+    // confirmed live-reported bug: a plain-value write that happens to
+    // re-set the exact same (already-derived) text with no ref (bulk Set
+    // field is one real way this happens; so is any other client/path
+    // that writes {field, value, fieldRef: null} directly) reads as
+    // 'overridden' from fieldLocalBindState's own purely-local
+    // perspective (the entry's id was never recorded as a derive this
+    // device performed) even though NOTHING has actually diverged in
+    // substance. A genuinely different override value (the user really
+    // did type/paste something else) always leaves computeBoundValue's
+    // live answer unequal to values[colId] (or undefined, if the source
+    // itself isn't reachable right now) -- that case is always left
+    // alone, plain text, exactly as typed, same as today.
+    const ruleStillMatchesValue = isOverridden && def && def.type === 'issue' && def.linkedSourceId
+      ? (() => {
+          const computed = computeBoundValue(issue, colId, def, this.liveRuleCtx(issue.id)).computed;
+          return computed !== undefined && computed === issue.values[colId];
+        })()
+      : false;
+    const liveBoundRef = (isBoundLive || ruleStillMatchesValue) && def && def.type === 'issue' && def.linkedSourceId
+      ? computeBoundFieldRef(issue, def, this.liveRuleCtx(issue.id))
+      : null;
+    const ref = liveBoundRef || rawRef;
+    // Deliberately keyed off rawRef, not the (possibly live-recomputed)
+    // ref above -- the glyph/tooltip's own bound-vs-overridden story is
+    // about THIS field's actual persisted state, unaffected by whether
+    // the override's value happens to coincide with what the rule would
+    // currently derive.
+    const boundGlyphTitle = isOverridden ? this.overrideTitle(def, rawRef) : (isBoundLive ? this.lockTitle(def) : '');
     const showBoundGlyph = isBoundLive || isOverridden;
     // The glyph itself is an absolutely-positioned overlay (stays fixed
     // in the cell's corner regardless of content, same spot across every
@@ -9892,7 +9947,13 @@ class Component extends DCLogic {
           // weren't). Shown for both kind-tagged and custom rows, same
           // toggle action either way.
           const isEnabled = c.enabled !== false;
-          const enabledToggle = { enabled: isEnabled, toggleEnabledLabel: isEnabled ? 'Deactivate' : 'Activate', onToggleEnabled: () => this.toggleConnectorEnabled(c.id) };
+          const enabledToggle = {
+            enabled: isEnabled,
+            toggleEnabledTitle: isEnabled ? 'Deactivate' : 'Activate',
+            toggleTrackBg: isEnabled ? 'var(--accent-fill)' : 'var(--n28)',
+            toggleThumbTransform: isEnabled ? 'translateX(13px)' : 'translateX(1px)',
+            onToggleEnabled: () => this.toggleConnectorEnabled(c.id)
+          };
           if (c.kind) {
             const configured = builtinKindConfigured(c);
             const disabled = c.kind !== 'github' && !isTauri;

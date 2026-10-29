@@ -134,6 +134,70 @@ test.describe('Binding an issue-type field to another field ("copy field")', () 
     expect(h.latestFieldRef(iss, remedyId)).toEqual(h.latestFieldRef(iss, 'linked')); // the SAME fieldRef, copied wholesale
   });
 
+  // Live-reported (Tom): a real production export showed exactly this --
+  // Remedy's OWN latest history entry had fieldRef: null (written by
+  // some plain-value commit -- bulk Set field, an old client, anything
+  // that writes {field, value, fieldRef: null} directly), even though
+  // the row condition (values.linked is not empty) and Related's own
+  // link were both still completely intact. Remedy rendered as flat
+  // plain text because buildTextCell only ever read its OWN persisted
+  // fieldRefs[colId]. It must instead re-derive live from the same
+  // row-condition match that originally wrote the copy (computeBoundFieldRef),
+  // so display survives this kind of persistence gap entirely.
+  test('a bound copy-field cell still renders title+link even when its OWN persisted fieldRef has gone stale/null, as long as the row condition and copy source are still real', async ({ page }) => {
+    const remedyId = await setUpRemedyBoundToRelated(page);
+    const cell = h.fieldCell(page, 1, remedyId);
+    await expect(cell.locator('a svg')).toHaveCount(1); // sanity: really copied before we break it
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    const iss = doc.issues.find(i => i.id === 'i1');
+    // The exact CURRENT resolved value (the rule computes the full
+    // "<project> / <issue title>" wigwag label, not just the bare
+    // title) -- re-reading it from the real latest entry rather than
+    // hardcoding it, so this test can't silently drift from reality the
+    // way a hand-typed copy of the string already has once.
+    const currentEntry = iss.history.filter(hh => hh.field === remedyId).reduce((a, b) => (b.sortKey > a.sortKey ? b : a));
+    const currentValue = currentEntry.value;
+    // sortKey must genuinely be the LATEST -- real entries use real
+    // epoch-ms sortKeys (via nextSortKey/advanceSortKey), not small
+    // sequential numbers, so this has to exceed whatever's already
+    // there or it's silently not "latest" at all and this test proves
+    // nothing (caught by first writing this test with a toy sortKey:
+    // 99999 and watching it get ignored).
+    const maxSortKey = Math.max(...iss.history.map(hh => hh.sortKey || 0));
+    iss.history.push({
+      id: 'h-stray-wipe', field: remedyId, text: 'Remedy set to "stray plain-value commit"',
+      value: currentValue, fieldRef: null,
+      origin: 'authored', sortKey: maxSortKey + 1, sig: null, pubKey: null
+    });
+    await h.writeActiveMilestoneDoc(page, doc);
+
+    // Confirm the stray entry really did become the latest BEFORE
+    // reloading -- otherwise this test would pass vacuously regardless
+    // of whether the render-time fix does anything at all.
+    const verify = await h.readActiveMilestoneDoc(page);
+    expect(h.latestFieldRef(verify.issues.find(i => i.id === 'i1'), remedyId)).toBeNull();
+
+    await page.reload({ waitUntil: 'networkidle' });
+    await h.waitForBootSplashGone(page);
+    await page.waitForTimeout(400);
+
+    // Still genuinely null after reload -- no other mechanism silently
+    // fixed the underlying data; buildTextCell's own live recompute is
+    // what's carrying the correct render here.
+    const afterReload = await h.readActiveMilestoneDoc(page);
+    expect(h.latestFieldRef(afterReload.issues.find(i => i.id === 'i1'), remedyId)).toBeNull();
+
+    const cellAfter = h.fieldCell(page, 1, remedyId);
+    await expect(cellAfter).toContainText("ACME – New rooms added to spaces don't show until sync");
+    await expect(cellAfter.locator('a svg')).toHaveCount(1); // still renders as a real, resolved link
+    // This device's own local record no longer matches (a plain-value
+    // write did this, not a derive it performed) -- the glyph correctly
+    // still reads "overridden," not "bound," even though the content
+    // renders exactly like the source issue.
+    await expect(cellAfter.locator('[title^="Overrides the linked value"]')).toBeVisible();
+  });
+
   // Tom's live feedback: a bound field that copies in another issue's
   // reference should be styled like the SOURCE issue itself (bold title,
   // smaller link beneath), and clicking it to edit should let you edit

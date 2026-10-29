@@ -461,6 +461,80 @@ test.describe('Jira linking: refresh migrates a stale built-in ref to a now-matc
     const doc = await h.readActiveMilestoneDoc(page);
     expect(h.latestFieldRef(doc.issues.find(i => i.num === 3), 'linked')).toMatchObject({ fetchedVia: '__builtin_jira', href: JIRA_BROWSE_URL('TRK-999') });
   });
+
+  // Live-reported (Tom): migration must work in EITHER direction, not
+  // just builtin-stale-in-favor-of-custom -- a field matched via a
+  // custom connector that's since been deactivated, with the built-in
+  // Jira now configured+enabled in its place, must follow that
+  // migration too.
+  test('refreshing a field linked through a now-deactivated custom connector migrates to the matching built-in Jira connector', async ({ page }) => {
+    await h.stubTauriConnectorRuntime(page, { responsesByUrlSubstring: { 'SUP-1234': jiraRawFixture('SUP-1234') }, credential: 'tok' });
+    await page.evaluate(() => {
+      localStorage.setItem('git_native_tracker_connected_sources_v1', JSON.stringify({
+        connectors: [
+          { id: '__builtin_jira', key: 'jira', kind: 'jira', name: 'Jira', builtin: true, rootUrl: 'https://newly.enabled.net', username: '', credentialConfigured: true },
+          { id: 'conn_linear', key: 'linear', name: 'Linear', glyph: 'L', color: 'red', enabled: false,
+            patterns: [{ regex: '[A-Z]+-\\d+', label: 'Linear key' }],
+            macro: "async () => ({ title: 'SHOULD NOT BE USED' })", credentialConfigured: true }
+        ]
+      }));
+    });
+    const doc = await h.readActiveMilestoneDoc(page);
+    const i3 = doc.issues.find(i => i.num === 3);
+    i3.history.push({
+      id: 'test-stale-custom-ref', time: 'now', actor: 'test', email: 'test@example.com',
+      text: 'Related linked', field: 'linked', value: 'SUP-1234',
+      fieldRef: { href: null, fetchedVia: 'conn_linear', matchedId: 'SUP-1234' },
+      origin: 'authored', sortKey: Date.now(), sig: null, pubKey: null
+    });
+    await h.writeActiveMilestoneDoc(page, doc);
+    await page.reload();
+    await h.waitForBootSplashGone(page);
+
+    await h.refreshRow(page, 3);
+    await page.waitForTimeout(400);
+
+    await expect(h.fieldCell(page, 3, 'linked')).toContainText('Mocked Jira ticket title');
+    const after = await h.readActiveMilestoneDoc(page);
+    const ref = h.latestFieldRef(after.issues.find(i => i.num === 3), 'linked');
+    expect(ref).toMatchObject({ fetchedVia: '__builtin_jira' });
+  });
+
+  // The ORIGINAL "stale builtin" test above only exercised an
+  // UNCONFIGURED built-in (no rootUrl/credential) -- a fully-configured
+  // but explicitly DEACTIVATED built-in must migrate away too, not keep
+  // dispatching to a connector that's acting as if it weren't there.
+  test('refreshing a field linked through a now-deactivated (but still fully configured) built-in Jira migrates to a matching custom connector', async ({ page }) => {
+    await page.evaluate(() => {
+      localStorage.setItem('git_native_tracker_connected_sources_v1', JSON.stringify({
+        connectors: [
+          { id: '__builtin_jira', key: 'jira', kind: 'jira', name: 'Jira', builtin: true, rootUrl: 'https://still.configured.net', username: '', credentialConfigured: true, enabled: false },
+          { id: 'conn_linear', key: 'linear', name: 'Linear', glyph: 'L', color: 'red',
+            patterns: [{ regex: '[A-Z]+-\\d+', label: 'Linear key' }],
+            macro: "async () => ({ title: 'Fix the thing', state: 'In Progress', url: 'https://linear.app/x/SUP-1234' })", credentialConfigured: true }
+        ]
+      }));
+    });
+    const doc = await h.readActiveMilestoneDoc(page);
+    const i3 = doc.issues.find(i => i.num === 3);
+    i3.history.push({
+      id: 'test-deactivated-builtin-ref', time: 'now', actor: 'test', email: 'test@example.com',
+      text: 'Related linked', field: 'linked', value: 'SUP-1234',
+      fieldRef: { system: 'jira', key: 'SUP-1234', browseUrl: 'https://still.configured.net/browse/SUP-1234' },
+      origin: 'authored', sortKey: Date.now(), sig: null, pubKey: null
+    });
+    await h.writeActiveMilestoneDoc(page, doc);
+    await page.reload();
+    await h.waitForBootSplashGone(page);
+
+    await h.refreshRow(page, 3);
+    await page.waitForTimeout(400);
+
+    await expect(h.fieldCell(page, 3, 'linked')).toContainText('Fix the thing');
+    const after = await h.readActiveMilestoneDoc(page);
+    const ref = h.latestFieldRef(after.issues.find(i => i.num === 3), 'linked');
+    expect(ref).toMatchObject({ fetchedVia: 'conn_linear', matchedId: 'SUP-1234' });
+  });
 });
 
 // Salesforce shares Jira's core constraint (no permissive browser CORS,

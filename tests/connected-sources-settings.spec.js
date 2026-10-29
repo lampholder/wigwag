@@ -177,7 +177,15 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
     expect(kinds).toEqual(['jira', 'github', 'salesforce', 'blank']);
   });
 
-  test('picking the Jira template pre-fills name/patterns/a real macro, and the resulting connector is independent of the legacy built-in Jira row', async ({ page }) => {
+  // Superseded by the connector-management redesign (confirmed with
+  // Tom): "+ Add source" -> Jira/GitHub/Salesforce no longer seeds a
+  // macro-shaped template -- it opens the exact same real root-url/
+  // username/credential small-modal editor a grandfathered row's own
+  // "Edit" uses (see "editing the built-in Jira connector..." above),
+  // just for a brand-new instance (draft id: null) instead of an
+  // existing one. The new instance gets its own conn_<...> id/key, fully
+  // independent of (and able to coexist with) the legacy built-in row.
+  test('picking the Jira type opens the real root-url/username/credential editor for a NEW instance, independent of the legacy built-in Jira row', async ({ page }) => {
     await stubTauri(page);
     await h.seedAllBuiltinConnectors(page);
     await h.gotoTracker(page);
@@ -186,22 +194,35 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
     await page.locator('[data-testid=source-type-option][data-kind=jira]').click();
     await page.waitForTimeout(100);
 
-    await expect(page.locator('[data-testid=connector-name-input]')).toHaveValue('Jira');
-    await expect(page.locator('[data-testid=connector-glyph-input]')).toHaveValue('J');
-    expect(await page.locator('[data-testid=connector-pattern-regex-input]').count()).toBe(2);
-    const macro = await page.locator('[data-testid=connector-macro-textarea]').inputValue();
-    expect(macro).toContain('rest/api/3/issue');
+    const modal = page.locator('[data-testid=connector-form-modal]');
+    await expect(modal).toContainText('Jira');
+    await expect(page.locator('[data-testid=connector-name-input]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=connector-macro-textarea]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=builtin-root-url-input]')).toHaveValue('');
+    await expect(page.locator('[data-testid=builtin-username-input]')).toHaveValue('');
+    await expect(page.locator('[data-testid=builtin-credential-input]')).toHaveValue('');
 
-    await page.locator('[data-testid=btn-save-connector]').click();
-    await page.waitForTimeout(150);
+    await page.locator('[data-testid=builtin-root-url-input]').fill('https://second.atlassian.net');
+    await page.locator('[data-testid=builtin-username-input]').fill('tom@second.com');
+    await page.locator('[data-testid=builtin-credential-input]').fill('a-second-secret');
+    await page.locator('[data-testid=btn-save-builtin-source]').click();
+    await expect(modal).toBeHidden();
 
     const rows = page.locator('[data-testid=connected-source-row]', { hasText: 'Jira' });
-    await expect(rows).toHaveCount(2); // the legacy built-in + this new template-seeded one
-    await expect(rows.filter({ hasText: 'Built-in' })).toHaveCount(1);
-    await expect(rows.filter({ hasNotText: 'Built-in' })).toHaveCount(1);
+    await expect(rows).toHaveCount(2); // the legacy built-in + this new independent instance
+    const sources = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_connected_sources_v1')));
+    const jiraEntries = sources.connectors.filter(c => c.kind === 'jira');
+    expect(jiraEntries).toHaveLength(2);
+    expect(jiraEntries.find(c => c.id === '__builtin_jira')).toBeTruthy();
+    const second = jiraEntries.find(c => c.id !== '__builtin_jira');
+    expect(second).toBeTruthy();
+    expect(second.key).not.toBe('jira'); // the reserved key stays unique to the grandfathered row
+    expect(second.rootUrl).toBe('https://second.atlassian.net');
+    expect(second.username).toBe('tom@second.com');
+    expect(second.credentialConfigured).toBe(true);
   });
 
-  test('picking the GitHub or Salesforce template pre-fills a plausible name/pattern/macro too', async ({ page }) => {
+  test('picking the GitHub or Salesforce type opens the same real editor, pre-filled with each kind\'s own default root URL', async ({ page }) => {
     await stubTauri(page);
     await h.gotoTracker(page);
     await h.openSettingsSection(page, 'connectedDataSources');
@@ -209,16 +230,17 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
     await page.locator('[data-testid=btn-add-connected-source]').click();
     await page.locator('[data-testid=source-type-option][data-kind=github]').click();
     await page.waitForTimeout(100);
-    await expect(page.locator('[data-testid=connector-name-input]')).toHaveValue('GitHub');
-    expect(await page.locator('[data-testid=connector-macro-textarea]').inputValue()).toContain('api.github.com');
+    await expect(page.locator('[data-testid=connector-form-modal]')).toContainText('GitHub');
+    await expect(page.locator('[data-testid=builtin-root-url-input]')).toHaveValue('https://api.github.com');
+    await expect(page.locator('[data-testid=builtin-username-input]')).toHaveCount(0);
     await page.locator('[data-testid=btn-cancel-connector-form]').click();
     await page.waitForTimeout(100);
 
     await page.locator('[data-testid=btn-add-connected-source]').click();
     await page.locator('[data-testid=source-type-option][data-kind=salesforce]').click();
     await page.waitForTimeout(100);
-    await expect(page.locator('[data-testid=connector-name-input]')).toHaveValue('Salesforce');
-    expect(await page.locator('[data-testid=connector-macro-textarea]').inputValue()).toContain('sobjects');
+    await expect(page.locator('[data-testid=connector-form-modal]')).toContainText('Salesforce');
+    await expect(page.locator('[data-testid=builtin-root-url-input]')).toHaveValue('https://login.salesforce.com');
   });
 
   test('"Blank custom" reproduces today\'s empty-form behavior exactly', async ({ page }) => {

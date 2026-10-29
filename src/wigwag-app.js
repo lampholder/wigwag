@@ -232,120 +232,18 @@ const docStore = {
   }
 };
 
-// Starting points for "+ Add source" (see docs/EDITING.md / the
-// connected-sources unification work) -- a template just pre-fills the
-// SAME draft shape openAddConnectorForm already builds; once saved, a
-// template-seeded connector is byte-identical to a hand-built one, no
-// separate discriminant to track or migrate later. Patterns omit their
-// own `^...$` anchoring, same as every other saved connector pattern --
-// the engine wraps each one itself (see connectorMatches).
-// Macros are real starting points, not placeholders, and also double as
-// the SEED DATA for the 3 built-in connectors (__builtin_github/jira/
-// salesforce -- see ensureBuiltinConnectors): Jira's and GitHub's mirror
-// the retired fetchJiraData's/fetchGithubData's own REST shape exactly,
-// including every field pickJiraFields/pickGithubFields ever exposed
-// (key/description/status/priority/assignee/dates/components/etc, under
-// `extra` -- buildSource flattens extra back onto source.<key> directly,
-// so an existing rule reading source.jira.priority keeps working
-// unchanged now that this macro is what's actually fetching that field;
-// see buildSource's own comment, wigwag-core.js). Salesforce's object
-// type ("Case") is the one genuinely uncertain part (it varies per org,
-// and there's no schema to assume) -- left as an obvious placeholder the
-// user swaps for their own object, same spirit as every template here
-// being "a starting point," not a guaranteed-correct default.
+// Starting point for "+ Add source" -> "Blank custom" only now --
+// Jira/GitHub/Salesforce used to seed a macro-shaped template here too
+// (and, earlier still, doubled as migrateBuiltinConnectors' own seed
+// data), but per the connector-management redesign (/home/dev/.claude/
+// plans/encapsulated-waddling-gizmo.md, confirmed with Tom) those 3
+// kinds now always open the real BUILTIN_INTEGRATIONS config editor
+// (openBuiltinSourceForm) for a NEW instance instead, never a macro --
+// see typeOptions below. A template just pre-fills the SAME draft shape
+// openAddConnectorForm already builds; once saved, a template-seeded
+// connector is byte-identical to a hand-built one, no separate
+// discriminant to track or migrate later.
 const CONNECTOR_TEMPLATES = {
-  jira: {
-    name: 'Jira', glyph: 'J', color: col('blue').dot,
-    patterns: [
-      { regex: '[A-Za-z][A-Za-z0-9]+-\\d+', label: 'Issue key' },
-      { regex: 'https?://[\\w.-]+/browse/([A-Za-z][A-Za-z0-9]+-\\d+)/?(?:[?#].*)?', label: 'Issue URL' }
-    ],
-    macro: 'async (id, credential) => {\n'
-      + '  const res = await fetch(\n'
-      + '    `https://your-domain.atlassian.net/rest/api/3/issue/${id}`,\n'
-      + '    { headers: { Authorization: \'Basic \' + btoa(credential) } }\n'
-      + '  );\n'
-      + '  const data = await res.json();\n'
-      + '  const f = data.fields;\n'
-      + '  return {\n'
-      + '    title: f.summary,\n'
-      + '    url: `https://your-domain.atlassian.net/browse/${id}`,\n'
-      + '    state: f.status.name,\n'
-      + '    labels: f.labels || [],\n'
-      + '    assignee: f.assignee ? f.assignee.displayName : \'\',\n'
-      + '    extra: {\n'
-      + '      key: data.key, description: f.description || \'\', status: f.status.name,\n'
-      + '      statusCategory: (f.status.statusCategory && f.status.statusCategory.key) || \'\',\n'
-      + '      issueType: (f.issuetype && f.issuetype.name) || \'\', priority: (f.priority && f.priority.name) || \'\',\n'
-      + '      reporter: (f.reporter && f.reporter.displayName) || \'\', created: f.created || \'\', updated: f.updated || \'\',\n'
-      + '      dueDate: f.duedate || \'\', resolution: (f.resolution && f.resolution.name) || \'\', resolutionDate: f.resolutiondate || \'\',\n'
-      + '      components: (f.components || []).map(c => c.name), fixVersions: (f.fixVersions || []).map(v => v.name),\n'
-      + '      project: (f.project && f.project.key) || \'\'\n'
-      + '    }\n'
-      + '  };\n'
-      + '}',
-    linkTextTemplate: ''
-  },
-  github: {
-    name: 'GitHub', glyph: 'G', color: col('gray').dot,
-    patterns: [
-      { regex: 'https?://github\\.com/([\\w.-]+)/([\\w.-]+)/(?:issues|pull)/(\\d+)/?', label: 'Issue/PR URL' },
-      { regex: '[\\w.-]+/[\\w.-]+#\\d+', label: 'owner/repo#123' }
-    ],
-    macro: 'async (id, credential) => {\n'
-      + '  const [owner, repo, num] = id.split(/[/#]/);\n'
-      + '  const res = await fetch(\n'
-      + '    `https://api.github.com/repos/${owner}/${repo}/issues/${num}`,\n'
-      + '    { headers: { Accept: \'application/vnd.github+json\', Authorization: \'Bearer \' + credential } }\n'
-      + '  );\n'
-      + '  const data = await res.json();\n'
-      + '  const isPullRequest = !!data.pull_request;\n'
-      + '  return {\n'
-      + '    title: data.title,\n'
-      + '    url: data.html_url,\n'
-      + '    state: data.state,\n'
-      + '    labels: (data.labels || []).map(l => l.name || l),\n'
-      + '    assignee: data.assignee ? data.assignee.login : \'\',\n'
-      + '    extra: {\n'
-      + '      key: `${owner}/${repo}#${num}`, description: data.body || \'\', status: data.state || \'\',\n'
-      + '      statusCategory: data.state === \'closed\' ? \'done\' : \'new\', issueType: isPullRequest ? \'Pull Request\' : \'Issue\',\n'
-      + '      assignees: (data.assignees || []).map(a => a.login), reporter: (data.user && data.user.login) || \'\',\n'
-      + '      created: data.created_at || \'\', updated: data.updated_at || \'\', resolution: data.state_reason || \'\',\n'
-      + '      resolutionDate: data.closed_at || \'\', fixVersions: data.project ? [data.project.title] : [],\n'
-      + '      project: `${owner}/${repo}`\n'
-      + '    }\n'
-      + '  };\n'
-      + '}',
-    linkTextTemplate: ''
-  },
-  salesforce: {
-    name: 'Salesforce', glyph: 'S', color: col('teal').dot,
-    patterns: [
-      { regex: '[a-zA-Z0-9]{15,18}', label: 'Record Id' },
-      { regex: 'https?://[\\w-]+\\.lightning\\.force\\.com/lightning/r/(?:[\\w]+/)?([a-zA-Z0-9]{15,18})/view/?(?:[?#].*)?', label: 'Lightning URL' }
-    ],
-    // "Case" is a placeholder object type -- swap for whatever object
-    // this connector actually points at (Opportunity, a custom object,
-    // etc.), see the comment above this whole constant.
-    macro: 'async (id, credential) => {\n'
-      + '  const res = await fetch(\n'
-      + '    `https://your-instance.my.salesforce.com/services/data/v59.0/sobjects/Case/${id}`,\n'
-      + '    { headers: { Authorization: \'Bearer \' + credential } }\n'
-      + '  );\n'
-      + '  const data = await res.json();\n'
-      + '  return {\n'
-      + '    title: data.Subject || data.Name || id,\n'
-      + '    url: `https://your-instance.lightning.force.com/lightning/r/${id}/view`,\n'
-      + '    state: data.Status || data.StageName || \'\',\n'
-      + '    extra: {\n'
-      + '      id, objectType: \'Case\', name: data.Name || data.Subject || \'\',\n'
-      + '      status: data.Status || data.StageName || \'\', owner: data.Owner ? data.Owner.Name : \'\',\n'
-      + '      lastModified: data.LastModifiedDate || \'\', fields: data\n'
-      + '    }\n'
-      + '  };\n'
-      + '}',
-    linkTextTemplate: ''
-  },
   blank: { name: '', glyph: '', color: col('red').dot, patterns: [{ regex: '', label: '' }], macro: '', linkTextTemplate: '' }
 };
 // The 3 built-in systems (GitHub/Jira/Salesforce): NOT a connector-
@@ -4356,14 +4254,21 @@ class Component extends DCLogic {
   // use elsewhere); `id` set edits that existing instance, draft started
   // from its real, currently-saved config -- today's behavior unchanged.
   openBuiltinSourceForm({ id, kind }) {
-    const c = id ? this.builtinConnector(kind) : null;
+    // Looked up by the passed id directly (not builtinConnector(kind)'s
+    // fixed-id lookup) -- a second real instance of a kind has its own
+    // conn_<...> id, not __builtin_<kind>, and must still open correctly
+    // for re-editing.
+    const c = id ? (this.state.connectedSources || []).find(x => x.id === id) : null;
     if (id && !c) return;
     const spec = BUILTIN_INTEGRATIONS[kind];
-    this.setState({ builtinFormOpen: { id, kind, draft: {
-      rootUrl: c ? (c.rootUrl || '') : (spec.rootUrlDefault || ''),
-      username: c ? (c.username || '') : '',
-      credentialDraft: '', hasCredential: c ? !!c.credentialConfigured : false
-    } } });
+    this.setState({
+      addSourceTypePickerOpen: false,
+      builtinFormOpen: { id, kind, draft: {
+        rootUrl: c ? (c.rootUrl || '') : (spec.rootUrlDefault || ''),
+        username: c ? (c.username || '') : '',
+        credentialDraft: '', hasCredential: c ? !!c.credentialConfigured : false
+      } }
+    });
   }
   cancelBuiltinForm() {
     this.setState({ builtinFormOpen: null });
@@ -9241,7 +9146,11 @@ class Component extends DCLogic {
     const countLabel = n => n + ' project' + (n === 1 ? '' : 's');
     const settingsSectionDefs = [
       { id: 'identity', label: 'Identity', title: 'Identity', blurb: 'Who your changes are attributed to.', configured: !!(activeIdentity && activeIdentity.email && activeIdentity.email.trim()) },
-      { id: 'connectedDataSources', label: 'Context connectors', title: 'Context connectors', blurb: 'Other systems wigwag can reference and pull state from -- GitHub, Jira, Salesforce, or your own custom connector.', configured: ['github', 'jira', 'salesforce'].some(k => this.builtinConfigured(k)) || (s.connectedSources || []).some(c => !c.id.startsWith('__builtin_')) },
+      // connectedSources now only ever holds what the user actually
+      // added (no more fixed-3 auto-seed) -- existing at all is enough
+      // signal for the nav dot, no need to separately check "and is it
+      // actually configured."
+      { id: 'connectedDataSources', label: 'Context connectors', title: 'Context connectors', blurb: 'Other systems wigwag can reference and pull state from -- GitHub, Jira, Salesforce, or your own custom connector.', configured: (s.connectedSources || []).length > 0 },
       { id: 'remoteDataStores', label: 'Project sync', title: 'Project sync', blurb: 'Where your project data is persisted outside this device -- GitHub today, more stores later.', configured: !!(activeIdentity && activeIdentity.githubToken && activeIdentity.githubToken.trim()) },
       { id: 'notifications', label: 'Notifications', title: 'Notifications', blurb: 'Get notified when someone @mentions you in a comment.', configured: !!s.mentionNotificationsEnabled }
     ];
@@ -9951,27 +9860,31 @@ class Component extends DCLogic {
         const builtinSpec = builtinForm ? BUILTIN_INTEGRATIONS[builtinForm.kind] : null;
         const isTauri = this.isTauriConnectorRuntime();
         const allConnectedSources = s.connectedSources || [];
-        const customConnectors = allConnectedSources.filter(c => !c.id.startsWith('__builtin_'));
-        // Disabled (not hidden) outside Tauri, per Tom's call -- the rows
-        // still need to exist to show the note. GitHub is the one
-        // exception: unauthenticated access works in any browser (see
-        // fetchGithubData/connectorMatches' own comments), so its row
-        // stays enabled outside Tauri too -- only Jira/Salesforce
-        // genuinely need the desktop app to do anything at all.
-        const builtinRows = ['github', 'jira', 'salesforce'].map(kind => {
-          const c = allConnectedSources.find(x => x.id === '__builtin_' + kind);
-          if (!c) return null;
-          const configured = this.builtinConfigured(kind);
-          const disabled = kind !== 'github' && !isTauri;
-          return {
-            id: c.id, name: c.name, logoKind: kind, builtin: true,
-            patternSummaryText: (c.rootUrl || '').trim() || 'Not configured',
-            statusLabel: configured ? 'Connected' : 'Not configured', statusColor: configured ? col('green').dot : col('gray').dot,
-            showEdit: !disabled, disabled, disabledNote: disabled ? 'Requires the desktop app' : '', rowOpacity: disabled ? '0.55' : '1',
-            onEdit: () => this.openBuiltinSourceForm({ id: c.id, kind })
-          };
-        }).filter(Boolean);
-        const rows = builtinRows.concat(isTauri ? customConnectors.map(c => {
+        // One row per connectedSources entry, directly -- no fixed-3
+        // concat (Tom's own ask: list only what's actually configured,
+        // not one row per built-in regardless of state; an unconfigured
+        // kind-tagged row simply isn't in connectedSources at all for a
+        // fresh install now that migrateBuiltinConnectors stopped auto-
+        // seeding, so it naturally doesn't appear here either). A kind-
+        // tagged entry is disabled (shown, not hidden) outside Tauri --
+        // except GitHub, whose unauthenticated access works in any
+        // browser (see fetchGithubData/connectorMatches' own comments).
+        // A macro connector's editing/credential/fetch is Tauri-only
+        // entirely, so it's hidden outside Tauri rather than shown
+        // disabled, same precedent this already had.
+        const rows = allConnectedSources.map(c => {
+          if (c.kind) {
+            const configured = builtinKindConfigured(c);
+            const disabled = c.kind !== 'github' && !isTauri;
+            return {
+              id: c.id, name: c.name, logoKind: c.kind, builtin: true,
+              patternSummaryText: (c.rootUrl || '').trim() || 'Not configured',
+              statusLabel: configured ? 'Connected' : 'Not configured', statusColor: configured ? col('green').dot : col('gray').dot,
+              showEdit: !disabled, disabled, disabledNote: disabled ? 'Requires the desktop app' : '', rowOpacity: disabled ? '0.55' : '1',
+              onEdit: () => this.openBuiltinSourceForm({ id: c.id, kind: c.kind })
+            };
+          }
+          if (!isTauri) return null;
           const n = (c.patterns || []).length;
           return {
             id: c.id, name: c.name, glyph: c.glyph, color: c.color, builtin: false,
@@ -9980,7 +9893,7 @@ class Component extends DCLogic {
             showEdit: true, disabled: false, disabledNote: '', rowOpacity: '1',
             onEdit: () => this.openEditConnectorForm(c.id)
           };
-        }) : []);
+        }).filter(Boolean);
         const patterns = form ? draft.patterns.map((p, i) => {
           let errorText = '';
           if (p.regex.trim()) { try { new RegExp(p.regex); } catch (e) { errorText = 'Invalid regular expression'; } }
@@ -10049,9 +9962,9 @@ class Component extends DCLogic {
           typePickerVisible: s.addSourceTypePickerOpen,
           onCloseTypePicker: () => this.closeAddSourceTypePicker(),
           typeOptions: [
-            { kind: 'jira', name: 'Jira', glyph: 'J', color: col('blue').dot, blurb: 'Issue keys and browse URLs', onPick: () => this.startConnectorFromTemplate('jira') },
-            { kind: 'github', name: 'GitHub', glyph: 'G', color: col('gray').dot, blurb: 'Issue/PR URLs and owner/repo#123', onPick: () => this.startConnectorFromTemplate('github') },
-            { kind: 'salesforce', name: 'Salesforce', glyph: 'S', color: col('teal').dot, blurb: 'Record Ids and Lightning URLs', onPick: () => this.startConnectorFromTemplate('salesforce') },
+            { kind: 'jira', name: 'Jira', glyph: 'J', color: col('blue').dot, blurb: 'Issue keys and browse URLs', onPick: () => this.openBuiltinSourceForm({ id: null, kind: 'jira' }) },
+            { kind: 'github', name: 'GitHub', glyph: 'G', color: col('gray').dot, blurb: 'Issue/PR URLs and owner/repo#123', onPick: () => this.openBuiltinSourceForm({ id: null, kind: 'github' }) },
+            { kind: 'salesforce', name: 'Salesforce', glyph: 'S', color: col('teal').dot, blurb: 'Record Ids and Lightning URLs', onPick: () => this.openBuiltinSourceForm({ id: null, kind: 'salesforce' }) },
             { kind: 'blank', name: 'Blank custom', glyph: '+', color: col('red').dot, blurb: 'Start from scratch', onPick: () => this.startConnectorFromTemplate('blank') }
           ],
           onAddClick: () => this.openAddSourceTypePicker(),

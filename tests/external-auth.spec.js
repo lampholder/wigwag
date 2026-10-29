@@ -128,6 +128,56 @@ test.describe('Jira linking', () => {
     expect(await anchor.locator('svg').innerHTML()).toContain('#2684FF');
   });
 
+  // Deactivate (tracker connector-management plan, Commit 5): keeps the
+  // row's own rootUrl/credential untouched, but acts as if it weren't
+  // there at all for NEW paste-matching (connectorMatches) and for a
+  // bound field reading it live (computeBoundValue's own isRefLocallyLive
+  // gate, bound-value-panel.spec.js's "local reachability gates the
+  // glyph" suite) -- it does NOT retract an already-resolved field's own
+  // display (that's just the persisted href/title, unaffected by live
+  // reachability, same as any dead bookmark stays clickable).
+  test('deactivating the built-in Jira connector stops new paste-matching, and reactivating restores it without touching rootUrl/credential', async ({ page }) => {
+    await h.clickFieldToEdit(page, 3, 'linked');
+    await h.pasteText(page, 'TRK-999');
+    await page.keyboard.press('Tab');
+    await h.waitForFieldResolved(page, 3, 'linked');
+    await expect(h.fieldCell(page, 3, 'linked')).toContainText('Mocked Jira ticket title');
+
+    await h.openSettingsSection(page, 'connectedDataSources');
+    const jiraRow = page.locator('[data-testid=connected-source-row]', { hasText: 'Jira' });
+    await expect(jiraRow).toContainText('Connected');
+    await jiraRow.locator('[data-testid=btn-toggle-connector-enabled]').click();
+    await expect(jiraRow).toContainText('Deactivated');
+    await page.locator('[data-testid=settings-overlay]').click({ position: { x: 10, y: 10 } });
+    await page.waitForTimeout(150);
+
+    // A fresh paste of the same shape no longer resolves at all -- falls
+    // through to plain text, same as if Jira had never been configured.
+    await h.clickFieldToEdit(page, 1, 'linked');
+    await h.pasteText(page, 'TRK-998');
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(300);
+    await expect(h.fieldCell(page, 1, 'linked')).toContainText('TRK-998');
+    await expect(h.fieldCell(page, 1, 'linked').locator('a')).toHaveCount(0);
+
+    await h.openSettingsSection(page, 'connectedDataSources');
+    await expect(jiraRow).toContainText('Deactivated');
+    await jiraRow.locator('[data-testid=btn-toggle-connector-enabled]').click();
+    await expect(jiraRow).toContainText('Connected');
+    const sources = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_connected_sources_v1')));
+    const jira = sources.connectors.find(c => c.id === '__builtin_jira');
+    expect(jira.rootUrl).toBe(JIRA_ROOT);
+    expect(jira.credentialConfigured).toBe(true);
+    await page.locator('[data-testid=settings-overlay]').click({ position: { x: 10, y: 10 } });
+    await page.waitForTimeout(150);
+
+    await h.clickFieldToEdit(page, 2, 'linked');
+    await h.pasteText(page, 'TRK-999');
+    await page.keyboard.press('Tab');
+    await h.waitForFieldResolved(page, 2, 'linked');
+    await expect(h.fieldCell(page, 2, 'linked')).toContainText('Mocked Jira ticket title');
+  });
+
   // Regression: once a field resolves to a Jira issue, its stored value
   // becomes the resolved title text -- the key the user actually typed
   // only survives as the small ref-chip's fieldRef metadata, which the

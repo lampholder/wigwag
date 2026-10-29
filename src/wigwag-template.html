@@ -2785,6 +2785,7 @@
                           </sc-if>
                           <sc-if value="{{ src.showEdit }}" hint-placeholder-val="{{ true }}">
                             <span style="flex-shrink:0; display:flex; align-items:center; gap:6px; font-size:11px; color: {{ src.statusColor }};"><span style="display:block; width:6px; height:6px; border-radius:50%; background: {{ src.statusColor }};"></span>{{ src.statusLabel }}</span>
+                            <span data-testid="btn-toggle-connector-enabled" sc-camel-on-click="{{ src.onToggleEnabled }}" style="flex-shrink:0; font-size:11.5px; color: var(--text-muted); cursor:pointer; margin-left:4px;" style-hover="color: var(--text-secondary);">{{ src.toggleEnabledLabel }}</span>
                             <span data-testid="btn-edit-connected-source" sc-camel-on-click="{{ src.onEdit }}" style="flex-shrink:0; font-size:11.5px; color: var(--accent-ink); cursor:pointer; margin-left:4px;">Edit</span>
                           </sc-if>
                         </div>

@@ -4349,6 +4349,19 @@ class Component extends DCLogic {
     this.setState({ connectorFormVisible: false });
     setTimeout(() => this.setState(s => (s.connectorFormVisible ? {} : { connectorFormOpen: null })), 280);
   }
+  // Deactivate: keeps all of a connector's own config/credentials in
+  // place, but acts as if it weren't there at all -- isRefLocallyLive
+  // and connectorMatches already read c.enabled === false as
+  // unreachable (see their own comments). A distinct action from
+  // deleteConnectorSource (both wanted, not alternatives, per Tom).
+  // Absence of the field reads as enabled (c.enabled !== false
+  // everywhere this is checked), so toggling simply flips the explicit
+  // boolean, defaulting a never-toggled connector to true the first
+  // time it's turned off.
+  toggleConnectorEnabled(id) {
+    const next = (this.state.connectedSources || []).map(c => c.id === id ? { ...c, enabled: c.enabled === false ? true : false } : c);
+    this.saveConnectedSources(next);
+  }
   // A retryable failure is a timeout, a network-level rejection (no
   // .status at all -- a real fetch() failure, not an HTTP error
   // response), or an HTTP 403/429/5xx. A 404 (issue genuinely gone/
@@ -9873,15 +9886,24 @@ class Component extends DCLogic {
         // entirely, so it's hidden outside Tauri rather than shown
         // disabled, same precedent this already had.
         const rows = allConnectedSources.map(c => {
+          // Deactivated overrides Connected/Not configured/Needs API key
+          // -- a real, distinct state from either (config/credentials
+          // are all still there, untouched; it just acts as if it
+          // weren't). Shown for both kind-tagged and custom rows, same
+          // toggle action either way.
+          const isEnabled = c.enabled !== false;
+          const enabledToggle = { enabled: isEnabled, toggleEnabledLabel: isEnabled ? 'Deactivate' : 'Activate', onToggleEnabled: () => this.toggleConnectorEnabled(c.id) };
           if (c.kind) {
             const configured = builtinKindConfigured(c);
             const disabled = c.kind !== 'github' && !isTauri;
             return {
               id: c.id, name: c.name, logoKind: c.kind, builtin: true,
               patternSummaryText: (c.rootUrl || '').trim() || 'Not configured',
-              statusLabel: configured ? 'Connected' : 'Not configured', statusColor: configured ? col('green').dot : col('gray').dot,
+              statusLabel: !isEnabled ? 'Deactivated' : (configured ? 'Connected' : 'Not configured'),
+              statusColor: !isEnabled ? col('gray').dot : (configured ? col('green').dot : col('gray').dot),
               showEdit: !disabled, disabled, disabledNote: disabled ? 'Requires the desktop app' : '', rowOpacity: disabled ? '0.55' : '1',
-              onEdit: () => this.openBuiltinSourceForm({ id: c.id, kind: c.kind })
+              onEdit: () => this.openBuiltinSourceForm({ id: c.id, kind: c.kind }),
+              ...enabledToggle
             };
           }
           if (!isTauri) return null;
@@ -9889,9 +9911,11 @@ class Component extends DCLogic {
           return {
             id: c.id, name: c.name, glyph: c.glyph, color: c.color, builtin: false,
             patternSummaryText: n + ' pattern' + (n === 1 ? '' : 's') + (n ? ' · ' + (c.patterns[0].label || c.patterns[0].regex) : ''),
-            statusLabel: c.credentialConfigured ? 'Connected' : 'Needs API key', statusColor: c.credentialConfigured ? col('green').dot : col('amber').dot,
+            statusLabel: !isEnabled ? 'Deactivated' : (c.credentialConfigured ? 'Connected' : 'Needs API key'),
+            statusColor: !isEnabled ? col('gray').dot : (c.credentialConfigured ? col('green').dot : col('amber').dot),
             showEdit: true, disabled: false, disabledNote: '', rowOpacity: '1',
-            onEdit: () => this.openEditConnectorForm(c.id)
+            onEdit: () => this.openEditConnectorForm(c.id),
+            ...enabledToggle
           };
         }).filter(Boolean);
         const patterns = form ? draft.patterns.map((p, i) => {

@@ -987,4 +987,39 @@ test.describe('Bound-field visibility: local reachability gates the glyph, not m
     await page.waitForTimeout(400);
     await expect(h.fieldCell(page, 1, 'priority')).toContainText('MANUAL');
   });
+
+  // Deactivate (tracker connector-management plan, Commit 5): isRefLocallyLive
+  // reads a connector's own enabled === false exactly like "no row at
+  // all" -- same mechanism, same observable effect as the no-config
+  // Jira case above (a field never gets a chance to bind via the
+  // passive resettle pass in the first place, so it never picks up a
+  // local-derived record either), just triggered by deactivation of an
+  // otherwise fully-configured row instead of missing config.
+  test('a GitHub-bound field reading a deactivated (but otherwise fully-configured) connector never binds at all -- same plain, freely-editable rendering as the no-config case', async ({ page }) => {
+    const doc = await h.readActiveMilestoneDoc(page);
+    doc.fieldDefs.priority.linkedSourceId = 'related';
+    doc.fieldDefs.priority.rule = "source.github ? (source.github.labels.includes('bug') ? 'Bug' : 'Other') : null";
+    doc.fieldDefs.priority.type = 'text';
+    doc.fieldDefs.related = doc.fieldDefs.related || { label: 'Related', type: 'text' };
+    const issue = doc.issues[0];
+    issue.history.push(
+      { id: 'h-related3', field: 'related', value: 'o/r#1', text: 'Related set', fieldRef: { system: 'github', owner: 'o', repo: 'r', num: 1 }, origin: 'authored', sortKey: 9201, sig: null, pubKey: null },
+      { id: 'h-priority3', field: 'priority', value: 'some manual note', text: 'Priority set', origin: 'authored', sortKey: 9202, sig: null, pubKey: null }
+    );
+    await h.writeActiveMilestoneDoc(page, doc);
+    // A real, fully-configured GitHub row -- deactivated, not merely
+    // unconfigured, so this isolates enabled:false specifically.
+    await page.evaluate(() => {
+      localStorage.setItem('git_native_tracker_connected_sources_v1', JSON.stringify({
+        connectors: [{ id: '__builtin_github', key: 'github', kind: 'github', name: 'GitHub', builtin: true, rootUrl: 'https://api.github.com', username: '', credentialConfigured: false, enabled: false }]
+      }));
+    });
+    await page.reload({ waitUntil: 'networkidle' });
+    await h.waitForBootSplashGone(page);
+    await page.waitForTimeout(400);
+
+    const cell = h.fieldCell(page, 1, 'priority');
+    await expect(cell).toContainText('some manual note');
+    await expect(cell.locator('svg')).toHaveCount(0);
+  });
 });

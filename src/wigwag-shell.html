@@ -995,7 +995,7 @@ function fieldRefSearchText(ref) {
   if (ref.system === 'wigwag') return '';
   // Unified {href, fetchedVia} shape: matchedId (when carried -- only on
   // a failed-fetch error-path write or a still-pending custom-connector
-  // match, see applyLinkToField/customConnectorMatches) is the bare
+  // match, see applyLinkToField/connectorMatches) is the bare
   // pasted identifier and the best search text available. Otherwise
   // fall back to href itself -- a github href encodes owner/repo/num
   // positionally so it gets its own regex; everything else (jira's

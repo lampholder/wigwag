@@ -238,7 +238,7 @@ const docStore = {
 // template-seeded connector is byte-identical to a hand-built one, no
 // separate discriminant to track or migrate later. Patterns omit their
 // own `^...$` anchoring, same as every other saved connector pattern --
-// the engine wraps each one itself (see customConnectorMatches).
+// the engine wraps each one itself (see connectorMatches).
 // Macros are real starting points, not placeholders, and also double as
 // the SEED DATA for the 3 built-in connectors (__builtin_github/jira/
 // salesforce -- see ensureBuiltinConnectors): Jira's and GitHub's mirror
@@ -1102,25 +1102,31 @@ class Component extends DCLogic {
       localDerivedEntryIds: { ...s.localDerivedEntryIds, [issueId]: { ...(s.localDerivedEntryIds[issueId] || {}), [colId]: entryId } }
     }));
   }
+  // GitHub needs no configuration at all to be reachable (anonymous
+  // access, rate-limited not blocked -- same tolerance fetchGithubData/
+  // resolveFetchConnector already have) -- but a brand-new install (now
+  // that migrateBuiltinConnectors stopped auto-seeding anything) simply
+  // has no __builtin_github row for a plain connectedSources.find(...)
+  // to find. Anything that needs to treat GitHub as always-at-least-
+  // minimally-reachable (liveRuleCtx's write-side gate, connectorMatches'
+  // paste-time dispatch) reads THIS instead of this.state.connectedSources
+  // directly -- the real list, plus the same synthetic stand-in
+  // resolveFetchConnector() uses, appended only when no real github-kind
+  // row exists yet. Deliberately NOT used by the Settings UI itself,
+  // which must keep showing a genuinely empty list until something is
+  // actually configured (Tom's own "list only configured connectors" ask).
+  connectedSourcesForDispatch() {
+    const connectedSources = this.state.connectedSources || [];
+    return connectedSources.some(c => c.id === '__builtin_github')
+      ? connectedSources
+      : connectedSources.concat([this.resolveFetchConnector('__builtin_github')]);
+  }
   // Context for the write-side reachability gate (computeBoundValue/
   // applyLinkedRules) AND the per-issue local-record slice -- gathered
   // once per call site rather than threading each field individually.
-  // GitHub needs no configuration at all to be reachable (anonymous
-  // access, rate-limited not blocked -- same tolerance fetchGithubData/
-  // resolveFetchConnector already have): isRefLocallyLive (wigwag-
-  // core.js) is a pure function with no fallback of its own, so a
-  // project with no __builtin_github row at all (every brand-new
-  // install, now that migrateBuiltinConnectors stopped auto-seeding
-  // one) gets the same synthetic stand-in resolveFetchConnector already
-  // uses for fetch/refresh dispatch, appended here so isRefLocallyLive's
-  // own `(ctx.connectedSources||[]).find(...)` lookup finds it.
   liveRuleCtx(issueId) {
-    const connectedSources = this.state.connectedSources || [];
-    const connectedSourcesForRules = connectedSources.some(c => c.id === '__builtin_github')
-      ? connectedSources
-      : connectedSources.concat([this.resolveFetchConnector('__builtin_github')]);
     return {
-      connectedSources: connectedSourcesForRules,
+      connectedSources: this.connectedSourcesForDispatch(),
       tauriConnectorRuntime: this.isTauriConnectorRuntime(),
       localDerivedEntryIds: (this.state.localDerivedEntryIds && this.state.localDerivedEntryIds[issueId]) || {}
     };
@@ -3784,49 +3790,17 @@ class Component extends DCLogic {
     if (shorthand) return { owner: shorthand[1], repo: shorthand[2], num: shorthand[3] };
     return null;
   }
-  // Gated on builtinConfigured('github') only -- NOT isTauriConnectorRuntime,
-  // unlike jiraKeyMatch/salesforceUrlMatch below. GitHub's rootUrl has a
-  // real default pre-filled at seed time (api.github.com) and never needs
-  // a credential (anonymous access works, just rate-limited), and
-  // fetchGithubData falls back to a plain browser fetch outside Tauri --
-  // same reach GitHub linking always had pre-retirement, not narrowed by
-  // this correction. builtinConfigured('github') is true as soon as the
-  // built-in exists at all (ensureBuiltinConnectors seeds it for every
-  // user, Tauri or not), so in practice this match is always live.
-  // Returns the shared {fetchedVia, matchedId, href} paste-dispatch
-  // shape (see /home/dev/.claude/plans/encapsulated-waddling-gizmo.md)
-  // -- href is fully knowable upfront for GitHub (unlike Jira/
-  // Salesforce, whose real browse/record URL only comes back from the
-  // fetch itself).
-  githubUrlMatch(text) {
-    if (!this.builtinConfigured('github')) return null;
-    const matchedId = this.parseGithubUrl(text);
-    if (!matchedId) return null;
-    return { fetchedVia: '__builtin_github', matchedId, href: 'https://github.com/' + matchedId.owner + '/' + matchedId.repo + '/issues/' + matchedId.num };
-  }
-  // Gated on isTauriConnectorRuntime + builtinConfigured('jira'), unlike
-  // githubUrlMatch above -- Jira (self-hosted/enterprise, no general CORS
-  // allowance) genuinely needs Tauri's IPC fetch + a real keychain
-  // credential to do anything at all, so there's no meaningful unmatched
-  // state to fall back to. An unconfigured (or Tauri-less) Jira steps
-  // aside for a matching custom connector instead of claiming the shape
-  // and failing.
+  // Pure shape recognition only -- gating (is this kind even reachable
+  // right now) and the {fetchedVia, matchedId, href} paste-dispatch
+  // shape live in connectorMatches below, which reuses these directly
+  // (also still reused by matchedIdFromHref, unrelated to paste gating).
   parseJiraKey(text) {
     const t = (text || '').trim();
     if (JIRA_KEY_RE.test(t)) return t.toUpperCase();
     const urlMatch = t.match(/^https?:\/\/[\w.-]+\/browse\/([A-Z][A-Z0-9]+-\d+)\/?(?:[?#].*)?$/i);
     return urlMatch ? urlMatch[1].toUpperCase() : null;
   }
-  // href is null here -- unlike GitHub, Jira's real browse URL depends
-  // on this device's own configured root URL, only knowable for real
-  // once a fetch actually returns one (data.browseUrl).
-  jiraKeyMatch(text) {
-    if (!this.isTauriConnectorRuntime() || !this.builtinConfigured('jira')) return null;
-    const matchedId = this.parseJiraKey(text);
-    if (!matchedId) return null;
-    return { fetchedVia: '__builtin_jira', matchedId, href: null };
-  }
-  // URL-only, unlike jiraKeyMatch -- a Salesforce Id (006Nz00000jD3mCIAS)
+  // URL-only -- a Salesforce Id (006Nz00000jD3mCIAS)
   // isn't something anyone types from memory the way a short Jira key is,
   // so there's no bare-id form to also accept. Handles both the modern
   // Lightning shape (object-name path segment optional -- some orgs' URLs
@@ -3849,24 +3823,82 @@ class Component extends DCLogic {
     m = t.match(/^https?:\/\/[\w-]+\.(?:my\.)?salesforce\.com\/([a-zA-Z0-9]{15,18})\/?(?:[?#].*)?$/i);
     return m ? m[1] : null;
   }
-  // Gated the same way jiraKeyMatch is (needs Tauri -- see its own
-  // comment); NOT the same as githubUrlMatch, which doesn't. href is
-  // null for the same reason as Jira's own match -- the record's real
-  // Lightning URL only comes back from the fetch itself.
-  salesforceUrlMatch(text) {
-    if (!this.isTauriConnectorRuntime() || !this.builtinConfigured('salesforce')) return null;
-    const matchedId = this.parseSalesforceId(text);
-    if (!matchedId) return null;
-    return { fetchedVia: '__builtin_salesforce', matchedId, href: null };
+  // The host of a pasted URL, for connectorMatches' own soft
+  // disambiguation below -- null for anything that isn't a parseable
+  // absolute URL (a bare Jira key, a Salesforce id, any plain text).
+  hostFromUrl(text) {
+    try { return new URL((text || '').trim()).host; } catch (e) { return null; }
+  }
+  // Unified paste-dispatch matcher -- replaces githubUrlMatch/
+  // jiraKeyMatch/salesforceUrlMatch/customConnectorMatches. Every
+  // connectedSources entry (real, or -- for GitHub specifically -- the
+  // same synthetic always-reachable stand-in connectedSourcesForDispatch
+  // appends -- see its own comment) is tried once: a kind-tagged entry
+  // reuses the matching pure parser (parseGithubUrl/parseJiraKey/
+  // parseSalesforceId), gated by builtinKindReachable (so an
+  // unconfigured/disabled/Tauri-less instance never claims a shape it
+  // can't actually fetch); an untagged (true macro) entry runs its own
+  // saved patterns through the same regex engine customConnectorMatches
+  // always used, gated on isTauriConnectorRuntime (every macro connector
+  // needs it, unlike github). Returns the shared {connector, fetchedVia,
+  // matchedId, href} shape every caller (commitEdit, createIssueFromText,
+  // classifyBulkPasteLines) already expects.
+  connectorMatches(draft) {
+    const t = (draft || '').trim();
+    if (!t) return [];
+    const ctx = { tauriConnectorRuntime: this.isTauriConnectorRuntime() };
+    const kindMatches = [];
+    const macroMatches = [];
+    for (const c of this.connectedSourcesForDispatch()) {
+      if (c.enabled === false) continue;
+      if (c.kind) {
+        if (!builtinKindReachable(c, ctx)) continue;
+        const matchedId = c.kind === 'github' ? this.parseGithubUrl(t)
+          : c.kind === 'jira' ? this.parseJiraKey(t)
+          : c.kind === 'salesforce' ? this.parseSalesforceId(t)
+          : null;
+        if (matchedId == null) continue;
+        const href = c.kind === 'github' ? 'https://github.com/' + matchedId.owner + '/' + matchedId.repo + '/issues/' + matchedId.num : null;
+        kindMatches.push({ connector: c, fetchedVia: c.id, matchedId, href });
+      } else {
+        if (!ctx.tauriConnectorRuntime) continue;
+        for (const p of c.patterns || []) {
+          let re;
+          try { re = new RegExp('^(?:' + p.regex + ')$'); } catch (e) { continue; }
+          const m = re.exec(t);
+          // href is left null here, same as the old jiraKeyMatch/
+          // salesforceUrlMatch -- a connector's real record URL only
+          // comes back from the macro's own fetch result (data.url).
+          if (m) { macroMatches.push({ connector: c, fetchedVia: c.id, matchedId: (m[1] || m[0]), href: null }); break; }
+        }
+      }
+    }
+    // Kind-tagged (github/jira/salesforce) matches take strict priority
+    // over untagged (macro) ones, same as the old gh||jira||sf chain
+    // short-circuiting before customConnectorMatches ever ran -- an
+    // unrelated custom connector whose own pattern happens to ALSO
+    // match (e.g. a broad `[A-Z]+-\d+` ticket-key pattern colliding
+    // with a real Jira key) must never turn a deterministic built-in
+    // match into a false "matches more than one source" ambiguity.
+    const raw = kindMatches.length ? kindMatches : macroMatches;
+    // Soft disambiguation: when 2+ matches share a kind AND the pasted
+    // text is itself a URL, a host match against each candidate's own
+    // rootUrl narrows silently to the one actually-matching instance --
+    // e.g. two configured Jira servers, paste a full browse URL on one
+    // of them rather than a bare key (which has no host to narrow by,
+    // and genuinely is ambiguous between them).
+    const host = this.hostFromUrl(t);
+    if (!host || raw.length < 2) return raw;
+    const narrowed = raw.filter(m => this.hostFromUrl(m.connector.rootUrl) === host);
+    return narrowed.length === 1 ? narrowed : raw;
   }
   // Matches EITHER a raw local-instance deep link (any scheme/origin/path,
   // since "local instance path" varies machine to machine -- only the
   // portable #/project/<id>(/issue/<id>) suffix matters) OR an
   // already-canonical wigwag: URI (so re-pasting an already-translated
   // link, e.g. copied from another project's field, still resolves).
-  // Whole-string match, matching githubUrlMatch/jiraKeyMatch/
-  // salesforceUrlMatch's own contract (paste-to-resolve gates on the
-  // ENTIRE field value, not a substring).
+  // Whole-string match, matching connectorMatches' own contract
+  // (paste-to-resolve gates on the ENTIRE field value, not a substring).
   wigwagUrlMatch(text) {
     const t = (text || '').trim();
     let m = t.match(/^wigwag:\/project\/([^\/?\s]+)(?:\/issue\/([^\/?\s]+))?\/?(?:\?(\S*))?$/);
@@ -4153,47 +4185,10 @@ class Component extends DCLogic {
   // dispatch site already gets; a plain "does a row exist" check would
   // wrongly deny this for a fresh install that's never had
   // migrateBuiltinConnectors seed anything. Signature unchanged --
-  // every existing caller (including githubUrlMatch's own paste-time
+  // every existing caller (including connectorMatches' own reachability
   // gate) keeps working for the grandfathered rows.
   builtinConfigured(key) {
     return builtinKindConfigured(this.resolveFetchConnector('__builtin_' + key));
-  }
-  // Whole-string match, same discipline as githubUrlMatch/jiraKeyMatch/
-  // salesforceUrlMatch -- the engine wraps each saved pattern in its own
-  // ^(?:...)$ so a user's own pattern text (e.g. the mockup's own sample
-  // 'linear\\.app/.+/issue/([A-Z]+-\\d+)') doesn't need to self-anchor.
-  // A bad/invalid saved regex is skipped defensively, never thrown --
-  // paste handling must never crash because of a malformed pattern
-  // saved earlier. First matching pattern per connector wins; a
-  // connector is never counted twice even if several of its own
-  // patterns match. Explicitly excludes the 3 fixed builtin ids -- they
-  // dispatch through their own shape-based matchers (githubUrlMatch/
-  // jiraKeyMatch/salesforceUrlMatch), never this pattern engine, and
-  // migrateBuiltinConnectors' own migration can't retroactively guarantee
-  // an already-persisted builtin entry has no stray patterns field left
-  // over from the earlier macro-based architecture -- without this
-  // exclusion a Jira-shaped paste could match the unconfigured built-in
-  // Jira AND a real custom connector, surfacing a confusing "matches
-  // more than one connected source" picker for a source that was never
-  // actually configured at all.
-  customConnectorMatches(draft) {
-    if (!this.isTauriConnectorRuntime()) return [];
-    const t = (draft || '').trim();
-    if (!t) return [];
-    const matches = [];
-    for (const c of this.state.connectedSources || []) {
-      if (c.id.startsWith('__builtin_')) continue;
-      for (const p of c.patterns || []) {
-        let re;
-        try { re = new RegExp('^(?:' + p.regex + ')$'); } catch (e) { continue; }
-        const m = re.exec(t);
-        // href is left null here, same as jiraKeyMatch/salesforceUrlMatch
-        // -- a connector's real record URL only comes back from the
-        // macro's own fetch result (data.url), not knowable upfront.
-        if (m) { matches.push({ connector: c, fetchedVia: c.id, matchedId: (m[1] || m[0]), href: null }); break; }
-      }
-    }
-    return matches;
   }
   // Connected Sources (Phase 1) macro engine. isTauriConnectorRuntime
   // follows the same window.__TAURI__-namespace feature-detect idiom as
@@ -4355,12 +4350,20 @@ class Component extends DCLogic {
   // config, not a macro -- see BUILTIN_INTEGRATIONS. A plain small modal,
   // not the custom connector editor's sliding chrome (see
   // cancelConnectorForm's own comment) -- opens/closes immediately, no
-  // animation state to coordinate. The draft starts from the real,
-  // currently-saved config.
-  openBuiltinSourceForm(kind) {
-    const c = this.builtinConnector(kind);
-    if (!c) return;
-    this.setState({ builtinFormOpen: { kind, draft: { rootUrl: c.rootUrl || '', username: c.username || '', credentialDraft: '', hasCredential: !!c.credentialConfigured } } });
+  // animation state to coordinate. `id: null` opens a blank draft for a
+  // NEW instance of `kind` (rootUrl pre-filled from its real default --
+  // same real-world default BUILTIN_INTEGRATIONS/resolveFetchConnector
+  // use elsewhere); `id` set edits that existing instance, draft started
+  // from its real, currently-saved config -- today's behavior unchanged.
+  openBuiltinSourceForm({ id, kind }) {
+    const c = id ? this.builtinConnector(kind) : null;
+    if (id && !c) return;
+    const spec = BUILTIN_INTEGRATIONS[kind];
+    this.setState({ builtinFormOpen: { id, kind, draft: {
+      rootUrl: c ? (c.rootUrl || '') : (spec.rootUrlDefault || ''),
+      username: c ? (c.username || '') : '',
+      credentialDraft: '', hasCredential: c ? !!c.credentialConfigured : false
+    } } });
   }
   cancelBuiltinForm() {
     this.setState({ builtinFormOpen: null });
@@ -4369,15 +4372,27 @@ class Component extends DCLogic {
     if (!this.state.builtinFormOpen) return;
     this.setState(s => ({ builtinFormOpen: s.builtinFormOpen ? { ...s.builtinFormOpen, draft: { ...s.builtinFormOpen.draft, ...patch } } : null }));
   }
+  // f.id null creates a brand-new instance of f.kind -- the original
+  // __builtin_<kind> id/key scheme is reserved for the one grandfathered
+  // row of each kind (see migrateBuiltinConnectors) and never reused, so
+  // a new instance gets the same conn_<timestamp><rand> id + slugified
+  // key scheme saveConnectorForm already uses for custom connectors.
   async saveBuiltinForm() {
     const f = this.state.builtinFormOpen;
     if (!f) return;
-    const id = '__builtin_' + f.kind;
     const rootUrl = f.draft.rootUrl.trim();
     const username = (f.draft.username || '').trim();
     const credentialTyped = f.draft.credentialDraft.trim();
     const existing = this.state.connectedSources || [];
-    const next = existing.map(c => c.id === id ? { ...c, rootUrl, username, credentialConfigured: credentialTyped ? true : c.credentialConfigured } : c);
+    const id = f.id || ('conn_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8));
+    let next;
+    if (f.id) {
+      next = existing.map(c => c.id === id ? { ...c, rootUrl, username, credentialConfigured: credentialTyped ? true : c.credentialConfigured } : c);
+    } else {
+      const spec = BUILTIN_INTEGRATIONS[f.kind];
+      const key = slugifyConnectorKey(spec.name, existing.map(c => c.key));
+      next = existing.concat([{ id, key, kind: f.kind, name: spec.name, builtin: true, rootUrl, username, credentialConfigured: !!credentialTyped, enabled: true }]);
+    }
     if (credentialTyped) await this.setConnectorCredential(id, credentialTyped);
     this.saveConnectedSources(next);
     this.cancelBuiltinForm();
@@ -4648,7 +4663,7 @@ class Component extends DCLogic {
   // -- one comparison for every system now that they all persist the
   // same {href, fetchedVia} shape. href isn't always directly
   // comparable pre-fetch (jira/salesforce/a custom connector only
-  // learn their real href FROM the fetch -- see githubUrlMatch's own
+  // learn their real href FROM the fetch -- see connectorMatches' own
   // comment), so this compares matchedId instead, re-deriving the
   // existing ref's own matchedId from its persisted href via
   // matchedIdFromHref when it isn't carried directly on the ref
@@ -4915,7 +4930,12 @@ class Component extends DCLogic {
         // this is a background refresh with no picker UI to
         // disambiguate through.
         const staleBuiltin = isBuiltin && (kind === 'jira' || kind === 'salesforce') && !builtinKindConfigured(connector) && typeof matchedId === 'string';
-        const migratedMatch = staleBuiltin ? this.customConnectorMatches(matchedId)[0] : null;
+        // Filtered to true macro connectors only (no .kind) -- deliberately
+        // narrower than connectorMatches' own full result, matching this
+        // self-healing migration's original intent: re-resolve against a
+        // CUSTOM connector specifically, never a different kind-tagged
+        // instance (that's a distinct, not-yet-asked-for migration path).
+        const migratedMatch = staleBuiltin ? this.connectorMatches(matchedId).filter(m => !m.connector.kind)[0] : null;
         if (migratedMatch) await this.applyLinkToField(issueId, colId, migratedMatch);
         else if (connector) await this.applyLinkToField(issueId, colId, { fetchedVia: n.fetchedVia, matchedId, connector });
       }
@@ -4952,8 +4972,7 @@ class Component extends DCLogic {
   // Replaces applyGithubLinkToField/applyJiraLinkToField/
   // applySalesforceLinkToField/applyConnectorLinkToField -- one
   // shared write path for every system, now that paste-dispatch
-  // (githubUrlMatch/jiraKeyMatch/salesforceUrlMatch/
-  // customConnectorMatches) and refresh-dispatch both produce the
+  // (connectorMatches) and refresh-dispatch both produce the
   // same {fetchedVia, matchedId} shape. Resolves the live connector
   // itself from fetchedVia (rather than trusting a caller-passed one)
   // so every caller -- a builtin shape-match that has never carried a
@@ -5057,7 +5076,7 @@ class Component extends DCLogic {
       } else {
         // href is unknown on a failed first attempt for every system
         // except github (whose href is deterministic from matchedId
-        // alone, known upfront -- see githubUrlMatch's own comment).
+        // alone, known upfront -- see connectorMatches' own comment).
         // matchedId is persisted here specifically so a RETRY is
         // correctly recognized as a retry (sameRef) rather than looking
         // like a brand-new link on the second attempt -- for a builtin,
@@ -5565,10 +5584,6 @@ class Component extends DCLogic {
       const iss0 = this.findIssue(issueId);
       const currentRef0 = iss0 && iss0.fieldRefs && iss0.fieldRefs[colId];
       if (currentRef0 && draft === this.editValueForRef(currentRef0, iss0.values[colId])) { this.cancelEdit(); return; }
-      const gh = this.githubUrlMatch(draft);
-      const jira = !gh && this.jiraKeyMatch(draft);
-      const sf = !gh && !jira && this.salesforceUrlMatch(draft);
-      const match = gh || jira || sf || null;
       // editValueForRef is what populated `draft` in the first place when
       // this field already has a link -- clicking in and clicking back out
       // with no real edit re-submits the EXACT SAME text, which re-matches
@@ -5579,17 +5594,12 @@ class Component extends DCLogic {
       // was being freshly (re-)linked/bound on every click-in/click-out.
       // sameRef is the same "is this a refresh of what's already there"
       // check applyLinkToField uses internally -- checked here first so a
-      // genuine no-op never starts the fetch at all.
-      if (match) {
-        const iss = this.findIssue(issueId);
-        const currentRef = iss && iss.fieldRefs && iss.fieldRefs[colId];
-        if (this.sameRef(currentRef, match.fetchedVia, match.matchedId)) { this.cancelEdit(); return; }
-        this.requireAttribution(() => this.applyLinkToField(issueId, colId, match));
-        return;
-      }
-      const wg = this.wigwagUrlMatch(draft);
-      if (wg && this.resolveWigwagProjectId(wg)) { this.requireAttribution(() => this.applyWigwagLinkToField(issueId, colId, wg)); return; }
-      const connMatches = this.customConnectorMatches(draft);
+      // genuine no-op never starts the fetch at all. connectorPickerOpen
+      // is the one place ambiguity (2+ matches, now possibly across
+      // kinds too -- e.g. two configured Jira instances) surfaces a real
+      // UI -- createIssueFromText/classifyBulkPasteLines have no picker
+      // and fall through to plain text instead (unchanged precedent).
+      const connMatches = this.connectorMatches(draft);
       if (connMatches.length === 1) {
         const iss = this.findIssue(issueId);
         const currentRef = iss && iss.fieldRefs && iss.fieldRefs[colId];
@@ -5598,6 +5608,8 @@ class Component extends DCLogic {
         return;
       }
       if (connMatches.length > 1) { this.setState({ connectorPickerOpen: { issueId, colId, matches: connMatches } }); return; }
+      const wg = this.wigwagUrlMatch(draft);
+      if (wg && this.resolveWigwagProjectId(wg)) { this.requireAttribution(() => this.applyWigwagLinkToField(issueId, colId, wg)); return; }
       draft = this.translateWigwagLinksInText(draft);
     } else if (commitDef && commitDef.type === 'text') {
       draft = this.translateWigwagLinksInText(draft);
@@ -6262,14 +6274,11 @@ class Component extends DCLogic {
   createIssueFromText(text) {
     const trimmed = (text || '').trim();
     if (!trimmed) return;
-    const gh = this.githubUrlMatch(trimmed);
-    const jira = !gh && this.jiraKeyMatch(trimmed);
-    const sf = !gh && !jira && this.salesforceUrlMatch(trimmed);
-    const wgParsed = !gh && !jira && !sf && this.wigwagUrlMatch(trimmed);
-    const wg = wgParsed && this.resolveWigwagProjectId(wgParsed) ? wgParsed : null;
-    const connMatches = (!gh && !jira && !sf && !wg) ? this.customConnectorMatches(trimmed) : [];
+    const connMatches = this.connectorMatches(trimmed);
     const conn = connMatches.length === 1 ? connMatches[0] : null; // ambiguous (>1) deliberately falls through to plain text -- no picker UI exists in this flow
-    const match = gh || jira || sf || conn || null;
+    const wgParsed = !conn && this.wigwagUrlMatch(trimmed);
+    const wg = wgParsed && this.resolveWigwagProjectId(wgParsed) ? wgParsed : null;
+    const match = conn || null;
     const id = crypto.randomUUID ? crypto.randomUUID() : 'i-' + Date.now() + '-' + Math.random().toString(36).slice(2);
     this.setState(s => {
       const num = Math.max(0, ...s.issues.map(i => i.num)) + 1;
@@ -6328,19 +6337,14 @@ class Component extends DCLogic {
     const seenTitles = [];
     return lines.map(text => {
       const trimmed = (text || '').trim();
-      const gh = this.githubUrlMatch(trimmed);
-      const jira = !gh && this.jiraKeyMatch(trimmed);
-      const sf = !gh && !jira && this.salesforceUrlMatch(trimmed);
-      const wgParsed = !gh && !jira && !sf && this.wigwagUrlMatch(trimmed);
-      const wg = wgParsed && this.resolveWigwagProjectId(wgParsed) ? wgParsed : null;
-      // Tracker 54e36073: a real custom connector match was never
-      // checked here at all -- createIssueFromText's own dispatch order
-      // checks it last, after the 3 built-ins + wigwag, so mirror that
-      // exact order; ambiguous (2+) matches fall through to unlinked,
-      // same as createIssueFromText itself (no picker UI in this flow).
-      const connMatches = (!gh && !jira && !sf && !wg) ? this.customConnectorMatches(trimmed) : [];
+      // Same connectorMatches-then-wigwag order as createIssueFromText;
+      // ambiguous (2+) matches fall through to unlinked, same as that
+      // function (no picker UI in this flow).
+      const connMatches = this.connectorMatches(trimmed);
       const conn = connMatches.length === 1 ? connMatches[0] : null;
-      const match = gh || jira || sf || conn || null;
+      const wgParsed = !conn && this.wigwagUrlMatch(trimmed);
+      const wg = wgParsed && this.resolveWigwagProjectId(wgParsed) ? wgParsed : null;
+      const match = conn || null;
       let duplicate;
       if (match) {
         duplicate = s.issues.some(iss => Object.values(iss.fieldRefs || {}).some(r => this.sameRef(r, match.fetchedVia, match.matchedId)))
@@ -9951,7 +9955,7 @@ class Component extends DCLogic {
         // Disabled (not hidden) outside Tauri, per Tom's call -- the rows
         // still need to exist to show the note. GitHub is the one
         // exception: unauthenticated access works in any browser (see
-        // fetchGithubData/githubUrlMatch's own comments), so its row
+        // fetchGithubData/connectorMatches' own comments), so its row
         // stays enabled outside Tauri too -- only Jira/Salesforce
         // genuinely need the desktop app to do anything at all.
         const builtinRows = ['github', 'jira', 'salesforce'].map(kind => {
@@ -9964,7 +9968,7 @@ class Component extends DCLogic {
             patternSummaryText: (c.rootUrl || '').trim() || 'Not configured',
             statusLabel: configured ? 'Connected' : 'Not configured', statusColor: configured ? col('green').dot : col('gray').dot,
             showEdit: !disabled, disabled, disabledNote: disabled ? 'Requires the desktop app' : '', rowOpacity: disabled ? '0.55' : '1',
-            onEdit: () => this.openBuiltinSourceForm(kind)
+            onEdit: () => this.openBuiltinSourceForm({ id: c.id, kind })
           };
         }).filter(Boolean);
         const rows = builtinRows.concat(isTauri ? customConnectors.map(c => {
@@ -10100,6 +10104,11 @@ class Component extends DCLogic {
       onCheckForUpdatesClick: () => this.checkForUpdate(),
       connectorPickerMatches: s.connectorPickerOpen ? s.connectorPickerOpen.matches.map(m => ({
         glyph: m.connector.glyph, color: m.connector.color, name: m.connector.name,
+        // A kind-tagged match (github/jira/salesforce) carries no
+        // glyph/color of its own (those are macro-connector-only
+        // fields) -- logoKind names which real brand mark the template
+        // should render instead, '' for a true macro connector.
+        logoKind: m.connector.kind || '',
         // Same requireAttribution gate every other apply*LinkToField call
         // site goes through (the single-match path in commitEdit included)
         // -- a write triggered from the picker is still a write.

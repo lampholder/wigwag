@@ -379,6 +379,89 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
     await expect(page.locator('[data-testid=connected-source-row]', { hasText: 'DeleteMe' })).toHaveCount(0);
   });
 
+  // deleteConnectorSource is already fully generic -- a deleted
+  // built-in-kind row behaves exactly like a deleted custom connector
+  // (isBuiltin is "does a row exist", not a fixed-id special case).
+  test('deleting the built-in GitHub connector removes it from the list; an issue already linked through it keeps its display text, with the link no longer treated as live', async ({ page }) => {
+    await h.seedBuiltinConfig(page, 'github', { rootUrl: 'https://api.github.com' });
+    await h.gotoTracker(page);
+    const doc = await h.readActiveMilestoneDoc(page);
+    const issue = doc.issues[0];
+    issue.history.push({
+      id: 'h-gh-delete-test', field: 'linked', value: 'octocat/Hello-World#1', text: 'Related linked',
+      fieldRef: { href: 'https://github.com/octocat/Hello-World/issues/1', fetchedVia: '__builtin_github' },
+      origin: 'authored', sortKey: 9301, sig: null, pubKey: null
+    });
+    await h.writeActiveMilestoneDoc(page, doc);
+    await page.reload({ waitUntil: 'networkidle' });
+    await h.waitForBootSplashGone(page);
+    await page.waitForTimeout(300);
+
+    await expect(h.fieldCell(page, 1, 'linked')).toContainText('octocat/Hello-World#1');
+
+    await h.openSettingsSection(page, 'connectedDataSources');
+    await expect(page.locator('[data-testid=connected-source-row]', { hasText: 'GitHub' })).toHaveCount(1);
+    await page.locator('[data-testid=connected-source-row]', { hasText: 'GitHub' }).locator('[data-testid=btn-edit-connected-source]').click();
+    await page.locator('[data-testid=btn-delete-builtin-source]').click();
+    await expect(page.locator('[data-testid=connector-form-modal]')).toBeHidden();
+    await expect(page.locator('[data-testid=connected-source-row]', { hasText: 'GitHub' })).toHaveCount(0);
+    await page.locator('[data-testid=settings-overlay]').click({ position: { x: 10, y: 10 } });
+    await page.waitForTimeout(150);
+
+    // The already-linked field still shows its persisted display text --
+    // no crash, no blank cell -- same graceful degrade a deleted custom
+    // connector's own linked field already had.
+    await expect(h.fieldCell(page, 1, 'linked')).toContainText('octocat/Hello-World#1');
+    const sources = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_connected_sources_v1')));
+    expect(sources.connectors.find(c => c.id === '__builtin_github')).toBeUndefined();
+  });
+
+  test('deleting one of 2 Jira instances leaves the other fully functional, including a field already linked through it', async ({ page }) => {
+    await stubTauri(page);
+    await h.seedBuiltinConfig(page, 'jira', { rootUrl: 'https://first.atlassian.net', credentialConfigured: true });
+    // Idempotent (existence-checked) the same way seedBuiltinConfig's
+    // own addInitScript is -- this test reloads later, which re-runs
+    // every registered addInitScript again, and a blind push would
+    // duplicate this row on that second run.
+    await page.addInitScript(() => {
+      const raw = localStorage.getItem('git_native_tracker_connected_sources_v1');
+      const existing = raw ? JSON.parse(raw) : { connectors: [] };
+      if (!existing.connectors.some(c => c.id === 'conn_second_jira')) {
+        existing.connectors.push({ id: 'conn_second_jira', key: 'jira2', kind: 'jira', name: 'Jira', builtin: true, rootUrl: 'https://second.atlassian.net', username: '', credentialConfigured: true });
+        localStorage.setItem('git_native_tracker_connected_sources_v1', JSON.stringify(existing));
+      }
+    });
+    await h.gotoTracker(page);
+    const doc = await h.readActiveMilestoneDoc(page);
+    const issue = doc.issues[0];
+    issue.history.push({
+      id: 'h-jira2-delete-test', field: 'linked', value: 'SEC-1', text: 'Related linked',
+      fieldRef: { href: 'https://second.atlassian.net/browse/SEC-1', fetchedVia: 'conn_second_jira' },
+      origin: 'authored', sortKey: 9401, sig: null, pubKey: null
+    });
+    await h.writeActiveMilestoneDoc(page, doc);
+    await page.reload({ waitUntil: 'networkidle' });
+    await h.waitForBootSplashGone(page);
+    await page.waitForTimeout(300);
+
+    await h.openSettingsSection(page, 'connectedDataSources');
+    const jiraRows = page.locator('[data-testid=connected-source-row]', { hasText: 'Jira' });
+    await expect(jiraRows).toHaveCount(2);
+    await jiraRows.filter({ hasText: 'first.atlassian.net' }).locator('[data-testid=btn-edit-connected-source]').click();
+    await page.locator('[data-testid=btn-delete-builtin-source]').click();
+    await expect(page.locator('[data-testid=connector-form-modal]')).toBeHidden();
+    await expect(jiraRows).toHaveCount(1);
+    await expect(jiraRows).toContainText('second.atlassian.net');
+    await page.locator('[data-testid=settings-overlay]').click({ position: { x: 10, y: 10 } });
+    await page.waitForTimeout(150);
+
+    // The second instance's own already-linked field is unaffected.
+    await expect(h.fieldCell(page, 1, 'linked')).toContainText('SEC-1');
+    const sources = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_connected_sources_v1')));
+    expect(sources.connectors.find(c => c.id === '__builtin_jira')).toBeUndefined();
+    expect(sources.connectors.find(c => c.id === 'conn_second_jira')).toBeTruthy();
+  });
+
   test('Cancel discards an in-progress draft without saving anything', async ({ page }) => {
     await stubTauri(page);
     await h.seedAllBuiltinConnectors(page);

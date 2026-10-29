@@ -542,7 +542,16 @@
     <div style="font-size:11px; color:var(--text-tertiary); padding:6px 9px;">Matches more than one connected source -- pick one:</div>
     <sc-for list="{{ connectorPickerMatches }}" as="m" hint-placeholder-count="2">
       <div sc-camel-on-click="{{ m.onPick }}" style="display:flex; align-items:center; gap:8px; padding:7px 10px; cursor:pointer; border-radius:6px;" style-hover="background:var(--surface-hover);">
-        <span style="width:16px; height:16px; border-radius:4px; color:#fff; background:{{ m.color }}; font-size:9px; font-weight:800; display:flex; align-items:center; justify-content:center; flex-shrink:0;">{{ m.glyph }}</span>
+        <sc-if value="{{ !!m.logoKind }}" hint-placeholder-val="{{ false }}">
+          <span style="width:16px; height:16px; border-radius:4px; background: var(--surface-selected); display:flex; align-items:center; justify-content:center; flex-shrink:0;">
+            <sc-if value="{{ m.logoKind === 'github' }}" hint-placeholder-val="{{ false }}"><svg width="10" height="10" viewBox="0 0 16 16" style="color:var(--text-secondary);"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg></sc-if>
+            <sc-if value="{{ m.logoKind === 'jira' }}" hint-placeholder-val="{{ false }}"><svg width="10" height="10" viewBox="0 0 16 16"><path fill="#2684FF" d="M11.5 0.5H7.8c0 1.9 1.5 3.4 3.4 3.4h1.4v1.3c0 1.9 1.5 3.4 3.4 3.4V1.3c0-0.4-0.4-0.8-0.9-0.8z"></path><path fill="#2684FF" d="M7.8 4.3H4.1c0 1.9 1.5 3.4 3.4 3.4H9v1.3c0 1.9 1.5 3.4 3.4 3.4V5.1c0-0.4-0.4-0.8-0.9-0.8z"></path><path fill="#2684FF" d="M4.1 8.1H0.4c0 1.9 1.5 3.4 3.4 3.4h1.4v1.3c0 1.9 1.5 3.4 3.4 3.4V8.9c0-0.4-0.4-0.8-0.9-0.8z"></path></svg></sc-if>
+            <sc-if value="{{ m.logoKind === 'salesforce' }}" hint-placeholder-val="{{ false }}"><svg width="10" height="10" viewBox="0 0 16 16"><path fill="#00A1E0" d="M6.5 3.5c.7-.7 1.7-1.2 2.8-1.2 1.5 0 2.7.8 3.4 2 .3-.1.6-.2 1-.2 1.5 0 2.8 1.2 2.8 2.8 0 .2 0 .3 0 .5 1 .4 1.5 1.4 1.5 2.5 0 1.5-1.2 2.7-2.7 2.7H3.7C2.2 12.6 1 11.4 1 9.9c0-1.2.8-2.2 1.9-2.6 0-.1 0-.2 0-.3 0-1.6 1.3-2.9 2.9-2.9.3 0 .5 0 .7.1z"></path></svg></sc-if>
+          </span>
+        </sc-if>
+        <sc-if value="{{ !m.logoKind }}" hint-placeholder-val="{{ true }}">
+          <span style="width:16px; height:16px; border-radius:4px; color:#fff; background:{{ m.color }}; font-size:9px; font-weight:800; display:flex; align-items:center; justify-content:center; flex-shrink:0;">{{ m.glyph }}</span>
+        </sc-if>
         <span style="font-size:12.5px;">{{ m.name }}</span>
       </div>
     </sc-for>
@@ -2945,6 +2954,9 @@
                       <div data-testid="connector-form-modal" style="position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); width:460px; max-width:92vw; max-height:85vh; overflow-y:auto; background:var(--surface); border-radius:12px; box-shadow:0 24px 60px var(--sh9); box-sizing:border-box; z-index:211;">
                         <div style="display:flex; align-items:center; gap:10px; padding:14px 20px; border-bottom:1px solid var(--border-subtle);">
                           <span style="font-size:14.5px; font-weight:700;">{{ connectedSourcesSettings.builtinFormTitle }}</span>
+                          <sc-if value="{{ connectedSourcesSettings.isEditingBuiltin }}" hint-placeholder-val="{{ false }}">
+                            <span data-testid="btn-delete-builtin-source" sc-camel-on-click="{{ connectedSourcesSettings.onDeleteBuiltin }}" style="font-size:12px; color: var(--c17); cursor:pointer; margin-left:4px;">Delete</span>
+                          </sc-if>
                           <span style="flex:1;"></span>
                           <span data-testid="btn-cancel-connector-form" sc-camel-on-click="{{ connectedSourcesSettings.onCancelBuiltin }}" style="cursor:pointer; font-size:12.5px; color: var(--text-muted); padding:7px 14px; border-radius:7px; border:1px solid var(--border);" style-hover="background:var(--n55);">Cancel</span>
                           <button data-testid="btn-save-builtin-source" sc-camel-on-click="{{ connectedSourcesSettings.onSaveBuiltin }}" style="border:none; border-radius:7px; background: {{ connectedSourcesSettings.saveBuiltinButtonBg }}; color:var(--ink-on-accent); font-size:12.5px; font-weight:600; padding:7px 16px; cursor: {{ connectedSourcesSettings.saveBuiltinButtonCursor }};">Save</button>

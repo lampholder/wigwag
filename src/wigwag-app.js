@@ -9981,6 +9981,19 @@ class Component extends DCLogic {
             : 'Stored in your OS keychain, never in the project file.',
           onSaveBuiltin: () => this.saveBuiltinForm(),
           onCancelBuiltin: () => this.cancelBuiltinForm(),
+          // deleteConnectorSource is already fully generic (isBuiltin is
+          // now "does a row exist", not a fixed-id special case) -- a
+          // deleted builtin-kind row behaves exactly like a deleted
+          // custom connector, same graceful "unreachable" degrade on any
+          // field still pointing at it. Only shown when editing an
+          // EXISTING instance (builtinForm.id set), same isEditing gate
+          // the custom editor's own Delete link uses.
+          isEditingBuiltin: !!(builtinForm && builtinForm.id),
+          // deleteConnectorSource only resets the CUSTOM editor's own
+          // slide state (connectorFormVisible/connectorFormOpen) --
+          // harmless no-ops here, but it never touches builtinFormOpen,
+          // so this modal needs its own explicit close too.
+          onDeleteBuiltin: () => { if (builtinForm && builtinForm.id) { this.deleteConnectorSource(builtinForm.id); this.cancelBuiltinForm(); } },
           saveBuiltinButtonBg: canSaveBuiltin ? 'var(--accent-fill)' : 'var(--n28)', saveBuiltinButtonCursor: canSaveBuiltin ? 'pointer' : 'not-allowed',
           showAddSource: this.isTauriConnectorRuntime(),
           typePickerVisible: s.addSourceTypePickerOpen,

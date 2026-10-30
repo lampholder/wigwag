@@ -10,8 +10,26 @@
 const { test, expect } = require('@playwright/test');
 const h = require('./helpers');
 
+// Tracker e8b52997: the field-NAME suggestion panel (every field, before
+// any colon) no longer opens from mere focus or typing on desktop -- only
+// this button opens it. A recognized "Label:" prefix's own VALUE
+// suggestions are unaffected and keep auto-opening as they always did.
+async function openFieldPicker(page) {
+  await page.locator('[data-testid=btn-filter-field-picker]').click();
+  await page.waitForTimeout(150);
+}
+
 test.describe('Filter bar: field:value autocomplete', () => {
   test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  test('tracker e8b52997: the "+Field" button sits at the same height as the filter input, visually aligned beside it', async ({ page }) => {
+    const wrap = page.locator('[data-testid=filter-input-wrap]');
+    const btn = page.locator('[data-testid=btn-filter-field-picker]');
+    const wrapBox = await wrap.boundingBox();
+    const btnBox = await btn.boundingBox();
+    expect(Math.abs(wrapBox.height - btnBox.height)).toBeLessThanOrEqual(3);
+    expect(Math.abs(wrapBox.y - btnBox.y)).toBeLessThanOrEqual(3);
+  });
 
   test('the placeholder reads "Filter this project" (tracker #144: the box lost its #id jump behavior to global search)', async ({ page }) => {
     await expect(page.locator('[data-testid=filter-input]')).toHaveAttribute('placeholder', 'Filter this project');
@@ -25,8 +43,7 @@ test.describe('Filter bar: field:value autocomplete', () => {
     const tableTopBefore = (await table.boundingBox()).y;
     const borderBefore = await wrap.evaluate(el => getComputedStyle(el).borderColor);
 
-    await input.click();
-    await page.waitForTimeout(150);
+    await openFieldPicker(page);
     await expect(page.locator('[data-testid=filter-suggest-panel]')).toBeVisible();
 
     const tableTopAfter = (await table.boundingBox()).y;
@@ -62,8 +79,7 @@ test.describe('Filter bar: field:value autocomplete', () => {
       return color;
     });
 
-    await input.click();
-    await page.waitForTimeout(150);
+    await openFieldPicker(page);
     const lightBorder = await panel.evaluate(el => getComputedStyle(el).borderColor);
     expect(lightBorder).toBe(await expectedBorderColor());
 
@@ -71,8 +87,7 @@ test.describe('Filter bar: field:value autocomplete', () => {
     await page.waitForTimeout(150);
     await page.locator('[data-testid=appearance-option][data-appearance-id=dark]').click();
     await page.waitForTimeout(150);
-    await input.click();
-    await page.waitForTimeout(150);
+    await openFieldPicker(page);
     const darkBorder = await panel.evaluate(el => getComputedStyle(el).borderColor);
     expect(darkBorder).toBe(await expectedBorderColor());
     expect(darkBorder).not.toBe(lightBorder); // themes genuinely differ, both real
@@ -88,8 +103,7 @@ test.describe('Filter bar: field:value autocomplete', () => {
     await page.locator('[data-testid=appearance-option][data-appearance-id=dark]').click();
     await page.waitForTimeout(150);
 
-    await page.locator('[data-testid=filter-input]').click();
-    await page.waitForTimeout(150);
+    await openFieldPicker(page);
     const activeRow = page.locator('[data-testid=filter-suggest-row]').first();
     const bg = await activeRow.evaluate(el => getComputedStyle(el).backgroundColor);
     const textColor = await activeRow.evaluate(el => getComputedStyle(el.querySelector('span')).color);
@@ -115,8 +129,7 @@ test.describe('Filter bar: field:value autocomplete', () => {
   test('arrowing down past the visible panel scrolls the active suggestion into view', async ({ page }) => {
     const input = page.locator('[data-testid=filter-input]');
     const panel = page.locator('[data-testid=filter-suggest-panel]');
-    await input.click();
-    await page.waitForTimeout(150);
+    await openFieldPicker(page);
 
     const rowCount = await page.locator('[data-testid=filter-suggest-row]').count();
     expect(rowCount).toBeGreaterThan(3); // enough fields that the panel's own max-height actually clips some
@@ -133,22 +146,21 @@ test.describe('Filter bar: field:value autocomplete', () => {
     expect(activeBox.y + activeBox.height).toBeLessThanOrEqual(panelBox.y + panelBox.height + 1);
   });
 
-  test('the panel sits a small (~3px), non-overlapping gap below the input\'s own visible border, not the bare input element', async ({ page }) => {
-    const input = page.locator('[data-testid=filter-input]');
-    const wrap = page.locator('[data-testid=filter-input-wrap]');
-    await input.click();
-    await page.waitForTimeout(150);
-    const wrapBox = await wrap.boundingBox();
+  // Tracker e8b52997: opened via the "+Field" button now, so the panel's
+  // anchor is the BUTTON's own box, not the input wrap -- same ~3px gap
+  // convention, just relative to whatever actually triggered the open.
+  test('the panel sits a small (~3px), non-overlapping gap below the button that opened it', async ({ page }) => {
+    const btn = page.locator('[data-testid=btn-filter-field-picker]');
+    await openFieldPicker(page);
+    const btnBox = await btn.boundingBox();
     const panelBox = await page.locator('[data-testid=filter-suggest-panel]').boundingBox();
-    const gap = panelBox.y - (wrapBox.y + wrapBox.height);
+    const gap = panelBox.y - (btnBox.y + btnBox.height);
     expect(gap).toBeGreaterThanOrEqual(2);
     expect(gap).toBeLessThanOrEqual(4);
   });
 
   test('the item list is capped to ~6 rows and scrolls for the rest, instead of growing unbounded', async ({ page }) => {
-    const input = page.locator('[data-testid=filter-input]');
-    await input.click();
-    await page.waitForTimeout(150);
+    await openFieldPicker(page);
     const panel = page.locator('[data-testid=filter-suggest-panel]');
     // The demo fixture has 7 filterable fields (Created/Updated, tracker
     // #148's always-present timestamp fields, are deliberately excluded
@@ -162,21 +174,36 @@ test.describe('Filter bar: field:value autocomplete', () => {
     expect(info.clientHeight).toBeLessThan(230); // roughly 6 rows' worth, not all 7
   });
 
-  test('clicking into an empty box shows every filterable field, before typing anything', async ({ page }) => {
+  // Tracker e8b52997: clicking (or focusing, or typing free text into) an
+  // empty box no longer opens the field panel on its own -- only the
+  // "+Field" button does. This is the core behavior change the issue
+  // asked for; the OLD version of this test (asserting the opposite) is
+  // rewritten, not just patched.
+  test('clicking into an empty box no longer shows the field panel on its own -- only the "+Field" button does', async ({ page }) => {
     const input = page.locator('[data-testid=filter-input]');
     const panel = page.locator('[data-testid=filter-suggest-panel]');
     await expect(panel).toHaveCount(0); // nothing shown before any interaction
     await input.click();
     await page.waitForTimeout(150);
+    await expect(panel).toHaveCount(0); // still nothing -- click/focus alone no longer opens it
+    await openFieldPicker(page);
     await expect(panel).toBeVisible();
     const rows = page.locator('[data-testid=filter-suggest-row]');
     await expect(rows).toContainText(['Issue', 'Related', 'Type', 'Priority', 'RAG', 'Delivery teams', 'Mitigation']);
   });
 
-  test('the shown-on-focus field list narrows as you type, same as normal', async ({ page }) => {
+  test('typing free text into an empty, unopened box never opens the field panel either -- only the button does', async ({ page }) => {
     const input = page.locator('[data-testid=filter-input]');
+    const panel = page.locator('[data-testid=filter-suggest-panel]');
     await input.click();
+    await input.type('ra');
     await page.waitForTimeout(150);
+    await expect(panel).toHaveCount(0);
+  });
+
+  test('once opened via the button, the field list narrows as you type, same as before', async ({ page }) => {
+    const input = page.locator('[data-testid=filter-input]');
+    await openFieldPicker(page);
     const rows = page.locator('[data-testid=filter-suggest-row]');
     expect(await rows.count()).toBeGreaterThan(1);
     await input.type('ra');
@@ -187,8 +214,7 @@ test.describe('Filter bar: field:value autocomplete', () => {
 
   test('clicking a suggested field name returns keyboard focus to the filter box so typing continues with no extra click', async ({ page }) => {
     const input = page.locator('[data-testid=filter-input]');
-    await input.click();
-    await page.waitForTimeout(150);
+    await openFieldPicker(page);
     await page.locator('[data-testid=filter-suggest-row]').filter({ hasText: 'RAG' }).first().click();
     await page.waitForTimeout(150);
     await expect(input).toHaveValue('RAG:');
@@ -198,7 +224,7 @@ test.describe('Filter bar: field:value autocomplete', () => {
     await expect(page.locator('[data-testid=filter-suggest-row]').first()).toContainText('On track');
   });
 
-  test('after committing a value, focus stays put but the panel closes -- no trailing space, and no field suggestions until the user types their own separating space', async ({ page }) => {
+  test('after committing a value, focus stays put but the panel closes -- no trailing space, and typing a separating space no longer reopens it on its own', async ({ page }) => {
     const input = page.locator('[data-testid=filter-input]');
     await input.click();
     await input.fill('RAG:on');
@@ -209,22 +235,31 @@ test.describe('Filter bar: field:value autocomplete', () => {
     expect(await input.evaluate(el => el === document.activeElement)).toBe(true); // cursor stays put
     await expect(page.locator('[data-testid=filter-suggest-panel]')).toHaveCount(0); // closed, not lingering on the just-picked value
 
-    // The user's OWN separating space reopens it with every field.
+    // Tracker e8b52997: typing the user's own separating space used to
+    // reopen the field list automatically -- that's exactly the
+    // unprompted-opening behavior this issue removed. Typing free text
+    // (a bare space included) never opens the field panel now, on a
+    // fresh token or otherwise.
     await page.keyboard.type(' ');
     await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=filter-suggest-panel]')).toHaveCount(0);
+
+    // The button still reaches the full field list from here, for a
+    // second token.
+    await openFieldPicker(page);
     const rows = page.locator('[data-testid=filter-suggest-row]');
     await expect(rows).toContainText(['Issue', 'Related', 'Type', 'Priority', 'RAG', 'Delivery teams', 'Mitigation']);
   });
 
-  test('clicking a second suggested field after a real trailing space ADDS a new token instead of replacing the first one, and both criteria filter together', async ({ page }) => {
+  test('the "+Field" button adds a second token after a committed one, instead of replacing it, and both criteria filter together', async ({ page }) => {
     const input = page.locator('[data-testid=filter-input]');
     await input.click();
     await input.fill('RAG:on');
     await page.waitForTimeout(150);
     await page.locator('[data-testid=filter-suggest-row]').first().click(); // -> RAG:"On track"
     await page.waitForTimeout(150);
-    await page.keyboard.type(' ');
-    await page.waitForTimeout(150);
+    await openFieldPicker(page); // inserts the user's own separating space, same as before, then opens the full list
+    await expect(input).toHaveValue('RAG:"On track" ');
     await page.locator('[data-testid=filter-suggest-row]').filter({ hasText: 'Priority' }).first().click();
     await page.waitForTimeout(150);
     await expect(input).toHaveValue('RAG:"On track" Priority:');
@@ -242,9 +277,9 @@ test.describe('Filter bar: field:value autocomplete', () => {
     }
   });
 
-  test('typing a partial field name suggests matching field labels', async ({ page }) => {
+  test('once opened via the button, typing a partial field name suggests matching field labels', async ({ page }) => {
     const input = page.locator('[data-testid=filter-input]');
-    await input.click();
+    await openFieldPicker(page);
     await input.fill('ra');
     await page.waitForTimeout(150);
     const panel = page.locator('[data-testid=filter-suggest-panel]');
@@ -257,7 +292,7 @@ test.describe('Filter bar: field:value autocomplete', () => {
 
   test('selecting a field suggestion inserts "Label:" and immediately opens that field\'s value suggestions', async ({ page }) => {
     const input = page.locator('[data-testid=filter-input]');
-    await input.click();
+    await openFieldPicker(page);
     await input.fill('ra');
     await page.waitForTimeout(150);
     await page.locator('[data-testid=filter-suggest-row]').first().click();
@@ -291,7 +326,7 @@ test.describe('Filter bar: field:value autocomplete', () => {
     // (which quotes automatically), not by hand-typing the raw label.
     const input = page.locator('[data-testid=filter-input]');
     const rows = page.locator('[data-testid=filter-suggest-row]');
-    await input.click();
+    await openFieldPicker(page);
     await input.fill('deliv');
     await page.waitForTimeout(150);
     await expect(rows).toHaveCount(1);
@@ -313,7 +348,7 @@ test.describe('Filter bar: field:value autocomplete', () => {
 
   test('keyboard: ArrowDown then Enter selects a suggestion, same as clicking it', async ({ page }) => {
     const input = page.locator('[data-testid=filter-input]');
-    await input.click();
+    await openFieldPicker(page);
     await input.fill('typ');
     await page.waitForTimeout(150);
     await input.press('ArrowDown');
@@ -324,7 +359,7 @@ test.describe('Filter bar: field:value autocomplete', () => {
 
   test('Escape dismisses the suggestion panel without clearing the typed text', async ({ page }) => {
     const input = page.locator('[data-testid=filter-input]');
-    await input.click();
+    await openFieldPicker(page);
     await input.fill('mit');
     await page.waitForTimeout(150);
     await expect(page.locator('[data-testid=filter-suggest-panel]')).toBeVisible();
@@ -336,7 +371,7 @@ test.describe('Filter bar: field:value autocomplete', () => {
 
   test('clicking outside dismisses the suggestion panel without clearing the typed text', async ({ page }) => {
     const input = page.locator('[data-testid=filter-input]');
-    await input.click();
+    await openFieldPicker(page);
     await input.fill('ra');
     await page.waitForTimeout(150);
     await expect(page.locator('[data-testid=filter-suggest-panel]')).toBeVisible();
@@ -397,7 +432,11 @@ test.describe('Filter bar: field:value autocomplete', () => {
 
   test('a synthesized comment-stream field (Comments) is never offered as a field suggestion', async ({ page }) => {
     const input = page.locator('[data-testid=filter-input]');
-    await input.click();
+    // Opened via the button first (not left to a cold .fill()) specifically
+    // so the panel is genuinely open going in -- the assertion below is
+    // then actually exercising the comment-stream exclusion, not just
+    // reproducing "nothing opens from a cold type" trivially.
+    await openFieldPicker(page);
     await input.fill('comm');
     await page.waitForTimeout(150);
     await expect(page.locator('[data-testid=filter-suggest-panel]')).toHaveCount(0);
@@ -417,7 +456,7 @@ test.describe('Filter bar: field:value autocomplete', () => {
   test.describe('Negation: -field:value excludes matching rows (GitHub-issue-search style)', () => {
     test('typing a leading dash before a field name still suggests that field, and committing keeps the dash', async ({ page }) => {
       const input = page.locator('[data-testid=filter-input]');
-      await input.click();
+      await openFieldPicker(page);
       await input.fill('-ra');
       await page.waitForTimeout(150);
       const rows = page.locator('[data-testid=filter-suggest-row]');

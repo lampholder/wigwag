@@ -569,6 +569,7 @@
         <span data-testid="filter-clear-btn" sc-camel-on-click="{{ onClearFilterQuery }}" title="Clear filter" style="cursor:pointer; display:flex; align-items:center; justify-content:center; width:18px; height:18px; border-radius:5px; color: var(--n61); flex-shrink:0;" style-hover="background: var(--n21); color: var(--surface);">✕</span>
       </sc-if>
     </div>
+    <span data-testid="btn-filter-field-picker" role="button" aria-haspopup="listbox" sc-camel-on-click="{{ onOpenFilterFieldPicker }}" title="Filter by field" style="display:flex; align-items:center; flex-shrink:0; padding:8px 12px; border:1px solid var(--border); border-radius:8px; background:var(--surface-page); font-size:13px; color: var(--text-secondary); cursor:pointer; box-sizing:border-box;" style-hover="background: var(--surface-hover);">+ Field</span>
     <sc-if value="{{ showFreezePill }}" hint-placeholder-val="{{ false }}">
     <div data-testid="freeze-pill" style="display:inline-flex; align-items:center; gap:8px; padding:6px 8px 6px 12px; border:1px solid var(--border); border-radius:999px; background:var(--surface); font-size:12.5px; color: var(--text-secondary); flex-shrink:0;">
       <span>Frozen through <strong>{{ freezeLabel }}</strong></span>

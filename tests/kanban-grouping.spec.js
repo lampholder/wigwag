@@ -160,15 +160,31 @@ test.describe('Kanban grouping', () => {
   });
 
   // Bound-field visibility redesign: no card is ever non-draggable --
-  // "bound" is purely a local-record-based display annotation now (the
-  // glyph), never an editability/drag gate. A fresh project has no local
-  // derive record for anything yet, so seed one directly (same
-  // local-only store a real derive would write to) to prove a genuinely
-  // bound card still drags exactly like any other.
+  // "bound" is purely a display annotation now (the glyph), never an
+  // editability/drag gate. A fresh project has no local derive record
+  // for anything yet, so seed one directly (same local-only store a
+  // real derive would write to) to prove a genuinely bound card still
+  // drags exactly like any other.
+  //
+  // liveBindState (wigwag-core.js) now decides "bound" via a LIVE
+  // comparison against what the rule currently computes, not purely
+  // this seeded local record -- so OTHER issues in the fixture whose
+  // own Type value already happens to agree with their own rule's
+  // live output read as genuinely bound too, with no record seeded for
+  // them at all (this is the intended behavior that fixed the original
+  // live-reported "Remedy" bug, not a leak). This test only ever needed
+  // to prove ONE specific thing -- i1 itself, the card we deliberately
+  // bound, shows the glyph/tooltip -- not that it's the sole bound card
+  // on the whole board, so it asserts that directly instead of a
+  // board-wide count.
   test('every card is draggable regardless of whether its grouped-by field is bound; a bound card still shows the glyph + tooltip', async ({ page }) => {
     const projectId = await h.activeMilestoneId(page);
     const doc = await h.readActiveMilestoneDoc(page);
     const i1 = doc.issues.find(i => i.id === 'i1');
+    // values/fieldRefs aren't persisted on the raw stored doc (derived
+    // fresh at runtime, see docs/FORMAT.md) -- read the title the same
+    // way, straight off its own latest history entry.
+    const i1Title = i1.history.filter(e => e.field === 'title').reduce((a, b) => (b.sortKey > (a ? a.sortKey : -Infinity) ? b : a), null).value;
     const latestTypeEntry = i1.history.filter(e => e.field === 'type').slice(-1)[0];
     await page.evaluate(({ projectId, issueId, entryId }) => {
       const KEY = 'git_native_tracker_local_derived_entry_ids_v1';
@@ -190,8 +206,8 @@ test.describe('Kanban grouping', () => {
       await expect(cards.nth(i)).toHaveAttribute('draggable', 'true');
     }
 
-    const boundCard = page.locator('[data-testid=kanban-card][title*="Linked to"]');
-    await expect(boundCard).toHaveCount(1);
+    const boundCard = page.locator('[data-testid=kanban-card]', { hasText: i1Title });
+    await expect(boundCard).toHaveAttribute('title', /Linked to/);
     await expect(boundCard.locator('svg')).toHaveCount(1);
     await expect(boundCard).toHaveAttribute('draggable', 'true');
   });

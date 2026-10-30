@@ -2276,6 +2276,55 @@ function fieldLocalBindState(issue, colId, localDerivedEntryIdsForIssue) {
   const latest = latestEntryForField(issue, colId);
   return (latest && latest.id === recordedId) ? 'bound' : 'overridden';
 }
+// Live-reported bug, and the reason this exists at all: fieldLocalBindState
+// is a purely LOCAL, per-device record ("did THIS device's own last write
+// to this field come from its rule") -- the right question for the WRITE
+// path (applyLinkedRules needs to know whether IT personally derived the
+// current value before deciding a routine resettle may silently replace
+// it; see that function's own comment for why a live comparison can't
+// substitute there), but the wrong one for DISPLAY. A value that a rule
+// genuinely, currently computes reads as 'plain' -- no glyph, no live
+// ref re-render, no special treatment at all -- the moment the local
+// record is simply missing: synced in from another device, merged in,
+// imported, or derived before this device ever had a record for it. None
+// of those are "not bound" -- they're exactly as bound as a value this
+// device wrote itself, just invisible to a check that only ever asks
+// "did I do this."
+//
+// This answers the display question properly: if the source is reachable
+// right now, compare what the rule ACTUALLY computes today against what's
+// actually stored (via applyComputedToField's own coercion, so the
+// comparison matches select/multiselect/text/issue identically) rather
+// than trusting any per-device bookkeeping. Only falls back to the local
+// record when a live verdict genuinely can't be reached -- source not
+// reachable from this device, a trimmed persisted ref whose rule needs
+// the full payload that's never been refreshed with, or (mirroring
+// applyLinkedRules' own asymmetric treatment of the write side) a
+// confidently-EMPTY live answer: a row that no longer matches doesn't
+// clear the field (Part 1 -- tracker #66), it just stops actively
+// vouching for whatever value is still sitting there, so there's nothing
+// live to confidently call either "bound" or "overridden" -- the local
+// record is the only thing that can still tell those apart.
+//
+// Deliberately value-only, even for an issue-type copy-field row: whether
+// THIS field's own persisted fieldRef happens to still agree is a
+// separate, render-time concern (buildTextCell re-derives the live ref
+// via computeBoundFieldRef whenever bindState is 'bound', independent of
+// what's on disk -- see its own comment) -- folding a fieldRef comparison
+// in here too would flip exactly the case that re-derivation exists to
+// paper over (value correct, persisted ref null/stale) back to
+// 'overridden', hiding the bound glyph and skipping the live re-render
+// right when it matters most.
+function liveBindState(issue, colId, def, ctx) {
+  if (!def || !def.linkedSourceId) return 'plain';
+  const local = ctx && ctx.localDerivedEntryIds ? fieldLocalBindState(issue, colId, ctx.localDerivedEntryIds) : 'plain';
+  const sourceRef = issue.fieldRefs && issue.fieldRefs[def.linkedSourceId];
+  if (!isRefLocallyLive(sourceRef, ctx)) return local;
+  const bound = computeBoundValue(issue, colId, def, ctx);
+  if (bound.computed === undefined || isEmptyBoundValue(bound.computed)) return local;
+  const applied = applyComputedToField(issue.values, colId, def, bound.computed);
+  return applied === issue.values ? 'bound' : 'overridden';
+}
 // select: computed matched against option id/label -> that option's id (or
 // null if nothing matches). multiselect: computed may be an array or a
 // single value; each entry is matched the same way and invalid entries are
@@ -2404,10 +2453,26 @@ function applyLiveLinkedRules(iss, fieldDefs, sourceColId, system, liveData, ctx
 // come out of a bare expression evaluation, and computeBoundValue only
 // ever sees the one fully-compiled rule string, not which row matched --
 // so this re-runs the same one-row-at-a-time match rulePreview's results
-// table already does, purely to find row.thenCopyFieldRefFrom for the
-// winning row. Returns null for advanced/hand-written mode (no ruleRows
-// at all), no match, or a row that isn't a field-copy -- the normal
-// literal/expression path, unaffected.
+// table already does, purely to find which field a winning row copies.
+//
+// Which field a row copies is derived STRUCTURALLY from its own `then`
+// string (the `=values.<id>` shape the row editor's "copy field" dropdown
+// always writes), not from the separately-stored `thenCopyFieldRefFrom` --
+// that field is redundant with (and can drift from) `then` itself:
+// `thenCopyFieldRefFrom` didn't always exist, so any row persisted before
+// it was introduced, or authored by hand (advanced mode, a direct JSONL
+// edit, an older client) with `then: '=values.X'`, has the exact same
+// effective binding but no flag -- live-reported bug, confirmed this was
+// silently leaving such a field's ref forever null (plain text, never a
+// link, never updating on refresh) despite its VALUE deriving correctly.
+// `thenCopyFieldRefFrom` is still read first when present so an explicit
+// value (however it got there) always wins; the pattern match is the
+// fallback that makes the structural `then` shape itself authoritative.
+function copyFieldRefTarget(row) {
+  if (row.thenCopyFieldRefFrom) return row.thenCopyFieldRefFrom;
+  const m = typeof row.then === 'string' ? /^=values\.([A-Za-z0-9_]+)$/.exec(row.then) : null;
+  return m ? m[1] : null;
+}
 function computeBoundFieldRef(issue, def, ctx) {
   const rows = Array.isArray(def.ruleRows) ? def.ruleRows : null;
   if (!rows || !def.linkedSourceId) return null;
@@ -2416,7 +2481,8 @@ function computeBoundFieldRef(issue, def, ctx) {
   for (const r of rows) {
     if (!ruleRowCriteria(r).length) continue;
     if (evalRule(ruleRowCondition(r), source, issue.values) === true) {
-      return r.thenCopyFieldRefFrom ? ((issue.fieldRefs && issue.fieldRefs[r.thenCopyFieldRefFrom]) || null) : null;
+      const copyFrom = copyFieldRefTarget(r);
+      return copyFrom ? ((issue.fieldRefs && issue.fieldRefs[copyFrom]) || null) : null;
     }
   }
   return null;
@@ -4752,7 +4818,7 @@ async function probeMatrixRoomAccess({ fetchImpl, homeserverUrl, accessToken, ro
 }
 
 const WigwagCoreExports = {
-  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, xlsxDateTimeSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_NS, storageNamespacePrefix, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, LAYOUT_PROPOSAL_DEVICE_ID_KEY, CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, tokenizeFilterQuery, parseFilterQuery, issueMatchesFieldToken, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, pickConnectorFields, connectorLinkText, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, migrateLegacyComments, deriveFieldDefs, effectiveFieldDefs, PROJECT_NAME_FIELD_ID, deriveProjectName, PROJECT_NOTES_FIELD_ID, deriveProjectNotes, simpleStringHash, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, issueTimestampValue, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, MATRIX_USER_ID_RE, principalKind, identityPrincipal, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, normalizeRef, sourceRefHasFullData, evalRule, compileConnectorMacro, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, builtinKindConfigured, builtinKindReachable, fieldLocalBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, issueCreatedAt,
+  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, xlsxDateTimeSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_NS, storageNamespacePrefix, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, LAYOUT_PROPOSAL_DEVICE_ID_KEY, CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, tokenizeFilterQuery, parseFilterQuery, issueMatchesFieldToken, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, pickConnectorFields, connectorLinkText, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, migrateLegacyComments, deriveFieldDefs, effectiveFieldDefs, PROJECT_NAME_FIELD_ID, deriveProjectName, PROJECT_NOTES_FIELD_ID, deriveProjectNotes, simpleStringHash, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, issueTimestampValue, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, MATRIX_USER_ID_RE, principalKind, identityPrincipal, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, normalizeRef, sourceRefHasFullData, evalRule, compileConnectorMacro, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, builtinKindConfigured, builtinKindReachable, fieldLocalBindState, liveBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, issueCreatedAt,
   importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry,
   squashHistory, displayValueForHistory, buildSourceText, keyRegistryEncoder, rehydrateKeyRef, humanFileSize, parseJsonl, entryKey, commentKey, unionByKey, mergeCommentStreams, mergeIssuePair, computeIssueMerge, mergeHasRealChanges, computeFieldDefsMerge, computeDerivedChangeEntries,
   isPastedTextASingleUrl, wrapSelectionWithMarkdownLink,

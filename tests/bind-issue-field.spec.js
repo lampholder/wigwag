@@ -144,7 +144,7 @@ test.describe('Binding an issue-type field to another field ("copy field")', () 
   // fieldRefs[colId]. It must instead re-derive live from the same
   // row-condition match that originally wrote the copy (computeBoundFieldRef),
   // so display survives this kind of persistence gap entirely.
-  test('a bound copy-field cell still renders title+link even when its OWN persisted fieldRef has gone stale/null, as long as the row condition and copy source are still real', async ({ page }) => {
+  test('a bound copy-field cell still renders title+link AND shows the bound glyph (not overridden) even when its OWN persisted fieldRef has gone stale/null, as long as the row condition and copy source are still real', async ({ page }) => {
     const remedyId = await setUpRemedyBoundToRelated(page);
     const cell = h.fieldCell(page, 1, remedyId);
     await expect(cell.locator('a svg')).toHaveCount(1); // sanity: really copied before we break it
@@ -191,11 +191,12 @@ test.describe('Binding an issue-type field to another field ("copy field")', () 
     const cellAfter = h.fieldCell(page, 1, remedyId);
     await expect(cellAfter).toContainText("ACME – New rooms added to spaces don't show until sync");
     await expect(cellAfter.locator('a svg')).toHaveCount(1); // still renders as a real, resolved link
-    // This device's own local record no longer matches (a plain-value
-    // write did this, not a derive it performed) -- the glyph correctly
-    // still reads "overridden," not "bound," even though the content
-    // renders exactly like the source issue.
-    await expect(cellAfter.locator('[title^="Overrides the linked value"]')).toBeVisible();
+    // Bound state is a LIVE comparison now (liveBindState, wigwag-core.js),
+    // not a per-device record of who last wrote the value -- the stray
+    // entry re-set the exact same text the rule still computes today, so
+    // this reads as genuinely "bound," not "overridden," regardless of
+    // which device (or mechanism) actually wrote that entry.
+    await expect(cellAfter.locator('[title="Linked to Issue\'s data"]')).toBeVisible();
   });
 
   // Tom's live feedback: a bound field that copies in another issue's

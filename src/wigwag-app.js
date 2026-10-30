@@ -11,7 +11,7 @@
 const {
   xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, columnFilterIsActive, dateFilterPresetRanges, parseFilterQuery, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, isPastedTextASingleUrl, wrapSelectionWithMarkdownLink, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, migrateLegacyComments, deriveFieldDefs, effectiveFieldDefs, deriveProjectName, PROJECT_NAME_FIELD_ID, deriveProjectNotes, PROJECT_NOTES_FIELD_ID, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, principalKind, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER
 ,
-  buildSource, normalizeRef, evalRule, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, fieldLocalBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, builtinKindConfigured, builtinKindReachable,
+  buildSource, normalizeRef, evalRule, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, fieldLocalBindState, liveBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, builtinKindConfigured, builtinKindReachable,
   CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, pickConnectorFields, connectorLinkText, compileConnectorMacro,
   importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry,
   squashHistory, displayValueForHistory, buildSourceText, humanFileSize, parseJsonl, entryKey, commentKey, unionByKey, mergeCommentStreams, mergeIssuePair, computeIssueMerge, mergeHasRealChanges, computeFieldDefsMerge, computeDerivedChangeEntries, buildGithubContentsUrl, buildGithubContentsHeaders, buildGithubCommitMessage, pullGithubFile, pushGithubFile, probeGithubRepoAccess, issueCreatedAt, computeHeaderMeshTriangles, computeHeaderCompression, cellPaddingForWidth, computeAffordanceFade,
@@ -2107,7 +2107,7 @@ class Component extends DCLogic {
       if (!s.jumpDismissed && !e.target.closest('[data-testid="filter-input-wrap"]') && !e.target.closest('[data-testid="jump-panel"]') && !e.target.closest('[data-testid="mobile-filter-header"]') && !e.target.closest('[data-testid="mobile-row-list"]')) {
         patch = Object.assign(patch || {}, { jumpDismissed: true });
       }
-      if (!s.filterSuggestDismissed && !e.target.closest('[data-testid="filter-input-wrap"]') && !e.target.closest('[data-testid="filter-suggest-panel"]')) {
+      if (!s.filterSuggestDismissed && !e.target.closest('[data-testid="filter-input-wrap"]') && !e.target.closest('[data-testid="filter-suggest-panel"]') && !e.target.closest('[data-testid="btn-filter-field-picker"]')) {
         patch = Object.assign(patch || {}, { filterSuggestDismissed: true });
       }
       if (s.activeCell) {
@@ -6928,7 +6928,7 @@ class Component extends DCLogic {
     const def = this.effectiveDef(colId);
     if (!def) return { opt: null, isBoundLive: false, isOverridden: false };
     const opt = (def.options || []).find(o => o.id === issue.values[colId]);
-    const bindState = def.linkedSourceId ? fieldLocalBindState(issue, colId, this.liveRuleCtx(issue.id).localDerivedEntryIds) : 'plain';
+    const bindState = def.linkedSourceId ? liveBindState(issue, colId, def, this.liveRuleCtx(issue.id)) : 'plain';
     return { opt: opt || null, isBoundLive: bindState === 'bound', isOverridden: bindState === 'overridden' };
   }
   kanbanDragStart(issueId, e) { if (e && e.dataTransfer) e.dataTransfer.effectAllowed = 'move'; this.setState({ draggingKanbanIssueId: issueId }); }
@@ -8108,7 +8108,7 @@ class Component extends DCLogic {
     // Always editable now -- no early-return "computed, display-only"
     // branch any more. isBoundLive/isOverridden are purely informational,
     // computed once here and merged into every return branch below.
-    const bindState = def && def.linkedSourceId ? fieldLocalBindState(issue, colId, this.liveRuleCtx(issue.id).localDerivedEntryIds) : 'plain';
+    const bindState = def && def.linkedSourceId ? liveBindState(issue, colId, def, this.liveRuleCtx(issue.id)) : 'plain';
     const isBoundLive = bindState === 'bound', isOverridden = bindState === 'overridden';
     const rawRef = issue.fieldRefs && issue.fieldRefs[colId];
     // Live-reported (Tom): a bound issue-type field must render like its
@@ -8123,28 +8123,10 @@ class Component extends DCLogic {
     // wipe fieldRefs[colId] to null without touching the row condition
     // or the field it actually copies from) as long as the underlying
     // condition/source field it copies FROM is still real and linked.
-    //
-    // Also applies while isOverridden, but ONLY when the override's own
-    // value is identical to what the rule would compute RIGHT NOW --
-    // confirmed live-reported bug: a plain-value write that happens to
-    // re-set the exact same (already-derived) text with no ref (bulk Set
-    // field is one real way this happens; so is any other client/path
-    // that writes {field, value, fieldRef: null} directly) reads as
-    // 'overridden' from fieldLocalBindState's own purely-local
-    // perspective (the entry's id was never recorded as a derive this
-    // device performed) even though NOTHING has actually diverged in
-    // substance. A genuinely different override value (the user really
-    // did type/paste something else) always leaves computeBoundValue's
-    // live answer unequal to values[colId] (or undefined, if the source
-    // itself isn't reachable right now) -- that case is always left
-    // alone, plain text, exactly as typed, same as today.
-    const ruleStillMatchesValue = isOverridden && def && def.type === 'issue' && def.linkedSourceId
-      ? (() => {
-          const computed = computeBoundValue(issue, colId, def, this.liveRuleCtx(issue.id)).computed;
-          return computed !== undefined && computed === issue.values[colId];
-        })()
-      : false;
-    const liveBoundRef = (isBoundLive || ruleStillMatchesValue) && def && def.type === 'issue' && def.linkedSourceId
+    // Gated on bindState alone now (liveBindState's own live comparison
+    // already covers the old narrow "overridden but value still matches"
+    // special case generically, for every field type, not just issue-type).
+    const liveBoundRef = isBoundLive && def && def.type === 'issue' && def.linkedSourceId
       ? computeBoundFieldRef(issue, def, this.liveRuleCtx(issue.id))
       : null;
     const ref = liveBoundRef || rawRef;
@@ -8286,7 +8268,7 @@ class Component extends DCLogic {
     // slot the old lock icon used), never gating click/arrow/popover.
     const curId = issue.values[colId];
     const opt = (def.options || []).find(o => o.id === curId);
-    const bindState = def.linkedSourceId ? fieldLocalBindState(issue, colId, this.liveRuleCtx(issue.id).localDerivedEntryIds) : 'plain';
+    const bindState = def.linkedSourceId ? liveBindState(issue, colId, def, this.liveRuleCtx(issue.id)) : 'plain';
     const isBoundLive = bindState === 'bound', isOverridden = bindState === 'overridden';
     const isSelected = s.selectedCell && s.selectedCell.issueId === issue.id && s.selectedCell.colId === colId;
     const popoverOpen = !readOnly && s.activeCell && s.activeCell.issueId === issue.id && s.activeCell.colId === colId;
@@ -8319,7 +8301,7 @@ class Component extends DCLogic {
     // Always editable now -- resolves from the real stored value in every
     // case. isBoundLive/isOverridden are purely informational.
     const ids = issue.values[colId] || [];
-    const bindState = def.linkedSourceId ? fieldLocalBindState(issue, colId, this.liveRuleCtx(issue.id).localDerivedEntryIds) : 'plain';
+    const bindState = def.linkedSourceId ? liveBindState(issue, colId, def, this.liveRuleCtx(issue.id)) : 'plain';
     const isBoundLive = bindState === 'bound', isOverridden = bindState === 'overridden';
     const optionOrder = (def.options || []).map(o => o.id);
     const idRank = id => { const i = optionOrder.indexOf(id); return i === -1 ? Infinity : i; };
@@ -8407,7 +8389,7 @@ class Component extends DCLogic {
     const canRefresh = linkedCount > 0 && !ROOM_MODE_CAPABILITIES && !jobFetching;
     const fieldRows = realColumnOrder(s.columnOrder).filter(colId => fieldDefs[colId].type !== 'commentStream' && fieldDefs[colId].type !== 'timestamp').map(colId => {
       const def = fieldDefs[colId];
-      const derivedCount = def.linkedSourceId ? selectedIssuesFull.filter(iss => fieldLocalBindState(iss, colId, this.liveRuleCtx(iss.id).localDerivedEntryIds) === 'bound').length : 0;
+      const derivedCount = def.linkedSourceId ? selectedIssuesFull.filter(iss => liveBindState(iss, colId, def, this.liveRuleCtx(iss.id)) === 'bound').length : 0;
       const hasDerived = derivedCount > 0;
       return {
         colId, label: def.label, locked: false, unlocked: true, hasDerivedNote: hasDerived,
@@ -9529,7 +9511,7 @@ class Component extends DCLogic {
           fields: realColumnOrder(s.columnOrder).filter(colId => colId !== mobileDescriptionColId).map(colId => {
             const def = fieldDefs[colId];
             const v = issue.values[colId];
-            const isBound = fieldLocalBindState(issue, colId, this.liveRuleCtx(issue.id).localDerivedEntryIds) !== 'plain';
+            const isBound = liveBindState(issue, colId, def, this.liveRuleCtx(issue.id)) !== 'plain';
             const isPickerType = def.type === 'select' || def.type === 'multiselect';
             const isDateType = def.type === 'date';
             const isEditingDate = isDateType && !isBound && s.activeCell && s.activeCell.issueId === issue.id && s.activeCell.colId === colId;
@@ -10266,7 +10248,31 @@ class Component extends DCLogic {
       sourcePretty: s.sourceViewOpen ? this.prettySourceNodes() : null,
       onSourceCopy: this.onSourceCopy,
       filterQuery: s.filterQuery,
-      onFilterChange: e => this.setState({ filterQuery: e.target.value, jumpDismissed: false, jumpActiveIndex: 0, filterSuggestDismissed: false, filterSuggestActiveIndex: 0 }),
+      // Tracker e8b52997: the FIELD-name suggestion list (Issue/Status/
+      // Type/...) no longer pops open just from typing free text on the
+      // desktop filter bar -- only the new "+ Field" button does that
+      // now (see onOpenFilterFieldPicker below). A recognized "Label:"
+      // prefix's own VALUE suggestions are a narrower, different kind of
+      // autocomplete (the user has already committed to filtering by a
+      // specific field) and keep auto-opening exactly as before, same
+      // as continuing to type while the field panel is ALREADY open
+      // (via the button) still live-narrows it -- this only gates the
+      // panel's own OPENING trigger, not whether it tracks what's typed
+      // once visible. Room/widget mode (no room for a separate button
+      // in that compact UI, and out of this fix's own scope -- the
+      // handoff spec is specifically about 'Issue Tracker.dc.html''s
+      // filter-input, not the widget's) keeps the original always-
+      // auto-open behavior unchanged.
+      onFilterChange: e => {
+        const filterQuery = e.target.value;
+        this.setState(s2 => {
+          const base = { filterQuery, jumpDismissed: false, jumpActiveIndex: 0, filterSuggestActiveIndex: 0 };
+          if (ROOM_MODE_CAPABILITIES) return { ...base, filterSuggestDismissed: false };
+          if (!s2.filterSuggestDismissed) return base; // already open -- recomputes fresh from filterQuery either way
+          const suggest = computeFilterSuggestions(filterQuery, s2.fieldDefs);
+          return { ...base, filterSuggestDismissed: suggest.mode !== 'value' };
+        });
+      },
       onFilterFocus: e => {
         let anchorLeft = 0, anchorTopPx = 0;
         // Anchor off the visibly-bordered wrap, not the bare (border:none)
@@ -10277,7 +10283,42 @@ class Component extends DCLogic {
           const a = this.computeAnchor(wrapEl, 280);
           anchorLeft = a.left; anchorTopPx = a.bottom + 3;
         }
-        this.setState({ filterSuggestDismissed: false, filterSuggestAnchorLeft: anchorLeft, filterSuggestAnchorTopPx: anchorTopPx });
+        // Desktop: focusing the box no longer opens the field panel on
+        // its own either (same tracker e8b52997 change as onFilterChange
+        // above) -- still updates the anchor though, so it's correctly
+        // positioned relative to the INPUT the moment VALUE-mode
+        // suggestions (or a still-open field panel) actually need it.
+        // Room/widget mode keeps today's behavior.
+        const patch = { filterSuggestAnchorLeft: anchorLeft, filterSuggestAnchorTopPx: anchorTopPx };
+        if (ROOM_MODE_CAPABILITIES) patch.filterSuggestDismissed = false;
+        this.setState(patch);
+      },
+      // Tracker e8b52997: the one new way to reach the FIELD-name list on
+      // desktop. Closes out whatever's mid-typed in the current token
+      // (a trailing space, same mechanic commitFilterSuggestion already
+      // relies on) so computeFilterSuggestions' own "emptyToken" branch
+      // shows the FULL field list, same as focusing an empty box used
+      // to -- then opens the panel anchored to the BUTTON itself, not
+      // the input. Refocuses the input first (synchronously fires
+      // onFilterFocus, which no longer opens anything but still resets
+      // the anchor to the INPUT's position) so the real, authoritative
+      // anchor/open state set below -- relative to the BUTTON -- always
+      // has the last word, same precedent selectFilterSuggestion's own
+      // refocus-then-setState ordering already established.
+      onOpenFilterFieldPicker: e => {
+        const btnEl = e && e.currentTarget;
+        const input = document.querySelector('[data-testid="filter-input"]');
+        if (input) input.focus();
+        let anchorLeft = 0, anchorTopPx = 0;
+        if (btnEl && btnEl.getBoundingClientRect) {
+          const a = this.computeAnchor(btnEl, 280);
+          anchorLeft = a.left; anchorTopPx = a.bottom + 3;
+        }
+        this.setState(s2 => ({
+          filterQuery: (!s2.filterQuery || /\s$/.test(s2.filterQuery)) ? s2.filterQuery : s2.filterQuery + ' ',
+          filterSuggestDismissed: false, filterSuggestActiveIndex: 0,
+          filterSuggestAnchorLeft: anchorLeft, filterSuggestAnchorTopPx: anchorTopPx
+        }));
       },
       onFilterKeyDown: this.onFilterKeyDown,
       hasFilterQuery: !!s.filterQuery.trim(),

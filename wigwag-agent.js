@@ -14,10 +14,10 @@
 // Usage:
 //   node wigwag-agent.js list
 //   node wigwag-agent.js next
-//   node wigwag-agent.js show <num-or-id-prefix>
+//   node wigwag-agent.js show <id-prefix>
 //   node wigwag-agent.js add-issue "Title text"
-//   node wigwag-agent.js comment <num-or-id-prefix> "Comment text"
-//   node wigwag-agent.js set-field <num-or-id-prefix> "<Field label>" <value>
+//   node wigwag-agent.js comment <id-prefix> "Comment text"
+//   node wigwag-agent.js set-field <id-prefix> "<Field label>" <value>
 //     (value is an option's exact label for a select field, or plain
 //     text for a text field)
 //
@@ -55,9 +55,13 @@ async function cmdNext(client) {
   for (const iss of next) console.log(formatIssueLine(iss));
 }
 
-async function cmdShow(client, numOrId) {
-  if (!numOrId) throw new Error('Usage: show <num-or-id-prefix>');
-  const issue = await client.getIssue(numOrId);
+// Format v2: an entry no longer carries its own narrative `.text` (see
+// docs/FORMAT_V2.md) -- display text is reconstructed here from the
+// field's own label + value, the same "field set to value" formula the
+// real app's Activity feed now uses. Comments keep their own `.text`.
+async function cmdShow(client, idPrefix) {
+  if (!idPrefix) throw new Error('Usage: show <id-prefix>');
+  const issue = await client.getIssue(idPrefix);
   console.log(`[${issue.id}]\n`);
   for (const colId in issue.fieldDefs) {
     const def = issue.fieldDefs[colId];
@@ -65,34 +69,46 @@ async function cmdShow(client, numOrId) {
     const value = def.type === 'select' ? ((def.options || []).find(o => o.id === raw) || {}).label || raw : raw;
     console.log(`  ${(def.label || colId).padEnd(16)} ${value === undefined || value === null || value === '' ? '—' : value}`);
   }
-  const activity = [
-    ...issue.comments.map(c => ({ time: c.time, sortKey: c.sortKey, text: c.redacted ? '(redacted)' : `${c.author}: ${c.text}` })),
-    ...issue.history.filter(h => h.origin !== 'legacy-backfill').map(h => ({ time: h.time, sortKey: h.sortKey, text: h.redacted ? '(redacted)' : h.text }))
-  ].sort((a, b) => (a.sortKey || 0) - (b.sortKey || 0));
+  const activity = [];
+  for (const colId in issue.fields) {
+    const def = issue.fieldDefs[colId];
+    for (const h of (issue.fields[colId].history || [])) {
+      if (def && def.type === 'commentStream') {
+        activity.push({ sortKey: h.sortKey, text: h.redacted ? '(redacted)' : `${h.actor}: ${h.text}` });
+      } else {
+        const text = h.redacted ? '(redacted)'
+          : !def ? `${colId} changed`
+          : (def.type === 'select' ? `${def.label} set to ` + (((def.options || []).find(o => o.id === h.value) || {}).label || h.value)
+            : `${def.label} set to ${h.value}`);
+        activity.push({ sortKey: h.sortKey, text });
+      }
+    }
+  }
+  activity.sort((a, b) => (a.sortKey || 0) - (b.sortKey || 0));
   if (activity.length) {
     console.log('\nActivity:');
-    for (const a of activity) console.log(`  ${a.time}  ${a.text}`);
+    for (const a of activity) console.log(`  ${new Date(a.sortKey).toISOString()}  ${a.text}`);
   }
 }
 
 async function cmdAddIssue(client, title) {
   if (!title) throw new Error('Usage: add-issue "<title>"');
-  const { syncStatus } = await client.addIssue(title);
-  console.log('Added issue:', title);
+  const { id, syncStatus } = await client.addIssue(title);
+  console.log(`Added issue [${id.slice(0, 8)}]:`, title);
   if (syncStatus) console.log('Sync status:', syncStatus);
 }
 
-async function cmdComment(client, numOrId, text) {
-  if (!numOrId || !text) throw new Error('Usage: comment <num-or-id> "<text>"');
-  const { num, syncStatus } = await client.comment(numOrId, text);
-  console.log(`Commented on #${num}`);
+async function cmdComment(client, idPrefix, text) {
+  if (!idPrefix || !text) throw new Error('Usage: comment <id-prefix> "<text>"');
+  const { id, syncStatus } = await client.comment(idPrefix, text);
+  console.log(`Commented on [${id.slice(0, 8)}]`);
   if (syncStatus) console.log('Sync status:', syncStatus);
 }
 
-async function cmdSetField(client, numOrId, fieldLabel, value) {
-  if (!numOrId || !fieldLabel || value === undefined) throw new Error('Usage: set-field <num-or-id> "<field label>" <value>');
-  const { num, syncStatus } = await client.setField(numOrId, fieldLabel, value);
-  console.log(`Set "${fieldLabel}" on #${num} to "${value}"`);
+async function cmdSetField(client, idPrefix, fieldLabel, value) {
+  if (!idPrefix || !fieldLabel || value === undefined) throw new Error('Usage: set-field <id-prefix> "<field label>" <value>');
+  const { id, syncStatus } = await client.setField(idPrefix, fieldLabel, value);
+  console.log(`Set "${fieldLabel}" on [${id.slice(0, 8)}] to "${value}"`);
   if (syncStatus) console.log('Sync status:', syncStatus);
 }
 
@@ -110,10 +126,10 @@ async function main() {
     console.log('Usage: node wigwag-agent.js <list|next|show|add-issue|comment|set-field> [args]');
     console.log('  list');
     console.log('  next');
-    console.log('  show <num-or-id-prefix>');
+    console.log('  show <id-prefix>');
     console.log('  add-issue "<title>"');
-    console.log('  comment <num-or-id-prefix> "<text>"');
-    console.log('  set-field <num-or-id-prefix> "<field label>" <value>');
+    console.log('  comment <id-prefix> "<text>"');
+    console.log('  set-field <id-prefix> "<field label>" <value>');
     process.exitCode = cmd ? 1 : 0;
     return;
   }

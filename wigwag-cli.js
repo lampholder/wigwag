@@ -12,10 +12,10 @@
 //   node wigwag-cli.js [--dir <path>] [--identity <path>] <command> [args]
 //
 //   list
-//   show <num-or-id-prefix>
+//   show <id-prefix>
 //   add-issue "<title>"
-//   comment <num-or-id-prefix> "<text>"
-//   set-field <num-or-id-prefix> "<field label>" <value>
+//   comment <id-prefix> "<text>"
+//   set-field <id-prefix> "<field label>" <value>
 //     (value is an option's id or exact label, case-insensitive, for a
 //     select field; comma-separated labels/ids for multiselect; plain
 //     text otherwise)
@@ -43,12 +43,14 @@ const { FileProjectStore, CredentialStore, TRACKER_FILENAME } = require('./wigwa
 const proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy;
 if (proxyUrl) setGlobalDispatcher(new ProxyAgent(proxyUrl));
 
-function findIssue(doc, numOrIdPrefix) {
-  const byNum = doc.issues.find(i => String(i.num) === String(numOrIdPrefix));
-  if (byNum) return byNum;
-  const byId = doc.issues.find(i => i.id.startsWith(numOrIdPrefix));
+// Format v2 drops `num` entirely (unstable across devices by its own
+// design -- see docs/FORMAT_V2.md) -- an issue is identified purely by
+// its real id (or an unambiguous prefix of it), the same short
+// #XXXXXXXX reference the real app already shows everywhere.
+function findIssue(doc, idPrefix) {
+  const byId = doc.issues.find(i => i.id.startsWith(idPrefix));
   if (byId) return byId;
-  throw new Error(`No issue matches "${numOrIdPrefix}" (checked both num and id prefix)`);
+  throw new Error(`No issue matches id prefix "${idPrefix}"`);
 }
 
 function fieldLabelToColId(fieldDefs, label) {
@@ -101,47 +103,62 @@ async function makeContext(identityPath) {
 // one-shot process, not a long-lived tab -- awaits the signing before
 // returning, so the doc that gets saved to disk always carries a real
 // signature, never a still-in-flight sig: null.
-async function commitHistoryEntry(ctx, doc, issueId, { text, field, value, fieldRef, origin }) {
+// Format v2: an issue-level entry drops text/origin/time entirely (field
+// becomes the fields-map key, not stored on the entry; time is redundant
+// with sortKey) and folds fieldRef into value as {title, href} when the
+// field is linked -- see docs/FORMAT_V2.md. (core.formatNow(), called
+// here before this pass, was already dead code -- no such function ever
+// existed on wigwag-core.js, and the real app.js never set `.time` on an
+// issue-level entry either; this was a pre-existing, never-matching
+// divergence between this CLI and the real write path.)
+async function commitHistoryEntry(ctx, doc, issueId, { field, value, fieldRef }) {
+  const colId = field;
+  const finalValue = (fieldRef && fieldRef.href) ? { title: value, href: fieldRef.href } : value;
   const entryBase = {
-    id: require('crypto').randomUUID(), time: core.formatNow(), actor: displayName(ctx.identity), email: ctx.identity.email || '',
-    text, field: field || null, value: field ? value : undefined,
-    fieldRef: (field && fieldRef !== undefined) ? fieldRef : undefined,
-    origin: origin || 'authored', sortKey: ctx.nextSortKey()
+    id: require('crypto').randomUUID(), actor: displayName(ctx.identity),
+    value: finalValue, sortKey: ctx.nextSortKey()
   };
   const iss = doc.issues.find(i => i.id === issueId);
   await core.commitSignedEntry(entryBase, {
-    signable: core.signablePayload(issueId, entryBase),
-    redacted: core.redactedPayload(issueId, entryBase)
+    signable: core.signableEntryPayload(issueId, entryBase),
+    redacted: core.redactedEntryPayload(issueId, entryBase)
   }, {
     sign: ctx.sign,
     insertUnsigned: (entry) => {
-      iss.history.push(entry);
+      if (!iss.fields[colId]) iss.fields[colId] = { history: [] };
+      iss.fields[colId].history.push(entry);
       iss.values = core.deriveIssueValues(iss, doc.fieldDefs);
       iss.fieldRefs = core.deriveIssueFieldRefs(iss, doc.fieldDefs);
+      iss.deleted = core.issueIsDeleted(iss);
     },
-    patchSignature: (id, sortKey, sig, sigRedacted, pubKey) => {
-      const h = iss.history.find(x => x.id === id);
-      if (h) Object.assign(h, { sig, sigRedacted, pubKey });
+    patchSignature: (id, sortKey, sig, pubKey) => {
+      const h = iss.fields[colId].history.find(x => x.id === id);
+      if (h) Object.assign(h, { sig, pubKey });
     },
     currentPubKey: () => ctx.identity.signingPublicKeyJwk
   });
 }
 
+// Project-level history was NOT restructured by format v2 -- stays a
+// flat, field-tagged array carrying text/email/origin same as before
+// (see wigwag-core.js's signableProjectEntryPayload comment); unlike
+// commitHistoryEntry above, time/formatNow was never real here either,
+// so it's dropped the same way rather than reintroduced.
 async function commitProjectHistoryEntry(ctx, doc, { text, field, value, origin }) {
   const entryBase = {
-    id: require('crypto').randomUUID(), time: core.formatNow(), actor: displayName(ctx.identity), email: ctx.identity.email || '',
+    id: require('crypto').randomUUID(), actor: displayName(ctx.identity), email: ctx.identity.email || '',
     text, field: field || null, value: field ? value : undefined,
     origin: origin || 'authored', sortKey: ctx.nextSortKey()
   };
   await core.commitSignedEntry(entryBase, {
-    signable: core.signableProjectPayload(doc.projectId, entryBase),
-    redacted: core.redactedProjectPayload(doc.projectId, entryBase)
+    signable: core.signableProjectEntryPayload(doc.projectId, entryBase),
+    redacted: core.redactedProjectEntryPayload(doc.projectId, entryBase)
   }, {
     sign: ctx.sign,
     insertUnsigned: (entry) => { doc.projectHistory.push(entry); },
-    patchSignature: (id, sortKey, sig, sigRedacted, pubKey) => {
+    patchSignature: (id, sortKey, sig, pubKey) => {
       const h = doc.projectHistory.find(x => x.id === id);
-      if (h) Object.assign(h, { sig, sigRedacted, pubKey });
+      if (h) Object.assign(h, { sig, pubKey });
     },
     currentPubKey: () => ctx.identity.signingPublicKeyJwk
   });
@@ -165,14 +182,14 @@ async function applyRulesAndLogDerived(ctx, doc, issueId) {
   const applied = core.applyLinkedRules(iss, doc.fieldDefs, {});
   if (applied !== iss) Object.assign(iss, applied);
   const entries = core.computeDerivedChangeEntries(iss, before, doc.fieldDefs);
-  for (const e of entries) await commitHistoryEntry(ctx, doc, issueId, { text: e.text, field: e.colId, value: e.value });
+  for (const e of entries) await commitHistoryEntry(ctx, doc, issueId, { field: e.colId, value: e.value, fieldRef: e.fieldRef || null });
 }
 
 async function cmdNext(doc) {
   const statusColId = fieldLabelToColId(doc.fieldDefs, 'Status');
   const next = doc.issues.filter(iss => statusColId && resolveOptionLabel(doc.fieldDefs[statusColId], iss.values[statusColId]) === 'Next');
   console.log(`Project ${doc.projectId || '(none yet)'} -- ${next.length} issue(s) with Status "Next"\n`);
-  for (const iss of next.slice().sort((a, b) => a.num - b.num)) {
+  for (const iss of next.slice().sort((a, b) => core.issueCreatedAt(a) - core.issueCreatedAt(b))) {
     console.log(`[${iss.id.slice(0, 8)}]  ${iss.values.title || '(untitled)'}`);
   }
 }
@@ -180,15 +197,21 @@ async function cmdNext(doc) {
 async function cmdList(doc) {
   const statusColId = fieldLabelToColId(doc.fieldDefs, 'Status');
   console.log(`Project ${doc.projectId || '(none yet)'} -- ${doc.issues.length} issues\n`);
-  for (const iss of doc.issues.slice().sort((a, b) => a.num - b.num)) {
+  for (const iss of doc.issues.slice().sort((a, b) => core.issueCreatedAt(a) - core.issueCreatedAt(b))) {
     const status = statusColId ? resolveOptionLabel(doc.fieldDefs[statusColId], iss.values[statusColId]) : '';
     console.log(`[${iss.id.slice(0, 8)}] (${status})  ${iss.values.title || '(untitled)'}`);
   }
 }
 
-async function cmdShow(doc, numOrId) {
-  if (!numOrId) throw new Error('Usage: show <num-or-id-prefix>');
-  const issue = findIssue(doc, numOrId);
+// Format v2: an entry no longer carries its own narrative `.text` (see
+// docs/FORMAT_V2.md) -- display text is reconstructed here from the
+// field's own label + value, same "field set to value" formula the real
+// app's Activity feed now uses (src/wigwag-app.js's
+// buildIssueHistoryActivityEntries). Comments keep their own `.text`
+// unchanged (comments were never narrative-generated).
+async function cmdShow(doc, idPrefix) {
+  if (!idPrefix) throw new Error('Usage: show <id-prefix>');
+  const issue = findIssue(doc, idPrefix);
   console.log(`[${issue.id}]\n`);
   for (const colId in doc.fieldDefs) {
     const def = doc.fieldDefs[colId];
@@ -198,13 +221,24 @@ async function cmdShow(doc, numOrId) {
       : raw;
     console.log(`  ${(def.label || colId).padEnd(16)} ${value === undefined || value === null || value === '' ? '—' : value}`);
   }
-  const activity = [
-    ...(issue.commentStreams.comments || []).map(c => ({ time: c.time, sortKey: c.sortKey, text: c.redacted ? '(redacted)' : `${c.author}: ${c.text}` })),
-    ...issue.history.filter(h => h.origin !== 'legacy-backfill').map(h => ({ time: h.time, sortKey: h.sortKey, text: h.redacted ? '(redacted)' : h.text }))
-  ].sort((a, b) => (a.sortKey || 0) - (b.sortKey || 0));
+  const activity = [];
+  for (const colId in issue.fields) {
+    const def = doc.fieldDefs[colId];
+    for (const h of (issue.fields[colId].history || [])) {
+      if (def && def.type === 'commentStream') {
+        activity.push({ sortKey: h.sortKey, text: h.redacted ? '(redacted)' : `${h.actor}: ${h.text}` });
+      } else {
+        const text = h.redacted ? '(redacted)'
+          : colId === core.ISSUE_DELETED_FIELD_ID ? 'Deleted issue'
+          : `${(def && def.label) || colId} set to ${def ? core.displayValueForHistory(def, h.value) : h.value}`;
+        activity.push({ sortKey: h.sortKey, text });
+      }
+    }
+  }
+  activity.sort((a, b) => (a.sortKey || 0) - (b.sortKey || 0));
   if (activity.length) {
     console.log('\nActivity:');
-    for (const a of activity) console.log(`  ${a.time}  ${a.text}`);
+    for (const a of activity) console.log(`  ${new Date(a.sortKey).toISOString()}  ${a.text}`);
   }
 }
 
@@ -216,61 +250,59 @@ async function cmdAddIssue(ctx, doc, title) {
   // field def to derive it against), not a loud, obvious failure.
   if (!doc.fieldDefs.title) throw new Error('This project has no fields defined yet -- run "pull" first to adopt a remote project\'s fields.');
   const id = require('crypto').randomUUID();
-  const num = doc.issues.reduce((m, i) => Math.max(m, i.num || 0), 0) + 1;
-  doc.issues.push({ id, num, fieldRefs: {}, fieldLoading: {}, values: {}, commentStreams: {}, history: [] });
-  await commitHistoryEntry(ctx, doc, id, { text: 'Created' });
-  await commitHistoryEntry(ctx, doc, id, { text: 'Title set to "' + core.truncate(title, 60) + '"', field: 'title', value: title });
+  // Format v2: no `num` (gone entirely) and no value-less "Created"
+  // entry (see docs/FORMAT_V2.md) -- the title-set entry below is this
+  // issue's own creation marker, same as the real app's createIssueFromText.
+  doc.issues.push({ id, fieldRefs: {}, fieldLoading: {}, values: {}, fields: {} });
+  await commitHistoryEntry(ctx, doc, id, { field: 'title', value: title });
   await applyRulesAndLogDerived(ctx, doc, id);
-  console.log(`Added issue #${num} [${id.slice(0, 8)}]`);
+  console.log(`Added issue [${id.slice(0, 8)}]`);
 }
 
-async function cmdComment(ctx, doc, numOrId, text) {
-  if (!numOrId || !text) throw new Error('Usage: comment <num-or-id-prefix> "<text>"');
-  const issue = findIssue(doc, numOrId);
+async function cmdComment(ctx, doc, idPrefix, text) {
+  if (!idPrefix || !text) throw new Error('Usage: comment <id-prefix> "<text>"');
+  const issue = findIssue(doc, idPrefix);
   const entryBase = {
-    id: require('crypto').randomUUID(), author: displayName(ctx.identity), email: ctx.identity.email || '', time: core.formatNow(), text,
+    id: require('crypto').randomUUID(), actor: displayName(ctx.identity), text,
     sortKey: ctx.nextSortKey()
   };
   await core.commitSignedEntry(entryBase, {
-    signable: core.signableCommentPayload(issue.id, entryBase),
-    redacted: core.redactedCommentPayload(issue.id, entryBase)
+    signable: core.signableCommentEntryPayload(issue.id, entryBase),
+    redacted: core.redactedEntryPayload(issue.id, entryBase)
   }, {
     sign: ctx.sign,
     insertUnsigned: (entry) => {
-      if (!issue.commentStreams.comments) issue.commentStreams.comments = [];
-      issue.commentStreams.comments.push(entry);
+      if (!issue.fields.comments) issue.fields.comments = { history: [] };
+      issue.fields.comments.history.push(entry);
     },
-    patchSignature: (id, sortKey, sig, sigRedacted, pubKey) => {
-      const c = (issue.commentStreams.comments || []).find(x => x.id === id && x.sortKey === sortKey);
-      if (c) Object.assign(c, { sig, sigRedacted, pubKey });
+    patchSignature: (id, sortKey, sig, pubKey) => {
+      const c = (issue.fields.comments.history || []).find(x => x.id === id && x.sortKey === sortKey);
+      if (c) Object.assign(c, { sig, pubKey });
     },
     currentPubKey: () => ctx.identity.signingPublicKeyJwk
   });
-  console.log(`Commented on #${issue.num}`);
+  console.log(`Commented on [${issue.id.slice(0, 8)}]`);
 }
 
-async function cmdSetField(ctx, doc, numOrId, fieldLabel, value) {
-  if (!numOrId || !fieldLabel || value === undefined) throw new Error('Usage: set-field <num-or-id-prefix> "<field label>" <value>');
-  const issue = findIssue(doc, numOrId);
+async function cmdSetField(ctx, doc, idPrefix, fieldLabel, value) {
+  if (!idPrefix || !fieldLabel || value === undefined) throw new Error('Usage: set-field <id-prefix> "<field label>" <value>');
+  const issue = findIssue(doc, idPrefix);
   const colId = fieldLabelToColId(doc.fieldDefs, fieldLabel);
   if (!colId) throw new Error(`No field labeled "${fieldLabel}". Fields: ` + Object.values(doc.fieldDefs).map(f => f.label).join(', '));
   const def = doc.fieldDefs[colId];
 
-  let text, storedValue;
+  let storedValue;
   if (def.type === 'select') {
     storedValue = value ? resolveOptionId(def, value) : null;
-    text = storedValue ? `${def.label} set to ${resolveOptionLabel(def, storedValue)}` : `${def.label} cleared`;
   } else if (def.type === 'multiselect') {
     const raws = value.split(',').map(s => s.trim()).filter(Boolean);
     storedValue = raws.map(r => resolveOptionId(def, r));
-    text = `${def.label} set to ` + (storedValue.length ? storedValue.map(id => resolveOptionLabel(def, id)).join(', ') : 'none');
   } else {
     storedValue = value;
-    text = `${def.label} set to "${core.truncate(value, 60)}"`;
   }
-  await commitHistoryEntry(ctx, doc, issue.id, { text, field: colId, value: storedValue });
+  await commitHistoryEntry(ctx, doc, issue.id, { field: colId, value: storedValue });
   await applyRulesAndLogDerived(ctx, doc, issue.id);
-  console.log(`Set "${fieldLabel}" on #${issue.num} to "${value}"`);
+  console.log(`Set "${fieldLabel}" on [${issue.id.slice(0, 8)}] to "${value}"`);
 }
 
 function resolveToken(ctx, tokenFlag) {
@@ -358,10 +390,10 @@ async function main() {
     console.log('Usage: node wigwag-cli.js [--dir <path>] [--identity <path>] [--token <ghp_...>] <command> [args]');
     console.log('  list');
     console.log('  next');
-    console.log('  show <num-or-id-prefix>');
+    console.log('  show <id-prefix>');
     console.log('  add-issue "<title>"');
-    console.log('  comment <num-or-id-prefix> "<text>"');
-    console.log('  set-field <num-or-id-prefix> "<field label>" <value>');
+    console.log('  comment <id-prefix> "<text>"');
+    console.log('  set-field <id-prefix> "<field label>" <value>');
     console.log('  pull | push | sync');
   };
   const readOnly = { list: true, next: true, show: true };

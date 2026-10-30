@@ -125,14 +125,16 @@ async function ensureConnected(page, repoOwner, repoName) {
   }
 }
 
+// Format v2: an issue's own data lives in issue.fields[colId].history now,
+// not one flat issue.history array keyed by h.field (see docs/FORMAT_V2.md)
+// -- each field's own latest entry is read directly off its own array.
 function deriveValues(issue) {
-  const latest = {};
-  for (const h of issue.history || []) {
-    if (!h.field) continue;
-    if (!latest[h.field] || h.sortKey > latest[h.field].sortKey) latest[h.field] = h;
-  }
   const values = {};
-  for (const f in latest) values[f] = latest[f].value;
+  for (const colId in (issue.fields || {})) {
+    const history = issue.fields[colId].history || [];
+    if (!history.length) continue;
+    values[colId] = history.reduce((a, b) => (b.sortKey > a.sortKey ? b : a)).value;
+  }
   return values;
 }
 
@@ -171,13 +173,14 @@ function fieldLabelToColId(fieldDefs, label) {
   return null;
 }
 
-async function findIssue(page, projectId, numOrIdPrefix) {
+// Format v2 drops `num` entirely (unstable across devices by its own
+// design -- see docs/FORMAT_V2.md) -- an issue is identified purely by
+// its real id (or an unambiguous prefix of it) now.
+async function findIssue(page, projectId, idPrefix) {
   const doc = await readDoc(page, projectId);
-  const byNum = doc.issues.find(i => String(i.num) === String(numOrIdPrefix));
-  if (byNum) return byNum;
-  const byId = doc.issues.find(i => i.id.startsWith(numOrIdPrefix));
+  const byId = doc.issues.find(i => i.id.startsWith(idPrefix));
   if (byId) return byId;
-  throw new Error(`No issue matches "${numOrIdPrefix}" (checked both num and id prefix)`);
+  throw new Error(`No issue matches id prefix "${idPrefix}"`);
 }
 
 // A blind fixed sleep here (previously 5.5s -- the real ~4s debounce plus
@@ -315,25 +318,25 @@ async function connect(opts = {}) {
     const projectId = await getActiveProjectId(page);
     const doc = await readDoc(page, projectId);
     const statusColId = fieldLabelToColId(doc.fieldDefs, STATUS_FIELD_LABEL);
-    const issues = doc.issues.slice().sort((a, b) => a.num - b.num).map(iss => {
+    const issues = doc.issues.map(iss => {
       const values = deriveValues(iss);
       return {
-        id: iss.id, num: iss.num, values,
+        id: iss.id, values,
         status: statusColId ? resolveOptionLabel(doc.fieldDefs[statusColId], values[statusColId]) : null
       };
     });
     return { projectId, fieldDefs: doc.fieldDefs, issues };
   }
 
-  async function getIssue(numOrId) {
+  async function getIssue(idPrefix) {
     const projectId = await getActiveProjectId(page);
-    const issue = await findIssue(page, projectId, numOrId);
+    const issue = await findIssue(page, projectId, idPrefix);
     const doc = await readDoc(page, projectId);
     return {
-      id: issue.id, num: issue.num, values: deriveValues(issue),
+      id: issue.id, values: deriveValues(issue),
       fieldDefs: doc.fieldDefs,
-      comments: (issue.commentStreams && issue.commentStreams.comments) || [],
-      history: issue.history || []
+      comments: (issue.fields.comments && issue.fields.comments.history) || [],
+      fields: issue.fields || {}
     };
   }
 
@@ -349,27 +352,33 @@ async function connect(opts = {}) {
     const syncStatus = await waitForPush(page);
     const projectId = await getActiveProjectId(page);
     const doc = await readDoc(page, projectId);
-    const created = doc.issues.slice().sort((a, b) => b.num - a.num)[0];
-    return { id: created.id, num: created.num, syncStatus };
+    // Format v2 has no `num` to sort by (see docs/FORMAT_V2.md) -- the
+    // just-created issue is whichever one has the newest title entry.
+    const created = doc.issues.slice().sort((a, b) => {
+      const at = (a.fields.title && a.fields.title.history || []).reduce((m, h) => Math.max(m, h.sortKey || 0), 0);
+      const bt = (b.fields.title && b.fields.title.history || []).reduce((m, h) => Math.max(m, h.sortKey || 0), 0);
+      return bt - at;
+    })[0];
+    return { id: created.id, syncStatus };
   }
 
-  async function comment(numOrId, text) {
-    if (!numOrId || !text) throw new Error('comment requires an issue and text');
+  async function comment(idPrefix, text) {
+    if (!idPrefix || !text) throw new Error('comment requires an issue and text');
     const projectId = await getActiveProjectId(page);
-    const issue = await findIssue(page, projectId, numOrId);
+    const issue = await findIssue(page, projectId, idPrefix);
     await page.goto(`/wigwag.html#/project/${projectId}/issue/${issue.id}`, { waitUntil: 'load' });
     await page.waitForTimeout(600);
     await page.locator('[data-testid=new-comment-input]').fill(text);
     await page.keyboard.press('Control+Enter');
     await page.waitForTimeout(500);
     const syncStatus = await waitForPush(page);
-    return { num: issue.num, syncStatus };
+    return { id: issue.id, syncStatus };
   }
 
-  async function setField(numOrId, fieldLabel, value) {
-    if (!numOrId || !fieldLabel || value === undefined) throw new Error('setField requires an issue, field label, and value');
+  async function setField(idPrefix, fieldLabel, value) {
+    if (!idPrefix || !fieldLabel || value === undefined) throw new Error('setField requires an issue, field label, and value');
     const projectId = await getActiveProjectId(page);
-    const issue = await findIssue(page, projectId, numOrId);
+    const issue = await findIssue(page, projectId, idPrefix);
     const doc = await readDoc(page, projectId);
     const colId = fieldLabelToColId(doc.fieldDefs, fieldLabel);
     if (!colId) throw new Error(`No field labeled "${fieldLabel}". Fields: ` + Object.values(doc.fieldDefs).map(f => f.label).join(', '));
@@ -380,10 +389,10 @@ async function connect(opts = {}) {
       const now = await currentFieldValue(page, projectId, issue.id, colId, doc.fieldDefs);
       if (now === value) {
         const syncStatus = await waitForPush(page);
-        return { num: issue.num, syncStatus };
+        return { id: issue.id, syncStatus };
       }
     }
-    throw new Error(`Could not confirm "${fieldLabel}" was set to "${value}" on #${issue.num} after 3 attempts (likely concurrent edits on the live tracker -- try again)`);
+    throw new Error(`Could not confirm "${fieldLabel}" was set to "${value}" on [${issue.id.slice(0, 8)}] after 3 attempts (likely concurrent edits on the live tracker -- try again)`);
   }
 
   return { page, list, getIssue, addIssue, comment, setField, close };

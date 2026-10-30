@@ -1,0 +1,87 @@
+{
+  "type": "issue",
+  "id": "b8f2a1c4-7e2a-4b1e-9c3d-1a2b3c4d5e6f",
+
+  "fields": {
+
+    "issue__key": {
+      "_comment": { "label": "Issue" },
+      "history": [
+        {
+          "id": "h_1a2b3c",
+          "actor": "tom@example.com",
+          "value": {
+            "title": "ACME – New rooms added to spaces don't show until sync",
+            "href": "https://github.com/acme/app/issues/3298"
+          },
+          "sortKey": 1738159320000,
+          "sig": { "alg": "ES256", "full": "base64url…", "redacted": "base64url…" },
+          "pubKey": { "kty": "EC", "crv": "P-256", "x": "…", "y": "…" }
+        }
+      ]
+    },
+
+    "issue__remedy": {
+      "history": [
+        {
+          "id": "h_m5x2k1_ab12cd",
+          "actor": "tom@example.com",
+          "value": {
+            "title": "ACME – New rooms added to spaces don't show until sync",
+            "href": "https://github.com/acme/app/issues/3298"
+          },
+          "sortKey": 1738594440000,
+          "sig": { "alg": "ES256", "full": "base64url…", "redacted": "base64url…" },
+          "pubKey": { "kty": "EC", "crv": "P-256", "x": "…", "y": "…" }
+        }
+      ]
+    },
+
+    "f_1793297192161": {
+      "_comment": {
+        "label": "Priority", "type": "select",
+        "options": { "opt_7f21": "P0", "opt_9f3c": "P1", "opt_a001": "P2" }
+      },
+      "history": [
+        {
+          "id": "h_9f1a", "actor": "tom@example.com",
+          "value": "opt_a001",
+          "sortKey": 1738249320000,
+          "sig": { "alg": "ES256", "full": "base64url…", "redacted": "base64url…" },
+          "pubKey": { "kty": "EC", "crv": "P-256", "x": "…", "y": "…" }
+        },
+        {
+          "id": "h_3c7d", "actor": "tom@example.com",
+          "value": "opt_9f3c",
+          "sortKey": 1738594500000,
+          "sig": { "alg": "ES256", "full": "base64url…", "redacted": "base64url…" },
+          "pubKey": { "kty": "EC", "crv": "P-256", "x": "…", "y": "…" }
+        }
+      ]
+    },
+
+    "select__rag": {
+      "history": [
+        {
+          "id": "h_rag1", "actor": "tom@example.com",
+          "value": "on_track",
+          "sortKey": 1738508400000,
+          "sig": { "alg": "ES256", "full": "base64url…", "redacted": "base64url…" },
+          "pubKey": { "kty": "EC", "crv": "P-256", "x": "…", "y": "…" }
+        }
+      ]
+    },
+
+    "commentStream__comments": {
+      "history": [
+        {
+          "id": "c_1", "actor": "tom@example.com",
+          "text": "Looping in support.",
+          "sortKey": 1738594560000,
+          "sig": { "alg": "ES256", "full": "base64url…", "redacted": "base64url…" },
+          "pubKey": { "kty": "EC", "crv": "P-256", "x": "…", "y": "…" }
+        }
+      ]
+    }
+  }
+}

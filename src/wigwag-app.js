@@ -9,12 +9,12 @@
 // names like deriveIssueValues(...), not window.WigwagCore.xxx(...))
 // because this destructure is the only thing that needed to change.
 const {
-  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, columnFilterIsActive, dateFilterPresetRanges, parseFilterQuery, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, isPastedTextASingleUrl, wrapSelectionWithMarkdownLink, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, migrateLegacyComments, deriveFieldDefs, effectiveFieldDefs, deriveProjectName, PROJECT_NAME_FIELD_ID, deriveProjectNotes, PROJECT_NOTES_FIELD_ID, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, principalKind, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER
+  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, columnFilterIsActive, dateFilterPresetRanges, parseFilterQuery, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, isPastedTextASingleUrl, wrapSelectionWithMarkdownLink, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, deriveFieldDefs, effectiveFieldDefs, deriveProjectName, PROJECT_NAME_FIELD_ID, deriveProjectNotes, PROJECT_NOTES_FIELD_ID, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, principalKind, SIGN_ALG, JOSE_ALG_ES256, signEntryPayload, verifyEntryPayload, signableEntryPayload, signableProjectEntryPayload, redactedEntryPayload, redactedProjectEntryPayload, signableCommentEntryPayload, signableProjectCommentEntryPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER
 ,
-  buildSource, normalizeRef, evalRule, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, fieldLocalBindState, liveBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, builtinKindConfigured, builtinKindReachable,
-  CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, pickConnectorFields, connectorLinkText, compileConnectorMacro,
+  buildSource, normalizeRef, sourceRefHasFullData, evalRule, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, fieldLocalBindState, liveBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, builtinKindConfigured, builtinKindReachable, resolveRefSystem, parseGithubUrl, parseJiraKey, parseSalesforceId, hostFromUrl,
+  CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, newFieldId, newOptionId, pickConnectorFields, connectorLinkText, compileConnectorMacro,
   importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry,
-  squashHistory, displayValueForHistory, buildSourceText, humanFileSize, parseJsonl, entryKey, commentKey, unionByKey, mergeCommentStreams, mergeIssuePair, computeIssueMerge, mergeHasRealChanges, computeFieldDefsMerge, computeDerivedChangeEntries, buildGithubContentsUrl, buildGithubContentsHeaders, buildGithubCommitMessage, pullGithubFile, pushGithubFile, probeGithubRepoAccess, issueCreatedAt, computeHeaderMeshTriangles, computeHeaderCompression, cellPaddingForWidth, computeAffordanceFade,
+  squashHistory, redactEntry, redactProjectEntry, displayValueForHistory, buildSourceText, humanFileSize, parseJsonl, entryKey, unionByKey, mergeIssuePair, computeIssueMerge, mergeHasRealChanges, computeFieldDefsMerge, computeDerivedChangeEntries, buildGithubContentsUrl, buildGithubContentsHeaders, buildGithubCommitMessage, pullGithubFile, pushGithubFile, probeGithubRepoAccess, issueCreatedAt, computeHeaderMeshTriangles, computeHeaderCompression, cellPaddingForWidth, computeAffordanceFade,
   diff3Merge, formatDateLabel, provenanceMarkerSuffix, conflictMarkerLines, hasUnresolvedMergeMarkers, computeMergeProseEntries, MERGE_LOG_TYPE, MERGE_LOG_VERSION, mergeLogStorageKey, buildMergeRecord, buildMergeIssueSummary, latestEntryIdsByField,
   patchMergeSummaryResultEntryId, fieldStillSafeToRevert, computeMergeRollbackEntries, buildMergePreviewViewModel, buildMergeFieldTimeline, mergeRecordNeedsAttention, buildMergeFieldDiffLines, mergeSettledValueView, buildMergeIssueTimeline, resolveFieldValueView,
   WIGWAG_EXPORT_TYPE, WIGWAG_EXPORT_VERSION, canonicalRecordsText, computeContentSha256Hex, fingerprintPublicKey, buildExportEnvelope, parseExportEnvelope, verifyExportEnvelope, EXPORT_TRUST_KEY, lookupSenderTrust, classifySenderTrust, rememberSenderTrust, classifyExportProvenance
@@ -193,7 +193,7 @@ function buildProjectSummaryFromDoc(doc) {
   const fieldDefs = (doc && doc.fieldDefs) || {};
   const issues = (doc && doc.issues) || [];
   return {
-    issueCount: issues.filter(iss => !issueIsDeleted(iss.history)).length,
+    issueCount: issues.filter(iss => !issueIsDeleted(iss)).length,
     githubRepo: (doc && doc.githubRepo) || '',
     githubRepoPath: (doc && doc.githubRepoPath) || 'tracker.jsonl',
     githubRepoBranch: (doc && doc.githubRepoBranch) || '',
@@ -689,9 +689,9 @@ class Component extends DCLogic {
           fieldDefs: parsed.fields,
           projectHistory: parsed.projectHistory || [],
           issues: parsed.issues.map(iss => ({
-            id: iss.id, num: iss.num,
+            id: iss.id,
             fieldRefs: iss.fieldRefs || {}, fieldLoading: {},
-            values: iss.values || {}, commentStreams: iss.commentStreams || {}, history: iss.history || []
+            values: iss.values || {}, fields: iss.fields || {}
           })),
           columnOrder: defaultColumnOrder(),
           hiddenFieldIds: [], githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', githubTokenOverride: '',
@@ -828,10 +828,12 @@ class Component extends DCLogic {
   seedIssueSubscriptionAsNotified = (issueId) => {
     const issue = this.state.issues.find(iss => iss.id === issueId);
     if (!issue) return;
+    // Format v2: every field (comment-stream fields included) lives in
+    // issue.fields now, so one walk covers what used to need a separate
+    // allCommentStreamEntries pass plus a flat issue.history pass.
     const ids = [];
-    for (const c of this.allCommentStreamEntries(issue)) ids.push(commentKey(c));
-    for (const h of (issue.history || [])) {
-      if (h.field && h.origin !== 'legacy-backfill') ids.push(entryKey(h));
+    for (const colId in (issue.fields || {})) {
+      for (const h of (issue.fields[colId].history || [])) ids.push(entryKey(h));
     }
     this.markMentionsNotified(ids);
   };
@@ -876,12 +878,22 @@ class Component extends DCLogic {
   // fires exactly like one in "Comments", per design). Order doesn't
   // matter to any caller (all of them just filter/reduce), so a plain
   // concat is fine.
+  // Format v2: a comment-stream field is just another entry in
+  // issue.fields now (its own colId, e.g. the grandfathered 'comments'
+  // or a new commentStream__<name> id) -- identified by fieldDefs'
+  // type:'commentStream', not by a separate issue.commentStreams
+  // structure any more (see docs/FORMAT_V2.md).
   allCommentStreamEntries(issue) {
-    return Object.values(issue.commentStreams || {}).flat();
+    const fieldDefs = this.effectiveFieldDefs();
+    const entries = [];
+    for (const colId in (issue.fields || {})) {
+      if (fieldDefs[colId] && fieldDefs[colId].type === 'commentStream') entries.push(...(issue.fields[colId].history || []));
+    }
+    return entries;
   }
   markCommentsRead(issueId) {
     const issue = this.findIssue(issueId);
-    const comments = (issue && issue.commentStreams.comments) || [];
+    const comments = (issue && issue.fields.comments && issue.fields.comments.history) || [];
     if (!comments.length) return;
     const latest = latestCommentsById(comments).reduce((max, c) => Math.max(max, c.sortKey || 0), 0);
     this.setState(s => ({ commentReads: { ...s.commentReads, [issueId]: latest } }));
@@ -1424,9 +1436,9 @@ class Component extends DCLogic {
       fieldDefs: parsed.fields || defaultFieldDefs(),
       projectHistory: parsed.projectHistory || [],
       issues: parsed.issues.map(iss => ({
-        id: iss.id, num: iss.num,
+        id: iss.id,
         fieldRefs: iss.fieldRefs || {}, fieldLoading: {},
-        values: iss.values || {}, commentStreams: iss.commentStreams || {}, history: iss.history || []
+        values: iss.values || {}, fields: iss.fields || {}
       })),
       columnOrder: defaultColumnOrder(),
       hiddenFieldIds: [], githubTokenOverride: '',
@@ -1894,7 +1906,7 @@ class Component extends DCLogic {
       id: crypto.randomUUID ? crypto.randomUUID() : 'ph-' + Date.now() + '-' + Math.random().toString(36).slice(2),
       actor: this.displayName(), email: this.state.identityEmail || '',
       text: 'Named project "' + value + '"', field: PROJECT_NAME_FIELD_ID, value,
-      origin: 'authored', sortKey: this.nextSortKey(), sig: null, sigRedacted: null, pubKey: null
+      origin: 'authored', sortKey: this.nextSortKey(), sig: null, pubKey: null
     };
   }
   // Signs an entry already present (unsigned) in projectId's own history --
@@ -1903,11 +1915,11 @@ class Component extends DCLogic {
   // viewing the same project the entry belongs to, in case the user
   // switched away before signing finished.
   signInsertedProjectHistoryEntry(projectId, entry) {
-    Promise.all([this.signPayload(signableProjectPayload(projectId, entry)), this.signPayload(redactedProjectPayload(projectId, entry))])
-      .then(([sig, sigRedacted]) => {
-        if (!sig && !sigRedacted) return;
+    Promise.all([this.signPayload(signableProjectEntryPayload(projectId, entry)), this.signPayload(redactedProjectEntryPayload(projectId, entry))])
+      .then(([full, redacted]) => {
+        if (!full && !redacted) return;
         if (this.state.projectId !== projectId) return;
-        this.setState(st => ({ projectHistory: st.projectHistory.map(h => h.id === entry.id ? { ...h, sig, sigRedacted, pubKey: this.state.identityPublicKeyJwk } : h) }));
+        this.setState(st => ({ projectHistory: st.projectHistory.map(h => h.id === entry.id ? { ...h, sig: { alg: JOSE_ALG_ES256, full, redacted }, pubKey: this.state.identityPublicKeyJwk } : h) }));
       });
   }
   startEditTrackerName() {
@@ -2561,35 +2573,49 @@ class Component extends DCLogic {
   // label in exactly this form -- e.g. a fetch-failure message might not),
   // so the Activity feed can render it in a visually distinct weight from
   // the surrounding sentence.
-  buildActivityFieldLabel(h, fieldDefs) {
-    if (!h.field || h.text === undefined) return null;
-    const def = fieldDefs[h.field];
+  // Format v2: a field-value entry no longer carries its own narrative
+  // `.text` to parse a label/pill substring out of (see docs/FORMAT_V2.md
+  // -- it's "field set to value," fully reconstructable from the field's
+  // own def + the entry's value, so that's what this now builds
+  // structurally instead of string-searching a stored sentence.
+  buildActivityFieldLabel(colId, value, fieldDefs) {
+    const def = fieldDefs[colId];
     const label = def && def.label;
     if (!label) return null;
-    const idx = h.text.indexOf(label);
-    if (idx === -1) return null;
-    return { before: h.text.slice(0, idx), label, after: h.text.slice(idx + label.length) };
+    return { before: '', label, after: ' set to ' + displayValueForHistory(def, value) };
   }
-  buildActivityPill(h, fieldDefs) {
-    if (!h.field || h.text === undefined) return null;
-    const def = fieldDefs[h.field];
-    if (!def) return null;
-    if (def.type === 'select') {
-      const opt = (def.options || []).find(o => o.id === h.value);
-      if (!opt) return null;
-      const idx = h.text.indexOf(opt.label);
-      if (idx === -1) return null;
-      return { before: h.text.slice(0, idx), label: opt.label, emoji: opt.emoji || '', bg: col(opt.color).bg, fg: col(opt.color).fg, after: h.text.slice(idx + opt.label.length) };
-    }
-    if (def.type === 'multiselect') {
-      for (const opt of (def.options || [])) {
-        const idx = h.text.indexOf(opt.label);
-        if (idx !== -1 && idx + opt.label.length === h.text.length) {
-          return { before: h.text.slice(0, idx), label: opt.label, emoji: '', bg: col(opt.color).bg, fg: col(opt.color).fg, after: '' };
-        }
+  buildActivityPill(colId, value, fieldDefs) {
+    const def = fieldDefs[colId];
+    if (!def || def.type !== 'select') return null;
+    const opt = (def.options || []).find(o => o.id === value);
+    if (!opt) return null;
+    return { before: (def.label || colId) + ' set to ', label: opt.label, emoji: opt.emoji || '', bg: col(opt.color).bg, fg: col(opt.color).fg, after: '' };
+  }
+  // Format v2: an issue's history is now issue.fields[colId].history, not
+  // one flat array with .field/.text/.origin per entry -- this flattens
+  // every non-comment-stream field's own history back into one
+  // chronological list (comment-stream fields render via their own
+  // buildStreamActivityEntries-style path instead), reconstructing each
+  // entry's display text from field+value since .text no longer exists.
+  // Shared by the desktop slide-over and the mobile row-detail sheet.
+  buildIssueHistoryActivityEntries(issue, fieldDefs) {
+    const entries = [];
+    for (const colId in (issue.fields || {})) {
+      if (fieldDefs[colId] && fieldDefs[colId].type === 'commentStream') continue;
+      for (const h of (issue.fields[colId].history || [])) {
+        const pill = this.buildActivityPill(colId, h.value, fieldDefs);
+        const fieldLabelParts = !pill ? this.buildActivityFieldLabel(colId, h.value, fieldDefs) : null;
+        const text = colId === ISSUE_DELETED_FIELD_ID ? 'Deleted issue'
+          : ((fieldDefs[colId] && fieldDefs[colId].label) || colId) + ' set to ' + displayValueForHistory(fieldDefs[colId] || { type: 'text' }, h.value);
+        entries.push({
+          isComment: false, isHistory: true, actor: h.actor, time: this.timeLabelFor(h), text, sortKey: h.sortKey || 0,
+          pill, hasPill: !!pill, fieldLabelParts, hasFieldLabel: !!fieldLabelParts, noPill: !pill && !h.redacted && !fieldLabelParts, isRedacted: !!h.redacted,
+          showRedactBtn: !!h.id && !h.redacted,
+          onRedact: () => this.redactHistoryEntry(issue.id, h.id)
+        });
       }
     }
-    return null;
+    return entries.sort((a, b) => b.sortKey - a.sortKey);
   }
   // Shared entry point for the file-based and paste-based "Import
   // project" flows. If the file references a project id that already
@@ -2622,9 +2648,9 @@ class Component extends DCLogic {
       fieldDefs: parsed.fields || defaultFieldDefs(),
       projectHistory: nameEntry ? importedProjectHistory.concat([nameEntry]) : importedProjectHistory,
       issues: parsed.issues.map(iss => ({
-        id: iss.id, num: iss.num,
+        id: iss.id,
         fieldRefs: iss.fieldRefs || {}, fieldLoading: {},
-        values: iss.values || {}, commentStreams: iss.commentStreams || {}, history: iss.history || []
+        values: iss.values || {}, fields: iss.fields || {}
       })),
       columnOrder: defaultColumnOrder(),
       hiddenFieldIds: [], githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', githubTokenOverride: '',
@@ -2731,16 +2757,22 @@ class Component extends DCLogic {
     const computed = computeIssueMerge(this.state.issues, parsed.issues, this.state.fieldDefs, inboundInfo);
     const localProjectHistory = this.state.projectHistory;
     const incomingProjectHistory = parsed.projectHistory || [];
+    // computeMergeProseEntries (format v2) reads a field's own history via
+    // issue.fields[colId].history, no longer doing its own h.field===colId
+    // filtering -- project history stays a flat, mixed-fields array (see
+    // docs/FORMAT_V2.md's scoping note), so this fake "pseudo-issue"
+    // wrapper must pre-filter down to just the Notes field's own entries
+    // itself before handing them in under that shape.
     const notesMergeEntries = computeMergeProseEntries(
-      { history: localProjectHistory },
-      { history: incomingProjectHistory },
+      { fields: { [PROJECT_NOTES_FIELD_ID]: { history: localProjectHistory.filter(h => h.field === PROJECT_NOTES_FIELD_ID) } } },
+      { fields: { [PROJECT_NOTES_FIELD_ID]: { history: incomingProjectHistory.filter(h => h.field === PROJECT_NOTES_FIELD_ID) } } },
       { [PROJECT_NOTES_FIELD_ID]: { type: 'text', label: 'Notes' } },
       inboundInfo
     );
     const localNotesKeys = new Set(localProjectHistory.filter(h => h.field === PROJECT_NOTES_FIELD_ID).map(h => entryKey(h)));
     const notesChanged = notesMergeEntries.length > 0 || incomingProjectHistory.some(h => h.field === PROJECT_NOTES_FIELD_ID && !localNotesKeys.has(entryKey(h)));
-    const localCommentKeys = new Set((this.state.projectComments || []).map(c => commentKey(c)));
-    const commentsChanged = ((parsed.projectComments) || []).some(c => !localCommentKeys.has(commentKey(c)));
+    const localCommentKeys = new Set((this.state.projectComments || []).map(c => entryKey(c)));
+    const commentsChanged = ((parsed.projectComments) || []).some(c => !localCommentKeys.has(entryKey(c)));
     this.setState({ pendingMerge: { parsed, inboundInfo: inboundInfo || null, computed: { ...computed, notesMergeEntries, notesChanged, commentsChanged } } });
   }
   // A refresh-sourced pendingMerge (inboundInfo.kind === 'refresh') has a
@@ -2801,8 +2833,10 @@ class Component extends DCLogic {
         if (!issueSummary) return iss;
         const deleteIds = new Set((issueSummary.fields || []).map(f => f.resultEntryId).filter(Boolean));
         if (!deleteIds.size) return iss;
-        const withHistory = { ...iss, history: iss.history.filter(h => !deleteIds.has(h.id)) };
-        return { ...withHistory, values: deriveIssueValues(withHistory, s.fieldDefs), fieldRefs: deriveIssueFieldRefs(withHistory, s.fieldDefs), deleted: issueIsDeleted(withHistory.history) };
+        const fields = {};
+        for (const colId in iss.fields) fields[colId] = { history: iss.fields[colId].history.filter(h => !deleteIds.has(h.id)) };
+        const withFields = { ...iss, fields };
+        return { ...withFields, values: deriveIssueValues(withFields, s.fieldDefs), fieldRefs: deriveIssueFieldRefs(withFields, s.fieldDefs), deleted: issueIsDeleted(withFields) };
       })
     }));
     const projectId = this.state.projectId;
@@ -3095,12 +3129,23 @@ class Component extends DCLogic {
   // cleared by viewing that row -- see onDismissMergeNotice).
   applyMergedIssues(mergedIssues, fieldDefs, projectHistory, notices, parsed) {
     let maxIncomingSortKey = this._lastSortKey;
-    mergedIssues.forEach(iss => (iss.history || []).forEach(h => { if (h.sortKey > maxIncomingSortKey) maxIncomingSortKey = h.sortKey; }));
+    mergedIssues.forEach(iss => {
+      for (const colId in (iss.fields || {})) {
+        for (const h of (iss.fields[colId].history || [])) { if (h.sortKey > maxIncomingSortKey) maxIncomingSortKey = h.sortKey; }
+      }
+    });
     this._lastSortKey = maxIncomingSortKey;
     const beforeByIssue = {};
     mergedIssues.forEach(iss => { beforeByIssue[iss.id] = iss.values; });
     const notesPatch = (!this.state.projectNotes && parsed && parsed.projectNotes) ? { projectNotes: parsed.projectNotes } : {};
-    const commentsPatch = { projectComments: unionByKey(this.state.projectComments || [], (parsed && parsed.projectComments) || [], c => commentKey(c)) };
+    // projectComments (comments on the PROJECT itself, distinct from an
+    // issue's own commentStream field) stay a flat array, never folded
+    // into any fields map -- entryKey (format v2's generic id-or-legacy-
+    // composite key, already falling back to .text when there's no
+    // .value) replaces the old comment-specific commentKey here, now
+    // that comments use the same {id, actor, text, sortKey} shape as
+    // every other entry rather than a dedicated commentKey/author pair.
+    const commentsPatch = { projectComments: unionByKey(this.state.projectComments || [], (parsed && parsed.projectComments) || [], c => entryKey(c)) };
     this.setState(s => Object.assign(
       { issues: mergedIssues.map(iss => settleLinkedRules({ ...iss }, effectiveFieldDefs(s.fieldDefs, s.localFieldBindings), this.liveRuleCtx(iss.id))) },
       fieldDefs ? { fieldDefs, projectHistory, columnOrder: reconcileColumnOrder(this.state.columnOrder, fieldDefs, this.state.hiddenFieldIds) } : {},
@@ -3138,11 +3183,15 @@ class Component extends DCLogic {
         id: crypto.randomUUID(), actor, email,
         text: 'Created field "' + (fieldDefs[id].label || id) + '"',
         field: id, value: fieldDefs[id], origin: 'authored',
-        sortKey: this.nextSortKey(), sig: null, sigRedacted: null, pubKey: null
+        sortKey: this.nextSortKey(), sig: null, pubKey: null
       });
     }
     return entries;
   }
+  // Project-level history was NOT restructured by format v2 -- stays a
+  // flat, field-tagged array (see docs/FORMAT_V2.md's scoping note, and
+  // signableProjectEntryPayload's own comment in wigwag-core.js) -- only
+  // the signature wrapper changed here.
   appendProjectHistory({ text, field, value, origin }) {
     const s = this.state;
     const entryBase = {
@@ -3154,8 +3203,8 @@ class Component extends DCLogic {
     };
     const projectId = this.state.projectId;
     commitSignedEntry(entryBase, {
-      signable: signableProjectPayload(projectId, entryBase),
-      redacted: redactedProjectPayload(projectId, entryBase)
+      signable: signableProjectEntryPayload(projectId, entryBase),
+      redacted: redactedProjectEntryPayload(projectId, entryBase)
     }, {
       sign: (payload) => this.signPayload(payload),
       insertUnsigned: (entry) => this.setState(st => {
@@ -3163,43 +3212,51 @@ class Component extends DCLogic {
         const derivedNotes = deriveProjectNotes(projectHistory);
         return { projectHistory, fieldDefs: deriveFieldDefs(projectHistory), projectNotes: derivedNotes != null ? derivedNotes : st.projectNotes };
       }),
-      patchSignature: (id, sortKey, sig, sigRedacted, pubKey) => this.setState(st => ({
-        projectHistory: st.projectHistory.map(h => h.id === id ? { ...h, sig, sigRedacted, pubKey } : h)
+      patchSignature: (id, sortKey, sig, pubKey) => this.setState(st => ({
+        projectHistory: st.projectHistory.map(h => h.id === id ? { ...h, sig, pubKey } : h)
       })),
       currentPubKey: () => this.state.identityPublicKeyJwk
     });
-    return { ...entryBase, sig: null, sigRedacted: null, pubKey: null };
+    return { ...entryBase, sig: null, pubKey: null };
   }
-  appendSignedHistory(issueId, { text, field, value, fieldRef, origin }) {
-    const s = this.state;
+  // Format v2: an issue-level entry drops text/origin entirely (field
+  // becomes the fields-map key, not stored on the entry itself) and
+  // folds fieldRef into value as {title, href} when the field is linked
+  // -- see docs/FORMAT_V2.md. Every call site keeps passing `field` (the
+  // colId) and may still pass a `text`/`origin` (now silently ignored --
+  // left harmless rather than ripped out of every caller, since neither
+  // carries any remaining meaning to strip by hand at each site).
+  appendSignedHistory(issueId, { field, value, fieldRef }) {
+    const colId = field;
+    const finalValue = (fieldRef && fieldRef.href) ? { title: value, href: fieldRef.href } : value;
     const entryBase = {
       id: crypto.randomUUID ? crypto.randomUUID() : 'h-' + Date.now() + '-' + Math.random().toString(36).slice(2),
-      actor: this.displayName(), email: s.identityEmail || '',
-      text, field: field || null, value: field ? value : undefined,
-      fieldRef: (field && fieldRef !== undefined) ? fieldRef : undefined,
-      origin: origin || 'authored',
+      actor: this.displayName(),
+      value: finalValue,
       sortKey: this.nextSortKey()
     };
     commitSignedEntry(entryBase, {
-      signable: signablePayload(issueId, entryBase),
-      redacted: redactedPayload(issueId, entryBase)
+      signable: signableEntryPayload(issueId, entryBase),
+      redacted: redactedEntryPayload(issueId, entryBase)
     }, {
       sign: (payload) => this.signPayload(payload),
       insertUnsigned: (entry) => this.setState(st => ({
         issues: st.issues.map(iss => {
           if (iss.id !== issueId) return iss;
-          const withHistory = { ...iss, history: [...iss.history, entry] };
-          return { ...withHistory, values: deriveIssueValues(withHistory, st.fieldDefs), fieldRefs: deriveIssueFieldRefs(withHistory, st.fieldDefs), deleted: issueIsDeleted(withHistory.history) };
+          const fields = { ...iss.fields, [colId]: { history: [...((iss.fields[colId] && iss.fields[colId].history) || []), entry] } };
+          const withFields = { ...iss, fields };
+          return { ...withFields, values: deriveIssueValues(withFields, st.fieldDefs), fieldRefs: deriveIssueFieldRefs(withFields, st.fieldDefs), deleted: issueIsDeleted(withFields) };
         })
       })),
-      patchSignature: (id, sortKey, sig, sigRedacted, pubKey) => this.setState(st => ({
-        issues: st.issues.map(iss => iss.id === issueId ? {
-          ...iss, history: iss.history.map(h => h.id === id ? { ...h, sig, sigRedacted, pubKey } : h)
-        } : iss)
+      patchSignature: (id, sortKey, sig, pubKey) => this.setState(st => ({
+        issues: st.issues.map(iss => {
+          if (iss.id !== issueId || !iss.fields[colId]) return iss;
+          return { ...iss, fields: { ...iss.fields, [colId]: { history: iss.fields[colId].history.map(h => h.id === id ? { ...h, sig, pubKey } : h) } } };
+        })
       })),
       currentPubKey: () => this.state.identityPublicKeyJwk
     });
-    return { ...entryBase, sig: null, sigRedacted: null, pubKey: null };
+    return { ...entryBase, sig: null, pubKey: null };
   }
   loadSecrets() {
     try {
@@ -3295,7 +3352,13 @@ class Component extends DCLogic {
         hiddenFieldIds = [...hiddenFieldIds0, ...['created', 'updated'].filter(tid => !hiddenFieldIds0.includes(tid))];
       }
       const hydratedIssues = issues0.map(iss => hydrateIssue(iss, fieldDefs));
-      const backfillChangedSomething = hydratedIssues.some((iss, i) => iss.history !== issues0[i].history || iss.commentStreams !== issues0[i].commentStreams);
+      // Format v2: hydrateIssue no longer backfills anything into an
+      // issue's own fields (backfillIssueHistoryFromValues/
+      // migrateLegacyComments are retired -- see docs/FORMAT_V2.md) --
+      // this is permanently false now, kept only so _shouldPersist below
+      // still reads correctly if a per-issue migration concern is ever
+      // reintroduced.
+      const backfillChangedSomething = hydratedIssues.some((iss, i) => iss.fields !== issues0[i].fields);
       patch = {
         fieldDefs, issues: hydratedIssues, projectHistory, projects, hiddenFieldIds, projectNotes,
         githubRepo: doc.githubRepo || this.state.githubRepo,
@@ -4579,20 +4642,22 @@ class Component extends DCLogic {
   }
   // Replaces sameLink/sameJiraLink/sameSalesforceLink/sameConnectorLink
   // -- one comparison for every system now that they all persist the
-  // same {href, fetchedVia} shape. href isn't always directly
-  // comparable pre-fetch (jira/salesforce/a custom connector only
-  // learn their real href FROM the fetch -- see connectorMatches' own
-  // comment), so this compares matchedId instead, re-deriving the
-  // existing ref's own matchedId from its persisted href via
-  // matchedIdFromHref when it isn't carried directly on the ref
-  // itself (a legacy connector ref, or a failed-fetch error-path
-  // write for any system, still carries its own bare matchedId
-  // precisely so a retry is recognized as a retry, not a brand-new
-  // link -- see applyLinkToField's own catch block).
+  // same {title, href} value shape (format v2 -- fetchedVia/matchedId
+  // are never persisted any more, see docs/FORMAT_V2.md; a linked
+  // field's own connector is re-resolved live from href via
+  // resolveRefSystem instead). href isn't always directly comparable
+  // pre-fetch (jira/salesforce/a custom connector only learn their real
+  // href FROM the fetch -- see connectorMatches' own comment), so this
+  // compares matchedId instead, re-deriving BOTH sides' matchedId from
+  // href via matchedIdFromHref -- there is no more "already carries its
+  // own bare matchedId" shortcut to take, since nothing persists it any
+  // more, on a failed fetch included (see applyLinkToField's own catch
+  // block, which no longer writes anything to signed history on error).
   sameRef(ref, fetchedVia, matchedId) {
-    const n = normalizeRef(ref);
-    if (!n || n.fetchedVia !== fetchedVia) return false;
-    const existingMatchedId = n.matchedId !== undefined ? n.matchedId : this.matchedIdFromHref(fetchedVia, n.href);
+    if (!ref || !ref.href) return false;
+    const resolved = resolveRefSystem(ref.href, { connectedSources: this.state.connectedSources });
+    if (!resolved || !resolved.connector || resolved.connector.id !== fetchedVia) return false;
+    const existingMatchedId = this.matchedIdFromHref(fetchedVia, ref.href);
     return JSON.stringify(existingMatchedId) === JSON.stringify(matchedId);
   }
   // Given a normalized ref's fetchedVia + href, re-derives the
@@ -4682,9 +4747,21 @@ class Component extends DCLogic {
   // was never a candidate for migrating to a DIFFERENT system's shape.
   // Ambiguous (2+) matches just take the first -- refresh (single-row
   // or staged) has no picker UI to disambiguate through.
+  // Format v2: fetchedVia is never persisted on a ref any more (see
+  // docs/FORMAT_V2.md) -- "the originally-matched connector" is now
+  // resolved LIVE via resolveRefSystem against the ref's own href, every
+  // time. This is the same self-healing mechanism the comment above
+  // already describes, just with the live lookup standing in for what
+  // used to be a stored pointer.
+  liveFetchedViaForRef(n) {
+    if (!n || !n.href) return null;
+    const resolved = resolveRefSystem(n.href, { connectedSources: this.state.connectedSources });
+    return resolved && resolved.connector ? resolved.connector.id : null;
+  }
   resolveRefreshDispatch(n) {
-    const matchedId = n.matchedId !== undefined ? n.matchedId : this.matchedIdFromHref(n.fetchedVia, n.href);
-    const original = this.resolveFetchConnector(n.fetchedVia);
+    const fetchedVia = this.liveFetchedViaForRef(n);
+    const matchedId = this.matchedIdFromHref(fetchedVia, n.href);
+    const original = this.resolveFetchConnector(fetchedVia);
     if (this.isConnectorReachableForRefresh(original)) return { connector: original, matchedId };
     if (typeof matchedId !== 'string') return { connector: null, matchedId };
     const migrated = this.connectorMatches(matchedId)[0];
@@ -4703,8 +4780,7 @@ class Component extends DCLogic {
   // no href at all.
   resolveMatchedIdForDisplay(ref, n) {
     if (!n) return null;
-    if (n.matchedId !== undefined) return n.matchedId;
-    const viaHref = this.matchedIdFromHref(n.fetchedVia, n.href);
+    const viaHref = this.matchedIdFromHref(this.liveFetchedViaForRef(n), n.href);
     if (viaHref != null) return viaHref;
     return ref.key || ref.id || null;
   }
@@ -4778,7 +4854,7 @@ class Component extends DCLogic {
       return { failed: false, afterIssue, rootEntry };
     }
     const n = normalizeRef(ref);
-    if (!n || !n.fetchedVia) return { failed: true, errorText: 'Could not refresh: link no longer resolvable' };
+    if (!n || !n.href) return { failed: true, errorText: 'Could not refresh: link no longer resolvable' };
     const dispatch = this.resolveRefreshDispatch(n);
     if (!dispatch.connector) return { failed: true, errorText: 'Could not refresh: connector no longer exists' };
     const connector = dispatch.connector;
@@ -4794,27 +4870,31 @@ class Component extends DCLogic {
       return { failed: true, errorText: 'Could not fetch from ' + systemLabel + ' (' + err.message + ')' };
     }
     const { data, href } = fetched;
-    // See applyLinkToField's own fieldRef comment -- matchedId is kept
-    // for a custom connector (identity, not rich per-system data) since
-    // its href has no guaranteed relationship to its own paste pattern.
-    const fieldRef = isBuiltin ? { href, fetchedVia } : { href, fetchedVia, matchedId };
+    // Format v2: a ref never persists fetchedVia/matchedId any more --
+    // which connector/identity it resolves to is re-derived live from
+    // href alone every time (resolveRefSystem: the builtins' own
+    // canonical-URL parsers for github/jira/salesforce, host-matching
+    // against rootUrl for a custom connector -- see docs/FORMAT_V2.md's
+    // "Resolved since the first draft"). So the only thing worth
+    // persisting here is href itself.
+    const fieldRef = { href };
     const value = kind === 'salesforce' ? data.name : data.title;
     const beforeValue = issue.values[colId];
     const beforeFieldRef = issue.fieldRefs && issue.fieldRefs[colId];
     // Compares against the NORMALIZED before-ref, not the raw one -- a
-    // legacy-shaped ref migrating to the new {href, fetchedVia} shape
-    // with the exact same identity/value is purely a representation
-    // change, not real news from the source system, so it must not
-    // surface as a spurious "refreshed" entry (confirmed: this was a
-    // real regression caught by row-selection.spec.js's own no-op-
-    // refresh coverage -- every pre-existing legacy-shaped link would
-    // otherwise show as "changed" on its first touch after this
-    // redesign). When unchanged, no entry is appended at all (append-
-    // only history is the only thing that actually persists state), so
-    // a legacy ref that never changes simply keeps its legacy shape on
-    // disk forever, read correctly via normalizeRef every time -- it
-    // only actually migrates to the new shape the next time a REAL
-    // value/href change gives it something worth writing anyway.
+    // legacy-shaped ref migrating to the new {href}-only shape with the
+    // exact same identity/value is purely a representation change, not
+    // real news from the source system, so it must not surface as a
+    // spurious "refreshed" entry (confirmed: this was a real regression
+    // caught by row-selection.spec.js's own no-op-refresh coverage --
+    // every pre-existing legacy-shaped link would otherwise show as
+    // "changed" on its first touch after this redesign). When unchanged,
+    // no entry is appended at all (append-only history is the only thing
+    // that actually persists state), so a legacy ref that never changes
+    // simply keeps its legacy shape on disk forever, read correctly via
+    // normalizeRef every time -- it only actually migrates to the new
+    // shape the next time a REAL value/href change gives it something
+    // worth writing anyway.
     const unchanged = value === beforeValue && JSON.stringify(fieldRef) === JSON.stringify(normalizeRef(beforeFieldRef));
     const rootEntry = (!isBound && !unchanged) ? { field: colId, text: fieldLabel + ' refreshed from ' + systemLabel, value, fieldRef } : null;
     const patchedIssue = { ...issue, values: { ...issue.values, [colId]: value }, fieldRefs: { ...issue.fieldRefs, [colId]: fieldRef } };
@@ -4863,7 +4943,7 @@ class Component extends DCLogic {
       this.applyWigwagLinkToField(issueId, colId, { projectId: ref.projectId, issueId: ref.issueId, from: ref.from, path: ref.path, ref: ref.ref });
     } else {
       const n = normalizeRef(ref);
-      if (n && n.fetchedVia) {
+      if (n && n.href) {
         // resolveRefreshDispatch handles the self-healing migration in
         // either direction (builtin<->custom, builtin<->builtin,
         // custom<->custom) when the originally-matched connector is no
@@ -4917,41 +4997,32 @@ class Component extends DCLogic {
     const isBuiltin = !!kind;
     if (!isBuiltin && !this.isTauriConnectorRuntime()) return; // same silent no-op applyConnectorLinkToField always had outside Tauri
     const systemLabel = connector.name;
-    const linkedToText = kind === 'github' ? 'GitHub #' + matchedId.num
-      : kind === 'jira' ? 'Jira ' + matchedId
-      : kind === 'salesforce' ? 'Salesforce ' + salesforceObjectTypeFromId(matchedId)
-      : systemLabel;
     const fieldLabel = (this.state.fieldDefs[colId] && this.state.fieldDefs[colId].label) || colId;
     const iss0 = this.findIssue(issueId);
-    const isRefreshStart = iss0 && this.sameRef(iss0.fieldRefs && iss0.fieldRefs[colId], fetchedVia, matchedId);
     const beforeTitle = iss0 ? iss0.values[colId] : undefined;
     this.setState({
       activeCell: null, editDraft: '', connectorPickerOpen: null,
       issues: this.state.issues.map(i => i.id === issueId ? { ...i, fieldLoading: { ...(i.fieldLoading || {}), [colId]: true } } : i)
     });
-    if (!isRefreshStart) this.appendSignedHistory(issueId, { text: 'Linked ' + fieldLabel + ' to ' + linkedToText });
+    // Format v2: the "Linked X to Y" narrative-only entry (no field/
+    // value of its own -- just announcing the attempt was starting) is
+    // gone; the real, value-bearing "fetched from"/"refreshed from"
+    // entry below is the only one this writes now.
     if (!isBuiltin) console.time('[diag] connector-link-total ' + matchedId);
     return this.fetchLinkData(fetchedVia, matchedId, connector).then(({ data, href }) => {
       const issNow = this.findIssue(issueId);
       const isRefresh = issNow && this.sameRef(issNow.fieldRefs && issNow.fieldRefs[colId], fetchedVia, matchedId);
       const beforeValues = (issNow && issNow.values) || {};
-      // Tracker #112 (b564316d): the persisted fieldRef is display-only
-      // -- {href, fetchedVia[, matchedId]} is all buildTextCell's ref
-      // rendering ever reads. The live `data`'s own full picked set is
-      // used ONLY in-memory, right below, to recompute any bound field
-      // while real data is in hand -- it never reaches
+      // Tracker #112 (b564316d) / format v2: the persisted fieldRef is
+      // display-only -- just {href} now (see docs/FORMAT_V2.md: no more
+      // fetchedVia/matchedId persisted for ANY system, github/jira/
+      // salesforce included -- a custom connector's own identity is
+      // re-resolved live from href via resolveRefSystem's rootUrl host-
+      // match, not from a stored pointer). The live `data`'s own full
+      // picked set is used ONLY in-memory, right below, to recompute any
+      // bound field while real data is in hand -- it never reaches
       // appendSignedHistory/disk.
-      // matchedId is persisted for a CUSTOM connector specifically (not
-      // github/jira/salesforce, whose href already deterministically
-      // encodes it, confirmed by matchedIdFromHref's own builtin
-      // branches) because a connector's own fetched `url` has no
-      // guaranteed relationship to the shape its paste-pattern matched
-      // (e.g. a pasted ticket URL vs. the system's own canonical record
-      // URL) -- without it, re-deriving the id from href for display
-      // (connectorLinkText's {{id}}) or duplicate-detection (sameRef) is
-      // unreliable. This is identity, not the "rich per-system fields"
-      // (labels/status/assignee/...) Tom categorically ruled out.
-      const fieldRef = isBuiltin ? { href, fetchedVia } : { href, fetchedVia, matchedId };
+      const fieldRef = { href };
       const value = kind === 'salesforce' ? data.name : data.title;
       const beforeFieldRef = issNow && issNow.fieldRefs && issNow.fieldRefs[colId];
       if (!isRefresh) this.appendSignedHistory(issueId, { text: fieldLabel + ' fetched from ' + systemLabel, field: colId, value, fieldRef });
@@ -4997,28 +5068,15 @@ class Component extends DCLogic {
       if (!isBuiltin) console.timeEnd('[diag] connector-link-total ' + matchedId);
     }).catch(err => {
       if (!isBuiltin) console.timeEnd('[diag] connector-link-total ' + matchedId);
-      const issNow = this.findIssue(issueId);
-      const isRefresh = issNow && this.sameRef(issNow.fieldRefs && issNow.fieldRefs[colId], fetchedVia, matchedId);
-      const errorText = 'Could not fetch from ' + systemLabel + ' (' + err.message + ')';
-      if (isRefresh) {
-        const fieldHistory = ((issNow && issNow.history) || []).filter(hh => hh.field === colId);
-        const lastEntry = fieldHistory.length ? fieldHistory.reduce((a, b) => (b.sortKey > a.sortKey ? b : a)) : null;
-        const alreadyLoggedThisFailure = lastEntry && lastEntry.value === undefined && lastEntry.text === errorText;
-        if (!alreadyLoggedThisFailure) this.appendSignedHistory(issueId, { text: errorText, field: colId });
-      } else {
-        // href is unknown on a failed first attempt for every system
-        // except github (whose href is deterministic from matchedId
-        // alone, known upfront -- see connectorMatches' own comment).
-        // matchedId is persisted here specifically so a RETRY is
-        // correctly recognized as a retry (sameRef) rather than looking
-        // like a brand-new link on the second attempt -- for a builtin,
-        // overwritten by the clean {href, fetchedVia}-only shape the
-        // moment a fetch actually succeeds; for a custom connector, kept
-        // on success too (see the success-path fieldRef comment above).
-        const fallbackHref = kind === 'github' ? ('https://github.com/' + matchedId.owner + '/' + matchedId.repo + '/issues/' + matchedId.num) : null;
-        const fallbackValue = kind === 'github' ? (matchedId.owner + '/' + matchedId.repo + '#' + matchedId.num) : matchedId;
-        this.appendSignedHistory(issueId, { text: errorText, field: colId, value: fallbackValue, fieldRef: { href: fallbackHref, fetchedVia, matchedId } });
-      }
+      // Format v2 (docs/FORMAT_V2.md, "what got removed and why"): a
+      // fetch error is transient/operational, not a fact about the
+      // issue worth preserving forever -- it no longer gets a signed
+      // history entry at all (there's also nothing in the UI that ever
+      // read one back; this was a disk-only audit trail). A retry after
+      // a failure is simply treated as a fresh link attempt -- sameRef
+      // correctly reads it as "not a refresh" either way, since nothing
+      // was ever persisted for the failed attempt.
+      console.error('[wigwag] link fetch failed: ' + systemLabel + ' (' + err.message + ')');
       this.setState(s => ({
         issues: s.issues.map(iss => iss.id === issueId ? { ...iss, fieldLoading: { ...(iss.fieldLoading || {}), [colId]: false } } : iss)
       }));
@@ -6065,7 +6123,7 @@ class Component extends DCLogic {
       if (!result) return;
       const iss = this.findIssue(result.id);
       const lines = (result.fields || []).map(fieldRow => {
-        const entry = iss && (iss.history || []).find(h => h.id === fieldRow.resultEntryId);
+        const entry = iss && iss.fields[fieldRow.field] && (iss.fields[fieldRow.field].history || []).find(h => h.id === fieldRow.resultEntryId);
         return entry ? JSON.stringify({ type: 'entry', issueId: result.id, ...entry }) : null;
       }).filter(Boolean);
       const recordsBody = lines.join('\n');
@@ -6213,20 +6271,22 @@ class Component extends DCLogic {
     const match = conn || null;
     const id = crypto.randomUUID ? crypto.randomUUID() : 'i-' + Date.now() + '-' + Math.random().toString(36).slice(2);
     this.setState(s => {
-      const num = Math.max(0, ...s.issues.map(i => i.num)) + 1;
       const values = this.buildDefaultValues();
       values.title = match ? 'Fetching…' : (wg ? this.resolveWigwagRef(wg).label : trimmed);
       return {
         addItemOpen: true, addItemDraft: '',
-        issues: [...s.issues, { id, num, fieldRefs: {}, fieldLoading: {}, values,
-          commentStreams: {}, history: [] }]
+        issues: [...s.issues, { id, fieldRefs: {}, fieldLoading: {}, values, fields: {} }]
       };
     });
     requestAnimationFrame(() => {
       const el = document.querySelector('[data-testid="table-scroll-wrap"]');
       if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
     });
-    this.appendSignedHistory(id, { text: 'Created' });
+    // Format v2: no more value-less "Created" narrative entry (see
+    // docs/FORMAT_V2.md) -- created/updated are 100% derivable from the
+    // min/max sortKey across every field's own history, so whichever
+    // entry gets written first below (the title set, or a fresh link)
+    // IS the issue's creation marker, with nothing extra to log.
     if (match) this.applyLinkToField(id, 'title', match);
     else if (wg) this.applyWigwagLinkToField(id, 'title', wg);
     else this.appendSignedHistory(id, { text: 'Title set to "' + truncate(trimmed, 60) + '"', field: 'title', value: trimmed });
@@ -6563,7 +6623,7 @@ class Component extends DCLogic {
     const ids = [];
     for (const iss of this.state.issues) {
       for (const c of this.allCommentStreamEntries(iss)) {
-        if (c.redacted || !c.text || (c.email && c.email === email)) continue;
+        if (c.redacted || !c.text || (c.actor && c.actor === email)) continue;
         if (textMentionsEmail(c.text, email)) ids.push(c.id);
       }
     }
@@ -6613,8 +6673,8 @@ class Component extends DCLogic {
       if (iss.deleted) continue;
       for (const c of this.allCommentStreamEntries(iss)) {
         if (alreadyNotified.has(c.id) || newlyNotified.includes(c.id)) continue;
-        if (c.redacted || !c.text || (c.email && c.email === email) || !textMentionsEmail(c.text, email)) continue;
-        const fired = fire((c.author || 'Someone') + ' mentioned you', truncate(c.text, 140) + ' — ' + (iss.values.title || 'an issue'), () => this.openSlideOver(iss.id), c.id);
+        if (c.redacted || !c.text || (c.actor && c.actor === email) || !textMentionsEmail(c.text, email)) continue;
+        const fired = fire((c.actor || 'Someone') + ' mentioned you', truncate(c.text, 140) + ' — ' + (iss.values.title || 'an issue'), () => this.openSlideOver(iss.id), c.id);
         if (fired) newlyNotified.push(c.id);
       }
     }
@@ -6639,18 +6699,29 @@ class Component extends DCLogic {
     for (const iss of (issues || this.state.issues)) {
       if (iss.deleted || !subscribedIds.includes(iss.id)) continue;
       for (const c of this.allCommentStreamEntries(iss)) {
-        const key = commentKey(c);
+        const key = entryKey(c);
         if (alreadyNotified.has(key) || newlyNotified.includes(key)) continue;
-        if (c.redacted || !c.text || (c.email && c.email === email)) continue;
-        const fired = fire((c.author || 'Someone') + ' commented', truncate(c.text, 140) + ' — ' + (iss.values.title || 'an issue'), () => this.openSlideOver(iss.id), key);
+        if (c.redacted || !c.text || (c.actor && c.actor === email)) continue;
+        const fired = fire((c.actor || 'Someone') + ' commented', truncate(c.text, 140) + ' — ' + (iss.values.title || 'an issue'), () => this.openSlideOver(iss.id), key);
         if (fired) newlyNotified.push(key);
       }
-      for (const h of (iss.history || [])) {
-        const key = entryKey(h);
-        if (alreadyNotified.has(key) || newlyNotified.includes(key)) continue;
-        if (!h.field || h.origin === 'legacy-backfill' || (h.email && h.email === email)) continue;
-        const fired = fire('Update on ' + (iss.values.title || 'an issue'), h.text || 'A field changed', () => this.openSlideOver(iss.id), key);
-        if (fired) newlyNotified.push(key);
+      // Format v2: comment-stream fields live in iss.fields too now --
+      // skip them here (already covered by allCommentStreamEntries just
+      // above) so a new comment doesn't fire BOTH a "commented" and a
+      // generic "Update on ..." notification for the same entry. `text`
+      // is gone from a plain field-value entry (see docs/FORMAT_V2.md),
+      // so there's no per-entry message left to show beyond the generic
+      // fallback.
+      const fieldDefs = this.effectiveFieldDefs();
+      for (const colId in (iss.fields || {})) {
+        if (fieldDefs[colId] && fieldDefs[colId].type === 'commentStream') continue;
+        for (const h of (iss.fields[colId].history || [])) {
+          const key = entryKey(h);
+          if (alreadyNotified.has(key) || newlyNotified.includes(key)) continue;
+          if (h.actor && h.actor === email) continue;
+          const fired = fire('Update on ' + (iss.values.title || 'an issue'), 'A field changed', () => this.openSlideOver(iss.id), key);
+          if (fired) newlyNotified.push(key);
+        }
       }
     }
     if (newlyNotified.length) this.markMentionsNotified(newlyNotified);
@@ -6687,31 +6758,31 @@ class Component extends DCLogic {
     this.requireAttribution(() => {
       const issueId = this.state.slideOverIssueId;
       const entryBase = {
-        id, author: this.displayName(), email: this.state.identityEmail || '', text,
+        id, actor: this.displayName(), text,
         sortKey: this.nextSortKey()
       };
       commitSignedEntry(entryBase, {
-        signable: signableCommentPayload(issueId, entryBase),
-        redacted: redactedCommentPayload(issueId, entryBase)
+        signable: signableCommentEntryPayload(issueId, entryBase),
+        redacted: redactedEntryPayload(issueId, entryBase)
       }, {
         sign: (payload) => this.signPayload(payload),
         insertUnsigned: (entry) => this.setState(s => ({
           editingCommentFieldId: null, editingCommentId: null, editCommentDraft: '',
           issues: s.issues.map(iss => iss.id === issueId ? {
             ...iss,
-            commentStreams: {
-              ...iss.commentStreams,
-              [fieldId]: [
-                ...(iss.commentStreams[fieldId] || []).map(c => (c.id === id && !c.redacted)
-                  ? { id: c.id, author: c.author, email: c.email, time: c.time, sortKey: c.sortKey, redacted: true, sigRedacted: c.sigRedacted, pubKey: c.pubKey }
-                  : c),
-                entry
-              ]
+            fields: {
+              ...iss.fields,
+              [fieldId]: {
+                history: [
+                  ...((iss.fields[fieldId] && iss.fields[fieldId].history) || []).map(c => (c.id === id && !c.redacted) ? redactEntry(c) : c),
+                  entry
+                ]
+              }
             }
           } : iss)
         })),
-        patchSignature: (pid, sortKey, sig, sigRedacted, pubKey) => this.setState(st => ({
-          issues: st.issues.map(iss => iss.id === issueId ? { ...iss, commentStreams: { ...iss.commentStreams, [fieldId]: (iss.commentStreams[fieldId] || []).map(c => c.id === pid && c.sortKey === sortKey ? { ...c, sig, sigRedacted, pubKey } : c) } } : iss)
+        patchSignature: (pid, sortKey, sig, pubKey) => this.setState(st => ({
+          issues: st.issues.map(iss => iss.id === issueId ? { ...iss, fields: { ...iss.fields, [fieldId]: { history: ((iss.fields[fieldId] && iss.fields[fieldId].history) || []).map(c => c.id === pid && c.sortKey === sortKey ? { ...c, sig, pubKey } : c) } } } : iss)
         })),
         currentPubKey: () => this.state.identityPublicKeyJwk
       });
@@ -6723,23 +6794,23 @@ class Component extends DCLogic {
     this.requireAttribution(() => {
       const entryBase = {
         id: crypto.randomUUID ? crypto.randomUUID() : 'c-' + Date.now() + '-' + Math.random().toString(36).slice(2),
-        author: this.displayName(), email: this.state.identityEmail || '', text,
+        actor: this.displayName(), text,
         sortKey: this.nextSortKey()
       };
       commitSignedEntry(entryBase, {
-        signable: signableCommentPayload(issueId, entryBase),
-        redacted: redactedCommentPayload(issueId, entryBase)
+        signable: signableCommentEntryPayload(issueId, entryBase),
+        redacted: redactedEntryPayload(issueId, entryBase)
       }, {
         sign: (payload) => this.signPayload(payload),
         insertUnsigned: (entry) => this.setState(s => ({
           newCommentDraft: fieldId === 'comments' ? '' : s.newCommentDraft,
           commentStreamDrafts: { ...s.commentStreamDrafts, [fieldId]: '' },
           activeCell: null,
-          issues: s.issues.map(iss => iss.id === issueId ? { ...iss, commentStreams: { ...iss.commentStreams, [fieldId]: [...(iss.commentStreams[fieldId] || []), entry] } } : iss),
+          issues: s.issues.map(iss => iss.id === issueId ? { ...iss, fields: { ...iss.fields, [fieldId]: { history: [...((iss.fields[fieldId] && iss.fields[fieldId].history) || []), entry] } } } : iss),
           commentReads: fieldId === 'comments' ? { ...s.commentReads, [issueId]: Math.max(s.commentReads[issueId] || 0, entry.sortKey) } : s.commentReads
         })),
-        patchSignature: (id, sortKey, sig, sigRedacted, pubKey) => this.setState(st => ({
-          issues: st.issues.map(iss => iss.id === issueId ? { ...iss, commentStreams: { ...iss.commentStreams, [fieldId]: (iss.commentStreams[fieldId] || []).map(c => c.id === id && c.sortKey === sortKey ? { ...c, sig, sigRedacted, pubKey } : c) } } : iss)
+        patchSignature: (id, sortKey, sig, pubKey) => this.setState(st => ({
+          issues: st.issues.map(iss => iss.id === issueId ? { ...iss, fields: { ...iss.fields, [fieldId]: { history: ((iss.fields[fieldId] && iss.fields[fieldId].history) || []).map(c => c.id === id && c.sortKey === sortKey ? { ...c, sig, pubKey } : c) } } } : iss)
         })),
         currentPubKey: () => this.state.identityPublicKeyJwk
       });
@@ -6779,17 +6850,17 @@ class Component extends DCLogic {
       const projectId = this.state.projectId;
       const entryBase = {
         id: crypto.randomUUID ? crypto.randomUUID() : 'pc-' + Date.now() + '-' + Math.random().toString(36).slice(2),
-        author: this.displayName(), email: this.state.identityEmail || '', text,
+        actor: this.displayName(), text,
         sortKey: this.nextSortKey()
       };
       commitSignedEntry(entryBase, {
-        signable: signableProjectCommentPayload(projectId, entryBase),
-        redacted: redactedProjectCommentPayload(projectId, entryBase)
+        signable: signableProjectCommentEntryPayload(projectId, entryBase),
+        redacted: redactedEntryPayload(projectId, entryBase)
       }, {
         sign: (payload) => this.signPayload(payload),
         insertUnsigned: (entry) => this.setState(s => ({ projectCommentDraft: '', projectComments: [...s.projectComments, entry] })),
-        patchSignature: (id, sortKey, sig, sigRedacted, pubKey) => this.setState(st => ({
-          projectComments: st.projectComments.map(c => c.id === id ? { ...c, sig, sigRedacted, pubKey } : c)
+        patchSignature: (id, sortKey, sig, pubKey) => this.setState(st => ({
+          projectComments: st.projectComments.map(c => c.id === id ? { ...c, sig, pubKey } : c)
         })),
         currentPubKey: () => this.state.identityPublicKeyJwk
       });
@@ -7158,12 +7229,15 @@ class Component extends DCLogic {
   redactHistoryEntry(issueId, entryId) {
     this.confirmAction('Redact this history entry? Its content will be permanently removed -- this can\'t be undone.', () => {
       this.setState(s => ({
-        issues: s.issues.map(iss => iss.id !== issueId ? iss : {
-          ...iss, history: iss.history.map(h => h.id !== entryId || h.redacted ? h : {
-            id: h.id, time: h.time, actor: h.actor, email: h.email,
-            field: h.field, origin: h.origin, sortKey: h.sortKey,
-            redacted: true, sigRedacted: h.sigRedacted, pubKey: h.pubKey
-          })
+        issues: s.issues.map(iss => {
+          if (iss.id !== issueId) return iss;
+          const fields = { ...iss.fields };
+          for (const colId in fields) {
+            const history = fields[colId].history || [];
+            if (!history.some(h => h.id === entryId && !h.redacted)) continue;
+            fields[colId] = { history: history.map(h => h.id === entryId ? redactEntry(h) : h) };
+          }
+          return { ...iss, fields };
         })
       }));
     }, 'Redact');
@@ -7171,11 +7245,7 @@ class Component extends DCLogic {
   redactProjectHistoryEntry(entryId) {
     this.confirmAction('Redact this history entry? Its content will be permanently removed -- this can\'t be undone.', () => {
       this.setState(s => ({
-        projectHistory: s.projectHistory.map(h => h.id !== entryId || h.redacted ? h : {
-          id: h.id, time: h.time, actor: h.actor, email: h.email,
-          field: h.field, origin: h.origin, sortKey: h.sortKey,
-          redacted: true, sigRedacted: h.sigRedacted, pubKey: h.pubKey
-        })
+        projectHistory: s.projectHistory.map(h => h.id !== entryId || h.redacted ? h : redactProjectEntry(h))
       }));
     }, 'Redact');
   }
@@ -7183,10 +7253,7 @@ class Component extends DCLogic {
     this.confirmAction('Redact this comment? Its content will be permanently removed -- this can\'t be undone.', () => {
       this.setState(s => ({
         issues: s.issues.map(iss => iss.id !== issueId ? iss : {
-          ...iss, commentStreams: { ...iss.commentStreams, [fieldId]: (iss.commentStreams[fieldId] || []).map(c => c.id !== commentId || c.redacted ? c : {
-            id: c.id, time: c.time, author: c.author, email: c.email, sortKey: c.sortKey,
-            redacted: true, sigRedacted: c.sigRedacted, pubKey: c.pubKey
-          }) }
+          ...iss, fields: { ...iss.fields, [fieldId]: { history: ((iss.fields[fieldId] && iss.fields[fieldId].history) || []).map(c => c.id !== commentId || c.redacted ? c : redactEntry(c)) } }
         })
       }));
     }, 'Redact');
@@ -7194,10 +7261,7 @@ class Component extends DCLogic {
   redactProjectComment(commentId) {
     this.confirmAction('Redact this comment? Its content will be permanently removed -- this can\'t be undone.', () => {
       this.setState(s => ({
-        projectComments: s.projectComments.map(c => c.id !== commentId || c.redacted ? c : {
-          id: c.id, time: c.time, author: c.author, email: c.email, sortKey: c.sortKey,
-          redacted: true, sigRedacted: c.sigRedacted, pubKey: c.pubKey
-        })
+        projectComments: s.projectComments.map(c => c.id !== commentId || c.redacted ? c : redactEntry(c))
       }));
     }, 'Redact');
   }
@@ -7210,25 +7274,23 @@ class Component extends DCLogic {
     this.requireAttribution(() => {
       const projectId = this.state.projectId;
       const entryBase = {
-        id, author: this.displayName(), email: this.state.identityEmail || '', text,
+        id, actor: this.displayName(), text,
         sortKey: this.nextSortKey()
       };
       commitSignedEntry(entryBase, {
-        signable: signableProjectCommentPayload(projectId, entryBase),
-        redacted: redactedProjectCommentPayload(projectId, entryBase)
+        signable: signableProjectCommentEntryPayload(projectId, entryBase),
+        redacted: redactedEntryPayload(projectId, entryBase)
       }, {
         sign: (payload) => this.signPayload(payload),
         insertUnsigned: (entry) => this.setState(s => ({
           editingProjectCommentId: null, editProjectCommentDraft: '',
           projectComments: [
-            ...s.projectComments.map(c => (c.id === id && !c.redacted)
-              ? { id: c.id, author: c.author, email: c.email, time: c.time, sortKey: c.sortKey, redacted: true, sigRedacted: c.sigRedacted, pubKey: c.pubKey }
-              : c),
+            ...s.projectComments.map(c => (c.id === id && !c.redacted) ? redactEntry(c) : c),
             entry
           ]
         })),
-        patchSignature: (pid, sortKey, sig, sigRedacted, pubKey) => this.setState(st => ({
-          projectComments: st.projectComments.map(c => c.id === pid && c.sortKey === sortKey ? { ...c, sig, sigRedacted, pubKey } : c)
+        patchSignature: (pid, sortKey, sig, pubKey) => this.setState(st => ({
+          projectComments: st.projectComments.map(c => c.id === pid && c.sortKey === sortKey ? { ...c, sig, pubKey } : c)
         })),
         currentPubKey: () => this.state.identityPublicKeyJwk
       });
@@ -7333,7 +7395,7 @@ class Component extends DCLogic {
     return stripped.slice(0, insertAt) + '\n' + snapshotScript + stripped.slice(insertAt);
   }
   commentStreamLatestText(issue, fieldId) {
-    const entries = latestCommentsById((issue.commentStreams && issue.commentStreams[fieldId]) || []);
+    const entries = latestCommentsById((issue.fields[fieldId] && issue.fields[fieldId].history) || []);
     if (!entries.length) return '';
     return entries.reduce((a, b) => (a.sortKey || 0) >= (b.sortKey || 0) ? a : b).text || '';
   }
@@ -7389,9 +7451,10 @@ class Component extends DCLogic {
   }
   lastChangeTimestamp() {
     let maxTs = 0;
+    // issueActivitySortKeys (format v2) already walks every field on the
+    // issue, comment-stream fields included, in one pass.
     for (const iss of this.state.issues) {
-      for (const h of (iss.history || [])) { if (h.sortKey && h.sortKey > maxTs) maxTs = h.sortKey; }
-      for (const c of this.allCommentStreamEntries(iss)) { if (c.sortKey && c.sortKey > maxTs) maxTs = c.sortKey; }
+      for (const sk of issueActivitySortKeys(iss)) { if (sk > maxTs) maxTs = sk; }
     }
     for (const c of (this.state.projectComments || [])) { if (c.sortKey && c.sortKey > maxTs) maxTs = c.sortKey; }
     return maxTs;
@@ -7900,7 +7963,7 @@ class Component extends DCLogic {
   copySlideOverJson = () => {
     const issue = this.findIssue(this.state.slideOverIssueId);
     if (!issue) return;
-    const json = JSON.stringify({ type: 'issue', id: issue.id, num: issue.num, commentStreams: issue.commentStreams, history: issue.history }, null, 2);
+    const json = JSON.stringify({ type: 'issue', id: issue.id, fields: issue.fields }, null, 2);
     this.writeToClipboard(json).catch(() => {});
     this.setState({ slideOverCopyJsonLabel: 'Copied!' });
     setTimeout(() => this.setState({ slideOverCopyJsonLabel: 'Copy JSON' }), 1500);
@@ -8044,7 +8107,7 @@ class Component extends DCLogic {
     const label = this.state.fieldEditorNewOptLabel.trim();
     if (!label) return;
     const def = this.state.fieldDefs[colId];
-    const opts = [...def.options, { id: 'opt_' + Date.now(), label, color: 'gray', emoji: '' }];
+    const opts = [...def.options, { id: newOptionId(label, def.options.map(o => o.id)), label, color: 'gray', emoji: '' }];
     this.setState({ fieldEditorNewOptLabel: '' });
     this.appendProjectHistory({ text: '"' + (def.label || colId) + '": added option "' + label + '"', field: colId, value: { ...def, options: opts } });
   }
@@ -8052,15 +8115,15 @@ class Component extends DCLogic {
   submitNewField = () => {
     const name = this.state.newFieldName.trim();
     if (!name) return;
-    const id = 'f_' + Date.now();
     const newFieldType = this.state.newFieldType;
+    const id = newFieldId(newFieldType, name, Object.keys(this.state.fieldDefs));
     const definition = { label: name, type: newFieldType, options: (newFieldType === 'select' || newFieldType === 'multiselect') ? [] : undefined };
     this.setState(s => ({
       addFieldOpen: false, newFieldName: '', newFieldType: 'text',
       fieldDefs: { ...s.fieldDefs, [id]: definition },
       columnOrder: [...s.columnOrder, id],
       issues: s.issues.map(iss => newFieldType === 'commentStream'
-        ? { ...iss, commentStreams: { ...iss.commentStreams, [id]: [] } }
+        ? { ...iss, fields: { ...iss.fields, [id]: { history: [] } } }
         : { ...iss, values: { ...iss.values, [id]: newFieldType === 'multiselect' ? [] : null } })
     }));
     this.appendProjectHistory({ text: 'Created field "' + name + '"', field: id, value: definition });
@@ -8094,7 +8157,7 @@ class Component extends DCLogic {
     if (ref.system === 'wigwag') return 'wigwag:/project/' + ref.projectId + (ref.issueId ? '/issue/' + ref.issueId : '');
     const n = normalizeRef(ref);
     if (!n) return currentText;
-    const connector = n.fetchedVia ? this.resolveFetchConnector(n.fetchedVia) : null;
+    const connector = this.resolveFetchConnector(this.liveFetchedViaForRef(n));
     if (connector && connector.kind === 'github') return n.href || currentText;
     const matchedId = this.resolveMatchedIdForDisplay(ref, n);
     return matchedId != null ? matchedId : currentText;
@@ -8207,13 +8270,14 @@ class Component extends DCLogic {
     // never from a persisted system/kind tag (see the plan's confirmed
     // decision #2: a deleted connector's ref falls back to this branch's
     // own unbranded-pill shape, all isXRef flags false, rather than a
-    // crash). matchedId is read straight off the ref when the legacy
-    // shape (or a failed-fetch error-path write) carries it directly;
-    // otherwise it's re-derived from the persisted href via
-    // matchedIdFromHref, same helper refreshField/sameRef use.
+    // crash). Format v2: fetchedVia is never persisted either -- resolved
+    // live from href via liveFetchedViaForRef/resolveRefSystem, same as
+    // every other former fetchedVia read in this file now. matchedId is
+    // re-derived from the persisted href via matchedIdFromHref, same
+    // helper refreshField/sameRef use.
     if (ref) {
       const n = normalizeRef(ref);
-      const fetchedVia = n ? n.fetchedVia : null;
+      const fetchedVia = this.liveFetchedViaForRef(n);
       const matchedId = this.resolveMatchedIdForDisplay(ref, n);
       const connDef = fetchedVia ? (this.state.connectedSources || []).find(c => c.id === fetchedVia) : null;
       const isGithubRef = fetchedVia === '__builtin_github' || (connDef && connDef.kind === 'github');
@@ -8437,7 +8501,7 @@ class Component extends DCLogic {
   // since history needs to stay reachable, just not inline in the grid.
   buildCommentStreamCell(issue, colId, readOnly) {
     const s = this.state;
-    const entries = latestCommentsById((issue.commentStreams && issue.commentStreams[colId]) || []).sort((a, b) => b.sortKey - a.sortKey);
+    const entries = latestCommentsById((issue.fields[colId] && issue.fields[colId].history) || []).sort((a, b) => b.sortKey - a.sortKey);
     const latest = entries[0] || null;
     const isSelected = s.selectedCell && s.selectedCell.issueId === issue.id && s.selectedCell.colId === colId;
     const popoverOpen = !readOnly && s.activeCell && s.activeCell.issueId === issue.id && s.activeCell.colId === colId;
@@ -8931,7 +8995,7 @@ class Component extends DCLogic {
         return { isTitle: false, isComments: false, isField: true, cell: { ...cellsById[id], rowBorderLeft, stickyStyle: bodyStickyStyle(id, rowBg, isLastRow) } };
       });
       segments.push({ isAddField: true, stickyStyle: bodyStickyStyle('__add_field__', rowBg, isLastRow) });
-      const visibleComments = latestCommentsById((issue.commentStreams && issue.commentStreams.comments) || []);
+      const visibleComments = latestCommentsById((issue.fields.comments && issue.fields.comments.history) || []);
       const lastReadKey = s.commentReads[issue.id] || 0;
       const unreadCount = visibleComments.filter(c => (c.sortKey || 0) > lastReadKey).length;
       return {
@@ -8954,7 +9018,7 @@ class Component extends DCLogic {
         // older one), chronologically, which is the right thing to preview
         // on hover; latestCommentsById's array order is grouped by each
         // comment's first appearance, not sorted by latest activity.
-        commentTooltip: ((issue.commentStreams && issue.commentStreams.comments) || []).length > 0 ? issue.commentStreams.comments[issue.commentStreams.comments.length - 1].text : 'Add a comment'
+        commentTooltip: visibleComments.length > 0 ? (((issue.fields.comments && issue.fields.comments.history) || []).reduce((a, b) => (!a || b.sortKey > a.sortKey) ? b : a)).text : 'Add a comment'
       };
     });
 
@@ -8963,10 +9027,10 @@ class Component extends DCLogic {
       const issue = this.findIssue(s.slideOverIssueId);
       if (issue) {
         const title = this.withMarkdownCopy(this.withEmbeddedWigwagLinks(this.buildTextCell(issue, 'title', issue.values.title, 'var(--text-placeholder)', false, true), issue.values.title || '', '', true, true), 'title');
-        const buildStreamActivityEntries = (fieldId) => latestCommentsById((issue.commentStreams && issue.commentStreams[fieldId]) || []).map(c => {
+        const buildStreamActivityEntries = (fieldId) => latestCommentsById((issue.fields[fieldId] && issue.fields[fieldId].history) || []).map(c => {
           const isEditing = s.editingCommentFieldId === fieldId && s.editingCommentId === c.id;
-          const canEdit = !!(s.identityEmail && c.email && c.email === s.identityEmail);
-          return { isComment: true, isHistory: false, actor: c.author, initial: (c.author || '?')[0].toUpperCase(),
+          const canEdit = !!(s.identityEmail && c.actor && c.actor === s.identityEmail);
+          return { isComment: true, isHistory: false, actor: c.actor, initial: (c.actor || '?')[0].toUpperCase(),
             time: this.timeLabelFor(c), text: c.text, sortKey: c.sortKey, wasEdited: c.wasEdited, isRedacted: !!c.redacted,
             isEditing, isNotEditing: !isEditing, showCommentBody: !isEditing && !c.redacted,
             showEditBtn: canEdit && !isEditing && !!c.id && !c.redacted,
@@ -8986,14 +9050,7 @@ class Component extends DCLogic {
           isActive: s.activityTab === id,
           onSwitch: () => this.setState({ activityTab: id })
         }));
-        const slideOverHistoryEntries = issue.history.filter(h => h.origin !== 'legacy-backfill').map(h => {
-          const pill = this.buildActivityPill(h, fieldDefs);
-          const fieldLabelParts = !pill ? this.buildActivityFieldLabel(h, fieldDefs) : null;
-          return { isComment: false, isHistory: true, actor: h.actor, time: this.timeLabelFor(h), text: h.text, sortKey: h.sortKey,
-            pill, hasPill: !!pill, fieldLabelParts, hasFieldLabel: !!fieldLabelParts, noPill: !pill && !h.redacted && !fieldLabelParts, isRedacted: !!h.redacted,
-            showRedactBtn: !!h.id && !h.redacted && h.text !== 'Created',
-            onRedact: () => this.redactHistoryEntry(issue.id, h.id) };
-        }).sort((a, b) => b.sortKey - a.sortKey);
+        const slideOverHistoryEntries = this.buildIssueHistoryActivityEntries(issue, fieldDefs);
         const slideOverActiveList = activeStreamColId ? streamEntriesByField[activeStreamColId] : (s.activityTab === 'history' ? slideOverHistoryEntries : slideOverCommentEntries);
         // Heuristic: a text-type field literally labeled "Description" gets
         // its own full-width section immediately below the title, instead
@@ -9060,9 +9117,9 @@ class Component extends DCLogic {
       const trimmedNotes = rawNotes.trim();
       const noteCommentEntries = latestCommentsById(s.projectComments).map(c => {
         const isEditing = s.editingProjectCommentId === c.id;
-        const canEdit = !!(s.identityEmail && c.email && c.email === s.identityEmail);
+        const canEdit = !!(s.identityEmail && c.actor && c.actor === s.identityEmail);
         return { isComment: true, isHistory: false,
-          id: c.id, initial: (c.author || '?')[0].toUpperCase(), author: c.author, actor: c.author, time: this.timeLabelFor(c), rawText: c.text, sortKey: c.sortKey || 0,
+          id: c.id, initial: (c.actor || '?')[0].toUpperCase(), author: c.actor, actor: c.actor, time: this.timeLabelFor(c), rawText: c.text, sortKey: c.sortKey || 0,
           wasEdited: c.wasEdited, isRedacted: !!c.redacted,
           isEditing, showCommentBody: !isEditing && !c.redacted,
           showEditBtn: canEdit && !isEditing && !!c.id && !c.redacted,
@@ -9434,9 +9491,15 @@ class Component extends DCLogic {
           textFields.push({ id: colId, label: def.label, value: String(v) });
         }
       }
-      const linkedColId = Object.keys(fieldDefs).find(colId => issue.fieldRefs && issue.fieldRefs[colId] && (issue.fieldRefs[colId].system || 'github') === 'github');
+      const linkedColId = Object.keys(fieldDefs).find(colId => {
+        const r = issue.fieldRefs && issue.fieldRefs[colId];
+        if (!r || r.system === 'wigwag') return false;
+        const resolved = resolveRefSystem(r.href, { connectedSources: this.state.connectedSources });
+        return resolved && resolved.kind === 'github';
+      });
       const ref = linkedColId ? issue.fieldRefs[linkedColId] : null;
-      const createdAt = issue.history && issue.history.length ? issue.history[0].sortKey : null;
+      const githubMatchedId = ref ? this.parseGithubUrl(ref.href) : null;
+      const createdAt = issueCreatedAt(issue) || null;
       return {
         id: issue.id,
         title: issue.values.title || '(untitled)',
@@ -9444,10 +9507,10 @@ class Component extends DCLogic {
         age: relativeAge(createdAt),
         pillFields, hasPillFields: pillFields.length > 0,
         textFields, hasTextFields: textFields.length > 0,
-        hasGithubRef: !!ref,
-        githubRefLabel: ref ? (ref.owner + '/' + ref.repo + '#' + ref.num) : '',
-        commentCount: latestCommentsById(issue.commentStreams.comments || []).length,
-        hasComments: latestCommentsById(issue.commentStreams.comments || []).length > 0,
+        hasGithubRef: !!githubMatchedId,
+        githubRefLabel: githubMatchedId ? (githubMatchedId.owner + '/' + githubMatchedId.repo + '#' + githubMatchedId.num) : '',
+        commentCount: latestCommentsById((issue.fields.comments && issue.fields.comments.history) || []).length,
+        hasComments: latestCommentsById((issue.fields.comments && issue.fields.comments.history) || []).length > 0,
         onOpen: () => { this.openSlideOver(issue.id); this.setState({ mobileActiveSheet: 'row' }); },
         onOpenComments: (e) => { if (e) e.stopPropagation(); this.openSlideOver(issue.id); this.setState({ mobileActiveSheet: 'row', activityTab: 'comments' }); }
       };
@@ -9464,14 +9527,10 @@ class Component extends DCLogic {
       const issue = this.findIssue(s.slideOverIssueId);
       if (issue) {
         const mobileDescriptionColId = Object.keys(fieldDefs).find(id => id !== 'title' && fieldDefs[id].type === 'text' && (fieldDefs[id].label || '').trim().toLowerCase() === 'description');
-        const mobileCommentEntries = latestCommentsById((issue.commentStreams && issue.commentStreams.comments) || []).map(c => ({
-          actor: c.author || 'Someone', initial: (c.author || '?')[0].toUpperCase(), time: this.timeLabelFor(c), text: c.text, isRedacted: !!c.redacted, sortKey: c.sortKey || 0
+        const mobileCommentEntries = latestCommentsById((issue.fields.comments && issue.fields.comments.history) || []).map(c => ({
+          actor: c.actor || 'Someone', initial: (c.actor || '?')[0].toUpperCase(), time: this.timeLabelFor(c), text: c.text, isRedacted: !!c.redacted, sortKey: c.sortKey || 0
         })).sort((a, b) => b.sortKey - a.sortKey);
-        const mobileHistoryEntries = issue.history.filter(h => h.origin !== 'legacy-backfill').map(h => {
-          const pill = this.buildActivityPill(h, fieldDefs);
-          const fieldLabelParts = !pill ? this.buildActivityFieldLabel(h, fieldDefs) : null;
-          return { actor: h.actor, time: this.timeLabelFor(h), text: h.text, sortKey: h.sortKey || 0, pill, hasPill: !!pill, fieldLabelParts, hasFieldLabel: !!fieldLabelParts, noPill: !pill && !fieldLabelParts, isRedacted: !!h.redacted };
-        }).sort((a, b) => b.sortKey - a.sortKey);
+        const mobileHistoryEntries = this.buildIssueHistoryActivityEntries(issue, fieldDefs);
         const mobileActiveActivity = s.activityTab === 'history' ? mobileHistoryEntries : mobileCommentEntries;
         const mobilePickerColId = s.activeCell && s.activeCell.issueId === issue.id ? s.activeCell.colId : null;
         const mobilePickerDef = mobilePickerColId ? fieldDefs[mobilePickerColId] : null;
@@ -9503,7 +9562,7 @@ class Component extends DCLogic {
           onPostComment: () => this.addComment(),
           title: issue.values.title || '(untitled)',
           shortId: issue.id.slice(0, 8),
-          age: relativeAge(issue.history && issue.history.length ? issue.history[0].sortKey : null),
+          age: relativeAge(issueCreatedAt(issue) || null),
           copyLinkLabel: s.slideOverCopyLinkLabel,
           onCopyLink: () => this.copySlideOverLink(),
           hasDescription: !!mobileDescriptionColId,

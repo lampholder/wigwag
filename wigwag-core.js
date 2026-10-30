@@ -401,7 +401,7 @@ function reconcileColumnOrder(override, fieldDefs, hiddenFieldIds) {
   }
   return result;
 }
-const FORMAT_VERSION = 1;
+const FORMAT_VERSION = 2;
 // Optional storage namespace (tracker #149's storage-models framework --
 // wigwag issue f6b39bf0, "Room Scoped Widget Mode"): an embedder
 // (wigwag-matrix-host.html) can load this file with
@@ -537,6 +537,33 @@ function slugifyConnectorKey(name, existingKeys) {
   let i = 2;
   while (taken.has(base + i)) i++;
   return base + i;
+}
+// Format v2 field/option ids (docs/FORMAT_V2.md): `<type>__<name>` for a
+// field (type is permanently fixed post-creation -- confirmed no code
+// path ever changes a field's type -- and a label rarely changes, so
+// baking both into the id is safe long-term), a bare slug for an option
+// (scoped to its own field, never read cross-field, so global uniqueness
+// buys nothing). Collisions get a short disambiguating suffix, applied
+// only on an actual collision, never a default-everywhere suffix.
+// Existing opaque f_<timestamp>/opt_<timestamp> ids are NOT retroactively
+// migrated -- both schemes coexist permanently, since ids are immutable
+// once assigned.
+function slugifyLabel(label) {
+  const base = (label || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  return base || 'field';
+}
+function uniqueSlugId(base, existingIds) {
+  const taken = new Set(existingIds || []);
+  if (!taken.has(base)) return base;
+  let i = 2;
+  while (taken.has(base + '_' + i)) i++;
+  return base + '_' + i;
+}
+function newFieldId(type, label, existingIds) {
+  return uniqueSlugId(type + '__' + slugifyLabel(label), existingIds);
+}
+function newOptionId(label, existingIds) {
+  return uniqueSlugId(slugifyLabel(label), existingIds);
 }
 // A synthetic filter-option id meaning "this field has no value" -- lives
 // in the same columnFilters[colId] array as real option ids, so
@@ -1114,13 +1141,13 @@ function connectorLinkText(template, currentText, matchedId) {
 //
 // Editing keeps the append-only shape of everything else this app
 // persists (mirrors how a field's history is a log of every set, never a
-// mutation): an edit appends a NEW entry to issues[].commentStreams[fieldId] sharing the
-// ORIGINAL comment's id, with a fresh time/sortKey. Nothing already in the
-// array is ever changed or removed. latestCommentsById() derives what to
-// actually display -- one bubble per id, showing the latest entry's text
-// but the EARLIEST entry's time (so editing does not bump a comment's
-// position in the thread), flagging wasEdited when more than one entry
-// shares an id.
+// mutation): an edit appends a NEW entry to issue.fields[fieldId].history
+// sharing the ORIGINAL comment's id, with a fresh sortKey. Nothing
+// already in the array is ever changed or removed. latestCommentsById()
+// derives what to actually display -- one bubble per id, showing the
+// latest entry's text but the EARLIEST entry's sortKey (so editing does
+// not bump a comment's position in the thread), flagging wasEdited when
+// more than one entry shares an id.
 function escapeHtml(s) {
   return String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -1330,7 +1357,11 @@ function renderMarkdown(raw) {
 // commentKey() on the component -- comments imported from before ids
 // existed, or from an external source, may not have one) so two genuinely
 // different id-less comments never collapse into a single bubble.
-function commentGroupKey(c) { return c.id || ('legacy|' + (c.sortKey || 0) + '|' + (c.author || '') + '|' + (c.text || '')); }
+// Format v2: a comment entry uses the same {id, actor, text, sortKey}
+// shape as everything else now (no more separate author/email/time) --
+// this key is the comment-specific legacy-composite fallback, same
+// role entryKey plays for field-value entries.
+function commentGroupKey(c) { return c.id || ('legacy|' + (c.sortKey || 0) + '|' + (c.actor || '') + '|' + (c.text || '')); }
 function latestCommentsById(comments) {
   const byKey = new Map();
   for (const c of (comments || [])) {
@@ -1344,21 +1375,46 @@ function latestCommentsById(comments) {
   }
   return Array.from(byKey.values()).map(function (entry) {
     const first = entry.first, latest = entry.latest;
-    return { id: first.id, author: first.author, email: first.email, time: first.time, sortKey: first.sortKey,
+    return { id: first.id, actor: first.actor, sortKey: first.sortKey,
       text: latest.text, wasEdited: latest.sortKey !== first.sortKey, redacted: !!latest.redacted };
   });
 }
 
+// Format v2 (tracker issue #227, 3212e2ff): `issue.fields` is now a map
+// keyed by field id, each holding its OWN `history` array -- "an issue
+// has fields, each field has history" -- replacing one flat,
+// chronologically-interleaved array across every field. A comment-
+// stream field (Comments included) is just an ordinary field in this
+// same map now, its entries carrying `text` instead of `value` --
+// there is no more separate `commentStreams` structure to union in.
+// Latest-entry-per-field helper used throughout this section.
+function latestFieldEntry(issue, colId) {
+  const history = issue.fields && issue.fields[colId] && issue.fields[colId].history;
+  if (!history || !history.length) return null;
+  return history.reduce((a, b) => (b.sortKey > a.sortKey ? b : a));
+}
+// Format v2: a field's own history is now issue.fields[colId].history, not
+// a slice of one flat array -- this is the uniform way every merge-
+// preview/revert/timeline function below reads "every entry ever written
+// to this one field," replacing the old `(issue.history || []).filter(h
+// => h.field === colId)` pattern. There is no more authored-vs-derived
+// split to additionally filter on (origin is gone -- see FORMAT_V2.md's
+// merge-semantics note): a rule-derived write is just an ordinary entry
+// now, same as any other, for this purpose too.
+function issueFieldHistory(issue, colId) {
+  return (issue.fields && issue.fields[colId] && issue.fields[colId].history) || [];
+}
 // Created/Updated (type: 'timestamp') are never written via history --
-// always derived straight from the issue's own activity, including
-// comment streams (a new comment counts as an update, same as any field
-// edit). Returns a raw ms-epoch number, not a formatted string, so
-// precise relative-age display and numeric sorting both work for free.
+// always derived straight from the issue's own activity, every field's
+// history (comment-stream fields included, same uniform walk now that
+// they're not a separate structure). Returns a raw ms-epoch number, not
+// a formatted string, so precise relative-age display and numeric
+// sorting both work for free.
 function issueActivitySortKeys(issue) {
-  const keys = (issue.history || []).map(h => h.sortKey).filter(k => typeof k === 'number');
-  for (const stream in (issue.commentStreams || {})) {
-    for (const entry of issue.commentStreams[stream]) {
-      if (typeof entry.sortKey === 'number') keys.push(entry.sortKey);
+  const keys = [];
+  for (const colId in (issue.fields || {})) {
+    for (const h of (issue.fields[colId].history || [])) {
+      if (typeof h.sortKey === 'number') keys.push(h.sortKey);
     }
   }
   return keys;
@@ -1372,16 +1428,15 @@ function issueTimestampValue(issue, colId) {
 // history log -- the same "log is the source of truth, values are a
 // projection" pattern latestCommentsById() already uses for comments,
 // one level over: for each field, the entry with the highest sortKey
-// wins. A field with no history entry at all falls back to the same
-// type-appropriate default buildDefaultValues() gives a freshly-created
-// issue ('' for text/issue, [] for multiselect, null otherwise).
+// in ITS OWN history array wins -- no more filtering a flat array by
+// `.field ===`, each field's own array already contains only its own
+// entries. A field with no history entry at all falls back to the same
+// type-appropriate default a freshly-created issue gets ('' for
+// text/issue, [] for multiselect, null otherwise). A comment-stream
+// entry's `text` (not `value`) correctly falls through to that default
+// too -- comment-stream fields never had a meaningful "value" to derive
+// in the first place.
 function deriveIssueValues(issue, fieldDefs) {
-  const latestByField = {};
-  for (const h of (issue.history || [])) {
-    if (!h.field || h.value === undefined) continue;
-    const existing = latestByField[h.field];
-    if (!existing || h.sortKey > existing.sortKey) latestByField[h.field] = h;
-  }
   const values = {};
   for (const colId in fieldDefs) {
     const def = fieldDefs[colId];
@@ -1389,106 +1444,32 @@ function deriveIssueValues(issue, fieldDefs) {
     // should never be one, but the derived value is authoritative either
     // way -- these fields are computed, not editable).
     if (def.type === 'timestamp') { values[colId] = issueTimestampValue(issue, colId); continue; }
-    if (latestByField[colId]) { values[colId] = latestByField[colId].value; continue; }
+    const latest = latestFieldEntry(issue, colId);
+    if (latest && latest.value !== undefined) { values[colId] = latest.value; continue; }
     values[colId] = def.type === 'multiselect' ? [] : (def.type === 'text' || def.type === 'issue' ? '' : null);
   }
   return values;
 }
-// Migration safety net: fills genuine GAPS only (a field with a real
-// stored value but zero history entries at all -- older data, or
-// anything that arrived via import/paste/merge before history became
-// authoritative). Deliberately does not try to reconcile a field that
-// already HAS history but disagrees with the stored value -- that's a
-// real data-integrity question, not a safe additive backfill. Naturally
-// idempotent: once a field has any history entry (including one this
-// function just added), it's no longer a gap, so re-running this adds
-// nothing further -- no separate "have I migrated" guard needed, unlike
-// the localStorage-key-guarded migrations elsewhere in this file.
-function backfillIssueHistoryFromValues(issue, fieldDefs) {
-  const fieldsWithHistory = new Set();
-  const fieldsWithFieldRefHistory = new Set();
-  for (const h of (issue.history || [])) {
-    if (!h.field) continue;
-    fieldsWithHistory.add(h.field);
-    if (h.fieldRef !== undefined) fieldsWithFieldRefHistory.add(h.field);
-  }
-  const oldestSortKey = (issue.history && issue.history.length) ? Math.min.apply(null, issue.history.map(function (h) { return h.sortKey || 0; })) : 0;
-  const backfillEntries = [];
-  for (const colId in fieldDefs) {
-    const hasFieldRef = issue.fieldRefs && issue.fieldRefs[colId];
-    if (!fieldsWithHistory.has(colId)) {
-      const storedValue = issue.values ? issue.values[colId] : undefined;
-      if (storedValue !== undefined) {
-        const def = fieldDefs[colId];
-        const isDefaultish = def.type === 'multiselect' ? (Array.isArray(storedValue) && storedValue.length === 0) : (storedValue === '' || storedValue === null);
-        if (!isDefaultish) {
-          backfillEntries.push({
-            id: 'backfill-' + issue.id + '-' + colId,
-            actor: 'system', email: '',
-            text: (def.label || colId) + ' (backfilled from existing data)',
-            field: colId, value: storedValue,
-            fieldRef: hasFieldRef ? issue.fieldRefs[colId] : undefined,
-            origin: 'legacy-backfill', sortKey: oldestSortKey - 1,
-            sig: null, sigRedacted: null, pubKey: null
-          });
-        }
-      }
-      continue;
-    }
-    // Field already has history (so no value backfill needed) but every
-    // existing entry predates fieldRef tracking -- a real link (owner/repo/
-    // num or a Jira key) would otherwise be silently lost. Carries no
-    // value, only a fieldRef, so it never competes with the real
-    // value-setting entries during derivation.
-    if (hasFieldRef && !fieldsWithFieldRefHistory.has(colId)) {
-      const def = fieldDefs[colId];
-      backfillEntries.push({
-        id: 'backfill-ref-' + issue.id + '-' + colId,
-        actor: 'system', email: '',
-        text: (def.label || colId) + ' link (backfilled from existing data)',
-        field: colId, value: undefined,
-        fieldRef: issue.fieldRefs[colId],
-        origin: 'legacy-backfill', sortKey: oldestSortKey - 1,
-        sig: null, sigRedacted: null, pubKey: null
-      });
-    }
-  }
-  if (!backfillEntries.length) return issue;
-  return { ...issue, history: [...issue.history, ...backfillEntries] };
-}
-// Derives current fieldRefs (GitHub/Jira link metadata) the same way
-// deriveIssueValues derives values -- latest history entry per field that
-// explicitly carries a fieldRef (commitEdit always sets fieldRef:null when
-// committing plain text over a field, so a field that was linked and then
-// edited away correctly resolves to no ref, not a stale one). Entries with
-// no fieldRef key at all (select/multiselect edits, derived/bound-field
-// recomputes) are irrelevant here -- those field types never carry a ref.
+// Runtime convenience, derived fresh every time, never stored: an
+// issue-type field's real link now lives FOLDED into its own value
+// (`{title, href}`, or `{title, wigwag: {...}}` for a cross-project
+// link, or a plain string when unlinked) -- there is no more separate
+// persisted `fieldRef`. This reconstructs the {href[, matchedId]} /
+// {system:'wigwag', ...} shape the rest of this file's ref-handling
+// code (buildSource, isRefLocallyLive, etc.) already expects, purely so
+// that code doesn't need to change its own input shape to match --
+// same "derive a convenience view, never persist it" discipline
+// `values` itself already follows.
 function deriveIssueFieldRefs(issue, fieldDefs) {
-  const latestByField = {};
-  for (const h of (issue.history || [])) {
-    if (!h.field || h.fieldRef === undefined) continue;
-    const existing = latestByField[h.field];
-    if (!existing || h.sortKey > existing.sortKey) latestByField[h.field] = h;
-  }
   const fieldRefs = {};
-  for (const colId in latestByField) fieldRefs[colId] = latestByField[colId].fieldRef;
+  for (const colId in fieldDefs) {
+    if (fieldDefs[colId].type !== 'issue') continue;
+    const latest = latestFieldEntry(issue, colId);
+    const v = latest && latest.value;
+    if (!v || typeof v !== 'object') continue;
+    fieldRefs[colId] = v.wigwag ? { system: 'wigwag', ...v.wigwag } : { href: v.href || null };
+  }
   return fieldRefs;
-}
-// Shared load-time preparation for an issue coming from anywhere other than
-// this session's own live edits (localStorage, an imported/pasted/merged
-// file, a GitHub pull): backfill any pre-history gaps, then (re)populate
-// values/fieldRefs fresh from history, which is now their sole source.
-// One-time, idempotent migration: the old top-level `comments` array
-// becomes `commentStreams.comments` (tracker #108/a91db807) -- comment
-// threads are now a generic per-field mechanism (any commentStream-typed
-// field gets its own array the same shape), not a one-off issue property.
-// No dual-support kept afterward: once migrated, `comments` is gone from
-// the issue object entirely, and every other code path only ever reads/
-// writes `commentStreams`.
-function migrateLegacyComments(issue) {
-  if (!('comments' in issue)) return issue;
-  const { comments, ...rest } = issue;
-  return { ...rest, commentStreams: { ...(issue.commentStreams || {}), comments: issue.commentStreams && issue.commentStreams.comments ? issue.commentStreams.comments : (comments || []) } };
 }
 // An issue's deletion state, derived the same "latest signed entry wins"
 // way as everything else (tracker #149, live-reported): the Matrix bridge
@@ -1496,23 +1477,28 @@ function migrateLegacyComments(issue) {
 // removal (the old behavior) leaves nothing to stop an issue's original
 // creation event from being read as "newly arrived" and re-added. A real
 // reserved field id, never a genuine field (nobody defines one named
-// this), makes deletion a normal, mergeable, sync-able fact instead of an
-// out-of-band structural operation. No exclusion is needed in
-// deriveIssueValues -- it only ever populates keys that exist in
-// fieldDefs, and this id is never a real field definition.
+// this, and -- unlike every real field -- it's never given a
+// `type__name`-style id, since it was never a schema field to begin
+// with), makes deletion a normal, mergeable, sync-able fact instead of
+// an out-of-band structural operation.
 const ISSUE_DELETED_FIELD_ID = '__deleted__';
-function issueIsDeleted(history) {
-  let latest = null;
-  for (const h of (history || [])) {
-    if (h.field !== ISSUE_DELETED_FIELD_ID || h.value === undefined) continue;
-    if (!latest || h.sortKey > latest.sortKey) latest = h;
-  }
+function issueIsDeleted(issue) {
+  const latest = latestFieldEntry(issue, ISSUE_DELETED_FIELD_ID);
   return !!(latest && latest.value === true);
 }
+// Shared load-time preparation for an issue coming from anywhere other
+// than this session's own live edits (localStorage, an imported/
+// pasted/merged file, a GitHub pull): (re)populate values/fieldRefs
+// fresh from history, which is its sole source. No backfill-from-
+// values-gap pass any more (v1's `backfillIssueHistoryFromValues`) and
+// no legacy top-level `comments` migration (v1's
+// `migrateLegacyComments`) -- both were v1-era migration scaffolding
+// for gaps that can no longer exist once the one-time v1->v2 migration
+// has actually run; carrying them forward as permanent runtime code
+// would be exactly the kind of "dual-format support forever" this
+// migration's own stance explicitly rejected.
 function hydrateIssue(issue, fieldDefs) {
-  const migrated = migrateLegacyComments(issue);
-  const backfilled = backfillIssueHistoryFromValues(migrated, fieldDefs);
-  return { ...backfilled, values: deriveIssueValues(backfilled, fieldDefs), fieldRefs: deriveIssueFieldRefs(backfilled, fieldDefs), fieldLoading: {}, deleted: issueIsDeleted(backfilled.history) };
+  return { ...issue, values: deriveIssueValues(issue, fieldDefs), fieldRefs: deriveIssueFieldRefs(issue, fieldDefs), fieldLoading: {}, deleted: issueIsDeleted(issue) };
 }
 // Project-level counterpart to deriveIssueValues -- but unlike issue
 // values (where the SET of fields is fixed by fieldDefs and every value
@@ -1669,7 +1655,7 @@ function backfillProjectHistory(fieldDefs, projectHistory, projectNotes) {
       text: 'Notes (backfilled from existing data)',
       field: PROJECT_NOTES_FIELD_ID, value: projectNotes,
       origin: 'legacy-backfill', sortKey: oldestSortKey - 1,
-      sig: null, sigRedacted: null, pubKey: null
+      sig: null, pubKey: null
     });
   }
   for (const colId in fieldDefs) {
@@ -1680,7 +1666,7 @@ function backfillProjectHistory(fieldDefs, projectHistory, projectNotes) {
       text: (fieldDefs[colId].label || colId) + ' (backfilled from existing data)',
       field: colId, value: fieldDefs[colId],
       origin: 'legacy-backfill', sortKey: oldestSortKey - 1,
-      sig: null, sigRedacted: null, pubKey: null
+      sig: null, pubKey: null
     });
   }
   if (!backfillEntries.length) return projectHistory || [];
@@ -1732,6 +1718,16 @@ function bytesFromBase64(b64) {
   return bytes;
 }
 function base64FromText(text) { return base64FromBytes(new TextEncoder().encode(text)); }
+// Format v2 (tracker issue #227, 3212e2ff): per-entry signatures use
+// base64url (JOSE/JWS convention -- URL-safe, unpadded), not the plain
+// base64 the rest of this file uses for secrets/export blobs. Thin
+// wrappers over the existing base64 helpers, not a second codec.
+function base64UrlFromBytes(bytes) { return base64FromBytes(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+function bytesFromBase64Url(b64url) {
+  const padded = b64url.replace(/-/g, '+').replace(/_/g, '/');
+  const pad = padded.length % 4 === 0 ? '' : '='.repeat(4 - (padded.length % 4));
+  return bytesFromBase64(padded + pad);
+}
 function textFromBase64(b64) { return new TextDecoder().decode(bytesFromBase64(b64.replace(/\n/g, ''))); }
 // A signed entry's `email` is really the author's *principal*: the
 // canonical, stable, human-readable identifier they act under. For a
@@ -1756,21 +1752,38 @@ const MATRIX_USER_ID_RE = /^@[^\s:]+:[^\s:]+$/;
 function principalKind(principal) { return MATRIX_USER_ID_RE.test(String(principal || '')) ? 'matrix' : 'email'; }
 function identityPrincipal(identity) { return (identity && (identity.email || identity.matrixUserId)) || ''; }
 const SIGN_ALG = { name: 'ECDSA', namedCurve: 'P-256' };
-// Deterministic subset of a history entry that gets signed — fixed key
-// order (source-literal object, not a generic canonicalizer) is enough
-// here since this only ever needs to round-trip through this same app,
-// not interoperate with an external signer. Explicitly not designed to be
-// bulletproof — a lightweight "this really came from me" marker for
-// sharing between collaborators, not a security boundary.
-function signablePayload(issueId, entry) {
-  return JSON.stringify({
-    issueId, id: entry.id, field: entry.field || null,
-    value: entry.value === undefined ? null : entry.value,
-    text: entry.text, time: entry.time, sortKey: entry.sortKey,
-    actor: entry.actor, email: entry.email || ''
-  });
+// Format v2 (tracker issue #227, 3212e2ff): a signed entry is now just
+// {id, actor, value, sortKey} (a field-value entry) or {id, actor, text,
+// sortKey} (a comment/narrative entry) -- no `field` (it's the map key
+// now, in `fields.<id>.history`, not a value on the entry itself), no
+// `time` (fully redundant with `sortKey`), no `origin` (every real
+// value remaining -- `authored` -- carried no information once nothing
+// else needed distinguishing; see docs/FORMAT_V2.md for the merge-
+// arbitration question this raised and how it was resolved), no
+// separate `email` (the real app has never once set `actor`/`email` to
+// different values). Fixed key order (source-literal object, not a
+// generic canonicalizer) is enough here since this only ever needs to
+// round-trip through this same app, not interoperate with an external
+// signer -- explicitly not designed to be bulletproof, a lightweight
+// "this really came from me" marker for collaborators who already trust
+// each other, not a security boundary.
+function signableEntryPayload(issueId, entry) {
+  return JSON.stringify({ issueId, id: entry.id, value: entry.value === undefined ? null : entry.value, sortKey: entry.sortKey, actor: entry.actor });
 }
-function signableProjectPayload(projectId, entry) {
+// Unlike issue-level entries, project-level history was NOT in scope for
+// the format-v2 fields-map redesign (docs/FORMAT_V2.md scopes the
+// redesign to per-issue history only) -- deriveFieldDefs/
+// deriveProjectName/deriveProjectNotes (and the merge-preview/revert
+// family below) all still group a flat projectHistory array by reading
+// entry.field directly, and a project-history `text` (e.g. "Renamed
+// project from X to Y", "'Field': reordered options") genuinely isn't
+// reconstructable from field+value alone the way an issue entry's text
+// always was -- so this keeps every v1 field (field/value/text/time/
+// actor/email/origin), unlike its issue-level counterpart above. The
+// ONLY change here is the signature wrapper (see commitSignedEntry) --
+// kept as its own function, not reusing signableEntryPayload, exactly
+// because the payload shape still genuinely differs.
+function signableProjectEntryPayload(projectId, entry) {
   return JSON.stringify({
     projectId, id: entry.id, field: entry.field || null,
     value: entry.value === undefined ? null : entry.value,
@@ -1778,48 +1791,28 @@ function signableProjectPayload(projectId, entry) {
     actor: entry.actor, email: entry.email || ''
   });
 }
-// The redacted (content-free) counterpart to signablePayload/
-// signableProjectPayload -- exactly the subset squashHistory's tombstone
-// keeps, no more, no less: the two must always agree, or a legitimately-
-// redacted tombstone would fail to verify.
-function redactedPayload(issueId, entry) {
-  return JSON.stringify({
-    issueId, id: entry.id, field: entry.field || null,
-    time: entry.time, sortKey: entry.sortKey,
-    actor: entry.actor, email: entry.email || '', origin: entry.origin || 'authored'
-  });
+function signableCommentEntryPayload(issueId, entry) {
+  return JSON.stringify({ issueId, id: entry.id, text: entry.text, sortKey: entry.sortKey, actor: entry.actor });
 }
-function redactedProjectPayload(projectId, entry) {
+function signableProjectCommentEntryPayload(projectId, entry) {
+  return JSON.stringify({ projectId, id: entry.id, text: entry.text, sortKey: entry.sortKey, actor: entry.actor });
+}
+// The redacted (content-free) counterpart -- exactly the subset
+// squashHistory's tombstone keeps, no more, no less: the two must
+// always agree, or a legitimately-redacted entry would fail to verify.
+// A genuine simplification over v1's four separate redacted functions:
+// with `field`/`origin`/`time` gone, stripping content (`value` or
+// `text`) from either entry kind leaves the exact same shape -- one
+// function now serves both a redacted field entry and a redacted
+// comment, per scope (issue vs. project).
+function redactedEntryPayload(issueId, entry) {
+  return JSON.stringify({ issueId, id: entry.id, sortKey: entry.sortKey, actor: entry.actor });
+}
+function redactedProjectEntryPayload(projectId, entry) {
   return JSON.stringify({
     projectId, id: entry.id, field: entry.field || null,
     time: entry.time, sortKey: entry.sortKey,
     actor: entry.actor, email: entry.email || '', origin: entry.origin || 'authored'
-  });
-}
-// Comment counterparts -- same two-signature shape, no `field`/`actor`
-// (comments use `author`).
-function signableCommentPayload(issueId, entry) {
-  return JSON.stringify({
-    issueId, id: entry.id, text: entry.text, time: entry.time, sortKey: entry.sortKey,
-    author: entry.author, email: entry.email || ''
-  });
-}
-function redactedCommentPayload(issueId, entry) {
-  return JSON.stringify({
-    issueId, id: entry.id, time: entry.time, sortKey: entry.sortKey,
-    author: entry.author, email: entry.email || ''
-  });
-}
-function signableProjectCommentPayload(projectId, entry) {
-  return JSON.stringify({
-    projectId, id: entry.id, text: entry.text, time: entry.time, sortKey: entry.sortKey,
-    author: entry.author, email: entry.email || ''
-  });
-}
-function redactedProjectCommentPayload(projectId, entry) {
-  return JSON.stringify({
-    projectId, id: entry.id, time: entry.time, sortKey: entry.sortKey,
-    author: entry.author, email: entry.email || ''
   });
 }
 
@@ -1923,25 +1916,24 @@ function compileRuleRows(rows, fallback, def) {
 function buildSource(issue, linkedSourceId, connectedSources) {
   if (!linkedSourceId) return { text: '', isLinked: false, github: null, jira: null, salesforce: null };
   const ref = issue.fieldRefs && issue.fieldRefs[linkedSourceId];
-  const n = normalizeRef(ref);
-  // normalizeRef's own job is reducing ANY shape down to {href,
-  // fetchedVia} -- deliberately throwing away rich fields in the
-  // process (that's the whole point of it). The pick* functions below
-  // need the OPPOSITE: whatever rich data the RAW ref (or a live,
-  // transient, in-memory-only enriched object passed through this same
-  // path at fetch time) actually still has, if any -- so they read
-  // `ref` directly, never `n`. `n` is consulted ONLY to decide WHICH
-  // subject key this ref's fetchedVia maps to.
+  // Format v2: a persisted fieldRef is always trimmed by construction
+  // (see sourceRefHasFullData) -- the pick* functions below only ever
+  // see whatever thin data ref.href-derived identification allows them
+  // to read off `ref` directly (never richer than that). resolveRefSystem
+  // is consulted ONLY to decide which system/connector this ref's href
+  // belongs to (and thus which subject key(s) to populate) -- it does
+  // not hand back a richer object to read fields from.
+  const resolved = ref && ref.system !== 'wigwag' ? resolveRefSystem(ref.href, { connectedSources }) : null;
   const source = {
     text: issue.values[linkedSourceId] || '',
     isLinked: !!ref,
-    github: n && n.fetchedVia === '__builtin_github' ? pickGithubFields(ref) : null,
-    jira: n && n.fetchedVia === '__builtin_jira' ? pickJiraFields(ref) : null,
-    salesforce: n && n.fetchedVia === '__builtin_salesforce' ? pickSalesforceFields(ref) : null
+    github: resolved && resolved.kind === 'github' ? pickGithubFields(ref) : null,
+    jira: resolved && resolved.kind === 'jira' ? pickJiraFields(ref) : null,
+    salesforce: resolved && resolved.kind === 'salesforce' ? pickSalesforceFields(ref) : null
   };
   // Connected Sources (Phase 1): a custom connector's own identity is
-  // looked up by fetchedVia now (its connectedSources entry's own
-  // immutable .key -- see slugifyConnectorKey -- surviving a later
+  // resolved live via resolveRefSystem now (its connectedSources entry's
+  // own immutable .key -- see slugifyConnectorKey -- surviving a later
   // rename so existing rules referencing source.<key> never silently
   // break), used as a DYNAMIC property name here. A rule reading
   // source.linear when the row is bound to something else just gets
@@ -1970,7 +1962,7 @@ function buildSource(issue, linkedSourceId, connectedSources) {
   // pickJiraFields/pickSalesforceFields) a dedicated slot would have
   // used -- it's still the real bridge, not a macro, just not the
   // FIRST/grandfathered instance of its kind.
-  const src = n && n.fetchedVia ? (connectedSources || []).find(c => c.id === n.fetchedVia) : null;
+  const src = resolved && resolved.connector;
   if (src && src.key && source[src.key] === undefined) {
     const picked = src.kind === 'github' ? pickGithubFields(ref)
       : src.kind === 'jira' ? pickJiraFields(ref)
@@ -2005,85 +1997,33 @@ function evalRule(ruleStr, source, values) {
 function compileConnectorMacro(macroSource) {
   return new Function('fetch', 'return (' + macroSource + ');');
 }
-// Unifies the 4 external-system fieldRef shapes persisted up through
-// this point (github: {system,owner,repo,num}; jira: {system,key,
-// browseUrl}; salesforce: {system,id,name,url}; connector: {system,
-// connectorId,connectorKey,matchedId,title,url,state}) into one
-// consistent {href, fetchedVia} view -- href is the canonical
-// identifying string (a real URL for github/jira/salesforce, possibly
-// a bare id for a custom connector depending on its own pattern),
-// fetchedVia is the connectedSources entry id (a fixed builtin id like
-// '__builtin_jira', or a custom connector's own id) that actually
-// resolved this link. This is a PERMANENT read-time adapter, not a
-// one-time migration -- old signed history is immutable and keeps its
-// legacy shape forever (same discipline as the pre-tracker-#112
-// maximalist-shape retirement: trimming/unifying what gets WRITTEN
-// can't retroactively rewrite what's already on disk). Every reader of
-// a fieldRef (buildSource, isRefLocallyLive, buildTextCell, refresh/
-// paste dispatch) goes through this first. system:'wigwag' is a wholly
-// separate, untouched system (an internal cross-project link, resolved
-// purely locally -- never touches connectedSources/fetch/credential
-// machinery at all) and is passed through as-is, never normalized.
-//
-// A legacy GitHub ref never carried an explicit `system` tag at all --
-// every other caller across this codebase defaults a missing `.system`
-// to 'github' (`ref.system || 'github'`, the universal pattern predating
-// Jira/Salesforce/connector support), so "new unified shape" can't be
-// detected by the mere ABSENCE of `.system` -- it's detected by the
-// PRESENCE of `.href` (a key no legacy shape, including legacy github's
-// own owner/repo/num, ever has).
+// Format v2 (tracker issue #227, 3212e2ff): a ref coming out of
+// deriveIssueFieldRefs is ALREADY in its final, resolved shape by
+// construction -- {href[, matchedId]}, or the wigwag shape -- there is
+// no more legacy system-tagged variant to unify (v1's github/jira/
+// salesforce/connector shapes, told apart by a `.system` tag and a
+// stored `fetchedVia`). Kept as a pass-through, not removed outright,
+// so every existing caller across this file keeps calling
+// normalizeRef(ref) unchanged; it simply no longer has real work to do.
 function normalizeRef(ref) {
-  if (!ref) return null;
-  if (ref.system === 'wigwag') return ref;
-  if ('href' in ref) return ref; // already the new {href, fetchedVia} shape
-  const system = ref.system || 'github';
-  if (system === 'github') return { href: 'https://github.com/' + ref.owner + '/' + ref.repo + '/issues/' + ref.num, fetchedVia: '__builtin_github' };
-  if (system === 'jira') return { href: ref.browseUrl || null, fetchedVia: '__builtin_jira' };
-  if (system === 'salesforce') return { href: ref.url || null, fetchedVia: '__builtin_salesforce' };
-  if (system === 'connector') return { href: ref.url || null, fetchedVia: ref.connectorId, matchedId: ref.matchedId };
-  return ref; // unknown/future shape -- pass through rather than drop
+  return ref || null;
 }
-// Tracker #112 (b564316d): a persisted fieldRef for an externally-linked
-// source (github/jira/salesforce) only ever carries display fields now
-// (owner/repo/num, key/browseUrl, id/name/url) -- never the maximalist
-// picked set (labels/status/etc, or Salesforce's whole field map), so a
-// rule reading source.<system>.foo can't be safely re-evaluated from what
-// disk actually holds. Detected structurally, on the RAW ref (before
-// pickGithubFields/pickJiraFields/pickSalesforceFields default every key
-// in): a trimmed github ref never has 'labels' at all; trimmed jira never
-// has 'status'; trimmed salesforce never has 'fields'. This is also how
-// the fetch/refresh flow's own transient, in-memory-only enriched ref
-// (used to recompute bound fields against a live payload, then discarded
-// before anything is persisted -- see applyGithubLinkToField and its
-// Jira/Salesforce counterparts) is told apart from the real, trimmed one:
-// the enriched ref legitimately has all those keys, so this same
-// function safely takes the live-eval path for it. A ref carrying
-// `.href` is the new, fully-unified {href, fetchedVia} shape (see
-// normalizeRef above) -- it structurally never carries rich data at
-// all, by construction, so it's always "trimmed." A legacy GitHub ref
-// never carried an explicit `system` tag (same universal `ref.system
-// || 'github'` default normalizeRef's own comment explains) -- checked
-// LAST, after the unambiguous `.href` check, so it can't misfire on a
-// new-shape ref that happens to have no `.system` key either.
+// Format v2: every real external ref is trimmed by construction now --
+// `value` (and the fieldRef view derived from it) never carries rich
+// data (labels/status/etc) for ANY system, so there's no more "is this
+// the rich in-memory-only shape fetch/refresh briefly holds, or the
+// trimmed persisted one" question to ask -- v1's whole reason this
+// function existed (tracker #112, b564316d). Kept only for the two
+// genuine non-trimmed cases: no ref at all, and a wigwag ref (never
+// given the maximalist treatment to begin with).
 function sourceRefHasFullData(ref) {
   if (!ref) return true; // no ref at all -- nothing to trim, buildSource's isLinked gate handles this
   if (ref.system === 'wigwag') return true; // wigwag was never given the maximalist treatment
-  if ('href' in ref) return false; // the new {href, fetchedVia} shape -- never has rich data, by construction
-  if (ref.system === 'jira') return 'status' in ref;
-  if (ref.system === 'salesforce') return 'fields' in ref;
-  if (ref.system === 'connector') return 'labels' in ref; // same trimmed-persist pattern as github/jira/salesforce
-  return 'labels' in ref; // github, explicit or defaulted (ref.system || 'github')
+  return false;
 }
 // The history entry (if any) that most recently set colId's value --
 // used to tell a rule-derived value apart from a manual one when the
 // rule itself can no longer be safely re-run (see sourceRefHasFullData).
-function latestEntryForField(issue, colId) {
-  let latest = null;
-  for (const h of issue.history || []) {
-    if (h.field === colId && (!latest || (h.sortKey || 0) > (latest.sortKey || 0))) latest = h;
-  }
-  return latest;
-}
 // { isLinked:false } short-circuits before the rule even runs, for fields
 // with no rule/no bound source AND for bound-but-not-yet-linked rows —
 // callers use isLinked to decide whether to lock the cell / overwrite its
@@ -2149,6 +2089,71 @@ const BUILTIN_CREDENTIAL_REQUIRED = { github: false, jira: true, salesforce: tru
 // "is this instance usable right now" question can be asked from
 // outside a ref's own reachability check too -- e.g. connectorMatches'
 // paste-time gating, which has no ref yet to normalize.
+// Format v2 (tracker issue #227, 3212e2ff): moved here from
+// src/wigwag-app.js (previously instance methods) -- fully pure shape
+// recognition with no component-state dependency, now needed by
+// resolveRefSystem below as well as the app's own paste-matching
+// (connectorMatches), which keeps calling these same functions, just no
+// longer owning them.
+function parseGithubUrl(text) {
+  const t = (text || '').trim();
+  const full = t.match(/^https?:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(?:issues|pull)\/(\d+)\/?$/i);
+  if (full) return { owner: full[1], repo: full[2], num: full[3] };
+  const shorthand = t.match(/^([\w.-]+)\/([\w.-]+)#(\d+)$/);
+  if (shorthand) return { owner: shorthand[1], repo: shorthand[2], num: shorthand[3] };
+  return null;
+}
+function parseJiraKey(text) {
+  const t = (text || '').trim();
+  if (JIRA_KEY_RE.test(t)) return t.toUpperCase();
+  const urlMatch = t.match(/^https?:\/\/[\w.-]+\/browse\/([A-Z][A-Z0-9]+-\d+)\/?(?:[?#].*)?$/i);
+  return urlMatch ? urlMatch[1].toUpperCase() : null;
+}
+function parseSalesforceId(text) {
+  const t = (text || '').trim();
+  let m = t.match(/\/lightning\/r\/(?:[\w]+\/)?([a-zA-Z0-9]{15,18})\/view\/?(?:[?#].*)?$/i);
+  if (m) return m[1];
+  m = t.match(/^https?:\/\/[\w-]+\.(?:my\.)?salesforce\.com\/([a-zA-Z0-9]{15,18})\/?(?:[?#].*)?$/i);
+  return m ? m[1] : null;
+}
+function hostFromUrl(text) {
+  try { return new URL((text || '').trim()).host; } catch (e) { return null; }
+}
+// Format v2: the live replacement for a stored `fetchedVia` pointer --
+// "which system/connector does this href belong to, RIGHT NOW, on this
+// device" -- resolved purely from the href itself plus this device's
+// own currently-configured connectedSources, never trusted from
+// anything persisted. The three built-ins resolve by shape (the exact
+// same recognizers paste-matching already uses, since a built-in's
+// stored href is always built from the fetch's own canonical shape);
+// a custom connector resolves by host-matching against its own
+// `rootUrl` (its `patterns` are tuned for recognizing pasted INPUT,
+// often a short key, with no obligation to also match the macro's own
+// canonical OUTPUT url -- see docs/FORMAT_V2.md's own writeup of why
+// this -- not re-running `patterns` -- is the right host-era design).
+// `connector` is null when the href is recognizably github/jira/
+// salesforce-shaped but no local row of that kind exists (still a real
+// KIND, for branding, just not a configured instance) -- github is the
+// one kind that's still real without one (see connectedSourcesForDispatch,
+// src/wigwag-app.js, which is expected to have already appended its own
+// always-reachable stand-in to ctx.connectedSources before this runs).
+// Known, deliberately-deferred gap: a connector with more than one real
+// root URL can't be told apart by a single host -- out of scope until
+// that's a real need, not a regression (today's model is one `rootUrl`
+// per connector entry already).
+function resolveRefSystem(href, ctx) {
+  if (!href) return null;
+  const connectedSources = (ctx && ctx.connectedSources) || [];
+  if (parseGithubUrl(href)) return { kind: 'github', connector: connectedSources.find(c => c.kind === 'github') || null };
+  if (parseJiraKey(href)) return { kind: 'jira', connector: connectedSources.find(c => c.kind === 'jira') || null };
+  if (parseSalesforceId(href)) return { kind: 'salesforce', connector: connectedSources.find(c => c.kind === 'salesforce') || null };
+  const host = hostFromUrl(href);
+  if (host) {
+    const c = connectedSources.find(c => !c.kind && c.enabled !== false && c.rootUrl && hostFromUrl(c.rootUrl) === host);
+    if (c) return { kind: null, connector: c };
+  }
+  return null;
+}
 function builtinKindConfigured(c) {
   if (!c || !c.kind) return false;
   if (!(c.rootUrl || '').trim()) return false;
@@ -2163,16 +2168,14 @@ function builtinKindReachable(c, ctx) {
 function isRefLocallyLive(ref, ctx) {
   if (!ref) return false;
   if (ref.system === 'wigwag') return true;
-  const n = normalizeRef(ref);
-  if (!n || !n.fetchedVia) return false;
   ctx = ctx || {};
-  const c = (ctx.connectedSources || []).find(x => x.id === n.fetchedVia);
-  if (!c) return false;
-  // A deactivated connector (new: keeps all its config/credentials, but
-  // acts as if it weren't there at all) behaves exactly like a deleted
-  // one for reachability -- same as `!c` just above.
-  if (c.enabled === false) return false;
-  if (c.kind) return builtinKindReachable(c, ctx);
+  const resolved = resolveRefSystem(ref.href, ctx);
+  if (!resolved || !resolved.connector) return false;
+  // A deactivated connector (keeps all its config/credentials, but acts
+  // as if it weren't there at all) behaves exactly like a deleted one
+  // for reachability.
+  if (resolved.connector.enabled === false) return false;
+  if (resolved.kind) return builtinKindReachable(resolved.connector, ctx);
   return !!ctx.tauriConnectorRuntime;
 }
 function computeBoundValue(issue, colId, def, ctx) {
@@ -2204,7 +2207,7 @@ function computeBoundValue(issue, colId, def, ctx) {
 function fieldLocalBindState(issue, colId, localDerivedEntryIdsForIssue) {
   const recordedId = localDerivedEntryIdsForIssue ? localDerivedEntryIdsForIssue[colId] : undefined;
   if (!recordedId) return 'plain';
-  const latest = latestEntryForField(issue, colId);
+  const latest = latestFieldEntry(issue, colId);
   return (latest && latest.id === recordedId) ? 'bound' : 'overridden';
 }
 // Live-reported bug, and the reason this exists at all: fieldLocalBindState
@@ -2460,17 +2463,18 @@ function sortValue(issue, colId, def) {
   return issue.values[colId] || '';
 }
 // An issue's earliest logged event (its own "Created" entry, always the
-// lowest sortKey in its history chronologically) as a stable creation-
-// order key. Immutable once set -- unlike issue.num (which only reflects
-// the order a browser first became aware of an issue, not its true age:
-// an issue merged in from elsewhere gets numbered above all of a local
-// project's existing issues regardless of how old it actually is) or raw
+// lowest sortKey across every field's history) as a stable creation-
+// order key. Immutable once set -- unlike v1's old `issue.num` (which
+// only reflected the order a browser first became aware of an issue, not
+// its true age: an issue merged in from elsewhere got numbered above all
+// of a local project's existing issues regardless of how old it actually
+// was -- see docs/FORMAT_V2.md's "what got removed and why") or raw
 // array position (which a merge can reorder relative to true creation
 // order), this is preserved verbatim through every merge, so it's safe
 // to sort by on every render with no snapshotting needed.
 function issueCreatedAt(issue) {
-  const sortKeys = (issue.history || []).map(h => h.sortKey).filter(k => typeof k === 'number');
-  return sortKeys.length ? Math.min(...sortKeys) : 0;
+  const keys = issueActivitySortKeys(issue);
+  return keys.length ? Math.min(...keys) : 0;
 }
 // Row order should only change when the sort itself is set/changed or the
 // page is reloaded -- never as a side effect of editing a field, even the
@@ -2524,6 +2528,30 @@ async function verifyPayload(payloadStr, sigBase64, pubKeyJwk) {
     return await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, sigBytes, new TextEncoder().encode(payloadStr));
   } catch (e) { return false; }
 }
+// Format v2: per-entry signatures move to a small self-describing shape,
+// `sig: {alg, full, redacted}` -- `alg` the real registered JOSE
+// identifier (RFC 7518) for what this app has always actually done
+// (ECDSA P-256 + SHA-256), both signature values base64url. Deliberately
+// NOT implemented by changing signWithKey/verifyPayload above -- those
+// are SHARED with the already-shipped export-envelope signing scheme
+// (buildExportEnvelope/verifyExportEnvelope), which has real exported
+// files on disk today using plain base64 and no alg tag; changing the
+// shared primitive would silently break verifying those. These wrap the
+// exact same underlying crypto call (no duplicated signing logic) and
+// only differ in the outer encoding/tagging layer.
+const JOSE_ALG_ES256 = 'ES256';
+async function signEntryPayload(key, payloadStr) {
+  const sigB64 = await signWithKey(key, payloadStr);
+  return sigB64 ? base64UrlFromBytes(bytesFromBase64(sigB64)) : null;
+}
+// `alg` is read from the entry's own `sig.alg` by the caller and passed
+// explicitly -- only ES256 is implemented; anything else fails closed
+// (false) rather than silently verifying under an algorithm this
+// function doesn't actually implement.
+async function verifyEntryPayload(payloadStr, sigBase64Url, pubKeyJwk, alg) {
+  if (alg !== JOSE_ALG_ES256 || !sigBase64Url) return false;
+  return verifyPayload(payloadStr, base64FromBytes(bytesFromBase64Url(sigBase64Url)), pubKeyJwk);
+}
 // Strictly-increasing sortKey for every history entry/comment this app
 // generates, so two events written in the same millisecond never tie.
 function advanceSortKey(lastSortKey) {
@@ -2535,22 +2563,28 @@ function advanceSortKey(lastSortKey) {
 // saveEditComment, postProjectComment, saveEditProjectComment): commit an
 // unsigned entry immediately (synchronous, optimistic), sign it in the
 // background, patch the signature on once both signings resolve.
-// entryBase: the caller-built entry object minus sig/sigRedacted/pubKey --
-// shape varies by call site (history entries carry field/value/fieldRef;
-// comments don't), this function only ever touches .id/.sortKey.
+// entryBase: the caller-built entry object minus sig/pubKey -- shape
+// varies by call site (an issue-level history entry carries just value;
+// a project-level one still carries field/value/text/time/email/origin;
+// comments carry text, not value), this function only ever touches
+// .id/.sortKey.
 // payloads: { signable, redacted } strings, built by the caller via the
 // existing signable*/redacted* functions above.
 // store: { sign(payloadStr) => Promise<string|null>,
 //          insertUnsigned(entry) => void,
-//          patchSignature(id, sortKey, sig, sigRedacted, pubKey) => void,
+//          patchSignature(id, sortKey, sig, pubKey) => void,
 //          currentPubKey() => jwk|null }
+// Format v2: `sig` is now one small object, {alg, full, redacted}, not
+// two flat sibling keys -- store.sign is expected to produce a
+// base64url signature (signEntryPayload), and store.patchSignature's
+// own signature drops the separate sigRedacted parameter to match.
 function commitSignedEntry(entryBase, payloads, store) {
-  const entry = { ...entryBase, sig: null, sigRedacted: null, pubKey: null };
+  const entry = { ...entryBase, sig: null, pubKey: null };
   store.insertUnsigned(entry);
   return Promise.all([store.sign(payloads.signable), store.sign(payloads.redacted)])
-    .then(([sig, sigRedacted]) => {
-      if (!sig && !sigRedacted) return;
-      store.patchSignature(entry.id, entry.sortKey, sig, sigRedacted, store.currentPubKey());
+    .then(([full, redacted]) => {
+      if (!full && !redacted) return;
+      store.patchSignature(entry.id, entry.sortKey, { alg: JOSE_ALG_ES256, full, redacted }, store.currentPubKey());
     });
 }
 
@@ -2581,6 +2615,34 @@ function commitSignedEntry(entryBase, payloads, store) {
 // app reads it any more -- so it gets redacted too, not kept around
 // forever just because nothing happened to supersede it under its own
 // (now-abandoned) field id.
+// A redacted (content-free) entry -- strips `value`/`text`, keeps only
+// what redactedEntryPayload/redactedProjectEntryPayload actually sign
+// (id/actor/sortKey) plus enough of `sig` to still independently verify
+// the redaction happened to real signed data: `sig.redacted` (the
+// signature over exactly this content-free shape) survives, `sig.full`
+// (which covered content that's now gone) does not.
+function redactEntry(h) {
+  return { id: h.id, actor: h.actor, sortKey: h.sortKey, redacted: true, sig: h.sig ? { alg: h.sig.alg, redacted: h.sig.redacted } : null, pubKey: h.pubKey };
+}
+// Project-level counterpart to redactEntry: its signed redacted payload
+// (redactedProjectEntryPayload) still includes field/time/email/origin
+// (project history was never part of the fields-map redesign -- see that
+// function's own comment), so the tombstone this produces must keep
+// exactly those fields too, or re-verifying a squashed project entry's
+// sig.redacted would recompute a different payload than what was
+// actually signed at creation time and show every redacted project
+// entry as falsely "changed."
+function redactProjectEntry(h) {
+  return {
+    id: h.id, time: h.time, actor: h.actor, email: h.email,
+    field: h.field, origin: h.origin, sortKey: h.sortKey,
+    redacted: true, sig: h.sig ? { alg: h.sig.alg, redacted: h.sig.redacted } : null, pubKey: h.pubKey
+  };
+}
+// Flat-array version, used for project-level (schema) history, which
+// stays a flat array in this pass -- only its entries' shape simplified
+// (format v2), not its structure; see docs/FORMAT_V2.md's own scoping
+// note on why per-issue history is this redesign's actual target.
 function squashHistory(history, fieldDefs) {
   const latestByField = {};
   for (const h of history) {
@@ -2593,12 +2655,61 @@ function squashHistory(history, fieldDefs) {
     if (!h.field) return h;
     const fieldDeleted = fieldDefs && !(h.field in fieldDefs);
     if (!fieldDeleted && keepIds.has(h.id)) return h;
-    return {
-      id: h.id, time: h.time, actor: h.actor, email: h.email,
-      field: h.field, origin: h.origin, sortKey: h.sortKey,
-      redacted: true, sigRedacted: h.sigRedacted, pubKey: h.pubKey
-    };
+    return redactProjectEntry(h);
   });
+}
+// Per-issue (format v2): squashes each field's OWN history array
+// independently -- keep the single latest entry in full, redact
+// everything earlier. A field no longer in fieldDefs gets even its
+// latest entry redacted (no reason to keep a full value for a field
+// that no longer exists in the schema) -- except the deletion tombstone
+// (ISSUE_DELETED_FIELD_ID), which is never a real schema field to begin
+// with but must always survive squashing in full, or a squashed/shared
+// export could silently resurrect a deleted issue.
+function squashIssueFields(fields, fieldDefs) {
+  const squashed = {};
+  for (const colId in (fields || {})) {
+    const history = fields[colId].history || [];
+    if (!history.length) { squashed[colId] = { history: [] }; continue; }
+    const latest = history.reduce((a, b) => (b.sortKey > a.sortKey ? b : a));
+    const fieldDeleted = fieldDefs && colId !== ISSUE_DELETED_FIELD_ID && !(colId in fieldDefs);
+    squashed[colId] = { history: history.map(h => (!fieldDeleted && h.id === latest.id) ? h : redactEntry(h)) };
+  }
+  return squashed;
+}
+// Format v2: `_comment` is purely a reading aid for a file written out
+// to disk -- never part of the canonical/synced model, regenerated
+// fresh here every export from whatever the live schema says right
+// now, never read back in (parseJsonl discards it outright on import --
+// there is no "keep this comment up to date" code path anywhere,
+// because nothing is ever stored to go stale). Carries only whatever
+// the field's own `type__name` id doesn't already self-describe:
+// nothing at all when the id's name already matches the label and its
+// type prefix already matches the real type, just the label when the
+// name doesn't match (e.g. issue__key, named for its role rather than
+// its label "Issue"), or the full {label, type, options} for an opaque
+// legacy id that reveals nothing on its own (a field created before
+// this id scheme, not yet migrated).
+function generateFieldComment(colId, def) {
+  if (!def) return undefined;
+  const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const m = /^([a-zA-Z]+)__(.+)$/.exec(colId);
+  const idType = m ? m[1] : null;
+  const idName = m ? m[2] : null;
+  const typeMatches = idType === def.type;
+  const labelMatches = idName != null && norm(idName) === norm(def.label);
+  if (typeMatches && labelMatches) return undefined;
+  const comment = {};
+  if (!labelMatches) comment.label = def.label;
+  if (!typeMatches) {
+    comment.type = def.type;
+    if (def.type === 'select' || def.type === 'multiselect') {
+      const options = {};
+      for (const o of (def.options || [])) options[o.id] = o.label;
+      comment.options = options;
+    }
+  }
+  return comment;
 }
 function displayValueForHistory(def, value) {
   if (def.type === 'select') {
@@ -2656,12 +2767,18 @@ function buildSourceText(mode, doc) {
   // it (tombstone included), since that's exactly what needs to survive
   // for another device/party to correctly see the deletion rather than
   // resurrect the issue from its still-present creation entry.
-  const exportedIssues = mode === 'squashed' ? issues.filter(iss => !issueIsDeleted(iss.history)) : issues;
+  const exportedIssues = mode === 'squashed' ? issues.filter(iss => !issueIsDeleted(iss)) : issues;
   const issueLines = exportedIssues.map(iss => {
-    const history = (mode === 'squashed' ? squashHistory(iss.history, fieldDefs) : iss.history).map(keys.encode);
-    const commentStreams = {};
-    for (const colId in (iss.commentStreams || {})) commentStreams[colId] = (iss.commentStreams[colId] || []).map(keys.encode);
-    return { id: iss.id, num: iss.num, commentStreams, history };
+    const fields = mode === 'squashed' ? squashIssueFields(iss.fields, fieldDefs) : iss.fields;
+    const encodedFields = {};
+    for (const colId in fields) {
+      const comment = generateFieldComment(colId, fieldDefs[colId]);
+      encodedFields[colId] = {
+        ...(comment ? { _comment: comment } : {}),
+        history: (fields[colId].history || []).map(keys.encode)
+      };
+    }
+    return { id: iss.id, fields: encodedFields };
   });
   const lines = [JSON.stringify({ type: 'fields', formatVersion: FORMAT_VERSION, generator: 'wigwag', fields: fieldDefs, projectHistory: encodedProjectHistory, keys: Object.keys(keys.registry).length ? keys.registry : undefined, id: projectId, name: projectName || undefined, projectNotes: projectNotes || undefined, projectComments: (projectComments && projectComments.length) ? projectComments : undefined })];
   for (const line of issueLines) lines.push(JSON.stringify({ type: 'issue', ...line }));
@@ -2847,7 +2964,7 @@ function humanFileSize(bytes) {
 // Rehydrates an entry written against the shared key registry (tracker
 // #132, 68d960f2) back to a full inline pubKey, so every downstream
 // consumer (verifyPayload, squashHistory, TOFU trust, etc.) sees exactly
-// the same {sig, sigRedacted, pubKey} shape it always has -- whether the
+// the same {sig, pubKey} shape it always has -- whether the
 // file used the registry or (an older export, still fully valid) inlined
 // pubKey directly on every entry. A no-op when keyRegistry is absent or
 // the entry has no keyRef, so old-format files pass through unchanged.
@@ -2873,95 +2990,86 @@ function parseJsonl(text, fallbackFieldDefs) {
   if (keyRegistry) {
     if (incomingProjectHistory) incomingProjectHistory = incomingProjectHistory.map(h => rehydrateKeyRef(h, keyRegistry));
     for (const iss of issues) {
-      if (iss.history) iss.history = iss.history.map(h => rehydrateKeyRef(h, keyRegistry));
-      if (iss.commentStreams) {
-        const cs = {};
-        for (const colId in iss.commentStreams) cs[colId] = (iss.commentStreams[colId] || []).map(h => rehydrateKeyRef(h, keyRegistry));
-        iss.commentStreams = cs;
+      for (const colId in (iss.fields || {})) {
+        if (iss.fields[colId].history) iss.fields[colId].history = iss.fields[colId].history.map(h => rehydrateKeyRef(h, keyRegistry));
       }
     }
   }
+  // `_comment` (format v2) is a pure reading aid written at export time,
+  // never part of the canonical model -- discarded here on import,
+  // never round-tripped. Nothing above even looks at it (hydrateIssue's
+  // own derivation only ever reads `.history`), so no explicit strip is
+  // needed; it simply never reaches anything that would act on it.
   const effectiveFields = fields || fallbackFieldDefs;
   const hydratedIssues = issues.map(iss => hydrateIssue(iss, effectiveFields));
   const projectHistory = fields ? backfillProjectHistory(fields, incomingProjectHistory || [], projectNotes) : (incomingProjectHistory || []);
   return { fields, projectHistory, issues: hydratedIssues, projectId, projectName, projectNotes, projectComments, formatVersion: incomingFormatVersion };
 }
-// A stable identity for a history/comment entry for union-dedup purposes.
-// Real entries always have an id; the original seed data's history
-// predates ids, so those fall back to a composite of their other fields
-// -- stable enough to dedupe on, since two independently-authored entries
-// are exceedingly unlikely to collide on sortKey+actor+field+text.
-function entryKey(h) { return h.id || ('legacy|' + (h.sortKey || 0) + '|' + (h.actor || '') + '|' + (h.field || '') + '|' + (h.text || '')); }
-function commentKey(c) { return c.id || ('legacy|' + (c.sortKey || 0) + '|' + (c.author || '') + '|' + (c.text || '')); }
+// A stable identity for a history entry for union-dedup purposes. Real
+// entries always have an id; the original seed data's history predates
+// ids, so those fall back to a composite of their other fields --
+// stable enough to dedupe on, since two independently-authored entries
+// are exceedingly unlikely to collide on sortKey+actor+content.
+function entryKey(h) { return h.id || ('legacy|' + (h.sortKey || 0) + '|' + (h.actor || '') + '|' + JSON.stringify(h.value !== undefined ? h.value : h.text)); }
 function unionByKey(localList, incomingList, keyFn) {
   const map = new Map();
   for (const item of localList) map.set(keyFn(item), item);
   for (const item of incomingList) if (!map.has(keyFn(item))) map.set(keyFn(item), item);
   return [...map.values()].sort((a, b) => (a.sortKey || 0) - (b.sortKey || 0));
 }
-// commentStreams is a map of independent per-field entry arrays (one per
-// commentStream-typed field, 'comments' included) -- union each field's
-// array separately, over the set of field ids present on EITHER side, so
-// a field that only exists on one side (e.g. created locally, not yet
-// seen by the other party) still comes through untouched.
-function mergeCommentStreams(localStreams, incomingStreams) {
-  const ids = new Set([...Object.keys(localStreams || {}), ...Object.keys(incomingStreams || {})]);
-  const merged = {};
-  for (const id of ids) {
-    merged[id] = unionByKey((localStreams && localStreams[id]) || [], (incomingStreams && incomingStreams[id]) || [], c => commentKey(c));
-  }
-  return merged;
-}
-// Unions both sides' history/comments (nothing is ever dropped -- a
-// losing edit is still sitting right there in history) and re-derives
-// values/fieldRefs fresh, the same derivation every other write path
-// uses. No blocking conflict step: whichever side's entry has the higher
-// sortKey naturally wins the derivation. overlappingFields flags any
-// field where BOTH sides had authored entries the other hadn't seen yet
-// (origin !== 'derived' -- two independently-computed bound values
-// disagreeing isn't an authorship overlap) purely so the caller can
-// surface a lightweight, non-blocking notice; it does not affect the
-// merge result itself.
+// Unions every field's own history independently (nothing is ever
+// dropped -- a losing edit is still sitting right there in history) and
+// re-derives values/fieldRefs fresh, the same derivation every other
+// write path uses. No blocking conflict step: whichever side's entry
+// has the higher sortKey naturally wins the derivation. A comment-
+// stream field merges through this exact same per-field union now --
+// it's just another field, not a separate `commentStreams` structure,
+// so there's no second merge function for it any more (v1's
+// `mergeCommentStreams`/`commentKey`).
+//
+// overlappingFields/touchedFields: a bound/derived field's value is just
+// an ordinary write, authored by whichever device computed it -- no
+// special-cased "is this a real conflict" distinction any more (see
+// docs/FORMAT_V2.md's merge-semantics note; this also means
+// overlappingFields no longer needs its own narrower "authored" filter
+// separate from touchedFields' "any real change" one -- the two
+// collapse onto the same per-field entry sets, just asking
+// one-sided-vs-both-sided of the same data). overlappingFields flags
+// any field where BOTH sides independently added something the other
+// hadn't seen, purely so the caller can surface a lightweight,
+// non-blocking notice. touchedFields (tracker #124, 5c3051e9) is the
+// strict superset: every field the incoming side brought something new
+// to at all, one-sided included -- the handoff's own Level 2 table
+// shows a row for every touched field, not just overlapping ones.
 function mergeIssuePair(localIssue, incomingIssue, fieldDefs) {
-  const history = unionByKey(localIssue.history, incomingIssue.history, h => entryKey(h));
-  const commentStreams = mergeCommentStreams(localIssue.commentStreams, incomingIssue.commentStreams);
-  const fieldIds = new Set();
-  for (const h of history) if (h.field) fieldIds.add(h.field);
+  const fieldIds = new Set([...Object.keys(localIssue.fields || {}), ...Object.keys(incomingIssue.fields || {})]);
+  const mergedFields = {};
   const overlappingFields = [];
-  // touchedFields (tracker #124, 5c3051e9): every field the INCOMING file
-  // genuinely brought something new to -- a strict superset of
-  // overlappingFields (which requires BOTH sides to have independently
-  // diverged). The handoff's own Level 2 table shows a row for every
-  // field the merge touched, whether the local side also edited it
-  // (winner: newest-edit-wins) or not (winner: incoming by default,
-  // origin note "one copy only") -- overlappingFields alone silently
-  // dropped the one-copy-only rows entirely.
   const touchedFields = [];
   for (const colId of fieldIds) {
-    const localAuthored = localIssue.history.filter(h => h.field === colId && h.origin !== 'derived');
-    const incomingAuthored = incomingIssue.history.filter(h => h.field === colId && h.origin !== 'derived');
-    const localKeys = new Set(localAuthored.map(h => entryKey(h)));
-    const incomingKeys = new Set(incomingAuthored.map(h => entryKey(h)));
-    const localOnly = localAuthored.some(h => !incomingKeys.has(entryKey(h)));
-    const incomingOnly = incomingAuthored.some(h => !localKeys.has(entryKey(h)));
+    const localHistory = (localIssue.fields[colId] && localIssue.fields[colId].history) || [];
+    const incomingHistory = (incomingIssue.fields[colId] && incomingIssue.fields[colId].history) || [];
+    mergedFields[colId] = { history: unionByKey(localHistory, incomingHistory, entryKey) };
+    const localKeys = new Set(localHistory.map(entryKey));
+    const incomingKeys = new Set(incomingHistory.map(entryKey));
+    const localOnly = localHistory.some(h => !incomingKeys.has(entryKey(h)));
+    const incomingOnly = incomingHistory.some(h => !localKeys.has(entryKey(h)));
+    // A comment-stream field's entries still merge via the exact same
+    // union above -- they just never generate a notice. Preserves the
+    // invariant v1's separate mergeCommentStreams gave for free: comment-
+    // stream entries are never contested on merge, only ever unioned
+    // (see docs/FORMAT.md) -- a new comment shouldn't surface as a
+    // touched/overlapping field the way a real field edit does.
+    if (fieldDefs[colId] && fieldDefs[colId].type === 'commentStream') continue;
     if (localOnly && incomingOnly) overlappingFields.push(colId);
-    // touchedFields (unlike overlappingFields above) must catch ANY real
-    // value the incoming side brought, including a purely rule-derived
-    // one (origin:'derived') -- a field whose only change is derived is
-    // still real data a receiving, not-yet-refreshed instance needs to
-    // see landed, not silently invisible to "is there anything to merge".
-    const localAll = localIssue.history.filter(h => h.field === colId);
-    const incomingAll = incomingIssue.history.filter(h => h.field === colId);
-    const localAllKeys = new Set(localAll.map(h => entryKey(h)));
-    const incomingTouchedAny = incomingAll.some(h => !localAllKeys.has(entryKey(h)));
-    if (incomingTouchedAny) touchedFields.push(colId);
+    if (incomingOnly) touchedFields.push(colId);
   }
-  const merged = { ...localIssue, commentStreams, history };
-  // A tombstone (field: ISSUE_DELETED_FIELD_ID) flows through the same
-  // generic history union above as any other field entry -- no special
+  // A tombstone (field id ISSUE_DELETED_FIELD_ID) flows through the same
+  // generic per-field union above as any other field -- no special
   // merge-conflict handling needed, just re-derive deleted status fresh
   // like values/fieldRefs.
-  const mergedIssue = { ...merged, values: deriveIssueValues(merged, fieldDefs), fieldRefs: deriveIssueFieldRefs(merged, fieldDefs), deleted: issueIsDeleted(history) };
+  const merged = { ...localIssue, fields: mergedFields };
+  const mergedIssue = { ...merged, values: deriveIssueValues(merged, fieldDefs), fieldRefs: deriveIssueFieldRefs(merged, fieldDefs), deleted: issueIsDeleted(merged) };
   return { mergedIssue, overlappingFields, touchedFields };
 }
 
@@ -3134,8 +3242,8 @@ function computeMergeProseEntries(localIssue, incomingIssue, fieldDefs, inboundI
   for (const colId in fieldDefs) {
     const def = fieldDefs[colId];
     if (!def || def.type !== 'text') continue;
-    const localAuthored = (localIssue.history || []).filter(h => h.field === colId && h.origin !== 'derived');
-    const incomingAuthored = (incomingIssue.history || []).filter(h => h.field === colId && h.origin !== 'derived');
+    const localAuthored = issueFieldHistory(localIssue, colId);
+    const incomingAuthored = issueFieldHistory(incomingIssue, colId);
     if (!localAuthored.length || !incomingAuthored.length) continue;
     const localKeys = new Set(localAuthored.map(h => entryKey(h)));
     const incomingKeys = new Set(incomingAuthored.map(h => entryKey(h)));
@@ -3153,7 +3261,7 @@ function computeMergeProseEntries(localIssue, incomingIssue, fieldDefs, inboundI
     if (oursValue === theirsValue) continue; // both sides already converged -- nothing new to record
 
     const markers = conflictMarkerLines(
-      (localLatest && (localLatest.email || localLatest.actor)) || 'unknown',
+      (localLatest && localLatest.actor) || 'unknown',
       info.exportedBy, info.exportedAt, info.provenance
     );
     const { text: mergedValue, hasConflict } = diff3Merge(baseValue, oursValue, theirsValue, markers);
@@ -3233,14 +3341,11 @@ function buildMergeRecord({ id, ingestedAt, ingestedBy, source, issues }) {
 // append real signed entries as a side effect, but neither a merge nor a
 // refresh previously recorded them anywhere revertible.
 function latestEntryIdsByField(issue) {
-  const latest = {};
-  for (const h of (issue.history || [])) {
-    if (!h.field) continue;
-    const existing = latest[h.field];
-    if (!existing || h.sortKey > existing.sortKey) latest[h.field] = h;
-  }
   const result = {};
-  for (const f in latest) result[f] = latest[f].id;
+  for (const colId in (issue.fields || {})) {
+    const latest = latestFieldEntry(issue, colId);
+    if (latest) result[colId] = latest.id;
+  }
   return result;
 }
 function buildMergeIssueSummary(issueId, localIssue, incomingIssue, touchedFields, proseEntries, fieldDefs) {
@@ -3250,21 +3355,14 @@ function buildMergeIssueSummary(issueId, localIssue, incomingIssue, touchedField
   for (const colId of (touchedFields || [])) {
     if (proseColIds.has(colId)) continue; // reported via proseEntries below instead
     if (!fieldDefs[colId]) continue;
-    const localAuthored = (localIssue.history || []).filter(h => h.field === colId && h.origin !== 'derived');
-    const incomingAuthored = (incomingIssue.history || []).filter(h => h.field === colId && h.origin !== 'derived');
-    // latest/winner/resultEntryId deliberately look at the FULL history
-    // (derived entries included), not just localAuthored/incomingAuthored
-    // above -- a field that only ever changes via a bound rule (origin
-    // 'derived' on both sides, e.g. Remedy cascading off a refreshed
-    // source field) can reach here with no authored entry on either side
-    // at all now that touchedFields counts a derived-only change as real
-    // (see mergeIssuePair); picking resultEntryId off an always-filtered,
-    // possibly-empty authored list crashed on a null .id in exactly that
-    // case.
-    const localAll = (localIssue.history || []).filter(h => h.field === colId);
-    const incomingAll = (incomingIssue.history || []).filter(h => h.field === colId);
-    const localLatest = latestOf(localAll);
-    const incomingLatest = latestOf(incomingAll);
+    // Format v2: origin is gone -- there's no more authored-vs-derived
+    // split (a rule-derived write is just an ordinary entry now), so the
+    // old separate "authored" (for divergence-detection) and "all, incl.
+    // derived" (for winner-picking) lists collapse into this one.
+    const localAuthored = issueFieldHistory(localIssue, colId);
+    const incomingAuthored = issueFieldHistory(incomingIssue, colId);
+    const localLatest = latestOf(localAuthored);
+    const incomingLatest = latestOf(incomingAuthored);
     const winner = (localLatest && incomingLatest)
       ? (localLatest.sortKey >= incomingLatest.sortKey ? 'local' : 'incoming')
       : (localLatest ? 'local' : 'incoming');
@@ -3295,8 +3393,8 @@ function buildMergeIssueSummary(issueId, localIssue, incomingIssue, touchedField
     });
   }
   for (const entry of (proseEntries || [])) {
-    const localAuthored = (localIssue.history || []).filter(h => h.field === entry.colId && h.origin !== 'derived');
-    const incomingAuthored = (incomingIssue.history || []).filter(h => h.field === entry.colId && h.origin !== 'derived');
+    const localAuthored = issueFieldHistory(localIssue, entry.colId);
+    const incomingAuthored = issueFieldHistory(incomingIssue, entry.colId);
     const incomingKeys = new Set(incomingAuthored.map(h => entryKey(h)));
     const localKeys = new Set(localAuthored.map(h => entryKey(h)));
     const localLatest = latestOf(localAuthored);
@@ -3334,9 +3432,8 @@ function patchMergeSummaryResultEntryId(mergeIssueSummaries, issueId, colId, res
 // standing rule that nothing real is ever silently discarded.
 function fieldStillSafeToRevert(currentIssue, fieldRow) {
   if (!fieldRow.resultEntryId || !fieldRow.preMergeLocalEntryId) return false;
-  const authored = (currentIssue.history || []).filter(h => h.field === fieldRow.field && h.origin !== 'derived');
-  if (!authored.length) return false;
-  const currentLatest = authored.reduce((a, b) => (b.sortKey > a.sortKey ? b : a));
+  const currentLatest = latestFieldEntry(currentIssue, fieldRow.field);
+  if (!currentLatest) return false;
   return currentLatest.id === fieldRow.resultEntryId;
 }
 
@@ -3358,7 +3455,7 @@ function computeMergeRollbackEntries(mergeRecord, issuesById, fieldDefs) {
         results.push({ issueId: issueSummary.id, field: fieldRow.field, skipped: 'changed-since-merge' });
         continue;
       }
-      const preEntry = (currentIssue.history || []).find(h => h.id === fieldRow.preMergeLocalEntryId);
+      const preEntry = issueFieldHistory(currentIssue, fieldRow.field).find(h => h.id === fieldRow.preMergeLocalEntryId);
       if (!preEntry || preEntry.redacted || preEntry.value === undefined) {
         results.push({ issueId: issueSummary.id, field: fieldRow.field, skipped: 'pre-merge-value-unavailable' });
         continue;
@@ -3466,11 +3563,11 @@ function buildMergePreviewViewModel(computed, ingestProvenance, fieldDefs) {
 // content into the merge log itself. An entry id no longer found in
 // history (e.g. redacted since) is simply omitted, not synthesized.
 function buildMergeFieldTimeline(issue, fieldRow) {
-  const byId = new Map((issue.history || []).map(h => [h.id, h]));
+  const byId = new Map(issueFieldHistory(issue, fieldRow.field).map(h => [h.id, h]));
   const toEvent = side => id => {
     const h = byId.get(id);
     if (!h) return null;
-    return { side, id: h.id, time: h.time, actor: h.actor, email: h.email, value: h.value, sortKey: h.sortKey };
+    return { side, id: h.id, actor: h.actor, value: h.value, sortKey: h.sortKey };
   };
   return []
     .concat((fieldRow.localEntryIds || []).map(toEvent('local')))
@@ -3518,14 +3615,14 @@ function buildMergeIssueTimeline(issue, fields) {
 // been redacted -- nothing safe to reconstruct, never synthesized.
 function buildMergeFieldDiffLines(issue, fieldRow, sourceInfo) {
   if (!fieldRow.baseEntryId || !fieldRow.theirsEntryId || !fieldRow.preMergeLocalEntryId) return null;
-  const byId = new Map((issue.history || []).map(h => [h.id, h]));
+  const byId = new Map(issueFieldHistory(issue, fieldRow.field).map(h => [h.id, h]));
   const baseEntry = byId.get(fieldRow.baseEntryId);
   const localEntry = byId.get(fieldRow.preMergeLocalEntryId);
   const theirsEntry = byId.get(fieldRow.theirsEntryId);
   if (!baseEntry || !localEntry || !theirsEntry) return null;
   const info = sourceInfo || {};
   const markers = conflictMarkerLines(
-    localEntry.email || localEntry.actor || 'unknown',
+    localEntry.actor || 'unknown',
     info.exported_by || info.exportedBy || 'unknown',
     info.exported_at || info.exportedAt || null,
     { sigState: info.sig_state || info.sigState || 'unsigned' }
@@ -3585,12 +3682,13 @@ function computeIssueMerge(localIssues, parsedIssues, fieldDefs, inboundInfo) {
       mergeIssueSummaries.push(buildMergeIssueSummary(localIssue.id, localIssue, incomingIssue, touchedFields, entries, fieldDefs));
     }
   }
-  let nextNum = localIssues.reduce((m, i) => Math.max(m, i.num || 0), 0) + 1;
+  // No more `num` generation here -- format v2 drops it entirely (it was
+  // never stable/portable across devices anyway; see docs/FORMAT_V2.md).
   for (const incomingIssue of parsedIssues) {
     if (localById.has(incomingIssue.id)) continue;
     mergedIssues.push({
-      id: incomingIssue.id, num: nextNum++, fieldRefs: incomingIssue.fieldRefs || {}, fieldLoading: {},
-      values: incomingIssue.values || {}, commentStreams: incomingIssue.commentStreams || {}, history: incomingIssue.history || []
+      id: incomingIssue.id, fieldRefs: incomingIssue.fieldRefs || {}, fieldLoading: {},
+      values: incomingIssue.values || {}, fields: incomingIssue.fields || {}
     });
   }
   return { mergedIssues, notices, proseMergeEntries, mergeIssueSummaries };
@@ -3602,10 +3700,10 @@ function computeIssueMerge(localIssues, parsedIssues, fieldDefs, inboundInfo) {
 // exist locally before (computeIssueMerge's own second loop pushes it
 // straight into mergedIssues, no summary entry -- there was never a
 // local counterpart to diff touchedFields against), and a comment-only
-// change (comments union via the completely separate mergeCommentStreams
-// mechanism, which never populates mergeIssueSummaries at all -- see
-// FORMAT.md's own "comment-stream entries are never contested on merge,
-// only ever unioned").
+// change (comment-stream fields are deliberately excluded from
+// touchedFields/mergeIssueSummaries -- see mergeIssuePair's own comment
+// -- "never contested on merge, only ever unioned", so a bare entry-
+// count check per field is the only thing left that would catch one).
 function mergeHasRealChanges(localIssues, computed) {
   if ((computed.mergeIssueSummaries || []).length) return true;
   if (computed.notesChanged) return true;
@@ -3614,9 +3712,11 @@ function mergeHasRealChanges(localIssues, computed) {
   for (const mi of (computed.mergedIssues || [])) {
     const local = localById.get(mi.id);
     if (!local) return true; // a genuinely new issue
-    const ids = new Set([...Object.keys(mi.commentStreams || {}), ...Object.keys(local.commentStreams || {})]);
-    for (const id of ids) {
-      if (((mi.commentStreams || {})[id] || []).length !== ((local.commentStreams || {})[id] || []).length) return true;
+    const fieldIds = new Set([...Object.keys(mi.fields || {}), ...Object.keys(local.fields || {})]);
+    for (const colId of fieldIds) {
+      const mergedLen = ((mi.fields[colId] && mi.fields[colId].history) || []).length;
+      const localLen = ((local.fields[colId] && local.fields[colId].history) || []).length;
+      if (mergedLen !== localLen) return true;
     }
   }
   return false;
@@ -3644,9 +3744,10 @@ function computeFieldDefsMerge(localProjectHistory, parsedFields, parsedProjectH
 // beforeValues against the now-already-written issue would see the same
 // change again and mislabel it as a rule-derived one -- which, for a
 // field that's ALSO independently bound, immediately re-locks it right
-// after the user's own override (computeBoundValue's conservative branch
-// trusts the latest 'derived' entry) or wipes/misattributes a plain
-// linked field's own fieldRef. Left unset for callers with no single
+// after the user's own override (fieldLocalBindState's own local record
+// would read the re-derived entry as 'bound' again, letting a routine
+// resettle silently reapply right over the override) or wipes/
+// misattributes a plain linked field's own fieldRef. Left unset for callers with no single
 // field to exclude (a cross-project merge, a schema-wide recompute).
 // beforeFieldRefs, when given, is a TRUE pre-settle snapshot (parallel to
 // beforeValues, captured the same way -- before any mutation this commit
@@ -4097,9 +4198,17 @@ const WIGWAG_MATRIX_EVENT_VERSION = 1;
 // several projects, every NEW entry a client sends should carry its
 // real projectId explicitly -- untagged is a legacy shape to keep
 // reading, not one to keep writing.
-function matrixEventContentFromEntry({ scope, issueId, stream, entry, projectId }) {
-  const content = { v: WIGWAG_MATRIX_EVENT_VERSION, scope, stream: stream || null, entry };
-  if (scope === 'issue') content.issueId = issueId;
+// Format v2: an issue-scope entry no longer carries its own field id (it
+// became the fields-map key -- see docs/FORMAT_V2.md), so the envelope
+// carries it explicitly now via `field`, replacing the old `stream` tag
+// (a comment-stream field is just another field id -- there's no more
+// separate "is this a stream" distinction at the envelope level either).
+// A project-scope entry still carries `field` on the entry itself
+// (project history stays a flat, field-tagged array), so `field` is only
+// set here for the issue case.
+function matrixEventContentFromEntry({ scope, issueId, field, entry, projectId }) {
+  const content = { v: WIGWAG_MATRIX_EVENT_VERSION, scope, entry };
+  if (scope === 'issue') { content.issueId = issueId; content.field = field || null; }
   if (projectId) content.projectId = projectId;
   return content;
 }
@@ -4115,7 +4224,15 @@ function entryFromMatrixEvent(rawEvent) {
     if (content.scope !== 'issue' && content.scope !== 'project') return null;
     if (!content.entry || typeof content.entry !== 'object') return null;
     if (content.scope === 'issue' && !content.issueId) return null;
-    return { scope: content.scope, issueId: content.issueId || null, stream: content.stream || null, entry: content.entry, projectId: content.projectId || null };
+    // Format v2: an issue-scope entry no longer carries its own field id
+    // (that became the map key -- see docs/FORMAT_V2.md) so the envelope
+    // must now say which field this entry belongs to explicitly; a
+    // project-scope entry still carries `field` on the entry itself
+    // (project history stays a flat, field-tagged array), so `field` is
+    // read off `content` here purely for the issue case. A comment-
+    // stream field is just an ordinary field now too -- no more separate
+    // `stream` tag; the pre-v2 `stream` name IS the field's colId.
+    return { scope: content.scope, issueId: content.issueId || null, field: content.field || null, entry: content.entry, projectId: content.projectId || null };
   } catch (e) { return null; }
 }
 // Project index (tracker f6b39bf0/#153, live-reported rate-limit incident):
@@ -4402,7 +4519,7 @@ async function resolveSnapshotPayload(manifest, { downloadFn }) {
 }
 // Decodes a flat list of raw Matrix events (work.wigwag.entry, any order,
 // foreign/malformed events silently skipped) into one flat array of
-// {scope, issueId, stream, entry, projectId} items -- the same shape
+// {scope, issueId, field, entry, projectId} items -- the same shape
 // entryFromMatrixEvent already produces, just uniformly flattened. Used
 // wherever a caller needs to reason about individual entries directly
 // (e.g. filtering out ones a found snapshot already covers, see
@@ -4458,8 +4575,7 @@ function hydrateProjectFromMatrixTimeline(rawEvents, opts) {
   const { fieldDefs: fallbackFieldDefs, projectId, projectName, includeUntaggedEntries } = opts || {};
   const includeUntagged = includeUntaggedEntries !== false;
   const projectHistory = [];
-  const issueHistoryById = new Map();
-  const commentStreamsById = new Map();
+  const issueFieldsById = new Map();
   // Live-reported (Tom, 2026-09-28): a widget reconnect (e.g. the host
   // iframe remounting) can resend an already-committed entry -- its own
   // in-memory "already sent" tracking is lost on remount, and a fresh
@@ -4489,25 +4605,18 @@ function hydrateProjectFromMatrixTimeline(rawEvents, opts) {
     if (!matchesThisProject) continue;
     if (isDuplicateEntry(decoded.entry)) continue;
     if (decoded.scope === 'project') { projectHistory.push(decoded.entry); continue; }
+    if (!decoded.field) continue; // no colId to file this under -- malformed/foreign, drop it
     const issueId = decoded.issueId;
-    if (decoded.stream) {
-      if (!commentStreamsById.has(issueId)) commentStreamsById.set(issueId, {});
-      const streams = commentStreamsById.get(issueId);
-      if (!streams[decoded.stream]) streams[decoded.stream] = [];
-      streams[decoded.stream].push(decoded.entry);
-    } else {
-      if (!issueHistoryById.has(issueId)) issueHistoryById.set(issueId, []);
-      issueHistoryById.get(issueId).push(decoded.entry);
-    }
+    if (!issueFieldsById.has(issueId)) issueFieldsById.set(issueId, {});
+    const fields = issueFieldsById.get(issueId);
+    if (!fields[decoded.field]) fields[decoded.field] = { history: [] };
+    fields[decoded.field].history.push(decoded.entry);
     }
   }
-  const issueIds = new Set([...issueHistoryById.keys(), ...commentStreamsById.keys()]);
-  const rawIssues = [...issueIds].map(id => ({
-    id, history: issueHistoryById.get(id) || [], commentStreams: commentStreamsById.get(id) || {}
-  }));
-  const earliestSortKey = issue => issue.history.reduce((m, h) => (typeof h.sortKey === 'number' && h.sortKey < m) ? h.sortKey : m, Infinity);
+  const rawIssues = [...issueFieldsById.keys()].map(id => ({ id, fields: issueFieldsById.get(id) }));
+  const earliestSortKey = issue => Object.values(issue.fields).reduce((m, f) =>
+    f.history.reduce((m2, h) => (typeof h.sortKey === 'number' && h.sortKey < m2) ? h.sortKey : m2, m), Infinity);
   rawIssues.sort((a, b) => (earliestSortKey(a) - earliestSortKey(b)) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-  rawIssues.forEach((issue, i) => { issue.num = i + 1; });
 
   // ensureTimestampFieldDefs matches hydrateProject's own unconditional
   // guarantee (every project gets created/updated, same universal-field
@@ -4749,9 +4858,9 @@ async function probeMatrixRoomAccess({ fetchImpl, homeserverUrl, accessToken, ro
 }
 
 const WigwagCoreExports = {
-  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, xlsxDateTimeSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_NS, storageNamespacePrefix, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, LAYOUT_PROPOSAL_DEVICE_ID_KEY, CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, tokenizeFilterQuery, parseFilterQuery, issueMatchesFieldToken, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, pickConnectorFields, connectorLinkText, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, backfillIssueHistoryFromValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, migrateLegacyComments, deriveFieldDefs, effectiveFieldDefs, PROJECT_NAME_FIELD_ID, deriveProjectName, PROJECT_NOTES_FIELD_ID, deriveProjectNotes, simpleStringHash, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, issueTimestampValue, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, MATRIX_USER_ID_RE, principalKind, identityPrincipal, SIGN_ALG, signablePayload, signableProjectPayload, redactedPayload, redactedProjectPayload, signableCommentPayload, redactedCommentPayload, signableProjectCommentPayload, redactedProjectCommentPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, normalizeRef, sourceRefHasFullData, evalRule, compileConnectorMacro, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, builtinKindConfigured, builtinKindReachable, fieldLocalBindState, liveBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, issueCreatedAt,
+  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, xlsxDateTimeSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_NS, storageNamespacePrefix, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, LAYOUT_PROPOSAL_DEVICE_ID_KEY, CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, slugifyLabel, uniqueSlugId, newFieldId, newOptionId, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, tokenizeFilterQuery, parseFilterQuery, issueMatchesFieldToken, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, pickConnectorFields, connectorLinkText, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, deriveFieldDefs, effectiveFieldDefs, PROJECT_NAME_FIELD_ID, deriveProjectName, PROJECT_NOTES_FIELD_ID, deriveProjectNotes, simpleStringHash, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, issueTimestampValue, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, MATRIX_USER_ID_RE, principalKind, identityPrincipal, SIGN_ALG, JOSE_ALG_ES256, base64UrlFromBytes, bytesFromBase64Url, signEntryPayload, verifyEntryPayload, signableEntryPayload, signableProjectEntryPayload, redactedEntryPayload, redactedProjectEntryPayload, signableCommentEntryPayload, signableProjectCommentEntryPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, normalizeRef, sourceRefHasFullData, evalRule, compileConnectorMacro, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, resolveRefSystem, parseGithubUrl, parseJiraKey, parseSalesforceId, hostFromUrl, builtinKindConfigured, builtinKindReachable, fieldLocalBindState, liveBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, issueCreatedAt,
   importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry,
-  squashHistory, displayValueForHistory, buildSourceText, keyRegistryEncoder, rehydrateKeyRef, humanFileSize, parseJsonl, entryKey, commentKey, unionByKey, mergeCommentStreams, mergeIssuePair, computeIssueMerge, mergeHasRealChanges, computeFieldDefsMerge, computeDerivedChangeEntries,
+  squashHistory, redactEntry, redactProjectEntry, displayValueForHistory, buildSourceText, keyRegistryEncoder, rehydrateKeyRef, humanFileSize, parseJsonl, entryKey, unionByKey, mergeIssuePair, computeIssueMerge, mergeHasRealChanges, computeFieldDefsMerge, computeDerivedChangeEntries,
   isPastedTextASingleUrl, wrapSelectionWithMarkdownLink,
   buildGithubContentsUrl, buildGithubContentsHeaders, buildGithubCommitMessage, pullGithubFile, pushGithubFile, probeGithubRepoAccess, computeHeaderMeshTriangles, columnFilterIsActive, localISODate, dateFilterPresetRanges,
   computeHeaderCompression, cellPaddingForWidth, computeAffordanceFade,

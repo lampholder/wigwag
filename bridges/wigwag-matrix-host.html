@@ -1077,16 +1077,22 @@ if (new URLSearchParams(location.search).get('widgetId')) {
     return { fieldDefs: hydratedProject.fieldDefs, projectHistory: hydratedProject.projectHistory, issues: hydratedIssues };
   }
 
-  // Flattens a hydrated doc's history/comment-stream entries back into
-  // the same {scope, issueId, stream, entry} shape entryFromMatrixEvent
-  // produces, so a single "have we sent/seen this entry id" Set can track
-  // both directions uniformly.
+  // Flattens a hydrated doc's per-field entries back into the same
+  // {scope, issueId, field, entry} shape entryFromMatrixEvent produces,
+  // so a single "have we sent/seen this entry id" Set can track both
+  // directions uniformly. Format v2: an issue no longer has a separate
+  // commentStreams structure -- every field (comment-stream fields
+  // included) lives in iss.fields now (see docs/FORMAT_V2.md), so one
+  // walk covers both; isCommentStream is captured here (fieldDefs are in
+  // scope) since downstream readers that need to tell the two apart
+  // (computePendingSummary) have no other cheap way to ask once an entry
+  // itself no longer carries .field.
   function flattenEntries(hydrated) {
-    const out = hydrated.projectHistory.map(entry => ({ scope: 'project', issueId: null, stream: null, entry }));
+    const out = hydrated.projectHistory.map(entry => ({ scope: 'project', issueId: null, entry }));
     for (const iss of hydrated.issues) {
-      for (const entry of (iss.history || [])) out.push({ scope: 'issue', issueId: iss.id, stream: null, entry });
-      for (const stream in (iss.commentStreams || {})) {
-        for (const entry of iss.commentStreams[stream]) out.push({ scope: 'issue', issueId: iss.id, stream, entry });
+      for (const colId in (iss.fields || {})) {
+        const isCommentStream = !!(hydrated.fieldDefs[colId] && hydrated.fieldDefs[colId].type === 'commentStream');
+        for (const entry of (iss.fields[colId].history || [])) out.push({ scope: 'issue', issueId: iss.id, field: colId, entry, isCommentStream });
       }
     }
     return out;
@@ -1489,10 +1495,10 @@ if (new URLSearchParams(location.search).get('widgetId')) {
     }
     if (typeof transport.onStateUpdate === 'function') transport.onStateUpdate(onPushedStateUpdate);
     // Reconstructs a minimal, mergeable "doc" shape (projectHistory +
-    // issues, each issue just {id, history, commentStreams}) from this
-    // device's own outbox -- the exact inverse of flattenEntries. This is
-    // the ONLY "local" input reconcileIntoLocal ever merges against now;
-    // see its own comment for why that matters.
+    // issues, each issue just {id, fields}) from this device's own
+    // outbox -- the exact inverse of flattenEntries. This is the ONLY
+    // "local" input reconcileIntoLocal ever merges against now; see its
+    // own comment for why that matters.
     function outboxAsPartialDoc(projectId) {
       const outbox = pendingOutboxByProject.get(projectId);
       const projectHistory = [];
@@ -1500,14 +1506,10 @@ if (new URLSearchParams(location.search).get('widgetId')) {
       if (outbox) {
         for (const { item } of outbox.values()) {
           if (item.scope === 'project') { projectHistory.push(item.entry); continue; }
-          if (!issuesById.has(item.issueId)) issuesById.set(item.issueId, { id: item.issueId, history: [], commentStreams: {} });
+          if (!issuesById.has(item.issueId)) issuesById.set(item.issueId, { id: item.issueId, fields: {} });
           const issue = issuesById.get(item.issueId);
-          if (item.stream) {
-            if (!issue.commentStreams[item.stream]) issue.commentStreams[item.stream] = [];
-            issue.commentStreams[item.stream].push(item.entry);
-          } else {
-            issue.history.push(item.entry);
-          }
+          if (!issue.fields[item.field]) issue.fields[item.field] = { history: [] };
+          issue.fields[item.field].history.push(item.entry);
         }
       }
       return { projectHistory, issues: [...issuesById.values()] };
@@ -1529,10 +1531,14 @@ if (new URLSearchParams(location.search).get('widgetId')) {
     // latest-write-wins derivation in this codebase. Issue-scope and
     // project-scope fields are kept separate since the iframe renders them
     // in different places (grid/slide-over vs the project panel). Comment-
-    // stream entries (item.stream set) and entries with no field at all
-    // (e.g. a plain __deleted__ tombstone) are deliberately excluded --
-    // different append-only semantics, not covered by the pending/failed
-    // UI in this first pass.
+    // stream entries (item.isCommentStream, format v2's replacement for
+    // the old item.stream tag -- see flattenEntries) and entries with no
+    // field at all (e.g. a plain __deleted__ tombstone) are deliberately
+    // excluded -- different append-only semantics, not covered by the
+    // pending/failed UI in this first pass. Format v2: an issue-scope
+    // item's field lives on the item itself (item.field) now, not on the
+    // entry (item.entry.field) -- a project-scope item is the opposite,
+    // unaffected by this redesign (see docs/FORMAT_V2.md's scoping note).
     function computePendingSummary(projectId) {
       const outbox = pendingOutboxByProject.get(projectId);
       const summary = { issues: {}, project: {} };
@@ -1540,10 +1546,11 @@ if (new URLSearchParams(location.search).get('widgetId')) {
       const latestByKey = new Map();
       for (const { status, item } of outbox.values()) {
         if (status === 'confirmed-via-snapshot') continue; // done -- kept in the outbox only to suppress a resend, never shown as pending/failed
-        if (!item.entry.field || item.stream) continue;
-        const key = item.scope === 'project' ? ('project:' + item.entry.field) : ('issue:' + item.issueId + ':' + item.entry.field);
+        const field = item.scope === 'project' ? item.entry.field : item.field;
+        if (!field || item.isCommentStream) continue;
+        const key = item.scope === 'project' ? ('project:' + field) : ('issue:' + item.issueId + ':' + field);
         const existing = latestByKey.get(key);
-        if (!existing || item.entry.sortKey > existing.sortKey) latestByKey.set(key, { sortKey: item.entry.sortKey, status, scope: item.scope, issueId: item.issueId, field: item.entry.field });
+        if (!existing || item.entry.sortKey > existing.sortKey) latestByKey.set(key, { sortKey: item.entry.sortKey, status, scope: item.scope, issueId: item.issueId, field });
       }
       for (const v of latestByKey.values()) {
         if (v.scope === 'project') summary.project[v.field] = v.status;

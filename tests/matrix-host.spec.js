@@ -47,10 +47,8 @@ const ROOM_ID = '!room123:example.org';
 const MODERATOR_LEVELS = { users: { '@test-user:example.org': 50 }, users_default: 0, state_default: 50 };
 const NON_MODERATOR_LEVELS = { users_default: 0, state_default: 50 };
 
-function entryEvent({ issueId, stream, entry, projectId }) {
-  const content = { v: 1, scope: 'issue', issueId, stream: stream || null, entry };
-  if (projectId) content.projectId = projectId;
-  return { type: 'work.wigwag.entry', content };
+function entryEvent({ issueId, field, entry, projectId }) {
+  return { type: 'work.wigwag.entry', content: core.matrixEventContentFromEntry({ scope: 'issue', issueId, field, entry, projectId }) };
 }
 
 // A minimal, permanently-invisible legacy issue -- most pre-existing
@@ -66,8 +64,8 @@ function entryEvent({ issueId, stream, entry, projectId }) {
 // still falls back to the room name exactly as before.
 function seedLegacyEntries() {
   return [
-    entryEvent({ issueId: 'seed-issue', entry: { id: 'seed-h1', field: 'title', value: 'seed', sortKey: 1, origin: 'authored' } }),
-    entryEvent({ issueId: 'seed-issue', entry: { id: 'seed-h2', field: '__deleted__', value: true, sortKey: 2, origin: 'authored' } })
+    entryEvent({ issueId: 'seed-issue', field: 'title', entry: { id: 'seed-h1', value: 'seed', sortKey: 1 } }),
+    entryEvent({ issueId: 'seed-issue', field: '__deleted__', entry: { id: 'seed-h2', value: true, sortKey: 2 } })
   ];
 }
 
@@ -102,7 +100,7 @@ test.describe('wigwag-matrix-host.html: connecting', () => {
     // moderator gate, so the room-name-fallback naming path is still
     // reachable and worth its own coverage.
     h.mockMatrixClientApi(page, {
-      homeserverUrl: HOMESERVER, roomId: ROOM_ID, initialEntries: [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Legacy issue', sortKey: 1, origin: 'authored' } })]
+      homeserverUrl: HOMESERVER, roomId: ROOM_ID, initialEntries: [entryEvent({ issueId: 'i1', field: 'title', entry: { id: 'h1', value: 'Legacy issue', sortKey: 1 } })]
     }); // roomName omitted -> 404
     await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
@@ -151,8 +149,8 @@ test.describe('wigwag-matrix-host.html: connecting', () => {
     h.mockMatrixClientApi(page, {
       homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Seeded Room',
       initialEntries: [
-        entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Fix the login bug', sortKey: 1, origin: 'authored' } }),
-        entryEvent({ issueId: 'i1', entry: { id: 'h2', field: 'status', value: 'todo', sortKey: 2, origin: 'authored' } }),
+        entryEvent({ issueId: 'i1', field: 'title', entry: { id: 'h1', value: 'Fix the login bug', sortKey: 1 } }),
+        entryEvent({ issueId: 'i1', field: 'status', entry: { id: 'h2', value: 'todo', sortKey: 2 } }),
       ]
     });
     await page.goto('/bridges/wigwag-matrix-host.html');
@@ -240,8 +238,8 @@ test.describe('wigwag-matrix-host.html: the localStorage bridge', () => {
     await page.keyboard.press('Enter');
     await page.waitForTimeout(300);
 
-    await expect.poll(() => state.sentEntries.some(c => c.entry.field === 'title' && c.entry.value === 'A brand new issue from the bridge')).toBe(true);
-    const titleEvent = state.sentEntries.find(c => c.entry.field === 'title' && c.entry.value === 'A brand new issue from the bridge');
+    await expect.poll(() => state.sentEntries.some(c => c.field === 'title' && c.entry.value === 'A brand new issue from the bridge')).toBe(true);
+    const titleEvent = state.sentEntries.find(c => c.field === 'title' && c.entry.value === 'A brand new issue from the bridge');
     assertNoKeyRef(titleEvent);
     // Tracker #149: every entry sent from here on is tagged with the
     // room's own derived project id -- a room can hold more than one
@@ -343,7 +341,7 @@ test.describe('wigwag-matrix-host.html: the localStorage bridge', () => {
     const frame = page.frameLocator('#frame');
     await expect(frame.locator('[data-testid=row]')).toHaveCount(0);
 
-    state.pendingEntries.push(entryEvent({ issueId: 'i-remote', entry: { id: 'hr1', field: 'title', value: 'Created from another client', sortKey: 1, origin: 'authored' } }));
+    state.pendingEntries.push(entryEvent({ issueId: 'i-remote', field: 'title', entry: { id: 'hr1', value: 'Created from another client', sortKey: 1 } }));
     await expect(frame.locator('[data-testid=row]')).toHaveCount(1, { timeout: 8000 }); // next 5s poll tick picks it up
     await expect(frame.locator('[data-testid=row]')).toContainText('Created from another client');
   });
@@ -367,7 +365,7 @@ test.describe('wigwag-matrix-host.html: the localStorage bridge', () => {
 
     state.pendingEntries.push(
       { type: 'work.wigwag.entry', content: { v: 1, scope: 'project', projectId: 'mid-session-import', entry: { id: 'mph1', field: '__project_name__', value: 'Imported Mid-Session', sortKey: 1, origin: 'authored' } } },
-      entryEvent({ issueId: 'mi1', entry: { id: 'mh1', field: 'title', value: 'Mid-session issue', sortKey: 2, origin: 'authored' }, projectId: 'mid-session-import' })
+      entryEvent({ issueId: 'mi1', field: 'title', entry: { id: 'mh1', value: 'Mid-session issue', sortKey: 2 }, projectId: 'mid-session-import' })
     );
 
     await expect(async () => {
@@ -530,8 +528,8 @@ test.describe('wigwag-matrix-host.html: widget-embedded transport', () => {
     await h.gotoFakeWidgetHost(page, {
       roomId: '!widgetroom:example.org', roomName: 'Seeded Widget Room',
       initialEntries: [
-        entryEvent({ issueId: 'wi1', entry: { id: 'wh1', field: 'title', value: 'Fix the widget bug', sortKey: 1, origin: 'authored' } }),
-        entryEvent({ issueId: 'wi1', entry: { id: 'wh2', field: 'status', value: 'todo', sortKey: 2, origin: 'authored' } }),
+        entryEvent({ issueId: 'wi1', field: 'title', entry: { id: 'wh1', value: 'Fix the widget bug', sortKey: 1 } }),
+        entryEvent({ issueId: 'wi1', field: 'status', entry: { id: 'wh2', value: 'todo', sortKey: 2 } }),
       ]
     });
     const frame = page.frameLocator('#widget').frameLocator('#frame');
@@ -554,7 +552,7 @@ test.describe('wigwag-matrix-host.html: widget-embedded transport', () => {
     await page.waitForTimeout(300);
 
     const state = await page.evaluate(() => window.__state);
-    const titleEvent = state.sentEntries.find(c => c.entry.field === 'title' && c.entry.value === 'A brand new issue from the widget');
+    const titleEvent = state.sentEntries.find(c => c.field === 'title' && c.entry.value === 'A brand new issue from the widget');
     expect(titleEvent).toBeTruthy();
     expect(typeof titleEvent.projectId).toBe('string'); // tracker #149 -- same tagging as the direct transport
     expect(titleEvent.projectId.length).toBeGreaterThan(0);
@@ -570,7 +568,7 @@ test.describe('wigwag-matrix-host.html: widget-embedded transport', () => {
 
     const pastedJsonl = [
       JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, id: 'widget-snapshot-proj', name: 'Widget Snapshot Project' }),
-      JSON.stringify({ type: 'issue', id: 'wsi1', num: 1, fieldRefs: {}, values: { title: 'Widget-imported issue' }, comments: [], history: [] })
+      JSON.stringify({ type: 'issue', id: 'wsi1', fields: { title: { history: [{ id: 'wsi1-title', actor: 'test', value: 'Widget-imported issue', sortKey: 1, sig: null, pubKey: null }] } } })
     ].join('\n');
     await frame.locator('[data-testid=btn-import-merge]').first().click();
     await page.waitForTimeout(150);
@@ -596,7 +594,7 @@ test.describe('wigwag-matrix-host.html: widget-embedded transport', () => {
     const plaintextBytes = await core.decryptSnapshotPayload({ ciphertext: new Uint8Array(Object.values(blobBytesArray)), encryption: manifest.encryption });
     const parsed = JSON.parse(new TextDecoder().decode(plaintextBytes));
     const items = parsed.map(item => core.entryFromMatrixEvent({ content: item })).filter(Boolean);
-    const titlePush = items.find(i => i.scope === 'issue' && i.entry.field === 'title');
+    const titlePush = items.find(i => i.scope === 'issue' && i.field === 'title');
     expect(titlePush.entry.value).toBe('Widget-imported issue');
   });
 
@@ -661,7 +659,7 @@ test.describe('wigwag-matrix-host.html: widget-embedded transport', () => {
     const realWorldPowerLevels = { ban: 50, events: {}, events_default: 0, invite: 0, kick: 50, redact: 50, state_default: 50, users: {}, users_default: 0 };
     await h.gotoFakeWidgetHost(page, {
       roomId: '!widgetcreator:example.org', roomName: 'Widget Creator Room',
-      initialEntries: [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Existing issue', sortKey: 1, origin: 'authored' } })], // untagged -- room already has a project
+      initialEntries: [entryEvent({ issueId: 'i1', field: 'title', entry: { id: 'h1', value: 'Existing issue', sortKey: 1 } })], // untagged -- room already has a project
       powerLevels: realWorldPowerLevels, roomCreator: '@fake-user:example.org' // default widget userId -- see gotoFakeWidgetHost's own default
     });
     const frame = page.frameLocator('#widget').frameLocator('#frame');
@@ -681,7 +679,7 @@ test.describe('wigwag-matrix-host.html: widget-embedded transport', () => {
     const roomId = '!pushupdate:example.org';
     await h.gotoFakeWidgetHost(page, {
       roomId, roomName: 'Push Update Room',
-      initialEntries: [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Existing issue', sortKey: 1, origin: 'authored' } })],
+      initialEntries: [entryEvent({ issueId: 'i1', field: 'title', entry: { id: 'h1', value: 'Existing issue', sortKey: 1 } })],
       powerLevels: { users: { '@fake-user:example.org': 100 }, users_default: 0, state_default: 50 } // default widget userId -- see gotoFakeWidgetHost's own default
     });
     const frame = page.frameLocator('#widget').frameLocator('#frame');
@@ -743,7 +741,7 @@ test.describe('wigwag-matrix-host.html: widget-embedded transport', () => {
     await h.gotoFakeWidgetHost(page, {
       roomId, roomName: 'Regression Poll Room',
       initialEntries: [
-        entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Existing issue', sortKey: 1, origin: 'authored' } }),
+        entryEvent({ issueId: 'i1', field: 'title', entry: { id: 'h1', value: 'Existing issue', sortKey: 1 } }),
         { type: 'work.wigwag.layout-proposal', state_key: projectId, content: staleContent } // sits in pendingEntries forever -- nothing ever sends a newer one through send_event
       ],
       powerLevels: { users: { '@fake-user:example.org': 100 }, users_default: 0, state_default: 50 }
@@ -795,7 +793,7 @@ test.describe('wigwag-matrix-host.html: widget-embedded transport', () => {
     await h.gotoFakeWidgetHost(page, {
       roomId, roomName: 'Malformed Proposal Room',
       initialEntries: [
-        entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Existing issue', sortKey: 1, origin: 'authored' } }),
+        entryEvent({ issueId: 'i1', field: 'title', entry: { id: 'h1', value: 'Existing issue', sortKey: 1 } }),
         { type: 'work.wigwag.layout-proposal', state_key: projectId, content: malformedContent }
       ],
       powerLevels: { users: { '@fake-user:example.org': 100 }, users_default: 0, state_default: 50 }
@@ -848,7 +846,7 @@ test.describe('wigwag-matrix-host.html: widget-embedded transport', () => {
     await h.gotoFakeWidgetHost(page, {
       roomId, roomName: 'Predates Connect Room',
       initialEntries: [
-        entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Existing issue', sortKey: 1, origin: 'authored' } }),
+        entryEvent({ issueId: 'i1', field: 'title', entry: { id: 'h1', value: 'Existing issue', sortKey: 1 } }),
         { type: 'work.wigwag.layout-proposal', state_key: projectId, content }
       ],
       powerLevels: { users: { '@fake-user:example.org': 100 }, users_default: 0, state_default: 50 }
@@ -882,7 +880,7 @@ test.describe('wigwag-matrix-host.html: widget-embedded transport', () => {
     const frame = page.frameLocator('#widget').frameLocator('#frame');
     await expect(frame.locator('[data-testid=row]')).toHaveCount(0);
 
-    const pushedEvent = entryEvent({ issueId: 'wi-remote', entry: { id: 'whr1', field: 'title', value: 'Created from Element', sortKey: 1, origin: 'authored' } });
+    const pushedEvent = entryEvent({ issueId: 'wi-remote', field: 'title', entry: { id: 'whr1', value: 'Created from Element', sortKey: 1 } });
     await page.evaluate(({ widgetId, pushedEvent }) => {
       document.querySelector('#widget').contentWindow.postMessage({
         api: 'toWidget', widgetId, requestId: 'test-push-entry-1', action: 'send_event', data: pushedEvent
@@ -911,7 +909,7 @@ test.describe('wigwag-matrix-host.html: widget-embedded transport', () => {
     const roomId = '!pushsendevent:example.org';
     await h.gotoFakeWidgetHost(page, {
       roomId, roomName: 'Push Send Event Room',
-      initialEntries: [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Existing issue', sortKey: 1, origin: 'authored' } })],
+      initialEntries: [entryEvent({ issueId: 'i1', field: 'title', entry: { id: 'h1', value: 'Existing issue', sortKey: 1 } })],
       powerLevels: { users: { '@fake-user:example.org': 100 }, users_default: 0, state_default: 50 }
     });
     const frame = page.frameLocator('#widget').frameLocator('#frame');
@@ -1159,7 +1157,7 @@ test.describe('wigwag-matrix-host.html: multiple projects in one room', () => {
   test('a room with only untagged (legacy-shaped) entries connects straight through, no prompt of any kind', async ({ page }) => {
     h.mockMatrixClientApi(page, {
       homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
-      initialEntries: [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Untagged issue', sortKey: 1, origin: 'authored' } })] // no projectId at all
+      initialEntries: [entryEvent({ issueId: 'i1', field: 'title', entry: { id: 'h1', value: 'Untagged issue', sortKey: 1 } })] // no projectId at all
     });
     await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
@@ -1179,8 +1177,8 @@ test.describe('wigwag-matrix-host.html: multiple projects in one room', () => {
     h.mockMatrixClientApi(page, {
       homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
       initialEntries: [
-        entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'In project A', sortKey: 1, origin: 'authored' }, projectId: 'proj-a' }),
-        entryEvent({ issueId: 'i2', entry: { id: 'h2', field: 'title', value: 'In project B', sortKey: 2, origin: 'authored' }, projectId: 'proj-b' }),
+        entryEvent({ issueId: 'i1', field: 'title', entry: { id: 'h1', value: 'In project A', sortKey: 1 }, projectId: 'proj-a' }),
+        entryEvent({ issueId: 'i2', field: 'title', entry: { id: 'h2', value: 'In project B', sortKey: 2 }, projectId: 'proj-b' }),
       ]
     });
     await page.goto('/bridges/wigwag-matrix-host.html');
@@ -1209,8 +1207,8 @@ test.describe('wigwag-matrix-host.html: multiple projects in one room', () => {
     h.mockMatrixClientApi(page, {
       homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
       initialEntries: [
-        entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Legacy default issue', sortKey: 1, origin: 'authored' } }), // untagged
-        entryEvent({ issueId: 'i2', entry: { id: 'h2', field: 'title', value: 'In a real other project', sortKey: 2, origin: 'authored' }, projectId: 'proj-other' }),
+        entryEvent({ issueId: 'i1', field: 'title', entry: { id: 'h1', value: 'Legacy default issue', sortKey: 1 } }), // untagged
+        entryEvent({ issueId: 'i2', field: 'title', entry: { id: 'h2', value: 'In a real other project', sortKey: 2 }, projectId: 'proj-other' }),
       ]
     });
     await page.goto('/bridges/wigwag-matrix-host.html');
@@ -1250,8 +1248,8 @@ test.describe('wigwag-matrix-host.html: multiple projects in one room', () => {
       homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
       initialEntries: [
         namedProjectEntry,
-        entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'In the named project', sortKey: 2, origin: 'authored' }, projectId: 'proj-named' }),
-        entryEvent({ issueId: 'i2', entry: { id: 'h2', field: 'title', value: 'In the unnamed project', sortKey: 3, origin: 'authored' }, projectId: 'proj-unnamed' }),
+        entryEvent({ issueId: 'i1', field: 'title', entry: { id: 'h1', value: 'In the named project', sortKey: 2 }, projectId: 'proj-named' }),
+        entryEvent({ issueId: 'i2', field: 'title', entry: { id: 'h2', value: 'In the unnamed project', sortKey: 3 }, projectId: 'proj-unnamed' }),
       ]
     });
     await page.goto('/bridges/wigwag-matrix-host.html');
@@ -1289,8 +1287,8 @@ test.describe('wigwag-matrix-host.html: multiple projects in one room', () => {
     const state = h.mockMatrixClientApi(page, {
       homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
       initialEntries: [
-        entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'In the active project', sortKey: 1, origin: 'authored' } }), // untagged -- the legacy default, what this viewer opens
-        entryEvent({ issueId: 'i2', entry: { id: 'h2', field: 'title', value: 'In the other project', sortKey: 2, origin: 'authored' }, projectId: 'proj-other' }),
+        entryEvent({ issueId: 'i1', field: 'title', entry: { id: 'h1', value: 'In the active project', sortKey: 1 } }), // untagged -- the legacy default, what this viewer opens
+        entryEvent({ issueId: 'i2', field: 'title', entry: { id: 'h2', value: 'In the other project', sortKey: 2 }, projectId: 'proj-other' }),
       ]
     });
     await page.goto('/bridges/wigwag-matrix-host.html');
@@ -1406,7 +1404,7 @@ test.describe('wigwag-matrix-host.html: moderator-gated project creation', () =>
     await expect(frame.locator('[data-testid=room-no-projects-receive-modal]')).toBeVisible();
     const pastedJsonl = [
       JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, id: 'received-proj-1', name: 'Received Project' }),
-      JSON.stringify({ type: 'issue', id: 'ri1', num: 1, fieldRefs: {}, values: { title: 'Received issue' }, comments: [], history: [] })
+      JSON.stringify({ type: 'issue', id: 'ri1', fields: { title: { history: [{ id: 'ri1-title', actor: 'test', value: 'Received issue', sortKey: 1, sig: null, pubKey: null }] } } })
     ].join('\n');
     await frame.locator('[data-testid=room-no-projects-receive-textarea]').fill(pastedJsonl);
     await frame.locator('[data-testid=btn-submit-room-no-projects-receive]').click();
@@ -1452,7 +1450,10 @@ test.describe('wigwag-matrix-host.html: moderator-gated project creation', () =>
     await expect(frame.locator('[data-testid=room-no-projects-receive-modal]')).toBeVisible();
     const issueLines = [];
     for (let i = 1; i <= 30; i++) {
-      issueLines.push(JSON.stringify({ type: 'issue', id: 'ri' + i, num: i, fieldRefs: {}, values: { title: 'Received issue ' + i, status: 'todo' }, comments: [], history: [] }));
+      issueLines.push(JSON.stringify({ type: 'issue', id: 'ri' + i, fields: {
+        title: { history: [{ id: 'ri' + i + '-title', actor: 'test', value: 'Received issue ' + i, sortKey: 1, sig: null, pubKey: null }] },
+        status: { history: [{ id: 'ri' + i + '-status', actor: 'test', value: 'todo', sortKey: 2, sig: null, pubKey: null }] }
+      } }));
     }
     const pastedJsonl = [
       JSON.stringify({ type: 'fields', fields: {
@@ -1675,7 +1676,7 @@ test.describe('wigwag-matrix-host.html: moderator-gated project creation', () =>
   test('an existing room\'s legacy project (grandfathered, predates this feature) is discovered without needing a state event', async ({ page }) => {
     h.mockMatrixClientApi(page, {
       homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
-      initialEntries: [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Pre-existing issue', sortKey: 1, origin: 'authored' } })] // untagged, no work.wigwag.project event anywhere
+      initialEntries: [entryEvent({ issueId: 'i1', field: 'title', entry: { id: 'h1', value: 'Pre-existing issue', sortKey: 1 } })] // untagged, no work.wigwag.project event anywhere
     });
     await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
@@ -1735,8 +1736,8 @@ test.describe('wigwag-matrix-host.html: connect pulls the FULL room history, not
       type: 'work.wigwag.entry',
       content: { v: 1, scope: 'project', projectId: 'new-project', entry: { id: 'nph1', field: '__project_name__', value: 'Freshly Imported', sortKey: 100, origin: 'authored' } }
     };
-    const newProjectIssueEntry = entryEvent({ issueId: 'new1', entry: { id: 'nh1', field: 'title', value: 'New project issue', sortKey: 101, origin: 'authored' }, projectId: 'new-project' });
-    const oldProjectEntry = entryEvent({ issueId: 'old1', entry: { id: 'oh1', field: 'title', value: 'Old project issue', sortKey: 1, origin: 'authored' }, projectId: 'old-project' });
+    const newProjectIssueEntry = entryEvent({ issueId: 'new1', field: 'title', entry: { id: 'nh1', value: 'New project issue', sortKey: 101 }, projectId: 'new-project' });
+    const oldProjectEntry = entryEvent({ issueId: 'old1', field: 'title', entry: { id: 'oh1', value: 'Old project issue', sortKey: 1 }, projectId: 'old-project' });
 
     // Most-recent-first ordering (matching dir=b), paged 2-at-a-time so a
     // single-page pull would see only the new project's issue entry and
@@ -1803,7 +1804,7 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
   test('a room whose ONLY history for a project is a snapshot (no individual entries at all) still hydrates it correctly', async ({ page }) => {
     const items = [
       { scope: 'project', entry: { id: 'ph1', field: '__project_name__', value: 'Snapshotted Project', sortKey: 1, origin: 'authored' }, projectId: 'snap-project' },
-      { scope: 'issue', issueId: 'si1', entry: { id: 'sh1', field: 'title', value: 'From the snapshot', sortKey: 2, origin: 'authored' }, projectId: 'snap-project' }
+      { scope: 'issue', issueId: 'si1', field: 'title', entry: { id: 'sh1', value: 'From the snapshot', sortKey: 2 }, projectId: 'snap-project' }
     ];
     const { manifestEvent, mediaBlob } = await snapshotEvent({ projectId: 'snap-project', snapshotId: 'snap-1', items, cutoffSortKey: 2, mxc: 'mxc://example.org/preseed1' });
     h.mockMatrixClientApi(page, {
@@ -1828,10 +1829,10 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
 
   test('a snapshot plus a newer "tail" entry combines correctly -- the tail is not swallowed by the snapshot', async ({ page }) => {
     const snapshotItems = [
-      { scope: 'issue', issueId: 'si1', entry: { id: 'sh1', field: 'title', value: 'From the snapshot', sortKey: 1, origin: 'authored' }, projectId: 'snap-project' }
+      { scope: 'issue', issueId: 'si1', field: 'title', entry: { id: 'sh1', value: 'From the snapshot', sortKey: 1 }, projectId: 'snap-project' }
     ];
     const { manifestEvent, mediaBlob } = await snapshotEvent({ projectId: 'snap-project', snapshotId: 'snap-1', items: snapshotItems, cutoffSortKey: 1, mxc: 'mxc://example.org/preseed2' });
-    const tailEntry = entryEvent({ issueId: 'si2', entry: { id: 'th1', field: 'title', value: 'After the snapshot', sortKey: 2, origin: 'authored' }, projectId: 'snap-project' });
+    const tailEntry = entryEvent({ issueId: 'si2', field: 'title', entry: { id: 'th1', value: 'After the snapshot', sortKey: 2 }, projectId: 'snap-project' });
     h.mockMatrixClientApi(page, {
       homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
       initialEntries: [manifestEvent, tailEntry], seedMediaBlobs: [mediaBlob]
@@ -1851,11 +1852,11 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
   });
 
   test('a manifest pointing at a blob that was never actually uploaded (404) is discarded -- falls back to the plain entries as if no snapshot existed', async ({ page }) => {
-    const { manifestEvent } = await snapshotEvent({ projectId: 'snap-project', snapshotId: 'snap-1', items: [{ scope: 'issue', issueId: 'si1', entry: { id: 'sh1', field: 'title', value: 'Should be discarded', sortKey: 1, origin: 'authored' }, projectId: 'snap-project' }], cutoffSortKey: 1, mxc: 'mxc://example.org/never-uploaded' });
+    const { manifestEvent } = await snapshotEvent({ projectId: 'snap-project', snapshotId: 'snap-1', items: [{ scope: 'issue', issueId: 'si1', field: 'title', entry: { id: 'sh1', value: 'Should be discarded', sortKey: 1 }, projectId: 'snap-project' }], cutoffSortKey: 1, mxc: 'mxc://example.org/never-uploaded' });
     // A real, plain entry for the same project exists independently of the
     // (unresolvable) snapshot -- deliberately NOT seeding the blob this
     // manifest points at.
-    const plainEntry = entryEvent({ issueId: 'si2', entry: { id: 'ph1', field: 'title', value: 'Plain entry survives', sortKey: 5, origin: 'authored' }, projectId: 'snap-project' });
+    const plainEntry = entryEvent({ issueId: 'si2', field: 'title', entry: { id: 'ph1', value: 'Plain entry survives', sortKey: 5 }, projectId: 'snap-project' });
     h.mockMatrixClientApi(page, {
       homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
       initialEntries: [manifestEvent, plainEntry]
@@ -1874,10 +1875,10 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
   });
 
   test('a corrupted/tampered blob (hash mismatch) is discarded exactly the same way -- never partially or incorrectly decrypted', async ({ page }) => {
-    const { manifestEvent, mediaBlob } = await snapshotEvent({ projectId: 'snap-project', snapshotId: 'snap-1', items: [{ scope: 'issue', issueId: 'si1', entry: { id: 'sh1', field: 'title', value: 'Should be discarded', sortKey: 1, origin: 'authored' }, projectId: 'snap-project' }], cutoffSortKey: 1, mxc: 'mxc://example.org/corrupted1' });
+    const { manifestEvent, mediaBlob } = await snapshotEvent({ projectId: 'snap-project', snapshotId: 'snap-1', items: [{ scope: 'issue', issueId: 'si1', field: 'title', entry: { id: 'sh1', value: 'Should be discarded', sortKey: 1 }, projectId: 'snap-project' }], cutoffSortKey: 1, mxc: 'mxc://example.org/corrupted1' });
     const tamperedBytes = new Uint8Array(mediaBlob.bytes);
     tamperedBytes[0] ^= 0xff; // flip a bit after "upload" -- corrupted in transit/at rest
-    const plainEntry = entryEvent({ issueId: 'si2', entry: { id: 'ph1', field: 'title', value: 'Plain entry survives', sortKey: 5, origin: 'authored' }, projectId: 'snap-project' });
+    const plainEntry = entryEvent({ issueId: 'si2', field: 'title', entry: { id: 'ph1', value: 'Plain entry survives', sortKey: 5 }, projectId: 'snap-project' });
     h.mockMatrixClientApi(page, {
       homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
       initialEntries: [manifestEvent, plainEntry], seedMediaBlobs: [{ mxc: mediaBlob.mxc, bytes: tamperedBytes }]
@@ -1898,7 +1899,7 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
   test('a bulk-adopted (imported) project automatically gets a snapshot written for it, in just one upload and one manifest event', async ({ page }) => {
     const state = h.mockMatrixClientApi(page, {
       homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
-      initialEntries: [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Room issue', sortKey: 1, origin: 'authored' } })]
+      initialEntries: [entryEvent({ issueId: 'i1', field: 'title', entry: { id: 'h1', value: 'Room issue', sortKey: 1 } })]
     });
     await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
@@ -1913,7 +1914,7 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
     // (tracker f6b39bf0's actual rate-limit fix).
     const issueLines = [];
     for (let i = 1; i <= 40; i++) {
-      issueLines.push(JSON.stringify({ type: 'issue', id: 'si' + i, num: i, fieldRefs: {}, values: { title: 'Issue ' + i }, comments: [], history: [] }));
+      issueLines.push(JSON.stringify({ type: 'issue', id: 'si' + i, fields: { title: { history: [{ id: 'si' + i + '-title', actor: 'test', value: 'Issue ' + i, sortKey: 1, sig: null, pubKey: null }] } } }));
     }
     const pastedJsonl = [
       JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, id: 'imported-for-snapshot', name: 'Imported For Snapshot' }),
@@ -1951,7 +1952,7 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
   test('a large paste-merge import into a project that is ALREADY bridged sends a single snapshot, not hundreds of individual entries', async ({ page }) => {
     const state = h.mockMatrixClientApi(page, {
       homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
-      initialEntries: [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Room issue', sortKey: 1, origin: 'authored' } })]
+      initialEntries: [entryEvent({ issueId: 'i1', field: 'title', entry: { id: 'h1', value: 'Room issue', sortKey: 1 } })]
     });
     await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
@@ -1966,7 +1967,7 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
 
     const issueLines = [];
     for (let i = 1; i <= 250; i++) {
-      issueLines.push(JSON.stringify({ type: 'issue', id: 'bi' + i, num: i + 1, fieldRefs: {}, values: { title: 'Bulk issue ' + i }, comments: [], history: [] }));
+      issueLines.push(JSON.stringify({ type: 'issue', id: 'bi' + i, fields: { title: { history: [{ id: 'bi' + i + '-title', actor: 'test', value: 'Bulk issue ' + i, sortKey: 1, sig: null, pubKey: null }] } } }));
     }
     const pastedJsonl = [
       JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, id: existingProjectId, name: 'Room issue project' }),
@@ -2010,7 +2011,7 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
     await page.addInitScript(() => { window.__wigwagSnapshotMaxAgeMsOverride = 100; });
     const state = h.mockMatrixClientApi(page, {
       homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
-      initialEntries: [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Quiet issue', sortKey: 1, origin: 'authored' } })] // one entry, nowhere near the 200-entry threshold, no pre-existing snapshot
+      initialEntries: [entryEvent({ issueId: 'i1', field: 'title', entry: { id: 'h1', value: 'Quiet issue', sortKey: 1 } })] // one entry, nowhere near the 200-entry threshold, no pre-existing snapshot
     });
     await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
@@ -2051,7 +2052,7 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
   test('an ordinary bulk field-set past the burst threshold (but nowhere near 200) still collapses to one snapshot', async ({ page }) => {
     const initialEntries = [];
     for (let i = 1; i <= 15; i++) {
-      initialEntries.push(entryEvent({ issueId: 'bi' + i, entry: { id: 'h' + i, field: 'title', value: 'Bulk issue ' + i, sortKey: i, origin: 'authored' } }));
+      initialEntries.push(entryEvent({ issueId: 'bi' + i, field: 'title', entry: { id: 'h' + i, value: 'Bulk issue ' + i, sortKey: i } }));
     }
     const state = h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries });
     await page.goto('/bridges/wigwag-matrix-host.html');
@@ -2092,7 +2093,7 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
   test('two concurrent calls to push a snapshot for the same project never produce two uploads', async ({ page }) => {
     const state = h.mockMatrixClientApi(page, {
       homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
-      initialEntries: [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Room issue', sortKey: 1, origin: 'authored' } })]
+      initialEntries: [entryEvent({ issueId: 'i1', field: 'title', entry: { id: 'h1', value: 'Room issue', sortKey: 1 } })]
     });
     await page.route('**/_matrix/media/v3/upload*', async (route) => {
       await new Promise(r => setTimeout(r, 500)); // wide enough that both calls are definitely still racing when the second one checks the lock
@@ -2123,7 +2124,7 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
   test('a homeserver rejecting the upload (e.g. rate-limited) is retried, same shared retry mechanics as any other Matrix write', async ({ page }) => {
     const state = h.mockMatrixClientApi(page, {
       homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
-      initialEntries: [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Room issue', sortKey: 1, origin: 'authored' } })],
+      initialEntries: [entryEvent({ issueId: 'i1', field: 'title', entry: { id: 'h1', value: 'Room issue', sortKey: 1 } })],
       rejectUploadTimes: 2
     });
     await page.goto('/bridges/wigwag-matrix-host.html');
@@ -2144,7 +2145,7 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
         type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, id: 'retry-project', name: 'Retry Project',
         projectHistory: [{ id: 'rp1', field: '__project_name__', value: 'Retry Project', sortKey: 1, origin: 'authored', time: '', actor: 'Someone', email: '' }]
       }),
-      JSON.stringify({ type: 'issue', id: 'ii1', num: 1, fieldRefs: {}, values: { title: 'An issue' }, comments: [], history: [] })
+      JSON.stringify({ type: 'issue', id: 'ii1', fields: { title: { history: [{ id: 'ii1-title', actor: 'test', value: 'An issue', sortKey: 1, sig: null, pubKey: null }] } } })
     ].join('\n');
     const frame = page.frameLocator('#frame');
     await frame.locator('[data-testid=btn-import-merge]').first().click();
@@ -2173,7 +2174,7 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
   test('full round trip: a bulk-adopted project\'s auto-written snapshot is what a genuinely separate reconnecting session actually reads back', async ({ page }) => {
     h.mockMatrixClientApi(page, {
       homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
-      initialEntries: [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Room issue', sortKey: 1, origin: 'authored' } })]
+      initialEntries: [entryEvent({ issueId: 'i1', field: 'title', entry: { id: 'h1', value: 'Room issue', sortKey: 1 } })]
     });
     await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
@@ -2194,7 +2195,7 @@ test.describe('wigwag-matrix-host.html: room snapshot', () => {
         type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, id: 'roundtrip-project', name: 'Roundtrip Project',
         projectHistory: [{ id: 'rtph1', field: '__project_name__', value: 'Roundtrip Project', sortKey: 1, origin: 'authored', time: '', actor: 'Someone', email: '' }]
       }),
-      JSON.stringify({ type: 'issue', id: 'ii1', num: 1, fieldRefs: {}, values: { title: 'Roundtrip issue' }, comments: [], history: [] })
+      JSON.stringify({ type: 'issue', id: 'ii1', fields: { title: { history: [{ id: 'ii1-title', actor: 'test', value: 'Roundtrip issue', sortKey: 1, sig: null, pubKey: null }] } } })
     ].join('\n');
     const frame = page.frameLocator('#frame');
     await frame.locator('[data-testid=btn-import-merge]').first().click();
@@ -2263,7 +2264,7 @@ function mockRealHomeserverReconnect(page, { entries, roomName }) {
 
 test.describe('wigwag-matrix-host.html: a deleted issue survives a real reconnect', () => {
   test('deleting an issue, then fully reconnecting, does not resurrect it', async ({ page }) => {
-    const entries = [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Delete me and stay deleted', sortKey: 1, origin: 'authored' } })];
+    const entries = [entryEvent({ issueId: 'i1', field: 'title', entry: { id: 'h1', value: 'Delete me and stay deleted', sortKey: 1 } })];
     mockRealHomeserverReconnect(page, { entries, roomName: 'Bridge Room' });
 
     const connect = async () => {
@@ -2310,7 +2311,7 @@ test.describe('wigwag-matrix-host.html: a locally-imported project is adopted in
   test('an imported project (identityId: null, simulating wigwag.html\'s own import flow) gets its identity corrected and its history pushed to the room', async ({ page }) => {
     const state = h.mockMatrixClientApi(page, {
       homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room',
-      initialEntries: [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Room issue', sortKey: 1, origin: 'authored' } })]
+      initialEntries: [entryEvent({ issueId: 'i1', field: 'title', entry: { id: 'h1', value: 'Room issue', sortKey: 1 } })]
     });
     await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
@@ -2333,7 +2334,7 @@ test.describe('wigwag-matrix-host.html: a locally-imported project is adopted in
     const importedId = 'imported-proj-1';
     const pastedJsonl = [
       JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, id: importedId, name: 'Imported project' }),
-      JSON.stringify({ type: 'issue', id: 'ii1', num: 1, fieldRefs: {}, values: { title: 'Imported issue' }, comments: [], history: [] })
+      JSON.stringify({ type: 'issue', id: 'ii1', fields: { title: { history: [{ id: 'ii1-title', actor: 'test', value: 'Imported issue', sortKey: 1, sig: null, pubKey: null }] } } })
     ].join('\n');
     const frame = page.frameLocator('#frame');
     await frame.locator('[data-testid=btn-import-merge]').first().click();
@@ -2367,12 +2368,12 @@ test.describe('wigwag-matrix-host.html: a locally-imported project is adopted in
     // so both are present here (unlike the old knownEntryIds-filtered
     // batch push, which never disambiguated this either but rarely
     // surfaced it).
-    const titlePush = pushedForImported.find(c => c.scope === 'issue' && c.entry.field === 'title');
+    const titlePush = pushedForImported.find(c => c.scope === 'issue' && c.field === 'title');
     expect(titlePush.entry.value).toBe('Imported issue');
   });
 
   test('a second session connecting afterward discovers both the room\'s own project and the imported one', async ({ page }) => {
-    const entries = [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Room issue', sortKey: 1, origin: 'authored' } })];
+    const entries = [entryEvent({ issueId: 'i1', field: 'title', entry: { id: 'h1', value: 'Room issue', sortKey: 1 } })];
     const base = HOMESERVER;
     const roomPath = base + '/_matrix/client/v3/rooms/' + encodeURIComponent(ROOM_ID);
     await page.route(roomPath + '/messages*', async (route) => {
@@ -2441,7 +2442,7 @@ test.describe('wigwag-matrix-host.html: a locally-imported project is adopted in
     const secondProjectId = 'imported-proj-2';
     const pastedJsonl = [
       JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, id: secondProjectId, name: 'Second project' }),
-      JSON.stringify({ type: 'issue', id: 'ii2', num: 1, fieldRefs: {}, values: { title: 'Second project issue' }, comments: [], history: [] })
+      JSON.stringify({ type: 'issue', id: 'ii2', fields: { title: { history: [{ id: 'ii2-title', actor: 'test', value: 'Second project issue', sortKey: 1, sig: null, pubKey: null }] } } })
     ].join('\n');
     const firstFrame = page.frameLocator('#frame');
     await firstFrame.locator('[data-testid=btn-import-merge]').first().click();
@@ -2509,16 +2510,16 @@ test.describe('wigwag-matrix-host.html: cosmetic prefs are scoped per room, not 
       homeserverUrl: HOMESERVER, roomId: ROOM_A, roomName: 'Room A',
       initialEntries: [
         priorityFieldDef,
-        entryEvent({ issueId: 'a1', entry: { id: 'ha1', field: 'title', value: 'Room A issue', sortKey: 1, origin: 'authored' }, projectId: SHARED_PROJECT_ID }),
-        entryEvent({ issueId: 'a1', entry: { id: 'ha1b', field: 'priority', value: 'low', sortKey: 2, origin: 'authored' }, projectId: SHARED_PROJECT_ID })
+        entryEvent({ issueId: 'a1', field: 'title', entry: { id: 'ha1', value: 'Room A issue', sortKey: 1 }, projectId: SHARED_PROJECT_ID }),
+        entryEvent({ issueId: 'a1', field: 'priority', entry: { id: 'ha1b', value: 'low', sortKey: 2 }, projectId: SHARED_PROJECT_ID })
       ]
     });
     h.mockMatrixClientApi(page, {
       homeserverUrl: HOMESERVER, roomId: ROOM_B, roomName: 'Room B',
       initialEntries: [
         priorityFieldDef,
-        entryEvent({ issueId: 'b1', entry: { id: 'hb1', field: 'title', value: 'Room B issue', sortKey: 1, origin: 'authored' }, projectId: SHARED_PROJECT_ID }),
-        entryEvent({ issueId: 'b1', entry: { id: 'hb1b', field: 'priority', value: 'high', sortKey: 2, origin: 'authored' }, projectId: SHARED_PROJECT_ID })
+        entryEvent({ issueId: 'b1', field: 'title', entry: { id: 'hb1', value: 'Room B issue', sortKey: 1 }, projectId: SHARED_PROJECT_ID }),
+        entryEvent({ issueId: 'b1', field: 'priority', entry: { id: 'hb1b', value: 'high', sortKey: 2 }, projectId: SHARED_PROJECT_ID })
       ]
     });
 
@@ -2583,11 +2584,11 @@ test.describe('wigwag-matrix-host.html: a project adopted in one room never leak
     const ROOM_B = '!roomB:example.org';
     const stateA = h.mockMatrixClientApi(page, {
       homeserverUrl: HOMESERVER, roomId: ROOM_A, roomName: 'Room A',
-      initialEntries: [entryEvent({ issueId: 'a1', entry: { id: 'ha1', field: 'title', value: 'Room A issue', sortKey: 1, origin: 'authored' } })]
+      initialEntries: [entryEvent({ issueId: 'a1', field: 'title', entry: { id: 'ha1', value: 'Room A issue', sortKey: 1 } })]
     });
     const stateB = h.mockMatrixClientApi(page, {
       homeserverUrl: HOMESERVER, roomId: ROOM_B, roomName: 'Room B',
-      initialEntries: [entryEvent({ issueId: 'b1', entry: { id: 'hb1', field: 'title', value: 'Room B issue', sortKey: 1, origin: 'authored' } })]
+      initialEntries: [entryEvent({ issueId: 'b1', field: 'title', entry: { id: 'hb1', value: 'Room B issue', sortKey: 1 } })]
     });
 
     const connectTo = async (roomId) => {
@@ -2610,7 +2611,7 @@ test.describe('wigwag-matrix-host.html: a project adopted in one room never leak
     const importedId = 'room-a-imported-proj';
     const pastedJsonl = [
       JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, id: importedId, name: 'Room A Import' }),
-      JSON.stringify({ type: 'issue', id: 'iax', num: 1, fieldRefs: {}, values: { title: 'Room A\'s own imported issue' }, comments: [], history: [] })
+      JSON.stringify({ type: 'issue', id: 'iax', fields: { title: { history: [{ id: 'iax-title', actor: 'test', value: 'Room A\'s own imported issue', sortKey: 1, sig: null, pubKey: null }] } } })
     ].join('\n');
     const frameA = page.frameLocator('#frame');
     await frameA.locator('[data-testid=btn-import-merge]').first().click();
@@ -2676,7 +2677,7 @@ test.describe('wigwag-matrix-host.html: moderator-proposed table layouts', () =>
     return [
       fieldDefEntry('priority', { label: 'Priority', type: 'select', options: [{ id: 'low', label: 'Low', color: 'green', emoji: '' }, { id: 'high', label: 'High', color: 'red', emoji: '' }] }, 0),
       fieldDefEntry('status', { label: 'Status', type: 'select', options: [{ id: 'open', label: 'Open', color: 'blue', emoji: '' }] }, 1),
-      entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Issue one', sortKey: 2, origin: 'authored' }, projectId: PROJ })
+      entryEvent({ issueId: 'i1', field: 'title', entry: { id: 'h1', value: 'Issue one', sortKey: 2 }, projectId: PROJ })
     ];
   }
   async function connect(page, opts = {}) {
@@ -2979,7 +2980,7 @@ test.describe('wigwag-matrix-host.html: moderator-proposed table layouts', () =>
     });
     const entries = seedProjectEntries().concat([
       { type: 'work.wigwag.entry', content: { v: 1, scope: 'project', projectId: OTHER_PROJ, entry: { id: 'other-def', field: 'title', value: { label: 'Issue', type: 'issue' }, sortKey: 0, origin: 'authored' } } },
-      entryEvent({ issueId: 'j1', entry: { id: 'hj1', field: 'title', value: 'Other project issue', sortKey: 1, origin: 'authored' }, projectId: OTHER_PROJ })
+      entryEvent({ issueId: 'j1', field: 'title', entry: { id: 'hj1', value: 'Other project issue', sortKey: 1 }, projectId: OTHER_PROJ })
     ]);
     // Only OTHER_PROJ has a live proposal. Neither project is the room's
     // legacy default (no untagged entries at all), so whichever opens
@@ -3060,7 +3061,7 @@ test.describe('wigwag-matrix-host.html: "+ New project" is hidden for a non-mode
   });
 
   test('the switcher\'s "New project in..." row is hidden for a non-moderator', async ({ page }) => {
-    const entries = [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Existing issue', sortKey: 1, origin: 'authored' } })]; // untagged -- room already has a project
+    const entries = [entryEvent({ issueId: 'i1', field: 'title', entry: { id: 'h1', value: 'Existing issue', sortKey: 1 } })]; // untagged -- room already has a project
     h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: entries, powerLevels: NON_MODERATOR_LEVELS });
     await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);
@@ -3075,7 +3076,7 @@ test.describe('wigwag-matrix-host.html: "+ New project" is hidden for a non-mode
   });
 
   test('the switcher\'s "New project in..." row is shown for a real moderator', async ({ page }) => {
-    const entries = [entryEvent({ issueId: 'i1', entry: { id: 'h1', field: 'title', value: 'Existing issue', sortKey: 1, origin: 'authored' } })]; // untagged -- room already has a project
+    const entries = [entryEvent({ issueId: 'i1', field: 'title', entry: { id: 'h1', value: 'Existing issue', sortKey: 1 } })]; // untagged -- room already has a project
     h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: entries, powerLevels: MODERATOR_LEVELS });
     await page.goto('/bridges/wigwag-matrix-host.html');
     await page.locator('#homeserverUrl').fill(HOMESERVER);

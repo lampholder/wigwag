@@ -1088,10 +1088,16 @@ if (new URLSearchParams(location.search).get('widgetId')) {
   // (computePendingSummary) have no other cheap way to ask once an entry
   // itself no longer carries .field.
   function flattenEntries(hydrated) {
+    // readCurrentLocalDoc's return uses .fieldDefs (matching the local
+    // app doc's own naming); computeRemoteDocFor's return is whatever
+    // hydrateProjectFromMatrixTimeline produces, which names the same
+    // map .fields instead -- this is the one function that has to read
+    // both shapes, since it's called on either.
+    const fieldDefs = hydrated.fieldDefs || hydrated.fields || {};
     const out = hydrated.projectHistory.map(entry => ({ scope: 'project', issueId: null, entry }));
     for (const iss of hydrated.issues) {
       for (const colId in (iss.fields || {})) {
-        const isCommentStream = !!(hydrated.fieldDefs[colId] && hydrated.fieldDefs[colId].type === 'commentStream');
+        const isCommentStream = !!(fieldDefs[colId] && fieldDefs[colId].type === 'commentStream');
         for (const entry of (iss.fields[colId].history || [])) out.push({ scope: 'issue', issueId: iss.id, field: colId, entry, isCommentStream });
       }
     }

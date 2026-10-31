@@ -120,12 +120,8 @@ test.describe('wigwag: links -- issue-type fields', () => {
       localStorage.setItem('git_native_tracker_v1:other-project', JSON.stringify({
         fieldDefs: { title: { label: 'Issue', type: 'issue' } },
         issues: [{
-          id: 'op-1', num: 1, fieldRefs: {}, fieldLoading: {}, comments: [],
-          history: [{
-            id: 'op-1-title', time: new Date().toISOString(), actor: 'Peer', email: 'peer@example.com',
-            text: 'Set Issue to "A remote-project issue"', field: 'title', value: 'A remote-project issue',
-            origin: 'authored', sortKey: 1, sig: null, sigRedacted: null, pubKey: null
-          }]
+          id: 'op-1', fieldRefs: {}, fieldLoading: {},
+          fields: { title: { history: [{ id: 'op-1-title', actor: 'peer@example.com', value: 'A remote-project issue', sortKey: 1, sig: null, pubKey: null }] } }
         }],
         githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: ''
       }));
@@ -153,8 +149,9 @@ test.describe('wigwag: links -- issue-type fields', () => {
     await expect(h.fieldCell(page, 1, 'linked')).toContainText("ACME – New rooms added to spaces don't show until sync");
     const doc = await h.readActiveMilestoneDoc(page);
     const iss = doc.issues.find(i => i.id === 'i1');
-    const linkedHistory = iss.history.filter(h2 => h2.field === 'linked');
-    expect(linkedHistory.some(h2 => (h2.text || '').includes('Could not fetch from GitHub'))).toBe(false);
+    // Format v2 never logs a fetch error to signed history at all any
+    // more (see docs/FORMAT_V2.md) -- what's left to check is the real
+    // observable result: the link resolved to a real wigwag ref.
     expect(h.latestFieldRef(iss, 'linked').system).toBe('wigwag');
   });
 

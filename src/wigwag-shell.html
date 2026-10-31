@@ -2804,11 +2804,21 @@ function squashHistory(history, fieldDefs) {
 // (ISSUE_DELETED_FIELD_ID), which is never a real schema field to begin
 // with but must always survive squashing in full, or a squashed/shared
 // export could silently resurrect a deleted issue.
+// A comment-stream field (structurally: its entries carry .text, not
+// .value -- same detection used elsewhere this session, since fieldDefs
+// can be stale) is exempt entirely -- "keep only the latest, redact the
+// rest" is a per-FIELD-VALUE squash, not a thread of independent
+// comments; applying it here would silently drop every comment but the
+// most recent on squashed/shared export, a real regression from v1
+// where comments lived in their own commentStreams structure squashing
+// never touched.
 function squashIssueFields(fields, fieldDefs) {
   const squashed = {};
   for (const colId in (fields || {})) {
     const history = fields[colId].history || [];
     if (!history.length) { squashed[colId] = { history: [] }; continue; }
+    const isCommentStream = history[0].text !== undefined && history[0].value === undefined;
+    if (isCommentStream) { squashed[colId] = { history }; continue; }
     const latest = history.reduce((a, b) => (b.sortKey > a.sortKey ? b : a));
     const fieldDeleted = fieldDefs && colId !== ISSUE_DELETED_FIELD_ID && !(colId in fieldDefs);
     squashed[colId] = { history: history.map(h => (!fieldDeleted && h.id === latest.id) ? h : redactEntry(h)) };

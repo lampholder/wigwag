@@ -15,13 +15,24 @@ async function showHiddenField(page, label) {
 function minutesAgo(n) { return Date.now() - n * 60 * 1000; }
 function daysAgo(n) { return Date.now() - n * 24 * 60 * 60 * 1000; }
 
-async function seedIssueWithHistory(page, { id, num, title, history, commentStreams }) {
+// Format v2: `history` entries are now {colId, value, sortKey} (no more
+// field/text/origin/email on an issue-level entry -- see
+// docs/FORMAT_V2.md), and comments live in fields.comments.history, not
+// a separate commentStreams structure. Builds the issue's own fields
+// map directly rather than going through pushFieldEntry's auto-sortKey
+// (these tests need EXACT, hand-picked sortKeys to control relative
+// Created/Updated timing).
+async function seedIssueWithHistory(page, { id, title, history, comments }) {
   const doc = await h.readActiveMilestoneDoc(page);
-  doc.issues.push({
-    id, num, values: {}, fieldRefs: {},
-    history: [{ id: id + '-created', time: 'Created', actor: 'Tester', email: 'tester@example.com', text: 'Created', field: 'title', value: title, origin: 'authored', sortKey: history[0].sortKey, sig: null, pubKey: null }, ...history],
-    commentStreams: commentStreams || {}
-  });
+  const fields = { title: { history: [{ id: id + '-created', actor: 'Tester', value: title, sortKey: history[0].sortKey, sig: null, pubKey: null }] } };
+  for (const h2 of history) {
+    if (!fields[h2.colId]) fields[h2.colId] = { history: [] };
+    fields[h2.colId].history.push({ id: h2.id, actor: h2.actor, value: h2.value, sortKey: h2.sortKey, sig: null, pubKey: null });
+  }
+  if (comments && comments.length) {
+    fields.comments = { history: comments.map(c => ({ id: c.id, actor: c.actor, text: c.text, sortKey: c.sortKey, sig: null, pubKey: null })) };
+  }
+  doc.issues.push({ id, values: {}, fieldRefs: {}, fields });
   await h.writeActiveMilestoneDoc(page, doc);
 }
 
@@ -37,13 +48,13 @@ test.describe('Created/Updated timestamp fields', () => {
   test('Created reflects the earliest history entry; Updated reflects the latest field edit', async ({ page }) => {
     await h.gotoTracker(page);
     await seedIssueWithHistory(page, {
-      id: 'ts-issue-1', num: 9001, title: 'A timestamp test issue',
-      history: [{ id: 'ts-issue-1-h2', time: 'later', actor: 'Tester', email: 'tester@example.com', text: 'Priority set', field: 'priority', value: 'p1', origin: 'authored', sortKey: minutesAgo(30), sig: null, pubKey: null }]
+      id: 'ts-issue-1', title: 'A timestamp test issue',
+      history: [{ id: 'ts-issue-1-h2', actor: 'Tester', colId: 'priority', value: 'p1', sortKey: minutesAgo(30) }]
     });
     // The synthetic "Created" entry above is given the SAME sortKey as history[0] (3 days ago via daysAgo below), so patch it explicitly:
     const doc = await h.readActiveMilestoneDoc(page);
     const issue = doc.issues.find(i => i.id === 'ts-issue-1');
-    issue.history[0].sortKey = daysAgo(3);
+    issue.fields.title.history[0].sortKey = daysAgo(3);
     await h.writeActiveMilestoneDoc(page, doc);
 
     await page.reload();
@@ -61,13 +72,13 @@ test.describe('Created/Updated timestamp fields', () => {
   test('a comment counts as an update, even if it is more recent than any field edit', async ({ page }) => {
     await h.gotoTracker(page);
     await seedIssueWithHistory(page, {
-      id: 'ts-issue-2', num: 9002, title: 'Comment updates this issue',
-      history: [{ id: 'ts-issue-2-h2', time: 'later', actor: 'Tester', email: 'tester@example.com', text: 'Priority set', field: 'priority', value: 'p1', origin: 'authored', sortKey: daysAgo(2), sig: null, pubKey: null }],
-      commentStreams: { comments: [{ id: 'c1', author: 'Tester', email: 'tester@example.com', time: 'just now', text: 'A fresh comment', sortKey: minutesAgo(5) }] }
+      id: 'ts-issue-2', title: 'Comment updates this issue',
+      history: [{ id: 'ts-issue-2-h2', actor: 'Tester', colId: 'priority', value: 'p1', sortKey: daysAgo(2) }],
+      comments: [{ id: 'c1', actor: 'Tester', text: 'A fresh comment', sortKey: minutesAgo(5) }]
     });
     const doc = await h.readActiveMilestoneDoc(page);
     const issue = doc.issues.find(i => i.id === 'ts-issue-2');
-    issue.history[0].sortKey = daysAgo(5);
+    issue.fields.title.history[0].sortKey = daysAgo(5);
     await h.writeActiveMilestoneDoc(page, doc);
 
     await page.reload();

@@ -284,8 +284,13 @@ test.describe('Merge provenance: TOFU trust on ingest', () => {
 
   test('a v0 file (no envelope at all) still ingests exactly as before -- full backward compatibility', async ({ page }) => {
     const doc = await h.readActiveMilestoneDoc(page);
+    // "v0" here means ENVELOPE-less (no signed wrapper line) -- an
+    // orthogonal axis from the issue-shape version. The shape itself is
+    // the current format-v2 fields-map, same as every other export this
+    // file builds; a genuinely pre-format-v2-shaped file is a one-time
+    // real-tracker migration concern, not a live-ingest compat concern.
     const v0Text = JSON.stringify({ type: 'fields', fields: doc.fieldDefs, projectHistory: doc.projectHistory || [] }) + '\n' +
-      doc.issues.map(iss => JSON.stringify({ type: 'issue', id: iss.id, num: iss.num, commentStreams: iss.commentStreams || {}, history: iss.history })).join('\n');
+      doc.issues.map(iss => JSON.stringify({ type: 'issue', id: iss.id, fields: iss.fields })).join('\n');
     await applyPasteMerge(page, v0Text);
     await expect(page.locator('[data-testid=row]')).toHaveCount(9); // unchanged, nothing broke
     const store = await readTrustStore(page);
@@ -329,10 +334,17 @@ test.describe('Merge provenance: diff3 prose merge + conflict markers + local-on
   // Seeds a "base" entry directly (simulating a prior real edit both
   // copies once shared) without going through the UI, to keep these
   // tests focused on the merge itself rather than editing mechanics.
+  // Format v2: a field's own history is issue.fields[colId].history now --
+  // no more field/text/origin/email on an issue-level entry (see
+  // docs/FORMAT_V2.md). actor carries the identity directly (no separate
+  // email) -- 'tom@example.com' here (not 'Tom') because the conflict-
+  // marker text below asserts against the entry's own .actor verbatim.
   async function seedBase(page, issueId, colId, value) {
     const projectId = await h.activeMilestoneId(page);
     const d = await h.idbGetProjectDoc(page, projectId);
-    d.issues.find(i => i.id === issueId).history.push({ id: 'base1', field: colId, value, text: 'set', origin: 'authored', sortKey: 100, actor: 'seed', email: 'seed@x' });
+    const issue = d.issues.find(i => i.id === issueId);
+    if (!issue.fields[colId]) issue.fields[colId] = { history: [] };
+    issue.fields[colId].history.push({ id: 'base1', value, sortKey: 100, actor: 'seed', sig: null, pubKey: null });
     await h.idbSetProjectDoc(page, projectId, d);
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
@@ -340,7 +352,9 @@ test.describe('Merge provenance: diff3 prose merge + conflict markers + local-on
   async function addLocalEdit(page, issueId, colId, value) {
     const projectId = await h.activeMilestoneId(page);
     const d = await h.idbGetProjectDoc(page, projectId);
-    d.issues.find(i => i.id === issueId).history.push({ id: 'local1', field: colId, value, text: 'edited', origin: 'authored', sortKey: 200, actor: 'Tom', email: 'tom@example.com' });
+    const issue = d.issues.find(i => i.id === issueId);
+    if (!issue.fields[colId]) issue.fields[colId] = { history: [] };
+    issue.fields[colId].history.push({ id: 'local1', value, sortKey: 200, actor: 'tom@example.com', sig: null, pubKey: null });
     await h.idbSetProjectDoc(page, projectId, d);
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
@@ -355,9 +369,9 @@ test.describe('Merge provenance: diff3 prose merge + conflict markers + local-on
       const idx = { activeMilestoneId };
       const incomingIssues = d.issues.map(iss => {
         if (iss.id !== issueId) return iss;
-        const history = iss.history.filter(h => h.id !== 'local1');
-        history.push({ id: 'inbound1', field: colId, value: inboundValue, text: 'edited', origin: 'authored', sortKey: 300, actor: 'Dave', email: exportedBy });
-        return { ...iss, history };
+        const history = (iss.fields[colId].history || []).filter(h => h.id !== 'local1');
+        history.push({ id: 'inbound1', value: inboundValue, sortKey: 300, actor: exportedBy });
+        return { ...iss, fields: { ...iss.fields, [colId]: { history } } };
       });
       const kp = await crypto.subtle.generateKey(window.WigwagCore.SIGN_ALG, true, ['sign', 'verify']);
       const priv = await crypto.subtle.exportKey('jwk', kp.privateKey);
@@ -375,7 +389,7 @@ test.describe('Merge provenance: diff3 prose merge + conflict markers + local-on
   async function latestFieldHistory(page, issueId, colId) {
     const doc = await h.readActiveMilestoneDoc(page);
     const issue = doc.issues.find(i => i.id === issueId);
-    return issue.history.filter(h => h.field === colId).sort((a, b) => b.sortKey - a.sortKey)[0];
+    return h.latestFieldHistoryEntry(issue, colId);
   }
 
   test('non-overlapping prose edits (separated by an untouched line) merge silently into one new SIGNED entry, no markers', async ({ page }) => {
@@ -390,7 +404,9 @@ test.describe('Merge provenance: diff3 prose merge + conflict markers + local-on
     expect(latest.value).toBe('Para ONE edited locally.\nPara two.\nPara THREE edited by dave.');
     expect(latest.value.includes('<<<<<<<')).toBe(false);
     expect(latest.sig).toBeTruthy(); // a real signed entry, same as any other edit
-    expect(latest.text).toMatch(/updated by merge$/);
+    // Format v2: field entries carry no .text (fully reconstructable from
+    // field def + value) -- "this was a clean merge, not a conflict" is
+    // already proven by the no-markers check above.
   });
 
   test('overlapping prose edits produce a conflict entry with self-describing markers naming both identities, the date, and signature state', async ({ page }) => {
@@ -407,7 +423,8 @@ test.describe('Merge provenance: diff3 prose merge + conflict markers + local-on
     expect(latest.value).toContain('=======');
     expect(latest.value).toContain('Changed by dave remotely.');
     expect(latest.value).toMatch(/^>>>>>>> dave@example\.com · export .+ · signed$/m);
-    expect(latest.text).toBe('Mitigation updated by merge — merge conflicts require human review.');
+    // Format v2: no .text on a field entry -- the markers themselves
+    // already prove this is a conflict (see the asserts above).
   });
 
   test('the local-only merge log records a "merged-with-markers" entry for a conflicting prose merge, with real envelope provenance', async ({ page }) => {
@@ -459,12 +476,12 @@ test.describe('Merge provenance: diff3 prose merge + conflict markers + local-on
     const inboundText = await buildInboundWithFieldEdit(page, issueId, colId, 'By dave.', 'dave@example.com');
 
     await applyPasteMerge(page, inboundText);
-    const historyAfterFirst = (await h.readActiveMilestoneDoc(page)).issues.find(i => i.id === issueId).history.filter(h => h.field === colId);
+    const historyAfterFirst = h.issueFieldHistory((await h.readActiveMilestoneDoc(page)).issues.find(i => i.id === issueId), colId);
     const logAfterFirst = await readMergeLog(page, doc.id || 'demo-milestone');
     expect(logAfterFirst.length).toBe(1);
 
     await applyPasteMerge(page, inboundText); // the identical file again
-    const historyAfterSecond = (await h.readActiveMilestoneDoc(page)).issues.find(i => i.id === issueId).history.filter(h => h.field === colId);
+    const historyAfterSecond = h.issueFieldHistory((await h.readActiveMilestoneDoc(page)).issues.find(i => i.id === issueId), colId);
     const logAfterSecond = await readMergeLog(page, doc.id || 'demo-milestone');
     expect(historyAfterSecond.length).toBe(historyAfterFirst.length); // no new entry created
     expect(logAfterSecond.length).toBe(1); // no new log record either
@@ -476,7 +493,9 @@ test.describe('Merge provenance: diff3 prose merge + conflict markers + local-on
     const ragColId = Object.keys(doc.fieldDefs).find(id => doc.fieldDefs[id].label === 'RAG');
     const scalarProjectId = await h.activeMilestoneId(page);
     const scalarDoc1 = await h.idbGetProjectDoc(page, scalarProjectId);
-    scalarDoc1.issues.find(i => i.id === issueId).history.push({ id: 'local1', field: ragColId, value: 'green', text: 'RAG set', origin: 'authored', sortKey: 500, actor: 'Tom', email: 'tom@example.com' });
+    const scalarIssue1 = scalarDoc1.issues.find(i => i.id === issueId);
+    if (!scalarIssue1.fields[ragColId]) scalarIssue1.fields[ragColId] = { history: [] };
+    scalarIssue1.fields[ragColId].history.push({ id: 'local1', value: 'green', sortKey: 500, actor: 'tom@example.com', sig: null, pubKey: null });
     await h.idbSetProjectDoc(page, scalarProjectId, scalarDoc1);
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
@@ -485,9 +504,9 @@ test.describe('Merge provenance: diff3 prose merge + conflict markers + local-on
     const inboundText = await page.evaluate(async ({ issueId, colId, activeMilestoneId, d }) => {
       const incomingIssues = d.issues.map(iss => {
         if (iss.id !== issueId) return iss;
-        const history = iss.history.filter(h => h.id !== 'local1');
-        history.push({ id: 'inbound1', field: colId, value: 'red', text: 'RAG set', origin: 'authored', sortKey: 600, actor: 'Dave', email: 'dave@example.com' });
-        return { ...iss, history };
+        const history = (iss.fields[colId].history || []).filter(h => h.id !== 'local1');
+        history.push({ id: 'inbound1', value: 'red', sortKey: 600, actor: 'dave@example.com' });
+        return { ...iss, fields: { ...iss.fields, [colId]: { history } } };
       });
       const kp = await crypto.subtle.generateKey(window.WigwagCore.SIGN_ALG, true, ['sign', 'verify']);
       const priv = await crypto.subtle.exportKey('jwk', kp.privateKey);
@@ -555,8 +574,10 @@ test.describe('Merge provenance: the pre-merge gate and Merge History (tracker #
     const incomingText = await page.evaluate(async ({ issueId, ragColId, incomingValue, exportedBy, idx, baseDoc }) => {
       const cloned = JSON.parse(JSON.stringify(baseDoc));
       const iss = cloned.issues.find(i => i.id === issueId);
-      const maxSort = Math.max(0, ...iss.history.map(h => h.sortKey || 0));
-      iss.history.push({ id: 'rag-inbound-' + Date.now(), time: new Date().toISOString(), actor: 'Dave', email: exportedBy, text: 'RAG changed', field: ragColId, value: incomingValue, origin: 'authored', sortKey: maxSort + 1000, sig: null, sigRedacted: null, pubKey: null });
+      let maxSort = 0;
+      for (const cId in iss.fields) for (const hh of (iss.fields[cId].history || [])) if ((hh.sortKey || 0) > maxSort) maxSort = hh.sortKey;
+      if (!iss.fields[ragColId]) iss.fields[ragColId] = { history: [] };
+      iss.fields[ragColId].history.push({ id: 'rag-inbound-' + Date.now(), value: incomingValue, sortKey: maxSort + 1000, actor: exportedBy, sig: null, pubKey: null });
       const kp = await crypto.subtle.generateKey(window.WigwagCore.SIGN_ALG, true, ['sign', 'verify']);
       const priv = await crypto.subtle.exportKey('jwk', kp.privateKey);
       const pub = await crypto.subtle.exportKey('jwk', kp.publicKey);
@@ -577,8 +598,10 @@ test.describe('Merge provenance: the pre-merge gate and Merge History (tracker #
       const pid = await h.activeMilestoneId(page);
       const d = await h.idbGetProjectDoc(page, pid);
       const iss = d.issues.find(i => i.id === issueId);
-      const maxSort = Math.max(0, ...iss.history.map(h => h.sortKey || 0));
-      iss.history.push({ id: 'rag-local-' + Date.now(), time: new Date().toISOString(), actor: 'Tom', email: 'tom@example.com', text: 'RAG changed', field: ragColId, value: localValue, origin: 'authored', sortKey: maxSort + 10, sig: null, sigRedacted: null, pubKey: null });
+      let maxSort = 0;
+      for (const cId in iss.fields) for (const hh of (iss.fields[cId].history || [])) if ((hh.sortKey || 0) > maxSort) maxSort = hh.sortKey;
+      if (!iss.fields[ragColId]) iss.fields[ragColId] = { history: [] };
+      iss.fields[ragColId].history.push({ id: 'rag-local-' + Date.now(), value: localValue, sortKey: maxSort + 10, actor: 'tom@example.com', sig: null, pubKey: null });
       await h.idbSetProjectDoc(page, pid, d);
     }
     await page.reload({ waitUntil: 'networkidle' });
@@ -603,8 +626,8 @@ test.describe('Merge provenance: the pre-merge gate and Merge History (tracker #
   test('"Not now" cancels a pending merge with zero side effects -- no new history, nothing applied', async ({ page }) => {
     const colId = await ragColId(page);
     const doc = await h.readActiveMilestoneDoc(page);
-    const issue = doc.issues.find(i => (i.history || []).some(h => h.field === colId));
-    const before = latestOf(issue.history.filter(h => h.field === colId));
+    const issue = doc.issues.find(i => h.issueFieldHistory(i, colId).length);
+    const before = latestOf(h.issueFieldHistory(issue, colId));
 
     const text = await buildRagOverlap(page, issue.id, colId, 'amber', 'red', 'dave@example.com');
     await page.locator('[data-testid=btn-import-merge]').click();
@@ -622,15 +645,15 @@ test.describe('Merge provenance: the pre-merge gate and Merge History (tracker #
 
     const after = await h.readActiveMilestoneDoc(page);
     const issueAfter = after.issues.find(i => i.id === issue.id);
-    expect(issueAfter.history.length).toBe(issue.history.length + 1); // +1 for our own seeded local edit only
-    const latest = latestOf(issueAfter.history.filter(h => h.field === colId));
+    expect(h.issueHistoryEntryCount(issueAfter)).toBe(h.issueHistoryEntryCount(issue) + 1); // +1 for our own seeded local edit only
+    const latest = latestOf(h.issueFieldHistory(issueAfter, colId));
     expect(latest.value).toBe('amber'); // unchanged from the local seed -- incoming never applied
   });
 
   test('"Merge update" applies the computed result for real, and records it in the local-only merge log', async ({ page }) => {
     const colId = await ragColId(page);
     const doc = await h.readActiveMilestoneDoc(page);
-    const issue = doc.issues.find(i => (i.history || []).some(h => h.field === colId));
+    const issue = doc.issues.find(i => h.issueFieldHistory(i, colId).length);
 
     const text = await buildRagOverlap(page, issue.id, colId, 'amber', 'red', 'dave@example.com');
     await page.locator('[data-testid=btn-import-merge]').click();
@@ -644,7 +667,7 @@ test.describe('Merge provenance: the pre-merge gate and Merge History (tracker #
     await expect(page.locator('[data-testid=merge-card]')).toHaveCount(0);
     const after = await h.readActiveMilestoneDoc(page);
     const issueAfter = after.issues.find(i => i.id === issue.id);
-    const latest = latestOf(issueAfter.history.filter(h => h.field === colId));
+    const latest = latestOf(h.issueFieldHistory(issueAfter, colId));
     expect(latest.value).toBe('red'); // incoming's later sortKey wins
 
     const log = await h.idbGetMergeLog(page, 'git_native_tracker_merge_log_v1:' + await h.activeMilestoneId(page));
@@ -655,7 +678,7 @@ test.describe('Merge provenance: the pre-merge gate and Merge History (tracker #
   test('Merge History lists a confirmed merge, expands into real per-field detail, and its timeline shows both sides', async ({ page }) => {
     const colId = await ragColId(page);
     const doc = await h.readActiveMilestoneDoc(page);
-    const issue = doc.issues.find(i => (i.history || []).some(h => h.field === colId));
+    const issue = doc.issues.find(i => h.issueFieldHistory(i, colId).length);
 
     const text = await buildRagOverlap(page, issue.id, colId, 'amber', 'red', 'dave@example.com');
     await page.locator('[data-testid=btn-import-merge]').click();
@@ -685,7 +708,7 @@ test.describe('Merge provenance: the pre-merge gate and Merge History (tracker #
   test('"Back out this update" restores the pre-merge local value by deleting the entry the merge introduced, not appending a new one', async ({ page }) => {
     const colId = await ragColId(page);
     const doc = await h.readActiveMilestoneDoc(page);
-    const issue = doc.issues.find(i => (i.history || []).some(h => h.field === colId));
+    const issue = doc.issues.find(i => h.issueFieldHistory(i, colId).length);
 
     // buildRagOverlap gives LOCAL its own separate pre-merge edit (to make
     // this a genuine overlap) before returning the incoming file -- that
@@ -693,7 +716,7 @@ test.describe('Merge provenance: the pre-merge gate and Merge History (tracker #
     // revert baseline is captured after it, right before clicking "Merge
     // update".
     const text = await buildRagOverlap(page, issue.id, colId, 'amber', 'red', 'dave@example.com');
-    const historyLenBeforeMerge = (await h.readActiveMilestoneDoc(page)).issues.find(i => i.id === issue.id).history.length;
+    const historyLenBeforeMerge = h.issueHistoryEntryCount((await h.readActiveMilestoneDoc(page)).issues.find(i => i.id === issue.id));
 
     await page.locator('[data-testid=btn-import-merge]').click();
     await page.waitForTimeout(150);
@@ -713,9 +736,9 @@ test.describe('Merge provenance: the pre-merge gate and Merge History (tracker #
 
     const after = await h.readActiveMilestoneDoc(page);
     const issueAfter = after.issues.find(i => i.id === issue.id);
-    const latest = latestOf(issueAfter.history.filter(h => h.field === colId));
+    const latest = latestOf(h.issueFieldHistory(issueAfter, colId));
     expect(latest.value).toBe('amber'); // back to the pre-merge local value
-    expect(issueAfter.history.length).toBe(historyLenBeforeMerge); // the merge's entry was DELETED, not superseded by a new one
+    expect(h.issueHistoryEntryCount(issueAfter)).toBe(historyLenBeforeMerge); // the merge's entry was DELETED, not superseded by a new one
 
     // The record itself is marked reverted and offers no further "Back out".
     await expect(page.locator('[data-testid=btn-merge-primary]')).toHaveCount(0);
@@ -724,7 +747,7 @@ test.describe('Merge provenance: the pre-merge gate and Merge History (tracker #
   test('a field edited again since the merge still backs out cleanly -- deleting a superseded entry is a safe no-op, not a refusal', async ({ page }) => {
     const colId = await ragColId(page);
     const doc = await h.readActiveMilestoneDoc(page);
-    const issue = doc.issues.find(i => (i.history || []).some(h => h.field === colId));
+    const issue = doc.issues.find(i => h.issueFieldHistory(i, colId).length);
 
     const text = await buildRagOverlap(page, issue.id, colId, 'amber', 'red', 'dave@example.com');
     await page.locator('[data-testid=btn-import-merge]').click();
@@ -740,14 +763,16 @@ test.describe('Merge provenance: the pre-merge gate and Merge History (tracker #
       const pid = await h.activeMilestoneId(page);
       const d = await h.idbGetProjectDoc(page, pid);
       const iss = d.issues.find(i => i.id === issue.id);
-      const maxSort = Math.max(0, ...iss.history.map(h => h.sortKey || 0));
-      iss.history.push({ id: 'post-merge-edit', time: new Date().toISOString(), actor: 'Tom', email: 'tom@example.com', text: 'RAG changed again', field: colId, value: 'green', origin: 'authored', sortKey: maxSort + 10, sig: null, sigRedacted: null, pubKey: null });
+      let maxSort = 0;
+      for (const cId in iss.fields) for (const hh of (iss.fields[cId].history || [])) if ((hh.sortKey || 0) > maxSort) maxSort = hh.sortKey;
+      if (!iss.fields[colId]) iss.fields[colId] = { history: [] };
+      iss.fields[colId].history.push({ id: 'post-merge-edit', value: 'green', sortKey: maxSort + 10, actor: 'tom@example.com', sig: null, pubKey: null });
       await h.idbSetProjectDoc(page, pid, d);
     }
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
 
-    const historyLenBeforeRevert = (await h.readActiveMilestoneDoc(page)).issues.find(i => i.id === issue.id).history.length;
+    const historyLenBeforeRevert = h.issueHistoryEntryCount((await h.readActiveMilestoneDoc(page)).issues.find(i => i.id === issue.id));
 
     await openMergeHistory(page);
     await page.locator('[data-testid=merge-history-item]').first().click();
@@ -765,17 +790,17 @@ test.describe('Merge provenance: the pre-merge gate and Merge History (tracker #
 
     const after = await h.readActiveMilestoneDoc(page);
     const issueAfter = after.issues.find(i => i.id === issue.id);
-    const latest = latestOf(issueAfter.history.filter(h => h.field === colId));
+    const latest = latestOf(h.issueFieldHistory(issueAfter, colId));
     expect(latest.value).toBe('green'); // the real post-merge edit is untouched -- it was already latest
     // The merge's now-superseded entry was still deleted (tidied up), even
     // though it had no visible effect on the current value.
-    expect(issueAfter.history.length).toBe(historyLenBeforeRevert - 1);
+    expect(h.issueHistoryEntryCount(issueAfter)).toBe(historyLenBeforeRevert - 1);
   });
 
   test('the Merge History nav badge appears only when something is genuinely unresolved, not just because a merge happened', async ({ page }) => {
     const colId = await ragColId(page);
     const doc = await h.readActiveMilestoneDoc(page);
-    const issue = doc.issues.find(i => (i.history || []).some(h => h.field === colId));
+    const issue = doc.issues.find(i => h.issueFieldHistory(i, colId).length);
 
     // A clean signed newest-edit-wins merge -- nothing left unresolved.
     const text = await buildRagOverlap(page, issue.id, colId, 'amber', 'red', 'dave@example.com');
@@ -845,10 +870,20 @@ test.describe('Merge provenance: the pre-merge gate and Merge History (tracker #
     // seed shape as row-selection.spec.js's own refresh test.
     {
       const doc = await h.idbGetProjectDoc(page, pid);
-      const maxSortKey = Math.max(0, ...doc.issues[0].history.map(x => x.sortKey || 0));
-      doc.issues[0].history.push({
-        id: 'test-link', time: 'now', actor: 'test', email: 'test@example.com', text: 'Linked', field: 'title', value: 'Fresh title',
-        fieldRef: { system: 'github', owner: 'acme', repo: 'demo', num: 42, labels: [] }, origin: 'authored', sortKey: maxSortKey + 1, sig: null, sigRedacted: null, pubKey: null
+      const issue = doc.issues[0];
+      let maxSortKey = 0;
+      for (const cId in issue.fields) for (const hh of (issue.fields[cId].history || [])) if ((hh.sortKey || 0) > maxSortKey) maxSortKey = hh.sortKey;
+      if (!issue.fields.title) issue.fields.title = { history: [] };
+      // Format v2: a linked field's fieldRef folds into its value as
+      // {title, href} -- no more separate fieldRef sibling or cached
+      // fetched payload. Since there's no more cached labels snapshot to
+      // diff against, a refresh only writes a new title entry when the
+      // title TEXT itself actually changes -- seed a stale title here (the
+      // mocked refresh below returns a genuinely different one) so this
+      // test's "both the explicit and derived field get bundled" claim
+      // stays true under v2, not just the derived one.
+      issue.fields.title.history.push({
+        id: 'test-link', value: { title: 'Stale title', href: h.githubHref('acme', 'demo', 42) }, sortKey: maxSortKey + 1, actor: 'test', sig: null, pubKey: null
       });
       await h.idbSetProjectDoc(page, pid, doc);
     }
@@ -863,14 +898,14 @@ test.describe('Merge provenance: the pre-merge gate and Merge History (tracker #
     } });
 
     await expect(page.locator('[data-testid=row]').nth(0).locator('[data-testid=field-cell][data-col=type]')).toContainText('Enhancement');
-    const historyLenBeforeRefresh = (await h.readActiveMilestoneDoc(page)).issues[0].history.length;
+    const historyLenBeforeRefresh = h.issueHistoryEntryCount((await h.readActiveMilestoneDoc(page)).issues[0]);
 
     await page.locator('[data-testid=row]').nth(0).locator('[data-testid=row-select-checkbox]').click();
     await page.locator('[data-testid=bulk-refresh-btn]').click();
     await page.waitForTimeout(500);
 
     await expect(page.locator('[data-testid=row]').nth(0).locator('[data-testid=field-cell][data-col=type]')).toContainText('Bug');
-    const historyLenAfterRefresh = (await h.readActiveMilestoneDoc(page)).issues[0].history.length;
+    const historyLenAfterRefresh = h.issueHistoryEntryCount((await h.readActiveMilestoneDoc(page)).issues[0]);
     expect(historyLenAfterRefresh).toBeGreaterThan(historyLenBeforeRefresh); // both title (explicit) and type (derived) added real entries
 
     await openMergeHistory(page);
@@ -893,7 +928,7 @@ test.describe('Merge provenance: the pre-merge gate and Merge History (tracker #
     await page.waitForTimeout(400);
 
     const after = await h.readActiveMilestoneDoc(page);
-    expect(after.issues[0].history.length).toBe(historyLenBeforeRefresh); // both entries deleted, exact round-trip
+    expect(h.issueHistoryEntryCount(after.issues[0])).toBe(historyLenBeforeRefresh); // both entries deleted, exact round-trip
     await expect(page.locator('[data-testid=row]').nth(0).locator('[data-testid=field-cell][data-col=type]')).toContainText('Enhancement'); // derived field fell back too
   });
 });

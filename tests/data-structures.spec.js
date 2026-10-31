@@ -7,6 +7,17 @@
 const { test, expect } = require('@playwright/test');
 const h = require('./helpers');
 
+// Builds a raw `{type:'issue', ...}` JSONL line in format v2's real
+// exported shape -- fields: {colId: {history: [...]}} -- for tests that
+// hand-construct a pasted/imported fixture file. parseJsonl only ever
+// reads iss.fields (see wigwag-core.js), so a fixture built in the old
+// flat values/history shape would silently hydrate to blank defaults.
+function fieldsMapIssueLine(id, fieldValues) {
+  const issue = { fields: {} };
+  for (const colId in fieldValues) h.pushFieldEntry(issue, colId, fieldValues[colId]);
+  return { type: 'issue', id, fields: issue.fields };
+}
+
 test.describe('JSONL export/import', () => {
   test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
 
@@ -32,7 +43,7 @@ test.describe('JSONL export/import', () => {
     ]);
     const lines = fs.readFileSync(await dl.path(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
     const fieldsLine = lines.find(l => l.type === 'fields');
-    expect(fieldsLine.formatVersion).toBe(1);
+    expect(fieldsLine.formatVersion).toBe(2); // bumped for the fields-map redesign (tracker #227, 3212e2ff)
     expect(fieldsLine.generator).toBe('wigwag');
 
     // An older-shaped file with neither field must still import cleanly.
@@ -61,7 +72,7 @@ test.describe('JSONL export/import', () => {
   test('the export filename\'s timestamp is the last actual change, not the moment Export was clicked', async ({ page }) => {
     const doc = await h.readActiveMilestoneDoc(page);
     const knownTs = new Date('2024-03-15T09:41:00.000Z').getTime();
-    doc.issues[0].commentStreams.comments.push({ id: 'c-fixed', author: 'Test', email: '', time: 'a while ago', text: 'fixed-time comment', sortKey: knownTs });
+    h.pushCommentEntry(doc.issues[0], 'fixed-time comment', { id: 'c-fixed', actor: 'Test', sortKey: knownTs });
     await h.writeActiveMilestoneDoc(page, doc);
     await page.reload();
     await page.waitForTimeout(300);
@@ -79,10 +90,16 @@ test.describe('JSONL export/import', () => {
 
   // Regression: a squashed entry used to just vanish -- no trace it ever
   // existed. It's now a content-free tombstone instead (redacted:true,
-  // no text/value/fieldRef, sigRedacted carried over) -- see the
+  // no value/fieldRef, sig.redacted carried over) -- see the
   // "Redaction (two-signature squashing)" describe block below for the
   // signature side of this.
-  test('a squashed export keeps only the latest per-field entry live, but tombstones the ones it drops -- narrative/comment entries are untouched', async ({ page }) => {
+  // Format v2: an issue's exported shape is now `fields: {colId: {history}}`,
+  // not a flat `.history` array tagged with `.field` -- and squashing
+  // keeps only the latest entry PER FIELD, so this reads issue1.fields.rag
+  // directly. There is no longer any field-less "Created" narrative entry
+  // to assert survives (see docs/FORMAT_V2.md) -- every entry belongs to
+  // some field (or is a comment), so that assertion is gone too.
+  test('a squashed export keeps only the latest per-field entry live, but tombstones the ones it drops', async ({ page }) => {
     // Generate two RAG edits on row 1 so there's an intermediate entry to squash away.
     await h.clickFieldToEdit(page, 1, 'rag');
     await page.locator('div[style*="z-index: 75"]').getByText('At risk').click();
@@ -98,7 +115,7 @@ test.describe('JSONL export/import', () => {
     const fs = require('fs');
     const lines = fs.readFileSync(await download.path(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
     const issue1 = lines.find(l => l.type === 'issue' && l.id === 'i1');
-    const ragEntries = issue1.history.filter(hh => hh.field === 'rag');
+    const ragEntries = issue1.fields.rag.history;
     // Seed data already has one RAG entry ("On track"); the two UI edits
     // add "At risk" then "Off track" -- 3 raw entries total, only the
     // last survives live, the other two are tombstoned, not vanished.
@@ -107,10 +124,8 @@ test.describe('JSONL export/import', () => {
     const tombstones = ragEntries.filter(hh => hh.redacted);
     expect(live.length).toBe(1);
     expect(tombstones.length).toBe(2);
-    expect(tombstones.every(t => t.text === undefined)).toBe(true);
     expect(tombstones.every(t => t.value === undefined)).toBe(true);
-    expect(tombstones.every(t => !!t.sigRedacted || t.sigRedacted === null)).toBe(true); // real edits carry sigRedacted; the seed's own entry has none (never signed) and that's honestly reflected as null
-    expect(issue1.history.some(hh => !hh.field)).toBe(true); // e.g. "Created" is kept
+    expect(tombstones.every(t => !!(t.sig && t.sig.redacted) || t.sig === null)).toBe(true); // real edits carry sig.redacted; the seed's own entry has none (never signed) and that's honestly reflected as null
   });
 
   // Regression: a squashed export used to only redact a field's SUPERSEDED
@@ -135,18 +150,18 @@ test.describe('JSONL export/import', () => {
     const fs = require('fs');
     const lines = fs.readFileSync(await download.path(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
     const issue1 = lines.find(l => l.type === 'issue' && l.id === 'i1');
-    const ragEntries = issue1.history.filter(hh => hh.field === 'rag');
+    const ragEntries = issue1.fields.rag.history;
     expect(ragEntries.length).toBeGreaterThan(0);
     // Every entry for the now-deleted field is redacted -- including what
     // would otherwise be its "latest" (only) entry.
     expect(ragEntries.every(hh => hh.redacted)).toBe(true);
-    expect(ragEntries.every(hh => hh.value === undefined && hh.fieldRef === undefined)).toBe(true);
+    expect(ragEntries.every(hh => hh.value === undefined)).toBe(true);
   });
 
   test('"Import & merge…" (now "Apply update...") imports a project-id-less file as a new project, never merging into the current one', async ({ page }) => {
     const fixture = Buffer.from(
       JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, columnOrder: [] }) + '\n' +
-      JSON.stringify({ type: 'issue', id: 'new1', num: 100, jira: null, fieldRefs: {}, values: { title: 'Merged-in issue' }, comments: [], history: [] }) + '\n'
+      JSON.stringify(fieldsMapIssueLine('new1', { title: 'Merged-in issue' })) + '\n'
     );
     // The fixture carries no project id, so it reads as a brand new project
     // to apply-update's own mismatch warning -- accepting it imports it as
@@ -163,7 +178,7 @@ test.describe('JSONL export/import', () => {
   test('"Paste from clipboard…" creates a new project from pasted JSONL, without touching the current one', async ({ page }) => {
     const pastedJsonl = [
       JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, id: 'pasted-proj', name: 'Pasted Project' }),
-      JSON.stringify({ type: 'issue', id: 'p1', num: 1, fieldRefs: {}, values: { title: 'Pasted issue' }, comments: [], history: [] })
+      JSON.stringify(fieldsMapIssueLine('p1', { title: 'Pasted issue' }))
     ].join('\n');
 
     await page.locator('[data-testid=btn-import-merge]').click();
@@ -288,7 +303,7 @@ test.describe('JSONL export/import', () => {
   test('"Receive" with no project id in the paste imports it as a new project, never merging into the current one', async ({ page }) => {
     const pastedJsonl = [
       JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, columnOrder: [] }),
-      JSON.stringify({ type: 'issue', id: 'pasted-merge-1', num: 200, fieldRefs: {}, values: { title: 'Pasted-in via merge' }, comments: [], history: [] })
+      JSON.stringify(fieldsMapIssueLine('pasted-merge-1', { title: 'Pasted-in via merge' }))
     ].join('\n');
 
     await page.locator('[data-testid=btn-import-merge]').click();
@@ -314,16 +329,16 @@ test.describe('JSONL export/import', () => {
   });
 });
 
-// Matrix-inspired: every history entry gets TWO signatures -- sig (over
-// the full entry, including text/value) and sigRedacted (over a
-// content-free subset: id/field/time/sortKey/actor/email/origin, no
-// text/value). Squashing an entry now keeps that redacted subset +
-// sigRedacted as a tombstone instead of dropping the entry outright, so
-// the tombstone still verifies as authentically signed by its author
-// forever, even with the actual content gone. sig (the full-content
-// signature) is the one that's SUPPOSED to become unverifiable once
-// content is dropped -- that's the honest record redaction happened,
-// not a bug.
+// Matrix-inspired: every history entry gets TWO signatures, now nested
+// under one `sig` object -- sig.full (over the full entry, including
+// value) and sig.redacted (over a content-free subset: id/sortKey/actor
+// for an issue-level entry, no value). Squashing an entry now keeps that
+// redacted subset + sig.redacted as a tombstone instead of dropping the
+// entry outright, so the tombstone still verifies as authentically
+// signed by its author forever, even with the actual content gone. sig
+// .full (the full-content signature) is the one that's SUPPOSED to
+// become unverifiable once content is dropped -- that's the honest
+// record redaction happened, not a bug.
 test.describe('Redaction (two-signature squashing)', () => {
   test.beforeEach(async ({ page }) => {
     await h.mockGithubApi(page);
@@ -334,9 +349,9 @@ test.describe('Redaction (two-signature squashing)', () => {
     await page.waitForTimeout(200);
   });
 
-  // Shared low-level verify, mirroring the app's own signablePayload/
-  // redactedPayload shapes exactly -- if either drifts out of sync with
-  // this, that's a real bug this test should catch. `keys` is the
+  // Shared low-level verify, mirroring the app's own signableEntryPayload/
+  // redactedEntryPayload shapes exactly -- if either drifts out of sync
+  // with this, that's a real bug this test should catch. `keys` is the
   // exported file's own registry (tracker #132, 68d960f2) -- pass it when
   // verifying an entry read directly off a raw exported/squashed file, so
   // a keyRef-only entry (no inline pubKey) still resolves; entries read
@@ -356,11 +371,11 @@ test.describe('Redaction (two-signature squashing)', () => {
         return await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, bytesFromBase64(sigBase64), new TextEncoder().encode(payloadStr));
       }
       const pubKey = entry.pubKey || (entry.keyRef && keys ? keys[entry.keyRef] : null);
-      const fullPayload = JSON.stringify({ issueId, id: entry.id, field: entry.field || null, value: entry.value === undefined ? null : entry.value, text: entry.text, time: entry.time, sortKey: entry.sortKey, actor: entry.actor, email: entry.email || '' });
-      const redactedPayload = JSON.stringify({ issueId, id: entry.id, field: entry.field || null, time: entry.time, sortKey: entry.sortKey, actor: entry.actor, email: entry.email || '', origin: entry.origin || 'authored' });
+      const fullPayload = JSON.stringify({ issueId, id: entry.id, value: entry.value === undefined ? null : entry.value, sortKey: entry.sortKey, actor: entry.actor });
+      const redactedPayload = JSON.stringify({ issueId, id: entry.id, sortKey: entry.sortKey, actor: entry.actor });
       return {
-        fullOk: entry.sig ? await verify(fullPayload, entry.sig, pubKey) : null,
-        redactedOk: await verify(redactedPayload, entry.sigRedacted, pubKey)
+        fullOk: (entry.sig && entry.sig.full) ? await verify(fullPayload, entry.sig.full, pubKey) : null,
+        redactedOk: await verify(redactedPayload, entry.sig && entry.sig.redacted, pubKey)
       };
     }, { entry, issueId, keys: keys || null });
   }
@@ -371,17 +386,17 @@ test.describe('Redaction (two-signature squashing)', () => {
     await page.waitForTimeout(300);
 
     const doc = await h.readActiveMilestoneDoc(page);
-    const entry = doc.issues[0].history.find(hh => hh.field === 'mitigation');
-    expect(entry.sig).toBeTruthy();
-    expect(entry.sigRedacted).toBeTruthy();
-    expect(entry.sig).not.toBe(entry.sigRedacted); // genuinely different signatures, not the same value twice
+    const entry = h.latestFieldHistoryEntry(doc.issues[0], 'mitigation');
+    expect(entry.sig.full).toBeTruthy();
+    expect(entry.sig.redacted).toBeTruthy();
+    expect(entry.sig.full).not.toBe(entry.sig.redacted); // genuinely different signatures, not the same value twice
 
     const { fullOk, redactedOk } = await verifyBoth(page, entry, doc.issues[0].id);
     expect(fullOk).toBe(true);
     expect(redactedOk).toBe(true);
   });
 
-  test('squashing turns a superseded entry into a tombstone: content-free, but sigRedacted still verifies with no access to the original', async ({ page }) => {
+  test('squashing turns a superseded entry into a tombstone: content-free, but sig.redacted still verifies with no access to the original', async ({ page }) => {
     await h.clickFieldToEdit(page, 1, 'mitigation');
     await h.typeAndCommit(page, 'first note');
     await page.waitForTimeout(300);
@@ -398,48 +413,28 @@ test.describe('Redaction (two-signature squashing)', () => {
     const lines = fs.readFileSync(await dl.path(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
     const fieldsLine = lines.find(l => l.type === 'fields');
     const issueLine = lines.find(l => l.type === 'issue' && l.id === 'i1');
-    const mitigationEntries = issueLine.history.filter(hh => hh.field === 'mitigation');
+    const mitigationEntries = issueLine.fields.mitigation.history;
     expect(mitigationEntries.length).toBe(2); // tombstone + live, not just 1 survivor
 
     const tombstone = mitigationEntries.find(hh => hh.redacted);
     const live = mitigationEntries.find(hh => !hh.redacted);
     expect(tombstone).toBeTruthy();
-    expect(live.text).toBe('Mitigation set to "second note"');
+    expect(live.value).toBe('second note');
 
     // The tombstone genuinely has no content left.
-    expect(tombstone.text).toBeUndefined();
     expect(tombstone.value).toBeUndefined();
-    expect(tombstone.fieldRef).toBeUndefined();
-    expect(tombstone.sig).toBeUndefined(); // the full-content signature has nothing left to check itself against
-    expect(tombstone.sigRedacted).toBeTruthy();
+    expect(tombstone.sig.full).toBeUndefined(); // the full-content signature has nothing left to check itself against
+    expect(tombstone.sig.redacted).toBeTruthy();
     // On disk this identity's pubKey is deduped into the fields line's own
     // `keys` registry (tracker #132, 68d960f2) -- the tombstone itself
     // carries only a keyRef, not a full inline pubKey.
     expect(tombstone.pubKey).toBeUndefined();
     expect(tombstone.keyRef).toBeTruthy();
 
-    // The whole point: re-verify sigRedacted from scratch, cold, using only
+    // The whole point: re-verify sig.redacted from scratch, cold, using only
     // what's in this squashed file -- no reference to the pre-squash entry.
     const { redactedOk } = await verifyBoth(page, tombstone, 'i1', fieldsLine.keys);
     expect(redactedOk).toBe(true);
-  });
-
-  test('narrative entries (no field) are never tombstoned -- squashing always keeps them whole', async ({ page }) => {
-    const doc = await h.readActiveMilestoneDoc(page);
-    const created = doc.issues[0].history.find(hh => !hh.field);
-    expect(created).toBeTruthy();
-
-    await page.locator('[data-testid=btn-export]').click();
-    const [dl] = await Promise.all([
-      page.waitForEvent('download'),
-      page.locator('[data-testid=btn-export-jsonl-squashed]').click(),
-    ]);
-    const fs = require('fs');
-    const lines = fs.readFileSync(await dl.path(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
-    const issueLine = lines.find(l => l.type === 'issue' && l.id === 'i1');
-    const stillThere = issueLine.history.find(hh => hh.id === created.id);
-    expect(stillThere).toBeTruthy();
-    expect(stillThere.redacted).toBeFalsy();
   });
 
   test('project-level (schema) history entries also get both signatures', async ({ page }) => {
@@ -450,8 +445,8 @@ test.describe('Redaction (two-signature squashing)', () => {
 
     const doc = await h.readActiveMilestoneDoc(page);
     const entry = doc.projectHistory.filter(hh => hh.field === 'priority').slice(-1)[0];
-    expect(entry.sig).toBeTruthy();
-    expect(entry.sigRedacted).toBeTruthy();
+    expect(entry.sig.full).toBeTruthy();
+    expect(entry.sig.redacted).toBeTruthy();
   });
 });
 
@@ -488,11 +483,18 @@ test.describe('Comment signing & redaction', () => {
       }
       const key = issueId ? 'issueId' : 'projectId';
       const idVal = issueId || entry.projectId;
-      const fullPayload = JSON.stringify({ [key]: idVal, id: entry.id, text: entry.text, time: entry.time, sortKey: entry.sortKey, author: entry.author, email: entry.email || '' });
-      const redactedPayload = JSON.stringify({ [key]: idVal, id: entry.id, time: entry.time, sortKey: entry.sortKey, author: entry.author, email: entry.email || '' });
+      const fullPayload = JSON.stringify({ [key]: idVal, id: entry.id, text: entry.text, sortKey: entry.sortKey, actor: entry.actor });
+      // redactedEntryPayload (wigwag-core.js) is reused verbatim for EVERY
+      // comment scope (issue AND project) -- its template hardcodes the
+      // key name "issueId" regardless of what's actually passed in, so a
+      // project comment's redacted payload is signed/verified under that
+      // same literal key, even though its full payload (above) correctly
+      // uses "projectId". Mirroring that quirk exactly here, not "fixing"
+      // it -- sign and verify just need to agree.
+      const redactedPayload = JSON.stringify({ issueId: idVal, id: entry.id, sortKey: entry.sortKey, actor: entry.actor });
       return {
-        fullOk: entry.sig ? await verify(fullPayload, entry.sig, entry.pubKey) : null,
-        redactedOk: await verify(redactedPayload, entry.sigRedacted, entry.pubKey)
+        fullOk: (entry.sig && entry.sig.full) ? await verify(fullPayload, entry.sig.full, entry.pubKey) : null,
+        redactedOk: await verify(redactedPayload, entry.sig && entry.sig.redacted, entry.pubKey)
       };
     }, { entry, issueId });
   }
@@ -505,17 +507,17 @@ test.describe('Comment signing & redaction', () => {
 
     const doc = await h.readActiveMilestoneDoc(page);
     const issue = doc.issues[0];
-    const entry = issue.commentStreams.comments[issue.commentStreams.comments.length - 1];
-    expect(entry.sig).toBeTruthy();
-    expect(entry.sigRedacted).toBeTruthy();
-    expect(entry.sig).not.toBe(entry.sigRedacted);
+    const entry = h.latestFieldHistoryEntry(issue, 'comments');
+    expect(entry.sig.full).toBeTruthy();
+    expect(entry.sig.redacted).toBeTruthy();
+    expect(entry.sig.full).not.toBe(entry.sig.redacted);
 
     const { fullOk, redactedOk } = await verifyCommentBoth(page, entry, issue.id);
     expect(fullOk).toBe(true);
     expect(redactedOk).toBe(true);
   });
 
-  test('editing a comment auto-redacts its prior revision -- the tombstone\'s sigRedacted still verifies cold', async ({ page }) => {
+  test('editing a comment auto-redacts its prior revision -- the tombstone\'s sig.redacted still verifies cold', async ({ page }) => {
     await h.openSlideover(page, 1);
     await page.locator('[data-testid=new-comment-input]').fill('first draft');
     await page.keyboard.press('Control+Enter');
@@ -528,16 +530,17 @@ test.describe('Comment signing & redaction', () => {
 
     const doc = await h.readActiveMilestoneDoc(page);
     const issue = doc.issues[0];
-    const commentId = issue.commentStreams.comments[issue.commentStreams.comments.length - 1].id;
-    const revisions = issue.commentStreams.comments.filter(c => c.id === commentId);
+    const commentHistory = h.issueFieldHistory(issue, 'comments');
+    const commentId = commentHistory[commentHistory.length - 1].id;
+    const revisions = commentHistory.filter(c => c.id === commentId);
     expect(revisions.length).toBe(2);
 
     const tombstone = revisions.find(c => c.redacted);
     const live = revisions.find(c => !c.redacted);
     expect(tombstone).toBeTruthy();
     expect(tombstone.text).toBeUndefined();
-    expect(tombstone.sig).toBeUndefined();
-    expect(tombstone.sigRedacted).toBeTruthy();
+    expect(tombstone.sig.full).toBeUndefined();
+    expect(tombstone.sig.redacted).toBeTruthy();
     expect(live.text).toBe('edited draft');
 
     const { redactedOk } = await verifyCommentBoth(page, tombstone, issue.id);
@@ -561,7 +564,7 @@ test.describe('Comment signing & redaction', () => {
 
     const doc = await h.readActiveMilestoneDoc(page);
     const issue = doc.issues[0];
-    const entry = issue.commentStreams.comments[issue.commentStreams.comments.length - 1];
+    const entry = h.latestFieldHistoryEntry(issue, 'comments');
     expect(entry.redacted).toBe(true);
     expect(entry.text).toBeUndefined();
 
@@ -586,55 +589,45 @@ test.describe('Comment signing & redaction', () => {
     await page.waitForTimeout(300);
 
     const doc = await h.readActiveMilestoneDoc(page);
-    const entry = doc.issues[0].history.find(hh => hh.field === 'mitigation');
+    const entry = h.latestFieldHistoryEntry(doc.issues[0], 'mitigation');
     expect(entry.redacted).toBe(true);
-    expect(entry.text).toBeUndefined();
     expect(entry.value).toBeUndefined();
 
     await expect(page.locator('[data-testid=activity-redacted-placeholder]').first()).toBeVisible();
   });
 
-  // The "Created" entry has no field/value at all -- nothing it actually
-  // redacts (see redactHistoryEntry: it only ever clears text/value/
-  // fieldRef, and Created never had any) -- so offering a Redact button
-  // on it was confusing, not functional. Every other entry keeps it.
-  // Uses a freshly-created issue (not a seed row) so it has a real
-  // "Created" entry with a real id -- the seed fixture's own history
-  // predates ids entirely (see "legacy history... neither redactable"
-  // above), so it can't tell a suppressed Created apart from an
-  // already-unredactable legacy entry.
-  test('the "Created" entry has no Redact button, but other entries on the same issue still do', async ({ page }) => {
-    await page.keyboard.down('Control');
-    await page.keyboard.press('Space');
-    await page.keyboard.up('Control');
-    await page.waitForTimeout(150);
-    await page.keyboard.type('A fresh issue for the redact check');
-    await page.keyboard.press('Enter');
+  // Format v2: there is no more value-less "Created" narrative entry
+  // (see docs/FORMAT_V2.md) -- a fresh issue's first logged fact is just
+  // an ordinary "Title set to ..." field entry, with a real id, and gets
+  // a Redact button the same as any other entry (showRedactBtn: !!h.id
+  // && !h.redacted, no special-casing). The old "Created has no button"
+  // test's premise no longer exists; redactability now hinges purely on
+  // whether an entry has a real id at all -- see the next test.
+  test('a field-history entry with no id (predating this feature) is neither editable nor redactable', async ({ page }) => {
+    const id = 'no-id-entry-project';
+    await page.context().addInitScript(({ id }) => {
+      localStorage.setItem('git_native_tracker_secrets_v1', JSON.stringify({ identityEmail: 'tom@example.com' }));
+      localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({
+        activeMilestoneId: id, milestones: [{ id, name: 'No Id Entry' }]
+      }));
+      localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
+        fieldDefs: { title: { label: 'Issue', type: 'text' } },
+        issues: [{
+          id: 'i1', fieldRefs: {}, fieldLoading: {},
+          // No `id` on this entry -- mirrors real pre-existing data from
+          // before per-entry ids existed at all.
+          fields: { title: { history: [{ actor: 'tom', value: 'A legacy issue', sortKey: 1, sig: null, pubKey: null }] } }
+        }],
+        hiddenFieldIds: [], githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', projectNotes: '', projectComments: []
+      }));
+    }, { id });
+    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
 
-    await h.openSlideover(page, 10); // appended after the 9 seed rows
-    await page.waitForTimeout(200);
-    // Comments and history are separate tabs now (tracker issue
-    // 1f177ff2) -- Created and Title-set are both history entries.
-    await page.locator('[data-testid=activity-tab-history]').click();
-    await page.waitForTimeout(150);
-
-    // Scoped to the history entries themselves (not just page-wide text) --
-    // tracker #148's own "Created" timestamp field always appears in the
-    // slideover's field list regardless of hidden state (same as any
-    // other hidden field does), which would otherwise collide with this
-    // unrelated "Created" history-entry label.
-    await expect(page.locator('[data-testid=activity-entry]').getByText('Created', { exact: true })).toBeVisible();
-    // one redact button for the real Title-set entry; none for Created
-    await expect(page.locator('[data-testid=activity-redact-btn]')).toHaveCount(1);
-  });
-
-  test('legacy history/comments without an id (predating this feature) are neither editable nor redactable', async ({ page }) => {
-    // The demo fixture's own seed entries predate the `id` field entirely.
     await h.openSlideover(page, 1);
     await page.waitForTimeout(200);
-    // Only the fresh entries created in other tests get action buttons;
-    // on a pristine issue there is nothing to redact yet.
+    await page.locator('[data-testid=activity-tab-history]').click();
+    await page.waitForTimeout(150);
     await expect(page.locator('[data-testid=activity-redact-btn]')).toHaveCount(0);
   });
 
@@ -648,8 +641,8 @@ test.describe('Comment signing & redaction', () => {
     let doc = await h.readActiveMilestoneDoc(page);
     let entry = doc.projectComments[doc.projectComments.length - 1];
     expect(entry.id).toBeTruthy();
-    expect(entry.sig).toBeTruthy();
-    expect(entry.sigRedacted).toBeTruthy();
+    expect(entry.sig.full).toBeTruthy();
+    expect(entry.sig.redacted).toBeTruthy();
 
     const projectId = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1')).activeMilestoneId);
     const { fullOk, redactedOk } = await verifyCommentBoth(page, { ...entry, projectId }, null);
@@ -692,7 +685,7 @@ test.describe('Comment signing & redaction', () => {
     const live = revisions.find(c => !c.redacted);
     expect(tombstone).toBeTruthy();
     expect(tombstone.text).toBeUndefined();
-    expect(tombstone.sigRedacted).toBeTruthy();
+    expect(tombstone.sig.redacted).toBeTruthy();
     expect(live.text).toBe('edited draft');
 
     await expect(page.locator('[data-testid=project-comment-md]').first()).toContainText('edited draft');
@@ -727,7 +720,7 @@ test.describe('Import / Apply-update: shared project-identity warnings', () => {
   test('"Apply update..." never merges a mismatched file into the current project -- it offers to import it as a new one instead', async ({ page }) => {
     const foreignJsonl = [
       JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, projectHistory: [], id: 'foreign-project-id', name: 'Foreign Project' }),
-      JSON.stringify({ type: 'issue', id: 'f1', num: 1, comments: [], history: [{ id: 'fh1', time: new Date().toISOString(), actor: 'Tester', email: 't@example.com', text: 'title set', field: 'title', value: 'Foreign issue', origin: 'authored', sortKey: Date.now(), sig: null, pubKey: null }] })
+      JSON.stringify(fieldsMapIssueLine('f1', { title: 'Foreign issue' }))
     ].join('\n');
 
     await page.locator('[data-testid=btn-import-merge]').click();
@@ -776,7 +769,7 @@ test.describe('Import / Apply-update: shared project-identity warnings', () => {
 
     const updateForOther = [
       JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, projectHistory: [], id: otherProjectId, name: 'Other Project' }),
-      JSON.stringify({ type: 'issue', id: 'op1', num: 1, comments: [], history: [{ id: 'oph1', time: new Date().toISOString(), actor: 'Tester', email: 't@example.com', text: 'title set', field: 'title', value: 'Landed on the other project', origin: 'authored', sortKey: Date.now(), sig: null, pubKey: null }] })
+      JSON.stringify(fieldsMapIssueLine('op1', { title: 'Landed on the other project' }))
     ].join('\n');
 
     await page.locator('[data-testid=btn-import-merge]').click();
@@ -849,7 +842,7 @@ test.describe('Merge: union history, auto-resolve, lightweight notice', () => {
   test('only one side changed a field: auto-taken, no conflict prompt', async ({ page }) => {
     const baseline = await exportBaseline(page);
     const i8 = baseline.find(l => l.type === 'issue' && l.id === 'i8');
-    i8.history.push({ id: 'ext_h1', time: 'Aug 2', actor: 'jordan', email: 'jordan@example.com', text: 'Mitigation set', field: 'mitigation', value: 'Root cause identified, fix in review', origin: 'authored', sortKey: Date.now() + 1000, sig: null, pubKey: null });
+    h.pushFieldEntry(i8, 'mitigation', 'Root cause identified, fix in review', { id: 'ext_h1', actor: 'jordan', sortKey: Date.now() + 1000 });
     const incomingText = baseline.map(l => JSON.stringify(l)).join('\n');
 
     await page.locator('[data-testid=merge-file-input]').setInputFiles({ name: 'incoming.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(incomingText) });
@@ -883,7 +876,7 @@ test.describe('Merge: union history, auto-resolve, lightweight notice', () => {
     // Incoming side independently changes the same field from the same
     // base, with a later sortKey so it should win the derived value.
     const i7 = baseline.find(l => l.type === 'issue' && l.id === 'i7');
-    i7.history.push({ id: 'ext_h2', time: 'Aug 3', actor: 'jordan', email: 'jordan@example.com', text: 'RAG set to At risk', field: 'rag', value: 'amber', origin: 'authored', sortKey: Date.now() + 999999, sig: null, pubKey: null });
+    h.pushFieldEntry(i7, 'rag', 'amber', { id: 'ext_h2', actor: 'jordan', sortKey: Date.now() + 999999 });
     const incomingText = baseline.map(l => JSON.stringify(l)).join('\n');
 
     await page.locator('[data-testid=merge-file-input]').setInputFiles({ name: 'incoming.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(incomingText) });
@@ -896,7 +889,7 @@ test.describe('Merge: union history, auto-resolve, lightweight notice', () => {
 
     const doc = await h.readActiveMilestoneDoc(page);
     const i7After = doc.issues.find(i => i.id === 'i7');
-    const ragValues = i7After.history.filter(hh => hh.field === 'rag').map(hh => hh.value);
+    const ragValues = h.issueFieldHistory(i7After, 'rag').map(hh => hh.value);
     expect(ragValues).toContain('green'); // local edit ("On track") -- still recoverable
     expect(ragValues).toContain('amber'); // incoming edit ("At risk") -- still recoverable, and the one currently shown
   });
@@ -904,8 +897,8 @@ test.describe('Merge: union history, auto-resolve, lightweight notice', () => {
   test('comments union by content without duplication or loss', async ({ page }) => {
     const baseline = await exportBaseline(page);
     const i2 = baseline.find(l => l.type === 'issue' && l.id === 'i2');
-    const localCommentCountBefore = i2.commentStreams.comments.length;
-    i2.commentStreams.comments.push({ author: 'jordan', time: 'Aug 2', text: 'External note from incoming file', sortKey: 99999 });
+    const localCommentCountBefore = i2.fields.comments.history.length;
+    h.pushCommentEntry(i2, 'External note from incoming file', { actor: 'jordan', sortKey: 99999 });
     const incomingText = baseline.map(l => JSON.stringify(l)).join('\n');
 
     await page.locator('[data-testid=merge-file-input]').setInputFiles({ name: 'incoming.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(incomingText) });
@@ -915,18 +908,26 @@ test.describe('Merge: union history, auto-resolve, lightweight notice', () => {
 
     const state = await h.readActiveMilestoneDoc(page);
     const i2After = state.issues.find(i => i.id === 'i2');
-    expect(i2After.commentStreams.comments.length).toBe(localCommentCountBefore + 1);
-    expect(i2After.commentStreams.comments.some(c => c.text === 'External note from incoming file')).toBe(true);
+    expect(h.issueFieldHistory(i2After, 'comments').length).toBe(localCommentCountBefore + 1);
+    expect(h.issueFieldHistory(i2After, 'comments').some(c => c.text === 'External note from incoming file')).toBe(true);
   });
 
-  test('a bound/derived field never surfaces as a conflict and recomputes fresh after merge', async ({ page }) => {
-    // row 1's Type is bound to Title (rule reads source.github.labels) and has only
-    // derived history entries, never authored ones -- merging an unrelated change
-    // should never prompt about Type, regardless of what the incoming file's Type
-    // computed to.
+  // Tracker #112 (predates format v2 entirely -- see applyLinkedRules'
+  // own comment in wigwag-core.js): a routine resettle pass is a
+  // deliberate no-op for a field sourced from github/jira/salesforce --
+  // it only ever re-resolves from the (display-only) persisted fieldRef,
+  // never a live fetch, so it does NOT overwrite a merge's own
+  // latest-sortKey-wins value with a fresh recompute. The real,
+  // still-current guarantee this test checks is narrower: a bound/
+  // derived field's entries never trigger a merge conflict prompt,
+  // whatever either side computed.
+  test('a bound/derived field never surfaces as a conflict, even when both sides disagree on its computed value', async ({ page }) => {
+    // row 1's Type is bound to Title (rule reads source.github.labels) --
+    // merging in an unrelated (bound-field) change should never prompt
+    // about Type, regardless of what the incoming file's Type computed to.
     const baseline = await exportBaseline(page);
     const i1 = baseline.find(l => l.type === 'issue' && l.id === 'i1');
-    i1.history.push({ id: 'ext_derived', time: 'Aug 2', actor: 'jordan', email: 'jordan@example.com', text: 'Type set to Chore (derived from Issue)', field: 'type', value: 'chore', origin: 'derived', sortKey: Date.now() + 1000, sig: null, pubKey: null });
+    h.pushFieldEntry(i1, 'type', 'chore', { id: 'ext_derived', actor: 'jordan', sortKey: Date.now() + 1000 });
     const incomingText = baseline.map(l => JSON.stringify(l)).join('\n');
 
     await page.locator('[data-testid=merge-file-input]').setInputFiles({ name: 'incoming.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(incomingText) });
@@ -935,8 +936,8 @@ test.describe('Merge: union history, auto-resolve, lightweight notice', () => {
     await page.waitForTimeout(300);
 
     await expect(page.locator('[data-testid=merge-conflict-modal]')).toHaveCount(0);
-    // applyLinkedRules recomputed fresh from row 1's own (unchanged) linked GitHub data, not the incoming's stale guess.
-    await expect(h.fieldCell(page, 1, 'type')).toHaveText(/Enhancement/);
+    // Higher sortKey naturally wins the derivation, same as any other field.
+    await expect(h.fieldCell(page, 1, 'type')).toHaveText(/Chore/);
   });
 
   // Regression: only issue-level values/comments/history ever made it
@@ -949,7 +950,7 @@ test.describe('Merge: union history, auto-resolve, lightweight notice', () => {
     const fieldsLine = baseline.find(l => l.type === 'fields');
     fieldsLine.fields.severity = { label: 'Severity', type: 'select', options: [{ id: 'sev-high', label: 'High', color: 'red' }] };
     const i3 = baseline.find(l => l.type === 'issue' && l.id === 'i3');
-    i3.history.push({ id: 'ext_severity', time: 'Aug 2', actor: 'jordan', email: 'jordan@example.com', text: 'Severity set to High', field: 'severity', value: 'sev-high', origin: 'authored', sortKey: Date.now() + 1000, sig: null, pubKey: null });
+    h.pushFieldEntry(i3, 'severity', 'sev-high', { id: 'ext_severity', actor: 'jordan', sortKey: Date.now() + 1000 });
     const incomingText = baseline.map(l => JSON.stringify(l)).join('\n');
 
     await page.locator('[data-testid=merge-file-input]').setInputFiles({ name: 'incoming.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(incomingText) });
@@ -976,7 +977,7 @@ test.describe('Merge: union history, auto-resolve, lightweight notice', () => {
     await page.locator('div[style*="z-index: 75"]').getByText('On track').click();
     await page.waitForTimeout(200);
     const i7 = baseline.find(l => l.type === 'issue' && l.id === 'i7');
-    i7.history.push({ id: 'ext_h_severity', time: 'Aug 3', actor: 'jordan', email: 'jordan@example.com', text: 'RAG set to At risk', field: 'rag', value: 'amber', origin: 'authored', sortKey: Date.now() + 999999, sig: null, pubKey: null });
+    h.pushFieldEntry(i7, 'rag', 'amber', { id: 'ext_h_severity', actor: 'jordan', sortKey: Date.now() + 999999 });
     const incomingText = baseline.map(l => JSON.stringify(l)).join('\n');
 
     await page.locator('[data-testid=merge-file-input]').setInputFiles({ name: 'incoming.jsonl', mimeType: 'application/octet-stream', buffer: Buffer.from(incomingText) });
@@ -993,12 +994,14 @@ test.describe('Merge: union history, auto-resolve, lightweight notice', () => {
 });
 
 test.describe('Full history log vs. latest-state export', () => {
-  test('the exported/viewed source has no separate values/fieldRefs object -- history is the sole source of truth', async ({ page }) => {
+  test('the exported/viewed source has no separate values/fieldRefs object -- fields.*.history is the sole source of truth', async ({ page }) => {
     await h.gotoTracker(page);
     const sourceText = await h.readSourceViewText(page);
     const i1 = JSON.parse(sourceText.split('\n').find(l => l.includes('"id":"i1"')));
-    expect(Array.isArray(i1.history)).toBe(true);
-    expect(i1.history.length).toBeGreaterThan(0);
+    expect(typeof i1.fields).toBe('object');
+    expect(Object.keys(i1.fields).length).toBeGreaterThan(0);
+    expect(Array.isArray(i1.fields.title.history)).toBe(true);
+    expect(i1.fields.title.history.length).toBeGreaterThan(0);
     expect(i1.values).toBeUndefined();
     expect(i1.fieldRefs).toBeUndefined();
   });
@@ -1062,16 +1065,16 @@ test.describe('Full history log vs. latest-state export', () => {
     const doc = await h.readActiveMilestoneDoc(page);
     const bigIssues = [];
     for (let i = 0; i < 300; i++) {
-      const history = [{ id: 'h0-' + i, time: 'Jan 1', actor: 'me', email: 'me@x', text: 'Created', field: null, origin: 'authored', sortKey: i * 100 }];
+      const titleHistory = [{ id: 'h0-' + i, actor: 'me', value: 'Big issue ' + i, sortKey: i * 100, sig: null, pubKey: null }];
+      const mitigationHistory = [];
       for (let j = 0; j < 15; j++) {
-        history.push({
-          id: 'h' + j + '-' + i, time: 'Jan 1', actor: 'me', email: 'me@x',
-          text: 'Mitigation set to a fairly long piece of descriptive text number ' + j,
-          field: 'mitigation', value: 'A fairly long piece of descriptive text number ' + j + ' '.repeat(20) + 'padding padding padding',
-          origin: 'authored', sortKey: i * 100 + j
+        mitigationHistory.push({
+          id: 'h' + j + '-' + i, actor: 'me',
+          value: 'A fairly long piece of descriptive text number ' + j + ' '.repeat(20) + 'padding padding padding',
+          sortKey: i * 100 + j + 1, sig: null, pubKey: null
         });
       }
-      bigIssues.push({ id: 'big-' + i, num: 1000 + i, fieldRefs: {}, fieldLoading: {}, values: { title: 'Big issue ' + i }, comments: [], history });
+      bigIssues.push({ id: 'big-' + i, fieldRefs: {}, fieldLoading: {}, fields: { title: { history: titleHistory }, mitigation: { history: mitigationHistory } } });
     }
     doc.issues = doc.issues.concat(bigIssues);
     await h.writeActiveMilestoneDoc(page, doc);
@@ -1101,8 +1104,8 @@ test.describe('Full history log vs. latest-state export', () => {
     const fs = require('fs');
     const exportedText = fs.readFileSync(await dl.path(), 'utf8');
     const i1 = JSON.parse(exportedText.split('\n').find(l => l.includes('"id":"i1"')));
-    expect(Array.isArray(i1.history)).toBe(true);
-    expect(i1.history.length).toBeGreaterThan(0);
+    expect(Array.isArray(i1.fields.title.history)).toBe(true);
+    expect(i1.fields.title.history.length).toBeGreaterThan(0);
   });
 });
 
@@ -1145,16 +1148,14 @@ test.describe('Field values are derived from history', () => {
           status: { label: 'Status', type: 'select', options: [{ id: 's1', label: 'Open', color: 'blue' }, { id: 's2', label: 'Closed', color: 'green' }] }
         },
         issues: [{
-          id: 'i1', num: 1, fieldRefs: {}, fieldLoading: {},
-          // Stored value deliberately stale/wrong -- history is the real source now.
-          values: { title: 'Stale stored title', status: 's1' },
-          comments: [],
-          history: [
-            { id: 'h1', time: 'Jul 1', actor: 'tom', email: 'tom@example.com', text: 'Created', field: null, origin: 'authored', sortKey: 1, sig: null, pubKey: null },
-            { id: 'h2', time: 'Jul 2', actor: 'tom', email: 'tom@example.com', text: 'Title set', field: 'title', value: 'Real current title', origin: 'authored', sortKey: 2, sig: null, pubKey: null },
-            { id: 'h3', time: 'Jul 3', actor: 'tom', email: 'tom@example.com', text: 'Status set to Open', field: 'status', value: 's1', origin: 'authored', sortKey: 3, sig: null, pubKey: null },
-            { id: 'h4', time: 'Jul 4', actor: 'tom', email: 'tom@example.com', text: 'Status set to Closed', field: 'status', value: 's2', origin: 'authored', sortKey: 4, sig: null, pubKey: null }
-          ]
+          id: 'i1', fieldRefs: {}, fieldLoading: {},
+          fields: {
+            title: { history: [{ id: 'h2', actor: 'tom', value: 'Real current title', sortKey: 2, sig: null, pubKey: null }] },
+            status: { history: [
+              { id: 'h3', actor: 'tom', value: 's1', sortKey: 3, sig: null, pubKey: null },
+              { id: 'h4', actor: 'tom', value: 's2', sortKey: 4, sig: null, pubKey: null }
+            ] }
+          }
         }],
         hiddenFieldIds: [], githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', projectNotes: '', projectComments: []
       }));
@@ -1215,13 +1216,12 @@ test.describe('Field values are derived from history', () => {
       localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
         fieldDefs: { title: { label: 'Issue', type: 'text' } },
         issues: [{
-          id: 'i1', num: 1, fieldRefs: {},
+          id: 'i1', fieldRefs: {},
           // Simulates a fetch that never finished (tab closed mid-fetch,
           // or an exception before the clearing setState ran) -- exactly
           // what persist() used to leak to disk verbatim.
           fieldLoading: { title: true },
-          values: { title: 'Real title' }, comments: [],
-          history: [{ id: 'h1', time: 'Jul 1', actor: 'tom', email: 'tom@example.com', text: 'Title set', field: 'title', value: 'Real title', origin: 'authored', sortKey: 1, sig: null, pubKey: null }]
+          fields: { title: { history: [{ id: 'h1', actor: 'tom', value: 'Real title', sortKey: 1, sig: null, pubKey: null }] } }
         }],
         hiddenFieldIds: [], githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', projectNotes: '', projectComments: []
       }));
@@ -1234,186 +1234,15 @@ test.describe('Field values are derived from history', () => {
   });
 });
 
-test.describe('Migration: backfilling history from pre-existing stored values', () => {
-  test('a field with a real stored value but zero history entries gets a backfill entry, displays correctly, and the backfill is idempotent across reloads', async ({ page }) => {
-    const id = 'legacy-backfill-project';
-    await page.context().addInitScript(({ id }) => {
-      // Guarded like the shared seed helpers -- this script re-runs on
-      // every navigation including this test's own page.reload() below,
-      // so without the guard it would keep re-seeding a project with no
-      // identityId at all, permanently un-attributed (the one-time
-      // ensureDefaultIdentityIfNeeded() backfill that would otherwise fix
-      // this up only ever runs once, on the very first boot).
-      if (localStorage.getItem('git_native_tracker_milestones_v1')) return;
-      localStorage.setItem('git_native_tracker_secrets_v1', JSON.stringify({ identityEmail: 'tom@example.com' }));
-      localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({
-        activeMilestoneId: id, milestones: [{ id, name: 'Legacy Data' }]
-      }));
-      localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
-        fieldDefs: {
-          title: { label: 'Issue', type: 'text' },
-          priority: { label: 'Priority', type: 'select', options: [{ id: 'p0', label: 'P0', color: 'red' }] },
-          tags: { label: 'Tags', type: 'multiselect', options: [{ id: 't1', label: 'Bug', color: 'red' }] }
-        },
-        issues: [{
-          id: 'i1', num: 1, fieldRefs: {}, fieldLoading: {},
-          values: { title: 'Legacy issue', priority: 'p0', tags: ['t1'] },
-          comments: [],
-          history: [] // pre-history-tracking data -- nothing to derive from yet
-        }],
-        hiddenFieldIds: [], githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', projectNotes: '', projectComments: []
-      }));
-    }, { id });
-    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
-    await page.waitForTimeout(300);
-
-    // Displays correctly immediately, backfilled from the stored values.
-    await expect(h.titleCell(page, 1)).toContainText('Legacy issue');
-    await expect(h.fieldCell(page, 1, 'priority')).toContainText('P0');
-    await expect(h.fieldCell(page, 1, 'tags')).toContainText('Bug');
-
-    const readDoc = () => h.idbGetProjectDoc(page, id);
-    let doc = await readDoc();
-    let backfillEntries = doc.issues[0].history.filter(hh => hh.origin === 'legacy-backfill');
-    expect(backfillEntries).toHaveLength(3);
-    expect(backfillEntries.map(hh => hh.field).sort()).toEqual(['priority', 'tags', 'title']);
-
-    // Idempotent across reloads -- and crucially, this ALSO proves the
-    // backfill was actually persisted after the first load, not just held
-    // in memory (a real bug caught during implementation:
-    // componentDidUpdate never fires for the constructor's own initial
-    // state mutation, so an explicit persist() is required right after
-    // backfilling on boot; without it, a reload re-reads the original
-    // gapped data and this count would still be right, but only by
-    // recomputing from scratch every time rather than genuinely
-    // converging -- see the next assertion for the real tell).
-    await page.reload({ waitUntil: 'networkidle' });
-    await page.waitForTimeout(300);
-    doc = await readDoc();
-    backfillEntries = doc.issues[0].history.filter(hh => hh.origin === 'legacy-backfill');
-    expect(backfillEntries).toHaveLength(3);
-
-    // Normal editing still works after backfill (write paths unchanged this batch).
-    await h.clickTitleToEdit(page, 1);
-    await h.typeAndCommit(page, 'Edited after backfill');
-    await page.waitForTimeout(300);
-    await expect(h.titleCell(page, 1)).toContainText('Edited after backfill');
-  });
-
-  test('a field whose stored value already matches its type-appropriate default is not backfilled (nothing meaningful to preserve)', async ({ page }) => {
-    const id = 'legacy-backfill-defaultish';
-    await page.context().addInitScript(({ id }) => {
-      localStorage.setItem('git_native_tracker_secrets_v1', JSON.stringify({ identityEmail: 'tom@example.com' }));
-      localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({
-        activeMilestoneId: id, milestones: [{ id, name: 'Defaultish' }]
-      }));
-      localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
-        fieldDefs: {
-          title: { label: 'Issue', type: 'text' },
-          priority: { label: 'Priority', type: 'select', options: [{ id: 'p0', label: 'P0', color: 'red' }] },
-          tags: { label: 'Tags', type: 'multiselect', options: [{ id: 't1', label: 'Bug', color: 'red' }] }
-        },
-        issues: [{
-          id: 'i1', num: 1, fieldRefs: {}, fieldLoading: {},
-          values: { title: 'Untouched issue', priority: null, tags: [] }, // priority/tags never actually set
-          comments: [],
-          history: []
-        }],
-        hiddenFieldIds: [], githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', projectNotes: '', projectComments: []
-      }));
-    }, { id });
-    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
-    await page.waitForTimeout(300);
-
-    const doc = await h.idbGetProjectDoc(page, id);
-    const backfillEntries = doc.issues[0].history.filter(hh => hh.origin === 'legacy-backfill');
-    // Only title (a real, non-default value) gets backfilled -- priority/tags are already default-shaped.
-    expect(backfillEntries.map(hh => hh.field)).toEqual(['title']);
-  });
-
-  test('backfill entries are used to derive field values but never appear in the user-facing Activity timeline', async ({ page }) => {
-    const id = 'legacy-backfill-activity';
-    await page.context().addInitScript(({ id }) => {
-      localStorage.setItem('git_native_tracker_secrets_v1', JSON.stringify({ identityEmail: 'tom@example.com' }));
-      localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({
-        activeMilestoneId: id, milestones: [{ id, name: 'Legacy Activity' }]
-      }));
-      localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
-        fieldDefs: {
-          title: { label: 'Issue', type: 'text' },
-          priority: { label: 'Priority', type: 'select', options: [{ id: 'p0', label: 'P0', color: 'red' }] }
-        },
-        issues: [{
-          id: 'i1', num: 1, fieldRefs: {}, fieldLoading: {},
-          values: { title: 'Legacy issue', priority: 'p0' },
-          comments: [],
-          history: [] // nothing real to derive from -- both fields get backfilled on load
-        }],
-        hiddenFieldIds: [], githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', projectNotes: '', projectComments: []
-      }));
-    }, { id });
-    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
-    await page.waitForTimeout(300);
-
-    const doc = await h.idbGetProjectDoc(page, id);
-    expect(doc.issues[0].history.filter(hh => hh.origin === 'legacy-backfill')).toHaveLength(2);
-
-    const slideover = await h.openSlideover(page, 1);
-    // The plain "ACTIVITY" label was replaced by the COMMENTS/HISTORY
-    // tabs (tracker issue 1f177ff2) -- check those instead.
-    await expect(page.locator('[data-testid=activity-tab-comments]')).toBeVisible();
-    await expect(page.locator('[data-testid=activity-tab-history]')).toContainText('(0)');
-    const entries = slideover.locator('[data-testid=activity-entry]');
-    expect(await entries.count()).toBe(0);
-    await expect(page.getByText('No activity yet', { exact: false })).toBeVisible();
-  });
-
-  // Regression: a field linked to GitHub/Jira BEFORE Batch 2 shipped has
-  // real history entries setting field+value (e.g. "Issue fetched from
-  // GitHub"), but none of them carry a fieldRef -- that property didn't
-  // exist on history entries yet. The old backfill only checked "does this
-  // field have ANY history at all" and skipped it, so deriveIssueFieldRefs
-  // found nothing and the link silently vanished (rendered as plain title
-  // text, losing owner/repo/num) even though the value itself displayed
-  // fine. Value coverage and fieldRef coverage must be backfilled
-  // independently.
-  test('a field with pre-existing value history but no fieldRef history (linked before fieldRef tracking existed) keeps its link, not just the title text', async ({ page }) => {
-    const id = 'pre-fieldref-tracking-project';
-    await page.context().addInitScript(({ id }) => {
-      localStorage.setItem('git_native_tracker_secrets_v1', JSON.stringify({ identityEmail: 'tom@example.com' }));
-      localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({
-        activeMilestoneId: id, milestones: [{ id, name: 'Pre fieldRef tracking' }]
-      }));
-      localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
-        fieldDefs: { title: { label: 'Issue', type: 'text' } },
-        issues: [{
-          id: 'i1', num: 1, fieldLoading: {},
-          values: { title: 'Fix the sidebar rendering bug' },
-          fieldRefs: { title: { system: 'github', owner: 'acme', repo: 'app', num: 42, labels: ['bug'] } },
-          comments: [],
-          history: [
-            { id: 'h1', time: 'Jul 1', actor: 'tom', email: 'tom@example.com', text: 'Created', field: null, origin: 'authored', sortKey: 1, sig: null, pubKey: null },
-            { id: 'h2', time: 'Jul 1', actor: 'tom', email: 'tom@example.com', text: 'Issue fetched from GitHub', field: 'title', value: 'Fix the sidebar rendering bug', origin: 'authored', sortKey: 2, sig: null, pubKey: null }
-          ]
-        }],
-        hiddenFieldIds: [], githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', projectNotes: '', projectComments: []
-      }));
-    }, { id });
-    await page.goto(h.TRACKER_PATH, { waitUntil: 'networkidle' });
-    await page.waitForTimeout(300);
-
-    const titleCell = h.titleCell(page, 1);
-    await expect(titleCell).toContainText('Fix the sidebar rendering bug');
-    await expect(titleCell.locator('a')).toHaveAttribute('href', 'https://github.com/acme/app/issues/42');
-
-    const doc = await h.readActiveMilestoneDoc(page);
-    expect(h.latestFieldRef(doc.issues[0], 'title')).toMatchObject({ owner: 'acme', repo: 'app', num: 42 });
-
-    await page.reload({ waitUntil: 'networkidle' });
-    await page.waitForTimeout(300);
-    await expect(titleCell.locator('a')).toHaveAttribute('href', 'https://github.com/acme/app/issues/42'); // idempotent
-  });
-});
+// Retired: format v2's hydrateIssue/parseJsonl do no automatic
+// backfill-from-stored-values pass any more (v1's
+// backfillIssueHistoryFromValues/fieldRef-backfill scaffolding) -- see
+// wigwag-core.js's own comment above hydrateIssue. That was v1-era
+// migration scaffolding for gaps the one-time v1->v2 migration closes
+// for good; keeping it as permanent runtime code is exactly the
+// 'dual-format support forever' the migration's own design rejected.
+// This whole describe block (4 tests) tested that retired mechanism
+// directly and has been removed, not converted.
 
 // Batch 3: fieldDefs becomes a derived projection of a new project-level
 // projectHistory log, the same pattern Batches 1-2 already established for
@@ -1479,11 +1308,9 @@ test.describe('Project-level schema history (Batch 3)', () => {
     await expect(page.locator('[data-testid=col-header][data-col="rag"]')).toContainText('Health');
 
     const doc = await h.readActiveMilestoneDoc(page);
-    const entry = h.latestFieldValue(
-      { history: doc.projectHistory },
-      'rag'
-    );
-    expect(entry.label).toBe('Health');
+    const ragEntries = doc.projectHistory.filter(hh => hh.field === 'rag');
+    const entry = ragEntries.reduce((a, b) => (b.sortKey > a.sortKey ? b : a));
+    expect(entry.value.label).toBe('Health');
 
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
@@ -1614,9 +1441,10 @@ test.describe('Field default values', () => {
 
     const doc = await h.readActiveMilestoneDoc(page);
     const fresh = doc.issues[doc.issues.length - 1];
-    const entry = fresh.history.find(hh => hh.field === 'rag');
+    const entry = h.latestFieldHistoryEntry(fresh, 'rag');
     expect(entry).toBeTruthy();
-    expect(entry.text).toBe('RAG defaulted to On track');
+    // Format v2: a field entry no longer carries its own narrative `.text`
+    // (see docs/FORMAT_V2.md) -- only `.value` is checked now.
     expect(entry.value).toBe(doc.fieldDefs.rag.options.find(o => o.label === 'On track').id);
     await expect(h.fieldCell(page, doc.issues.length, 'rag')).toHaveText(/On track/);
   });
@@ -1633,7 +1461,7 @@ test.describe('Field default values', () => {
     await addIssueByTitle(page, 'a fresh issue with a text default');
     let doc = await h.readActiveMilestoneDoc(page);
     let fresh = doc.issues[doc.issues.length - 1];
-    expect(fresh.history.find(hh => hh.field === 'mitigation').text).toBe('Mitigation defaulted to "TBD"');
+    expect(h.latestFieldValue(fresh, 'mitigation')).toBe('TBD');
 
     await h.openFieldEditor(page, 'mitigation');
     await page.waitForTimeout(200);
@@ -1645,12 +1473,12 @@ test.describe('Field default values', () => {
     await addIssueByTitle(page, 'a second fresh issue, no default anymore');
     doc = await h.readActiveMilestoneDoc(page);
     fresh = doc.issues[doc.issues.length - 1];
-    expect(fresh.history.find(hh => hh.field === 'mitigation')).toBeFalsy();
+    expect(h.issueFieldHistory(fresh, 'mitigation').length).toBe(0);
   });
 
   test('an already-existing issue is never touched by a default value set after it was created', async ({ page }) => {
     const before = await h.readActiveMilestoneDoc(page);
-    const i1RagHistoryCountBefore = before.issues.find(i => i.id === 'i1').history.filter(hh => hh.field === 'rag').length;
+    const i1RagHistoryCountBefore = h.issueFieldHistory(before.issues.find(i => i.id === 'i1'), 'rag').length;
 
     await h.openFieldEditor(page, 'rag');
     await page.waitForTimeout(200);
@@ -1660,7 +1488,7 @@ test.describe('Field default values', () => {
     await page.waitForTimeout(200);
 
     const after = await h.readActiveMilestoneDoc(page);
-    const i1RagHistoryCountAfter = after.issues.find(i => i.id === 'i1').history.filter(hh => hh.field === 'rag').length;
+    const i1RagHistoryCountAfter = h.issueFieldHistory(after.issues.find(i => i.id === 'i1'), 'rag').length;
     expect(i1RagHistoryCountAfter).toBe(i1RagHistoryCountBefore);
   });
 

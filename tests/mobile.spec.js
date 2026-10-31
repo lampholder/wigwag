@@ -729,16 +729,16 @@ test.describe('M7: row detail', () => {
   // previously had no activity at all. Reuses the same activityTab
   // state/addComment() desktop's slide-over already uses.
   test('Comments and History render as separate tabs with counts, defaulting to Comments', async ({ page }) => {
-    await page.locator('[data-testid=mobile-row]').nth(1).click(); // i2: 1 comment, 2 history entries
+    await page.locator('[data-testid=mobile-row]').nth(1).click(); // i2: 1 comment, 6 history entries (title/type/priority/rag/teams/mitigation -- one real entry per non-empty field under format v2, see docs/FORMAT_V2.md)
     await page.waitForTimeout(350);
     await expect(page.locator('[data-testid=mobile-activity-tab-comments]')).toContainText('COMMENTS (1)');
-    await expect(page.locator('[data-testid=mobile-activity-tab-history]')).toContainText('HISTORY (2)');
+    await expect(page.locator('[data-testid=mobile-activity-tab-history]')).toContainText('HISTORY (6)');
     await expect(page.locator('[data-testid=mobile-activity-entry]')).toHaveCount(1);
     await expect(page.locator('[data-testid=mobile-new-comment-input]')).toBeVisible();
 
     await page.locator('[data-testid=mobile-activity-tab-history]').click();
     await page.waitForTimeout(250);
-    await expect(page.locator('[data-testid=mobile-activity-entry]')).toHaveCount(2);
+    await expect(page.locator('[data-testid=mobile-activity-entry]')).toHaveCount(6);
     await expect(page.locator('[data-testid=mobile-new-comment-input]')).toHaveCount(0); // no composing on History
 
     await page.locator('[data-testid=mobile-activity-tab-comments]').click();

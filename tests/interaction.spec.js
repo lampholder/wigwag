@@ -338,7 +338,7 @@ test.describe('Remote lookups persist with the data', () => {
 
     const doc = await h.readActiveMilestoneDoc(page);
     const issue = doc.issues.find(i => i.id === 'i3');
-    expect(h.latestFieldRef(issue, 'linked')).toMatchObject({ fetchedVia: '__builtin_github', href: 'https://github.com/octocat/Hello-World/issues/1' });
+    expect(h.latestFieldRef(issue, 'linked')).toMatchObject({ href: 'https://github.com/octocat/Hello-World/issues/1' });
   });
 
   test('the exported/viewed JSONL source carries fieldRefs too (regression: it used to read a removed property and silently drop this)', async ({ page }) => {
@@ -351,7 +351,7 @@ test.describe('Remote lookups persist with the data', () => {
     const i3Line = sourceText.split('\n').find(l => l.includes('"id":"i3"'));
     expect(i3Line).toBeTruthy();
     const parsed = JSON.parse(i3Line);
-    expect(h.latestFieldRef(parsed, 'linked')).toMatchObject({ fetchedVia: '__builtin_github', href: 'https://github.com/octocat/Hello-World/issues/1' });
+    expect(h.latestFieldRef(parsed, 'linked')).toMatchObject({ href: 'https://github.com/octocat/Hello-World/issues/1' });
   });
 });
 
@@ -405,9 +405,14 @@ test.describe('Refresh: row / whole table', () => {
     await expect(h.titleCell(page, 3)).toContainText('(v2)');
     await expect(h.fieldCell(page, 3, 'linked')).toContainText('(v2)');
 
+    // Format v2: a refresh entry's own narrative text ("Issue
+    // refreshed from GitHub") is gone -- only the field+value entry
+    // survives, reconstructed for display as "{Label} set to {value}".
+    // Checking for the fresh "(v2)" value under each field's own label
+    // is the equivalent proof that both fields were genuinely re-pulled.
     const history = await h.getHistoryEntriesFor(page, 'i3');
-    expect(history.some(t => /Issue [Rr]efresh/.test(t))).toBe(true);
-    expect(history.some(t => /Related [Rr]efresh/.test(t))).toBe(true);
+    expect(history.some(t => t.startsWith('Issue set to') && t.includes('(v2)'))).toBe(true);
+    expect(history.some(t => t.startsWith('Related set to') && t.includes('(v2)'))).toBe(true);
   });
 
   test('row: unlinked row\'s refresh is a harmless no-op', async ({ page }) => {
@@ -452,16 +457,22 @@ test.describe('Refresh: row / whole table', () => {
   // link used to log "Could not fetch..." forever too; it should only log
   // when the failure state is new, not every time it fails the same way again.
   test('a no-op refresh that keeps failing the same way does not spam the history log either', async ({ page }) => {
+    // Format v2: fetch errors are never written to signed history any
+    // more (see docs/FORMAT_V2.md) -- not even the first time, unlike
+    // v1's "first failure after load logs once" behavior (there's
+    // nothing in the UI that ever read a logged fetch error back
+    // anyway). Refreshing a permanently-broken link now logs nothing
+    // at all, on any attempt.
     const before = await h.getHistoryEntriesFor(page, 'i1');
     await h.refreshRow(page, 1);
     await page.waitForTimeout(400);
     const afterFirstRefresh = await h.getHistoryEntriesFor(page, 'i1');
-    expect(afterFirstRefresh.length).toBeGreaterThan(before.length); // first failure after load IS new, logs once
+    expect(afterFirstRefresh.length).toBe(before.length);
 
     await h.refreshRow(page, 1);
     await page.waitForTimeout(400);
     const afterSecondRefresh = await h.getHistoryEntriesFor(page, 'i1');
-    expect(afterSecondRefresh.length).toBe(afterFirstRefresh.length); // repeating the same failure logs nothing new
+    expect(afterSecondRefresh.length).toBe(before.length);
   });
 
   // Deliberately no column-level refresh: refreshing one column but leaving
@@ -521,8 +532,10 @@ test.describe('Refresh: row / whole table', () => {
 
     const h1 = await h.getHistoryEntriesFor(page, 'i1');
     expect(h1.some(t => /Could not fetch/.test(t))).toBe(false); // excluded from the merge entirely, not logged
+    // Format v2: no more narrative "refreshed" text -- the fresh "(v2)"
+    // value under Related's own label is the equivalent proof.
     const h3 = await h.getHistoryEntriesFor(page, 'i3');
-    expect(h3.some(t => /Related/.test(t) && /[Rr]efresh/.test(t))).toBe(true);
+    expect(h3.some(t => t.startsWith('Related set to') && t.includes('(v2)'))).toBe(true);
   });
 
   // Regression: "Refresh all" used to fire every linked field's fetch in one
@@ -665,8 +678,8 @@ test.describe('Comment-indicator column', () => {
     // Simulate a collaborator's new comment landing (e.g. via sync/merge)
     // without this browser having opened the issue again.
     const doc = await h.readActiveMilestoneDoc(page);
-    const iss = doc.issues.find(i => i.num === 2);
-    iss.commentStreams.comments.push({ id: 'c-new', author: 'jordan', email: 'jordan@example.com', time: 'just now', text: 'A brand new comment', sortKey: Date.now() + 999999 });
+    const iss = doc.issues.find(i => i.id === 'i2');
+    h.pushCommentEntry(iss, 'A brand new comment', { id: 'c-new', actor: 'jordan', sortKey: Date.now() + 999999 });
     await h.writeActiveMilestoneDoc(page, doc);
     await page.reload();
     await page.waitForTimeout(400);
@@ -707,7 +720,7 @@ test.describe('Comment-indicator column', () => {
 
     // The append-only log now has 2 raw entries for this one comment...
     const doc = await h.readActiveMilestoneDoc(page);
-    expect(doc.issues[0].commentStreams.comments.length).toBe(2);
+    expect(h.issueFieldHistory(doc.issues[0], 'comments').length).toBe(2);
     // ...but the badge still counts it as a single visible (and already
     // read) note, not a newly unread one.
     await expect(badge).toHaveCount(0);
@@ -750,7 +763,7 @@ test.describe('Detail slide-over', () => {
 
   test('header shows a stable short ref (first 8 chars of the issue id), not the positional row number', async ({ page }) => {
     const slideover = await h.openSlideover(page, 1);
-    const id = (await h.readActiveMilestoneDoc(page)).issues.find(i => i.num === 1).id;
+    const id = (await h.readActiveMilestoneDoc(page)).issues.find(i => i.id === 'i1').id;
     await expect(slideover).toContainText('#' + id.slice(0, 8));
   });
 
@@ -765,17 +778,13 @@ test.describe('Detail slide-over', () => {
     await h.gotoTracker(page);
     const projectId = await h.activeMilestoneId(page);
     const doc = await h.idbGetProjectDoc(page, projectId);
-    doc.issues[2].history.push({
-      id: 'h-jira-align-test', field: 'title', value: 'TRK-1 A Jira-linked title',
-      // Legacy jira shape uses `browseUrl`, not `href` -- `href` is the
-      // sentinel key normalizeRef's new-shape detection looks for, so a
-      // ref that happens to carry both `system` and a key literally
-      // named `href` gets misread as already-new-shape and loses its
-      // branding entirely (confirmed regression: this fixture used
-      // `href` before the fieldRef-unification redesign existed, when
-      // the two never collided).
-      fieldRef: { system: 'jira', key: 'TRK-1', browseUrl: 'https://example.atlassian.net/browse/TRK-1' },
-      text: 'Title set', actor: 'test', email: '', time: 'now', sortKey: 999999999
+    // Format v2 unified every system onto one {title, href} shape -- the
+    // v1-era ambiguity this test used to exercise (a ref that happened to
+    // carry a key literally named `href` getting misread as already-new-
+    // shape) is now structurally impossible, since href IS the shape.
+    h.pushFieldEntry(doc.issues[2], 'title', 'TRK-1 A Jira-linked title', {
+      id: 'h-jira-align-test', actor: 'test', sortKey: 999999999,
+      href: 'https://example.atlassian.net/browse/TRK-1'
     });
     await h.idbSetProjectDoc(page, projectId, doc);
     await page.reload({ waitUntil: 'networkidle' });
@@ -829,7 +838,10 @@ test.describe('Detail slide-over', () => {
     const slideover = await h.openSlideover(page, 2);
     await expect(page.getByText('ACTIVITY', { exact: true })).toHaveCount(0);
     await expect(page.locator('[data-testid=activity-tab-comments]')).toContainText('COMMENTS (1)');
-    await expect(page.locator('[data-testid=activity-tab-history]')).toContainText('HISTORY (2)');
+    // Format v2: history is now one entry per field edit, not a narrative
+    // log -- row 2's fixture seeds title/type/priority/rag/teams/mitigation,
+    // so 6 entries, not the old fixture's 2 narrative ones.
+    await expect(page.locator('[data-testid=activity-tab-history]')).toContainText('HISTORY (6)');
 
     const entries = slideover.locator('[data-testid=activity-entry]');
     await expect(entries).toHaveCount(1); // Comments tab is the default
@@ -837,9 +849,9 @@ test.describe('Detail slide-over', () => {
 
     await slideover.locator('[data-testid=activity-tab-history]').click();
     await page.waitForTimeout(150);
-    await expect(entries).toHaveCount(2);
-    await expect(entries.nth(0)).toContainText('RAG set to At risk'); // most recent
-    await expect(entries.nth(1)).toContainText('Created'); // oldest
+    await expect(entries).toHaveCount(6);
+    await expect(entries.nth(0)).toContainText('Mitigation set to'); // most recent
+    await expect(entries.nth(5)).toContainText('Issue set to'); // oldest
   });
 
   test('posting a new comment adds it to the top of the ACTIVITY timeline', async ({ page }) => {
@@ -978,8 +990,8 @@ test.describe('Detail slide-over', () => {
 
       await expect(page.locator('[data-testid=slideover-description] [data-testid=text-field-md]')).toBeVisible();
       const doc = await h.readActiveMilestoneDoc(page);
-      const iss = doc.issues.find(i => i.num === 1);
-      const latest = iss.history.filter(hh => hh.field === 'mitigation').sort((a, b) => b.sortKey - a.sortKey)[0];
+      const iss = doc.issues.find(i => i.id === 'i1');
+      const latest = h.latestFieldHistoryEntry(iss, 'mitigation');
       expect(latest.value).toBe('A real description with **markdown**.');
     });
 
@@ -1194,7 +1206,14 @@ test.describe('Activity history', () => {
   // end up sorted as if it happened after something that came later. A
   // shared monotonic counter (nextSortKey()) makes that impossible: every
   // sortKey this app hands out is now strictly increasing.
-  test('Created always sorts as the oldest entry, even when logged in the same tick as a second entry', async ({ page }) => {
+  // Format v2: there's no more value-less "Created"/"Linked" narrative
+  // entry (see docs/FORMAT_V2.md) -- creating an issue from a GitHub URL
+  // writes a real title-fetched entry plus whatever a bound rule derives
+  // from it (e.g. type), potentially in the very same tick. The thing
+  // this test actually guards -- a shared monotonic sortKey counter, so
+  // nothing written in the same tick ever ties -- still has real
+  // entries to check even without the old narrative markers.
+  test('every field entry gets a real, strictly distinct sortKey, even multiple written in the same tick', async ({ page }) => {
     await page.keyboard.down('Control');
     await page.keyboard.press('Space');
     await page.keyboard.up('Control');
@@ -1205,12 +1224,13 @@ test.describe('Activity history', () => {
 
     const doc = await h.readActiveMilestoneDoc(page);
     const issue = doc.issues[doc.issues.length - 1];
-    const created = issue.history.find(h => h.text === 'Created');
-    const linked = issue.history.find(h => h.text.startsWith('Linked'));
-    expect(created).toBeTruthy();
-    expect(linked).toBeTruthy();
-    expect(created.sortKey).toBeLessThan(linked.sortKey); // strictly less, never tied
-    expect(issue.history.slice().sort((a, b) => a.sortKey - b.sortKey)[0].text).toBe('Created'); // oldest overall
+    const allEntries = [];
+    for (const colId in issue.fields) allEntries.push(...issue.fields[colId].history);
+    expect(allEntries.length).toBeGreaterThan(1); // title fetch + at least one bound-rule-derived field
+    const sortKeys = allEntries.map(e => e.sortKey);
+    expect(new Set(sortKeys).size).toBe(sortKeys.length); // every sortKey distinct, never tied
+    const title = h.latestFieldHistoryEntry(issue, 'title');
+    expect(Math.min(...sortKeys)).toBe(title.sortKey); // title fetch is the oldest -- everything else derives from it
   });
 
   test('select/multiselect field changes show a coloured pill in the activity timeline, not plain text', async ({ page }) => {
@@ -1285,8 +1305,8 @@ test.describe('Activity history', () => {
     await page.waitForTimeout(150);
 
     const doc = await h.readActiveMilestoneDoc(page);
-    const history = doc.issues.find(i => i.id === 'i3').history;
-    const newest = history[history.length - 1];
+    const issue = doc.issues.find(i => i.id === 'i3');
+    const newest = h.latestFieldHistoryEntry(issue, 'priority');
     // A new entry's real timestamp lives SOLELY in its numeric sortKey
     // (epoch ms) now -- Tom: "if the real ts is in the sortKey, why
     // store a formatted version at all in the file? Don't do that."
@@ -1370,7 +1390,7 @@ test.describe('Comments: markdown rendering and append-only editing', () => {
     // data-structures.spec.js): the original entry survives as a
     // content-free tombstone, not with its old text intact.
     const doc = await h.readActiveMilestoneDoc(page);
-    const comments = doc.issues[0].commentStreams.comments;
+    const comments = h.issueFieldHistory(doc.issues[0], 'comments');
     expect(comments.length).toBe(2); // tombstoned original + live edit, not just 1 survivor
     expect(comments[0].id).toBe(comments[1].id); // same comment, same id across both entries
 
@@ -1397,7 +1417,7 @@ test.describe('Comments: markdown rendering and append-only editing', () => {
     await expect(page.locator('[data-testid=comment-edit-input]')).toHaveCount(0);
     await expect(page.locator('[data-testid=comment-md]').first()).toContainText('do not touch this');
     const doc = await h.readActiveMilestoneDoc(page);
-    expect(doc.issues[0].commentStreams.comments.length).toBe(1);
+    expect(h.issueFieldHistory(doc.issues[0], 'comments').length).toBe(1);
   });
 
   test('without a matching identity, comments show no edit affordance at all', async ({ page }) => {
@@ -1407,8 +1427,8 @@ test.describe('Comments: markdown rendering and append-only editing', () => {
     // than trying to create it via new-comment-input, which the gate no
     // longer lets through without an identity.
     const doc = await h.readActiveMilestoneDoc(page);
-    const issue = doc.issues.find(i => i.num === 1);
-    issue.commentStreams.comments.push({ id: 'c-no-identity', author: 'anonymous', email: '', time: 'Jul 1', text: 'a comment with no identity set', sortKey: Date.now() });
+    const issue = doc.issues.find(i => i.id === 'i1');
+    h.pushCommentEntry(issue, 'a comment with no identity set', { id: 'c-no-identity', actor: '', sortKey: Date.now() });
     await h.writeActiveMilestoneDoc(page, doc);
     await page.reload();
     await page.waitForTimeout(300);
@@ -1425,9 +1445,11 @@ test.describe('Comments: markdown rendering and append-only editing', () => {
   test('two distinct legacy comments with no id each get their own bubble, and neither is editable', async ({ page }) => {
     await setIdentity(page, 'me@example.com');
     const doc = await h.readActiveMilestoneDoc(page);
-    doc.issues[0].commentStreams.comments.push(
-      { author: 'jordan', time: 'Aug 1', text: 'first legacy note', sortKey: 5001 },
-      { author: 'jordan', time: 'Aug 2', text: 'second legacy note', sortKey: 5002 }
+    const issue = doc.issues[0];
+    if (!issue.fields.comments) issue.fields.comments = { history: [] };
+    issue.fields.comments.history.push(
+      { actor: 'jordan', text: 'first legacy note', sortKey: 5001 },
+      { actor: 'jordan', text: 'second legacy note', sortKey: 5002 }
     );
     await h.writeActiveMilestoneDoc(page, doc);
     await page.reload();
@@ -1541,7 +1563,7 @@ test.describe('Keep "add an item" reachable: full-height flex shell', () => {
       localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({ activeMilestoneId: id, milestones: [{ id, name: 'Short Project' }] }));
       localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
         fieldDefs: { title: { label: 'Issue', type: 'text' } },
-        issues: [{ id: 'i1', num: 1, fieldRefs: {}, fieldLoading: {}, values: { title: 'Only issue' }, comments: [], history: [] }],
+        issues: [{ id: 'i1', fieldRefs: {}, fieldLoading: {}, fields: { title: { history: [{ id: 'h1', actor: 'test', value: 'Only issue', sortKey: 1, sig: null, pubKey: null }] } } }],
         hiddenFieldIds: [], githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '', projectNotes: '', projectComments: []
       }));
     }, { id: shortId });
@@ -1565,7 +1587,7 @@ test.describe('Keep "add an item" reachable: full-height flex shell', () => {
     await page.addInitScript(({ id }) => {
       const issues = [];
       for (let i = 1; i <= 60; i++) {
-        issues.push({ id: 'i' + i, num: i, fieldRefs: {}, fieldLoading: {}, values: { title: 'Issue number ' + i }, comments: [], history: [] });
+        issues.push({ id: 'i' + i, fieldRefs: {}, fieldLoading: {}, fields: { title: { history: [{ id: 'h' + i, actor: 'test', value: 'Issue number ' + i, sortKey: i, sig: null, pubKey: null }] } } });
       }
       localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({ activeMilestoneId: id, milestones: [{ id, name: 'Tall Project' }] }));
       localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
@@ -1594,7 +1616,7 @@ test.describe('Keep "add an item" reachable: full-height flex shell', () => {
     await page.addInitScript(({ id }) => {
       const issues = [];
       for (let i = 1; i <= 60; i++) {
-        issues.push({ id: 'i' + i, num: i, fieldRefs: {}, fieldLoading: {}, values: { title: 'Issue number ' + i }, comments: [], history: [] });
+        issues.push({ id: 'i' + i, fieldRefs: {}, fieldLoading: {}, fields: { title: { history: [{ id: 'h' + i, actor: 'test', value: 'Issue number ' + i, sortKey: i, sig: null, pubKey: null }] } } });
       }
       localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({ activeMilestoneId: id, milestones: [{ id, name: 'Tall Project' }] }));
       localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
@@ -1617,7 +1639,7 @@ test.describe('Keep "add an item" reachable: full-height flex shell', () => {
     await page.addInitScript(({ id }) => {
       const issues = [];
       for (let i = 1; i <= 60; i++) {
-        issues.push({ id: 'i' + i, num: i, fieldRefs: {}, fieldLoading: {}, values: { title: 'Issue number ' + i }, comments: [], history: [] });
+        issues.push({ id: 'i' + i, fieldRefs: {}, fieldLoading: {}, fields: { title: { history: [{ id: 'h' + i, actor: 'test', value: 'Issue number ' + i, sortKey: i, sig: null, pubKey: null }] } } });
       }
       localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({ activeMilestoneId: id, milestones: [{ id, name: 'Tall Project 2' }] }));
       localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
@@ -1672,7 +1694,7 @@ test.describe('Keep "add an item" reachable: full-height flex shell', () => {
     await page.addInitScript(({ id }) => {
       const issues = [];
       for (let i = 1; i <= 60; i++) {
-        issues.push({ id: 'i' + i, num: i, fieldRefs: {}, fieldLoading: {}, values: { title: 'Issue number ' + i }, comments: [], history: [] });
+        issues.push({ id: 'i' + i, fieldRefs: {}, fieldLoading: {}, fields: { title: { history: [{ id: 'h' + i, actor: 'test', value: 'Issue number ' + i, sortKey: i, sig: null, pubKey: null }] } } });
       }
       localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({ activeMilestoneId: id, milestones: [{ id, name: 'Tall Project Radius' }] }));
       localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
@@ -1807,19 +1829,22 @@ test.describe('Keep "add an item" reachable: full-height flex shell', () => {
     // same convention as the bound-field edit-reveals-the-link behavior
     // elsewhere) -- mirror buildTextCell's own editValueForRef logic
     // against the doc's history in DOM row order, not rendered textContent.
+    // Format v2: a fieldRef is just {href} now -- github's edit affordance
+    // is the href itself (buildTextCell/editValueForRef), jira's is the
+    // bare key parsed back out of its browse URL, everything else falls
+    // through to the plain current text.
     function editValueFor(iss) {
       const ref = h.latestFieldRef(iss, 'title');
       const currentText = h.latestFieldValue(iss, 'title') || '';
-      if (!ref) return currentText;
-      if ((ref.system || 'github') === 'jira') return ref.key;
-      if (ref.system === 'wigwag') return 'wigwag:/project/' + ref.projectId + (ref.issueId ? '/issue/' + ref.issueId : '');
-      if (ref.system === 'connector') return ref.matchedId;
-      return 'https://github.com/' + ref.owner + '/' + ref.repo + '/issues/' + ref.num;
+      if (!ref) return typeof currentText === 'string' ? currentText : '';
+      const jiraMatch = /\/browse\/([A-Za-z][A-Za-z0-9]*-\d+)$/.exec(ref.href || '');
+      if (jiraMatch) return jiraMatch[1];
+      return ref.href;
     }
     const rowNums = await rows.evaluateAll(els => els.map(el => el.getAttribute('data-row-num')));
     const doc = await h.readActiveMilestoneDoc(page);
     const trimmed = rowNums.map(num => {
-      const iss = doc.issues.find(i => String(i.num) === String(num));
+      const iss = doc.issues[parseInt(num, 10) - 1];
       return iss ? editValueFor(iss) : '';
     });
 
@@ -1873,19 +1898,22 @@ test.describe('Keep "add an item" reachable: full-height flex shell', () => {
     const n = await rows.count();
     expect(n).toBeGreaterThan(2);
 
+    // Format v2: a fieldRef is just {href} now -- github's edit affordance
+    // is the href itself (buildTextCell/editValueForRef), jira's is the
+    // bare key parsed back out of its browse URL, everything else falls
+    // through to the plain current text.
     function editValueFor(iss) {
       const ref = h.latestFieldRef(iss, 'title');
       const currentText = h.latestFieldValue(iss, 'title') || '';
-      if (!ref) return currentText;
-      if ((ref.system || 'github') === 'jira') return ref.key;
-      if (ref.system === 'wigwag') return 'wigwag:/project/' + ref.projectId + (ref.issueId ? '/issue/' + ref.issueId : '');
-      if (ref.system === 'connector') return ref.matchedId;
-      return 'https://github.com/' + ref.owner + '/' + ref.repo + '/issues/' + ref.num;
+      if (!ref) return typeof currentText === 'string' ? currentText : '';
+      const jiraMatch = /\/browse\/([A-Za-z][A-Za-z0-9]*-\d+)$/.exec(ref.href || '');
+      if (jiraMatch) return jiraMatch[1];
+      return ref.href;
     }
     const rowNums = await rows.evaluateAll(els => els.map(el => el.getAttribute('data-row-num')));
     const doc = await h.readActiveMilestoneDoc(page);
     const trimmed = rowNums.map(num => {
-      const iss = doc.issues.find(i => String(i.num) === String(num));
+      const iss = doc.issues[parseInt(num, 10) - 1];
       return iss ? editValueFor(iss) : '';
     });
 
@@ -1931,7 +1959,7 @@ test.describe('Keep "add an item" reachable: full-height flex shell', () => {
     await page.addInitScript(({ id }) => {
       const issues = [];
       for (let i = 1; i <= 60; i++) {
-        issues.push({ id: 'i' + i, num: i, fieldRefs: {}, fieldLoading: {}, values: { title: 'Issue number ' + i }, comments: [], history: [] });
+        issues.push({ id: 'i' + i, fieldRefs: {}, fieldLoading: {}, fields: { title: { history: [{ id: 'h' + i, actor: 'test', value: 'Issue number ' + i, sortKey: i, sig: null, pubKey: null }] } } });
       }
       // The preceding beforeEach's gotoTracker() already bootstrapped a
       // real identity (with an email set) -- reuse its id here so this
@@ -3100,7 +3128,7 @@ test.describe('App bar / Project bar / footer', () => {
 
   test('the footer shows format version, last-updated (once there is real history), and View source, with no issue count or filename', async ({ page }) => {
     const footer = page.locator('[data-testid=app-footer]');
-    await expect(footer).toContainText('Format v1');
+    await expect(footer).toContainText('Format v2');
     await expect(footer).toContainText('Updated');
     await expect(footer).toContainText('{ } View source');
     await expect(footer).not.toContainText('issues');
@@ -3111,7 +3139,7 @@ test.describe('App bar / Project bar / footer', () => {
     await h.createNamedBlankProject(page, 'A truly blank project');
     await page.waitForTimeout(400);
     const footer = page.locator('[data-testid=app-footer]');
-    await expect(footer).toContainText('Format v1');
+    await expect(footer).toContainText('Format v2');
     await expect(footer).not.toContainText('Updated');
     await expect(footer).toContainText('{ } View source');
   });
@@ -3659,7 +3687,7 @@ test.describe('App bar / Project bar stay fixed while the table scrolls', () => 
     await page.addInitScript(({ id }) => {
       const issues = [];
       for (let i = 1; i <= 60; i++) {
-        issues.push({ id: 'i' + i, num: i, fieldRefs: {}, fieldLoading: {}, values: { title: 'Issue number ' + i }, comments: [], history: [] });
+        issues.push({ id: 'i' + i, fieldRefs: {}, fieldLoading: {}, fields: { title: { history: [{ id: 'h' + i, actor: 'test', value: 'Issue number ' + i, sortKey: i, sig: null, pubKey: null }] } } });
       }
       localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify({ activeMilestoneId: id, milestones: [{ id, name: 'Big Project' }] }));
       localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({

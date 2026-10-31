@@ -1324,6 +1324,22 @@ async function getHistoryEntries(page) {
 // longer exists at all (refresh/fetch/error are no longer narrated, or
 // for a failed fetch, logged to history at all) -- that's a per-test
 // fixup, not something this helper can paper over.
+// Mirrors the real app's buildIssueHistoryActivityEntries/
+// displayValueForHistory/multiselectDiffText (src/wigwag-app.js) --
+// format v2 never stores .text on a field entry, so the real UI
+// reconstructs it from field+value alone, including select/multiselect
+// option-id-to-label resolution and multiselect's "added X"/"removed Y"
+// diff against the immediately-preceding entry for that same field.
+function optionLabelFor(def, id) {
+  const o = (def && def.options || []).find(x => x.id === id);
+  return o ? o.label : id;
+}
+function displayValueForHistoryInTest(def, value) {
+  if (!def) return value == null || value === '' ? '—' : '"' + String(value) + '"';
+  if (def.type === 'select') { const o = (def.options || []).find(x => x.id === value); return o ? o.label : (value == null || value === '' ? '—' : String(value)); }
+  if (def.type === 'multiselect') { const ids = Array.isArray(value) ? value : (value ? [value] : []); return ids.length ? ids.map(id => optionLabelFor(def, id)).join(', ') : '—'; }
+  return value == null || value === '' ? '—' : '"' + String(value) + '"';
+}
 async function getHistoryEntriesFor(page, issueId) {
   const d = await readActiveMilestoneDoc(page);
   const iss = d.issues.find(i => i.id === issueId);
@@ -1332,11 +1348,34 @@ async function getHistoryEntriesFor(page, issueId) {
   const entries = [];
   for (const colId in (iss.fields || {})) {
     const def = fieldDefs[colId];
+    let prevValue = [], hasPrev = false;
     for (const hEntry of (iss.fields[colId].history || [])) {
-      const text = (def && def.type === 'commentStream') ? hEntry.text
-        : colId === '__deleted__' ? 'Deleted issue'
-        : `${(def && def.label) || colId} set to ${hEntry.value}`;
+      // A linked field's value is {title, href} (or the wigwag shape) --
+      // unwrap to the plain title text for display, same as the real
+      // app's deriveIssueValues, or this reads as the literal
+      // "[object Object]" instead of the real text.
+      const v = hEntry.value;
+      const unwrapped = (v && typeof v === 'object' && !Array.isArray(v) && 'title' in v) ? v.title : v;
+      let text;
+      if (def && def.type === 'commentStream') text = hEntry.text;
+      else if (colId === '__deleted__') text = 'Deleted issue';
+      else if (def && def.type === 'multiselect') {
+        const prevIds = hasPrev && Array.isArray(prevValue) ? prevValue : [];
+        const nextIds = Array.isArray(unwrapped) ? unwrapped : [];
+        const added = nextIds.filter(id => !prevIds.includes(id)).map(id => optionLabelFor(def, id));
+        const removed = prevIds.filter(id => !nextIds.includes(id)).map(id => optionLabelFor(def, id));
+        if (!added.length && !removed.length) text = `${def.label || colId} set to ${displayValueForHistoryInTest(def, unwrapped)}`;
+        else {
+          const parts = [];
+          if (added.length) parts.push('added ' + added.join(', '));
+          if (removed.length) parts.push('removed ' + removed.join(', '));
+          text = `${def.label || colId}: ${parts.join(', ')}`;
+        }
+      } else {
+        text = `${(def && def.label) || colId} set to ${displayValueForHistoryInTest(def, unwrapped)}`;
+      }
       entries.push({ sortKey: hEntry.sortKey || 0, text });
+      prevValue = unwrapped; hasPrev = true;
     }
   }
   entries.sort((a, b) => a.sortKey - b.sortKey);

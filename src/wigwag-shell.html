@@ -2159,8 +2159,25 @@ function sourceRefHasFullData(ref) {
 // matter how many times the rule settles). Detected structurally rather
 // than by rule shape, so a hand-written/advanced-mode rule that happens
 // not to mention source gets the same treatment.
+// Format v2: every ref is unconditionally trimmed to {href} now (see
+// sourceRefHasFullData), so this can no longer tell "mentions source at
+// all" apart from "actually needs a rich nested field" the way v1 could
+// (v1's maximalist refs sometimes genuinely had labels/status/fields
+// embedded, so the plain /\bsource\b/ check and sourceRefHasFullData
+// together correctly gated only the cases that needed it). Under v2,
+// buildSource can ALWAYS answer a mere existence/kind check (!!source
+// .github, source.jira ? ... true-ism) purely from the ref's href shape
+// -- no fetch needed -- but genuinely can't answer a nested field
+// (source.github.labels, source.jira.status) without one. Narrowed to
+// match: only a two-level-plus property access (optional "?." included)
+// counts as needing full data; a bare source.<kind> reference doesn't.
+// Confirmed regression (found during the format v2 test-suite
+// conversion): the old blanket check silently made every GitHub/Jira/
+// Salesforce-linked existence check un-evaluable without an explicit
+// refresh first, even though nothing about answering it ever required
+// one.
 function ruleNeedsSourceData(ruleStr) {
-  return /\bsource\b/.test(ruleStr || '');
+  return /\bsource\.\w+\??\.\w+/.test(ruleStr || '');
 }
 // A rule-derived value of "" / null / [] is a REAL, confident answer (the
 // binding was evaluated and genuinely matched nothing) -- not the same
@@ -2859,17 +2876,28 @@ function generateFieldComment(colId, def) {
   }
   return comment;
 }
+// A linked field's value is {title, href} (or the wigwag shape) now --
+// unwrap to the plain title text first, or the select/multiselect
+// lookups below would never match (option ids are never objects) and
+// the final fallback would stringify to the literal "[object Object]"
+// (confirmed regression: this fed directly into the Activity History
+// tab's own entry text with no unwrapping at all).
 function displayValueForHistory(def, value) {
+  const v = (value && typeof value === 'object' && !Array.isArray(value) && 'title' in value) ? value.title : value;
   if (def.type === 'select') {
-    const opt = (def.options || []).find(o => o.id === value);
-    return opt ? opt.label : (value == null || value === '' ? '—' : String(value));
+    const opt = (def.options || []).find(o => o.id === v);
+    return opt ? opt.label : (v == null || v === '' ? '—' : String(v));
   }
   if (def.type === 'multiselect') {
-    const ids = Array.isArray(value) ? value : (value ? [value] : []);
+    const ids = Array.isArray(v) ? v : (v ? [v] : []);
     if (!ids.length) return '—';
     return ids.map(id => { const opt = (def.options || []).find(o => o.id === id); return opt ? opt.label : id; }).join(', ');
   }
-  return value == null || value === '' ? '—' : String(value);
+  // Quoted, matching commitFieldValue/createIssueFromText's own (now-
+  // unused, since format v2 dropped .text storage entirely) narrative
+  // convention -- distinguishes "the value is literally this string"
+  // from the surrounding "{Label} set to " sentence.
+  return v == null || v === '' ? '—' : '"' + String(v) + '"';
 }
 // Dedupes every signed entry's inlined pubKey (a ~180-byte JWK, repeated
 // verbatim on every entry from the same identity) into one per-project

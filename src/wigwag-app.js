@@ -2583,22 +2583,66 @@ class Component extends DCLogic {
   // so the Activity feed can render it in a visually distinct weight from
   // the surrounding sentence.
   // Format v2: a field-value entry no longer carries its own narrative
-  // `.text` to parse a label/pill substring out of (see docs/FORMAT_V2.md
-  // -- it's "field set to value," fully reconstructable from the field's
-  // own def + the entry's value, so that's what this now builds
-  // structurally instead of string-searching a stored sentence.
-  buildActivityFieldLabel(colId, value, fieldDefs) {
+  // `.text` to find a label/pill substring within (see docs/FORMAT_V2.md)
+  // -- `text` here is the already-reconstructed sentence (built from the
+  // field's own def + the entry's value, by buildIssueHistoryActivityEntries
+  // below), and this still finds the label's own span within it exactly
+  // like v1 did with a stored sentence.
+  buildActivityFieldLabel(colId, fieldDefs, text) {
     const def = fieldDefs[colId];
     const label = def && def.label;
     if (!label) return null;
-    return { before: '', label, after: ' set to ' + displayValueForHistory(def, value) };
+    const idx = text.indexOf(label);
+    if (idx === -1) return null;
+    return { before: text.slice(0, idx), label, after: text.slice(idx + label.length) };
   }
-  buildActivityPill(colId, value, fieldDefs) {
+  // Format v2: same reconstructed-text search as buildActivityFieldLabel
+  // above, not a stored sentence. select pills the option at wherever its
+  // label appears; multiselect (toggleMultiOption's "added X"/"removed Y")
+  // pills whichever option's label sits at the very END of the text, same
+  // v1 convention -- a single just-toggled option, with "added "/"removed "
+  // staying plain prefix text.
+  buildActivityPill(colId, value, fieldDefs, text) {
     const def = fieldDefs[colId];
-    if (!def || def.type !== 'select') return null;
-    const opt = (def.options || []).find(o => o.id === value);
-    if (!opt) return null;
-    return { before: (def.label || colId) + ' set to ', label: opt.label, emoji: opt.emoji || '', bg: col(opt.color).bg, fg: col(opt.color).fg, after: '' };
+    if (!def) return null;
+    if (def.type === 'select') {
+      const opt = (def.options || []).find(o => o.id === value);
+      if (!opt) return null;
+      const idx = text.indexOf(opt.label);
+      if (idx === -1) return null;
+      return { before: text.slice(0, idx), label: opt.label, emoji: opt.emoji || '', bg: col(opt.color).bg, fg: col(opt.color).fg, after: text.slice(idx + opt.label.length) };
+    }
+    if (def.type === 'multiselect') {
+      for (const opt of (def.options || [])) {
+        const idx = text.indexOf(opt.label);
+        if (idx !== -1 && idx + opt.label.length === text.length) {
+          return { before: text.slice(0, idx), label: opt.label, emoji: '', bg: col(opt.color).bg, fg: col(opt.color).fg, after: '' };
+        }
+      }
+    }
+    return null;
+  }
+  // Reconstructs toggleMultiOption's "added X" / "removed Y" narrative
+  // from field+value alone (format v2 never stores .text on a field
+  // entry -- see appendSignedHistory) by diffing this entry's value
+  // against whatever the field held just before it; a field's very
+  // first entry diffs against an implicit empty baseline, same as
+  // toggleMultiOption always starting from "nothing selected yet".
+  // Falls back to the plain "set to {list}" phrasing when the diff is
+  // empty (identical before/after -- a bulk Set-field replace, not a
+  // single toggle) or there's nothing to describe either way.
+  multiselectDiffText(def, prevValue, nextValue) {
+    const label = def.label || '';
+    const prevIds = Array.isArray(prevValue) ? prevValue : [];
+    const nextIds = Array.isArray(nextValue) ? nextValue : [];
+    const optLabel = id => { const o = (def.options || []).find(x => x.id === id); return o ? o.label : id; };
+    const added = nextIds.filter(id => !prevIds.includes(id)).map(optLabel);
+    const removed = prevIds.filter(id => !nextIds.includes(id)).map(optLabel);
+    if (!added.length && !removed.length) return label + ' set to ' + displayValueForHistory(def, nextValue);
+    const parts = [];
+    if (added.length) parts.push('added ' + added.join(', '));
+    if (removed.length) parts.push('removed ' + removed.join(', '));
+    return label + ': ' + parts.join(', ');
   }
   // Format v2: an issue's history is now issue.fields[colId].history, not
   // one flat array with .field/.text/.origin per entry -- this flattens
@@ -2610,18 +2654,23 @@ class Component extends DCLogic {
   buildIssueHistoryActivityEntries(issue, fieldDefs) {
     const entries = [];
     for (const colId in (issue.fields || {})) {
-      if (fieldDefs[colId] && fieldDefs[colId].type === 'commentStream') continue;
-      for (const h of (issue.fields[colId].history || [])) {
-        const pill = this.buildActivityPill(colId, h.value, fieldDefs);
-        const fieldLabelParts = !pill ? this.buildActivityFieldLabel(colId, h.value, fieldDefs) : null;
+      const def = fieldDefs[colId];
+      if (def && def.type === 'commentStream') continue;
+      const history = issue.fields[colId].history || [];
+      let prevValue = [], hasPrev = false;
+      for (const h of history) {
         const text = colId === ISSUE_DELETED_FIELD_ID ? 'Deleted issue'
-          : ((fieldDefs[colId] && fieldDefs[colId].label) || colId) + ' set to ' + displayValueForHistory(fieldDefs[colId] || { type: 'text' }, h.value);
+          : (def && def.type === 'multiselect') ? this.multiselectDiffText(def, hasPrev ? prevValue : [], h.value)
+          : ((def && def.label) || colId) + ' set to ' + displayValueForHistory(def || { type: 'text' }, h.value);
+        const pill = this.buildActivityPill(colId, h.value, fieldDefs, text);
+        const fieldLabelParts = !pill ? this.buildActivityFieldLabel(colId, fieldDefs, text) : null;
         entries.push({
           isComment: false, isHistory: true, actor: h.actor, time: this.timeLabelFor(h), text, sortKey: h.sortKey || 0,
           pill, hasPill: !!pill, fieldLabelParts, hasFieldLabel: !!fieldLabelParts, noPill: !pill && !h.redacted && !fieldLabelParts, isRedacted: !!h.redacted,
           showRedactBtn: !!h.id && !h.redacted,
           onRedact: () => this.redactHistoryEntry(issue.id, h.id)
         });
+        prevValue = h.value; hasPrev = true;
       }
     }
     return entries.sort((a, b) => b.sortKey - a.sortKey);
@@ -4722,10 +4771,20 @@ class Component extends DCLogic {
   matchedIdFromHref(fetchedVia, href) {
     if (!href) return null;
     const c = this.resolveFetchConnector(fetchedVia);
+    // A builtin kind is recognized structurally from the href's own shape
+    // (parseGithubUrl/parseJiraKey/parseSalesforceId), independent of
+    // whether any connector row currently backs it -- falling through to
+    // resolveRefSystem's kind here (not just bailing when `c` is null)
+    // is what lets resolveRefreshDispatch's self-healing re-match still
+    // work when the ORIGINAL system is completely unconfigured (no
+    // connectedSources row at all), not just disabled-but-present.
+    // Confirmed regression: migrateBuiltinConnectors stopped auto-seeding
+    // empty shells, making "zero rows" the common case, not an edge case.
+    const kind = c ? c.kind : (resolveRefSystem(href, { connectedSources: this.connectedSourcesForDispatch() }) || {}).kind;
+    if (kind === 'github') return this.parseGithubUrl(href);
+    if (kind === 'jira') return this.parseJiraKey(href);
+    if (kind === 'salesforce') return this.parseSalesforceId(href);
     if (!c) return null;
-    if (c.kind === 'github') return this.parseGithubUrl(href);
-    if (c.kind === 'jira') return this.parseJiraKey(href);
-    if (c.kind === 'salesforce') return this.parseSalesforceId(href);
     for (const p of c.patterns || []) {
       let re;
       try { re = new RegExp('^(?:' + p.regex + ')$'); } catch (e) { continue; }
@@ -5101,6 +5160,15 @@ class Component extends DCLogic {
       // correctly reads it as "not a refresh" either way, since nothing
       // was ever persisted for the failed attempt.
       console.error('[wigwag] link fetch failed: ' + systemLabel + ' (' + err.message + ')');
+      // A FIRST attempt's typed text (matchedId) must stay visible as a
+      // plain, unlinked placeholder rather than leaving the field looking
+      // totally unset -- distinct from the error-logging concern above
+      // (retired per format v2), this is a value-only fallback entry, no
+      // fieldRef, no narrative text. A REFRESH failure writes nothing at
+      // all, so an already-resolved title/fieldRef is never clobbered.
+      const issNow = this.findIssue(issueId);
+      const isRefresh = issNow && this.sameRef(issNow.fieldRefs && issNow.fieldRefs[colId], fetchedVia, matchedId);
+      if (!isRefresh) this.appendSignedHistory(issueId, { field: colId, value: matchedId });
       this.setState(s => ({
         issues: s.issues.map(iss => iss.id === issueId ? { ...iss, fieldLoading: { ...(iss.fieldLoading || {}), [colId]: false } } : iss)
       }));
@@ -8312,9 +8380,18 @@ class Component extends DCLogic {
       const fetchedVia = this.liveFetchedViaForRef(n);
       const matchedId = this.resolveMatchedIdForDisplay(ref, n);
       const connDef = fetchedVia ? this.connectedSourcesForDispatch().find(c => c.id === fetchedVia) : null;
-      const isGithubRef = fetchedVia === '__builtin_github' || (connDef && connDef.kind === 'github');
-      const isJiraRef = fetchedVia === '__builtin_jira' || (connDef && connDef.kind === 'jira');
-      const isSalesforceRef = fetchedVia === '__builtin_salesforce' || (connDef && connDef.kind === 'salesforce');
+      // Branding is a pure structural read of the href's own shape (same
+      // resolveRefSystem kind detection buildSource's source.github/jira/
+      // salesforce population already uses) -- independent of whether a
+      // connector is actually configured/reachable right now. Confirmed
+      // regression: gating this on fetchedVia/connDef meant an
+      // unconfigured Jira/Salesforce link rendered with no branding at
+      // all (same "GitHub works with zero config" class of bug fixed
+      // elsewhere this session).
+      const resolvedKind = n && n.href ? (resolveRefSystem(n.href, { connectedSources: this.connectedSourcesForDispatch() }) || {}).kind : null;
+      const isGithubRef = resolvedKind === 'github';
+      const isJiraRef = resolvedKind === 'jira';
+      const isSalesforceRef = resolvedKind === 'salesforce';
       const isConnectorRef = !!connDef && !connDef.kind;
       const href = n ? n.href : null;
       const refLabel = isGithubRef ? (matchedId ? matchedId.owner + '/' + matchedId.repo + '#' + matchedId.num : (href || ''))

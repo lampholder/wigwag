@@ -211,7 +211,7 @@ test.describe('Jira linking', () => {
     await expect(anchor).toHaveAttribute('href', JIRA_BROWSE_URL('TRK-999'));
 
     const doc = await h.readActiveMilestoneDoc(page);
-    expect(h.latestFieldRef(doc.issues.find(i => i.num === 3), 'title')).toMatchObject({ fetchedVia: '__builtin_jira', href: JIRA_BROWSE_URL('TRK-999') });
+    expect(h.latestFieldRef(doc.issues.find(i => i.id === 'i3'), 'title')).toMatchObject({ href: JIRA_BROWSE_URL('TRK-999') });
   });
 
   // Tracker #112 (b564316d), now superseded by the fieldRef-unification
@@ -228,8 +228,8 @@ test.describe('Jira linking', () => {
     await h.waitForFieldResolved(page, 3, 'linked');
 
     const doc = await h.readActiveMilestoneDoc(page);
-    const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'linked');
-    expect(ref).toMatchObject({ fetchedVia: '__builtin_jira', href: JIRA_BROWSE_URL('TRK-999') });
+    const ref = h.latestFieldRef(doc.issues.find(i => i.id === 'i3'), 'linked');
+    expect(ref).toMatchObject({ href: JIRA_BROWSE_URL('TRK-999') });
     expect(ref).not.toHaveProperty('labels');
     expect(ref).not.toHaveProperty('description');
   });
@@ -247,7 +247,14 @@ test.describe('Jira linking', () => {
     expect(afterCount).toBeGreaterThan(beforeCount);
   });
 
-  test('an unreachable Jira fails gracefully — no crash, plain text kept, history records the error', async ({ page }) => {
+  // Format v2: fetch errors are never written to signed history any
+  // more (see docs/FORMAT_V2.md) -- just console.error. A FIRST-attempt
+  // failure still writes a value-only fallback entry (field + raw typed
+  // text, no fieldRef, no narrative text) so the raw typed text
+  // ("TRK-999") stays visible as a plain, unlinked placeholder instead
+  // of leaving the field looking totally unset -- see
+  // applyLinkToField's catch block.
+  test('an unreachable Jira fails gracefully — no crash, plain text kept', async ({ page }) => {
     await h.overrideConnectorFetchResponses(page, { failUrlSubstrings: ['TRK-999'] });
     await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'TRK-999');
@@ -256,7 +263,7 @@ test.describe('Jira linking', () => {
 
     await expect(h.fieldCell(page, 3, 'linked')).toContainText('TRK-999');
     const history = await h.getHistoryEntriesFor(page, 'i3');
-    expect(history.some(t => t.toLowerCase().includes('could not fetch from jira'))).toBe(true);
+    expect(history.some(t => t.toLowerCase().includes('could not fetch from jira'))).toBe(false);
   });
 
   // Real bug report: refreshing an already-linked field while the system is
@@ -278,10 +285,12 @@ test.describe('Jira linking', () => {
 
     await expect(h.fieldCell(page, 3, 'linked')).toContainText('Mocked Jira ticket title');
     const doc = await h.readActiveMilestoneDoc(page);
-    const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'linked');
-    expect(ref).toMatchObject({ fetchedVia: '__builtin_jira', href: JIRA_BROWSE_URL('TRK-999') }); // unchanged, not clobbered with an empty fallback fieldRef
+    const ref = h.latestFieldRef(doc.issues.find(i => i.id === 'i3'), 'linked');
+    expect(ref).toMatchObject({ href: JIRA_BROWSE_URL('TRK-999') }); // unchanged, not clobbered with an empty fallback fieldRef
+    // Format v2: fetch errors are never written to signed history any
+    // more -- just console.error.
     const history = await h.getHistoryEntriesFor(page, 'i3');
-    expect(history.some(t => t.toLowerCase().includes('could not fetch from jira'))).toBe(true);
+    expect(history.some(t => t.toLowerCase().includes('could not fetch from jira'))).toBe(false);
   });
 
   // Tracker #112 (b564316d): a bound field can no longer be computed live,
@@ -306,9 +315,21 @@ test.describe('Jira linking', () => {
     await expect(h.fieldCell(page, 3, 'type')).toHaveText(/Bug/);
   });
 
-  test('the legacy seed Jira reference (never live-fetched) still renders as a plain unlinked chip', async ({ page }) => {
-    // seed row 9: TRK-118, fieldRefs.title has no browseUrl (never resolved).
-    const cell = h.titleCell(page, 9);
+  // The demo fixture's own rows all carry a real, already-resolved
+  // {title, href} by now (the format v2 migration synthesized real
+  // links for every legacy fieldRefs-bearing row -- see
+  // tests/fixtures/demo-milestone.jsonl) -- so this seeds its own bare,
+  // never-resolved value directly rather than relying on a fixture row
+  // that no longer represents this case.
+  test('a legacy reference value with no href still renders as a plain unlinked chip', async ({ page }) => {
+    const doc = await h.readActiveMilestoneDoc(page);
+    const i1 = doc.issues.find(i => i.id === 'i1');
+    h.pushFieldEntry(i1, 'title', 'TRK-118', { id: 'test-unresolved-title', actor: 'test' });
+    await h.writeActiveMilestoneDoc(page, doc);
+    await page.reload();
+    await h.waitForBootSplashGone(page);
+
+    const cell = h.titleCell(page, 1);
     await expect(cell).toContainText('TRK-118');
     expect(await cell.locator('a').count()).toBe(0);
   });
@@ -341,8 +362,8 @@ test.describe('Jira/Salesforce linking, not configured', () => {
     expect(await cell.locator('a').count()).toBe(0);
 
     const doc = await h.readActiveMilestoneDoc(page);
-    const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'linked');
-    expect(ref?.system).not.toBe('jira');
+    const ref = h.latestFieldRef(doc.issues.find(i => i.id === 'i3'), 'linked');
+    expect(ref).toBeNull(); // plain text stored, no href -- never ref-shaped at all
   });
 
   test('a full Jira browse URL is also kept as plain text when unconfigured', async ({ page }) => {
@@ -354,8 +375,8 @@ test.describe('Jira/Salesforce linking, not configured', () => {
     const cell = h.titleCell(page, 3);
     await expect(cell).not.toContainText('Mocked Jira ticket title');
     const doc = await h.readActiveMilestoneDoc(page);
-    const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'title');
-    expect(ref?.system).not.toBe('jira');
+    const ref = h.latestFieldRef(doc.issues.find(i => i.id === 'i3'), 'title');
+    expect(ref).toBeNull(); // plain text stored, no href -- never ref-shaped at all
   });
 });
 
@@ -381,6 +402,16 @@ test.describe('Jira linking: refresh migrates a stale built-in ref to a now-matc
     await h.gotoTracker(page);
   });
 
+  // "unconfigured" here means NO connectedSources row exists for jira at
+  // all (migrateBuiltinConnectors stopped seeding empty shells -- this
+  // is now the common case, not an edge case). Fixed: matchedIdFromHref
+  // used to bail to null the moment resolveFetchConnector(fetchedVia)
+  // found no row, discarding the kind resolveRefSystem had already
+  // recognized from the href's own shape (parseJiraKey) -- it now falls
+  // back to resolveRefSystem's kind when no connector row backs the
+  // original fetchedVia, so the self-healing migration below still
+  // finds its matchedId even when the original system is completely
+  // absent, not just disabled-but-present.
   test('refreshing a system:"jira" field migrates to the matching custom connector once the built-in is unconfigured', async ({ page }) => {
     await page.evaluate(() => {
       // migrateBuiltinConnectors no longer seeds an (empty or otherwise)
@@ -398,13 +429,8 @@ test.describe('Jira linking: refresh migrates a stale built-in ref to a now-matc
       localStorage.setItem('git_native_tracker_connected_sources_v1', JSON.stringify(existing));
     });
     const doc = await h.readActiveMilestoneDoc(page);
-    const i3 = doc.issues.find(i => i.num === 3);
-    i3.history.push({
-      id: 'test-stale-jira-ref', time: 'now', actor: 'test', email: 'test@example.com',
-      text: 'Related linked', field: 'linked', value: 'TRK-999',
-      fieldRef: { system: 'jira', key: 'TRK-999', browseUrl: 'https://old.atlassian.net/browse/TRK-999' },
-      origin: 'authored', sortKey: Date.now(), sig: null, pubKey: null
-    });
+    const i3 = doc.issues.find(i => i.id === 'i3');
+    h.pushFieldEntry(i3, 'linked', 'TRK-999', { id: 'test-stale-jira-ref', actor: 'test', href: 'https://old.atlassian.net/browse/TRK-999' });
     await h.writeActiveMilestoneDoc(page, doc);
     await page.reload();
     await h.waitForBootSplashGone(page);
@@ -416,10 +442,9 @@ test.describe('Jira linking: refresh migrates a stale built-in ref to a now-matc
 
     await expect(h.fieldCell(page, 3, 'linked')).toContainText('Fix the thing');
     const after = await h.readActiveMilestoneDoc(page);
-    const ref = h.latestFieldRef(after.issues.find(i => i.num === 3), 'linked');
-    expect(ref).toMatchObject({ fetchedVia: 'conn_linear', matchedId: 'TRK-999' });
+    const ref = h.latestFieldRef(after.issues.find(i => i.id === 'i3'), 'linked');
+    expect(ref).toMatchObject({ href: 'https://linear.app/x/TRK-999', title: 'Fix the thing' });
     const history = await h.getHistoryEntriesFor(page, i3.id);
-    expect(history.some(t => t.toLowerCase().includes('fetched from linear'))).toBe(true);
     expect(history.some(t => t.toLowerCase().includes('could not fetch from jira'))).toBe(false);
   });
 
@@ -459,7 +484,7 @@ test.describe('Jira linking: refresh migrates a stale built-in ref to a now-matc
 
     await expect(h.fieldCell(page, 3, 'linked')).toContainText('Mocked Jira ticket title');
     const doc = await h.readActiveMilestoneDoc(page);
-    expect(h.latestFieldRef(doc.issues.find(i => i.num === 3), 'linked')).toMatchObject({ fetchedVia: '__builtin_jira', href: JIRA_BROWSE_URL('TRK-999') });
+    expect(h.latestFieldRef(doc.issues.find(i => i.id === 'i3'), 'linked')).toMatchObject({ href: JIRA_BROWSE_URL('TRK-999') });
   });
 
   // Live-reported (Tom): migration must work in EITHER direction, not
@@ -467,6 +492,21 @@ test.describe('Jira linking: refresh migrates a stale built-in ref to a now-matc
   // custom connector that's since been deactivated, with the built-in
   // Jira now configured+enabled in its place, must follow that
   // migration too.
+  //
+  // (KNOWN GAP, confirmed during the format v2 test-suite conversion):
+  // this specific case is a custom connector's macro that never
+  // surfaced a real url (fetchLinkData's own `href = data.url || null`
+  // branch for a non-kind connector, src/wigwag-app.js), so the
+  // resulting ref has no href at all. Format v2's unification made href
+  // the ONLY thing a stale ref's self-healing refresh re-matches
+  // against (resolveRefreshDispatch -> liveFetchedViaForRef ->
+  // matchedIdFromHref, all href-only) -- with no href to re-parse, the
+  // migration never triggers and the field stays stuck on the dead
+  // connector. resolveMatchedIdForDisplay already has a documented
+  // raw-key fallback for display purposes, but resolveRefreshDispatch
+  // has no equivalent, and even that fallback (`ref.key || ref.id`)
+  // reads fields the new unified {title, href} value shape no longer
+  // carries. Left failing on purpose as a regression marker.
   test('refreshing a field linked through a now-deactivated custom connector migrates to the matching built-in Jira connector', async ({ page }) => {
     await h.stubTauriConnectorRuntime(page, { responsesByUrlSubstring: { 'SUP-1234': jiraRawFixture('SUP-1234') }, credential: 'tok' });
     await page.evaluate(() => {
@@ -480,13 +520,8 @@ test.describe('Jira linking: refresh migrates a stale built-in ref to a now-matc
       }));
     });
     const doc = await h.readActiveMilestoneDoc(page);
-    const i3 = doc.issues.find(i => i.num === 3);
-    i3.history.push({
-      id: 'test-stale-custom-ref', time: 'now', actor: 'test', email: 'test@example.com',
-      text: 'Related linked', field: 'linked', value: 'SUP-1234',
-      fieldRef: { href: null, fetchedVia: 'conn_linear', matchedId: 'SUP-1234' },
-      origin: 'authored', sortKey: Date.now(), sig: null, pubKey: null
-    });
+    const i3 = doc.issues.find(i => i.id === 'i3');
+    h.pushFieldEntry(i3, 'linked', 'SUP-1234', { id: 'test-stale-custom-ref', actor: 'test' });
     await h.writeActiveMilestoneDoc(page, doc);
     await page.reload();
     await h.waitForBootSplashGone(page);
@@ -496,8 +531,8 @@ test.describe('Jira linking: refresh migrates a stale built-in ref to a now-matc
 
     await expect(h.fieldCell(page, 3, 'linked')).toContainText('Mocked Jira ticket title');
     const after = await h.readActiveMilestoneDoc(page);
-    const ref = h.latestFieldRef(after.issues.find(i => i.num === 3), 'linked');
-    expect(ref).toMatchObject({ fetchedVia: '__builtin_jira' });
+    const ref = h.latestFieldRef(after.issues.find(i => i.id === 'i3'), 'linked');
+    expect(ref).toMatchObject({ href: /^https:\/\/still\.configured\.net\/browse\/SUP-1234$/ });
   });
 
   // The ORIGINAL "stale builtin" test above only exercised an
@@ -516,13 +551,8 @@ test.describe('Jira linking: refresh migrates a stale built-in ref to a now-matc
       }));
     });
     const doc = await h.readActiveMilestoneDoc(page);
-    const i3 = doc.issues.find(i => i.num === 3);
-    i3.history.push({
-      id: 'test-deactivated-builtin-ref', time: 'now', actor: 'test', email: 'test@example.com',
-      text: 'Related linked', field: 'linked', value: 'SUP-1234',
-      fieldRef: { system: 'jira', key: 'SUP-1234', browseUrl: 'https://still.configured.net/browse/SUP-1234' },
-      origin: 'authored', sortKey: Date.now(), sig: null, pubKey: null
-    });
+    const i3 = doc.issues.find(i => i.id === 'i3');
+    h.pushFieldEntry(i3, 'linked', 'SUP-1234', { id: 'test-deactivated-builtin-ref', actor: 'test', href: 'https://still.configured.net/browse/SUP-1234' });
     await h.writeActiveMilestoneDoc(page, doc);
     await page.reload();
     await h.waitForBootSplashGone(page);
@@ -532,8 +562,13 @@ test.describe('Jira linking: refresh migrates a stale built-in ref to a now-matc
 
     await expect(h.fieldCell(page, 3, 'linked')).toContainText('Fix the thing');
     const after = await h.readActiveMilestoneDoc(page);
-    const ref = h.latestFieldRef(after.issues.find(i => i.num === 3), 'linked');
-    expect(ref).toMatchObject({ fetchedVia: 'conn_linear', matchedId: 'SUP-1234' });
+    // Format v2: fetchedVia/matchedId are never persisted on a ref any
+    // more -- re-resolved live from href every time (see
+    // liveFetchedViaForRef) -- so the stored shape to check is just
+    // {title, href}; href alone is enough to confirm this is really the
+    // migrated-to connector's own URL, not the old dead built-in one.
+    const ref = h.latestFieldRef(after.issues.find(i => i.id === 'i3'), 'linked');
+    expect(ref).toMatchObject({ href: 'https://linear.app/x/SUP-1234' });
   });
 });
 
@@ -609,8 +644,8 @@ test.describe('Salesforce linking', () => {
     await h.waitForFieldResolved(page, 3, 'linked');
 
     const doc = await h.readActiveMilestoneDoc(page);
-    const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'linked');
-    expect(ref).toMatchObject({ fetchedVia: '__builtin_salesforce', href: SF_RECORD_URL });
+    const ref = h.latestFieldRef(doc.issues.find(i => i.id === 'i3'), 'linked');
+    expect(ref).toMatchObject({ href: SF_RECORD_URL });
     expect(ref).not.toHaveProperty('objectType');
     expect(ref).not.toHaveProperty('status');
     expect(ref).not.toHaveProperty('fields');
@@ -629,7 +664,12 @@ test.describe('Salesforce linking', () => {
     expect(afterCount).toBeGreaterThan(beforeCount);
   });
 
-  test('an unreachable Salesforce fails gracefully — no crash, plain text kept, history records the error', async ({ page }) => {
+  // Format v2: fetch errors are never written to signed history any
+  // more (see docs/FORMAT_V2.md) -- just console.error. A FIRST-attempt
+  // failure still writes a value-only fallback entry (field + raw typed
+  // text, no fieldRef, no narrative text) so the field doesn't revert to
+  // the empty placeholder -- see applyLinkToField's catch block.
+  test('an unreachable Salesforce fails gracefully — no crash, plain text kept', async ({ page }) => {
     await h.overrideConnectorFetchResponses(page, { failUrlSubstrings: ['/services/Soap/'] });
     await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, SF_URL);
@@ -638,7 +678,7 @@ test.describe('Salesforce linking', () => {
 
     await expect(h.fieldCell(page, 3, 'linked')).toContainText(SF_ID);
     const history = await h.getHistoryEntriesFor(page, 'i3');
-    expect(history.some(t => t.toLowerCase().includes('could not fetch from salesforce'))).toBe(true);
+    expect(history.some(t => t.toLowerCase().includes('could not fetch from salesforce'))).toBe(false);
   });
 
   // Tracker #112 (b564316d): see the equivalent Jira test above for why a
@@ -729,8 +769,8 @@ test.describe('Jira linking: expanded field set', () => {
     await h.waitForFieldResolved(page, 3, 'linked');
 
     const doc = await h.readActiveMilestoneDoc(page);
-    const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'linked');
-    expect(ref).toMatchObject({ fetchedVia: '__builtin_jira', href: JIRA_BROWSE_URL('TRK-999') });
+    const ref = h.latestFieldRef(doc.issues.find(i => i.id === 'i3'), 'linked');
+    expect(ref).toMatchObject({ href: JIRA_BROWSE_URL('TRK-999') });
     for (const key of ['status', 'statusCategory', 'issueType', 'priority', 'assignee', 'reporter', 'dueDate', 'components', 'fixVersions', 'project', 'description', 'labels']) {
       expect(ref).not.toHaveProperty(key);
     }
@@ -850,8 +890,8 @@ test.describe('Jira linking: expanded field set', () => {
     await h.waitForFieldResolved(page, 3, 'linked');
 
     const doc = await h.readActiveMilestoneDoc(page);
-    const ref = h.latestFieldRef(doc.issues.find(i => i.num === 3), 'linked');
-    expect(ref).toMatchObject({ fetchedVia: '__builtin_jira', href: JIRA_BROWSE_URL('TRK-1000') });
+    const ref = h.latestFieldRef(doc.issues.find(i => i.id === 'i3'), 'linked');
+    expect(ref).toMatchObject({ href: JIRA_BROWSE_URL('TRK-1000') });
     expect(ref).not.toHaveProperty('status'); // display-only shape -- never persisted regardless of API response
 
     await h.openFieldEditor(page, 'type');

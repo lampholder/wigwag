@@ -97,7 +97,8 @@ test.describe('GitHub repo sync', () => {
     const fs = require('fs');
     const lines = fs.readFileSync(await dl.path(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
     const i8 = lines.find(l => l.type === 'issue' && l.id === 'i8');
-    i8.history.push({ id: 'ext_h1', time: 'Aug 2', actor: 'jordan', email: 'jordan@example.com', text: 'Mitigation set', field: 'mitigation', value: 'Root cause identified, fix in review', origin: 'authored', sortKey: Date.now() + 1000, sig: null, pubKey: null });
+    if (!i8.fields.mitigation) i8.fields.mitigation = { history: [] };
+    i8.fields.mitigation.history.push({ id: 'ext_h1', actor: 'jordan', value: 'Root cause identified, fix in review', sortKey: Date.now() + 1000, sig: null, pubKey: null });
     const recordsBody = lines.map(l => JSON.stringify(l)).join('\n');
     const envelope = await page.evaluate((recordsBody) => window.WigwagCore.buildExportEnvelope({
       exportedBy: 'dave@example.com', exportedAt: new Date().toISOString(),
@@ -160,7 +161,8 @@ test.describe('GitHub repo sync', () => {
     const fs = require('fs');
     const lines = fs.readFileSync(await dl.path(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
     const i8 = lines.find(l => l.type === 'issue' && l.id === 'i8');
-    i8.history.push({ id: 'ext_h1', time: 'Aug 2', actor: 'jordan', email: 'jordan@example.com', text: 'Mitigation set', field: 'mitigation', value: 'Root cause identified, fix in review', origin: 'authored', sortKey: Date.now() + 1000, sig: null, pubKey: null });
+    if (!i8.fields.mitigation) i8.fields.mitigation = { history: [] };
+    i8.fields.mitigation.history.push({ id: 'ext_h1', actor: 'jordan', value: 'Root cause identified, fix in review', sortKey: Date.now() + 1000, sig: null, pubKey: null });
     gh.getResponses = [{ status: 200, sha: 'sha1', text: lines.map(l => JSON.stringify(l)).join('\n') }];
 
     await h.setGithubRepoSync(page, { repo: REPO, token: 'ghp_faketoken' });
@@ -348,7 +350,8 @@ test.describe('GitHub repo sync', () => {
     const baseline = fs.readFileSync(await dl.path(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
     const remote = JSON.parse(JSON.stringify(baseline));
     const i8 = remote.find(l => l.type === 'issue' && l.id === 'i8');
-    i8.history.push({ id: 'ext_h1', time: 'Aug 2', actor: 'jordan', email: 'jordan@example.com', text: 'Mitigation set', field: 'mitigation', value: 'Root cause identified, fix in review', origin: 'authored', sortKey: Date.now() + 1000, sig: null, pubKey: null });
+    if (!i8.fields.mitigation) i8.fields.mitigation = { history: [] };
+    i8.fields.mitigation.history.push({ id: 'ext_h1', actor: 'jordan', value: 'Root cause identified, fix in review', sortKey: Date.now() + 1000, sig: null, pubKey: null });
 
     // First connect finds nothing yet, so it pushes -- but that push comes
     // back 409 (someone else's commit landed first, in this fixture). The
@@ -371,10 +374,29 @@ test.describe('GitHub repo sync', () => {
   // the merge applies immediately (latest sortKey wins, nothing lost, a
   // dismissible notice flags it), and auto-push keeps working normally
   // right after, same as any other successful sync.
+  //
+  // Local edit happens BEFORE the repo is connected (not after, as an
+  // earlier version of this test had it): setGithubRepoSync's own
+  // "connects immediately" behavior (see the comment on the very first
+  // test in this file) means connecting is itself a write that ratchets
+  // nextSortKey()'s monotonic counter forward past whatever it just
+  // merged in -- so a local edit made AFTER connecting to a remote with
+  // an artificially-future sortKey would always win regardless of the
+  // specific numbers involved, which isn't what this test is trying to
+  // exercise. Doing the local edit first and deriving the remote's
+  // overlapping sortKey from it afterward sidesteps that ordering
+  // entirely, while still exercising the real "higher sortKey wins"
+  // merge semantics this test is named for.
   test('a same-field overlap on reconnect merges immediately (no pause), flags a notice, and auto-push keeps working', async ({ page }) => {
     const gh = h.mockGithubContentsApi(page, REPO);
 
     await h.gotoTracker(page);
+
+    // Local independently changes a field, with no repo connected yet.
+    await h.clickFieldToEdit(page, 7, 'rag');
+    await page.locator('div[style*="z-index: 75"]').getByText('On track').click();
+    await page.waitForTimeout(200);
+
     await page.locator('[data-testid=btn-export]').click();
     const [dl] = await Promise.all([
       page.waitForEvent('download'),
@@ -384,15 +406,12 @@ test.describe('GitHub repo sync', () => {
     const baseline = fs.readFileSync(await dl.path(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
     const remote = JSON.parse(JSON.stringify(baseline));
     const i7r = remote.find(l => l.type === 'issue' && l.id === 'i7');
-    i7r.history.push({ id: 'remote_h1', time: 'Aug 2', actor: 'jordan', email: 'jordan@example.com', text: 'RAG set to At risk', field: 'rag', value: 'amber', origin: 'authored', sortKey: Date.now() + 999999, sig: null, pubKey: null });
+    const localSortKey = Math.max(...i7r.fields.rag.history.map(e => e.sortKey));
+    i7r.fields.rag.history.push({ id: 'remote_h1', actor: 'jordan', value: 'amber', sortKey: localSortKey + 1000, sig: null, pubKey: null });
     gh.getResponses = [{ status: 200, sha: 'sha-remote-1', text: remote.map(l => JSON.stringify(l)).join('\n') }];
 
     await h.setGithubRepoSync(page, { repo: REPO, token: 'ghp_faketoken' });
-
-    // Local independently changes the SAME field on the same issue.
-    await h.clickFieldToEdit(page, 7, 'rag');
-    await page.locator('div[style*="z-index: 75"]').getByText('On track').click();
-    await page.waitForTimeout(200);
+    await page.waitForTimeout(500);
 
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(500);
@@ -479,7 +498,7 @@ test.describe('GitHub repo sync', () => {
 
     const doc = await h.readActiveMilestoneDoc(page);
     const i8Before = doc.issues.find(i => i.id === 'i8');
-    const historyLenBefore = i8Before.history.length;
+    const historyLenBefore = h.issueHistoryEntryCount(i8Before);
 
     // Point every subsequent GET at the exact sha the push just landed --
     // a no-op poll must not merge anything or flip the footer into a fresh
@@ -488,7 +507,7 @@ test.describe('GitHub repo sync', () => {
     gh.getResponses = [{ status: 200, sha: pushedSha, text: 'irrelevant -- sha match short-circuits before this is read' }];
     await page.waitForTimeout(6000); // past a full poll interval (5s), so a real no-op tick actually happens
     const docAfterNoop = await h.readActiveMilestoneDoc(page);
-    expect(docAfterNoop.issues.find(i => i.id === 'i8').history.length).toBe(historyLenBefore);
+    expect(h.issueHistoryEntryCount(docAfterNoop.issues.find(i => i.id === 'i8'))).toBe(historyLenBefore);
 
     // Now the remote genuinely changes -- the very next poll must merge it
     // in with no reload and no user action.
@@ -497,7 +516,8 @@ test.describe('GitHub repo sync', () => {
     const demoLines = fs.readFileSync(path.join(__dirname, 'fixtures', 'demo-milestone.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
     const remote = JSON.parse(JSON.stringify(demoLines));
     const i8 = remote.find(l => l.type === 'issue' && l.id === 'i8');
-    i8.history.push({ id: 'poll_h1', time: 'Aug 2', actor: 'jordan', email: 'jordan@example.com', text: 'Mitigation set', field: 'mitigation', value: 'Picked up via background poll', origin: 'authored', sortKey: Date.now() + 1000, sig: null, pubKey: null });
+    if (!i8.fields.mitigation) i8.fields.mitigation = { history: [] };
+    i8.fields.mitigation.history.push({ id: 'poll_h1', actor: 'jordan', value: 'Picked up via background poll', sortKey: Date.now() + 1000, sig: null, pubKey: null });
     gh.getResponses = [{ status: 200, sha: 'sha-remote-poll-2', text: remote.map(l => JSON.stringify(l)).join('\n') }];
 
     await h.waitUntil(async () => (await h.fieldCell(page, 8, 'mitigation').textContent()).includes('Picked up via background poll'), 12000);
@@ -523,14 +543,14 @@ test.describe('GitHub repo sync', () => {
     await h.waitUntil(() => Promise.resolve(gh.pushCount >= 1));
 
     const doc = await h.readActiveMilestoneDoc(page);
-    const historyLenBefore = doc.issues.find(i => i.id === 'i8').history.length;
+    const historyLenBefore = h.issueHistoryEntryCount(doc.issues.find(i => i.id === 'i8'));
 
     const pushedSha = 'sha-after-push-' + gh.pushCount;
     gh.getResponses = [{ status: 200, sha: pushedSha, text: 'irrelevant -- a 304 short-circuits before this is ever read' }];
 
     await h.waitUntil(() => Promise.resolve(gh.getCount >= 2), 15000); // two poll ticks: first 200 (learns the etag), second 304
     const docAfter304 = await h.readActiveMilestoneDoc(page);
-    expect(docAfter304.issues.find(i => i.id === 'i8').history.length).toBe(historyLenBefore); // no merge happened
+    expect(h.issueHistoryEntryCount(docAfter304.issues.find(i => i.id === 'i8'))).toBe(historyLenBefore); // no merge happened
     await expect(page.locator('[data-testid=merge-conflict-modal]')).toHaveCount(0);
   });
 

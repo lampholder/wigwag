@@ -739,10 +739,10 @@ test.describe('Editable identity label', () => {
     await page.waitForTimeout(300);
 
     const doc = await h.readActiveMilestoneDoc(page);
-    const issue = doc.issues.find(i => i.num === 1);
-    const newComment = issue.commentStreams.comments.find(c => c.text === 'A fresh comment');
+    const issue = doc.issues.find(i => i.id === 'i1'); // row 1 in the demo fixture's own creation order
+    const newComment = h.issueFieldHistory(issue, 'comments').find(c => c.text === 'A fresh comment');
     expect(newComment).toBeTruthy();
-    expect(newComment.author).not.toBe('Acme Corp');
-    expect(newComment.email).toBe('tom@example.com');
+    expect(newComment.actor).not.toBe('Acme Corp');
+    expect(newComment.actor).toBe('tom@example.com');
   });
 });

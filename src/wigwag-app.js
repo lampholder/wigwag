@@ -4655,7 +4655,7 @@ class Component extends DCLogic {
   // block, which no longer writes anything to signed history on error).
   sameRef(ref, fetchedVia, matchedId) {
     if (!ref || !ref.href) return false;
-    const resolved = resolveRefSystem(ref.href, { connectedSources: this.state.connectedSources });
+    const resolved = resolveRefSystem(ref.href, { connectedSources: this.connectedSourcesForDispatch() });
     if (!resolved || !resolved.connector || resolved.connector.id !== fetchedVia) return false;
     const existingMatchedId = this.matchedIdFromHref(fetchedVia, ref.href);
     return JSON.stringify(existingMatchedId) === JSON.stringify(matchedId);
@@ -4752,10 +4752,17 @@ class Component extends DCLogic {
   // resolved LIVE via resolveRefSystem against the ref's own href, every
   // time. This is the same self-healing mechanism the comment above
   // already describes, just with the live lookup standing in for what
-  // used to be a stored pointer.
+  // used to be a stored pointer. connectedSourcesForDispatch(), not a
+  // bare this.state.connectedSources -- same zero-config GitHub
+  // tolerance (connectorMatches' paste-time dispatch, liveRuleCtx's
+  // write-side gate) every other dispatch-facing lookup in this file
+  // already goes through; a bare find() here silently broke GitHub
+  // refresh for any project with no connectedSources row configured at
+  // all (confirmed live regression: stageFieldRefresh always failed
+  // with "connector no longer exists" for a zero-config GitHub link).
   liveFetchedViaForRef(n) {
     if (!n || !n.href) return null;
-    const resolved = resolveRefSystem(n.href, { connectedSources: this.state.connectedSources });
+    const resolved = resolveRefSystem(n.href, { connectedSources: this.connectedSourcesForDispatch() });
     return resolved && resolved.connector ? resolved.connector.id : null;
   }
   resolveRefreshDispatch(n) {
@@ -5094,8 +5101,8 @@ class Component extends DCLogic {
   pickSourcePreview(linkedSourceId) {
     const empty = { text: '', isLinked: false, github: null, jira: null, salesforce: null };
     if (!this.state.issues.length) return empty;
-    const linkedIssue = this.state.issues.find(iss => buildSource(iss, linkedSourceId, this.state.connectedSources).isLinked);
-    const source = buildSource(linkedIssue || this.state.issues[0], linkedSourceId, this.state.connectedSources);
+    const linkedIssue = this.state.issues.find(iss => buildSource(iss, linkedSourceId, this.connectedSourcesForDispatch()).isLinked);
+    const source = buildSource(linkedIssue || this.state.issues[0], linkedSourceId, this.connectedSourcesForDispatch());
     return {
       text: truncate(source.text, 60),
       isLinked: source.isLinked,
@@ -5371,7 +5378,7 @@ class Component extends DCLogic {
     const conds = rows.map(r => ruleRowCondition(r));
     return this.state.issues.map(iss => {
       const title = truncate(iss.values.title || '(untitled)', 44);
-      const source = buildSource(iss, def.linkedSourceId, this.state.connectedSources);
+      const source = buildSource(iss, def.linkedSourceId, this.connectedSourcesForDispatch());
       if (!source.isLinked) {
         return { id: iss.id, title, titleColor: 'var(--n29)', sourceText: '—',
           matchedLabel: 'not linked', matchedColor: 'var(--n46)',
@@ -8279,7 +8286,7 @@ class Component extends DCLogic {
       const n = normalizeRef(ref);
       const fetchedVia = this.liveFetchedViaForRef(n);
       const matchedId = this.resolveMatchedIdForDisplay(ref, n);
-      const connDef = fetchedVia ? (this.state.connectedSources || []).find(c => c.id === fetchedVia) : null;
+      const connDef = fetchedVia ? this.connectedSourcesForDispatch().find(c => c.id === fetchedVia) : null;
       const isGithubRef = fetchedVia === '__builtin_github' || (connDef && connDef.kind === 'github');
       const isJiraRef = fetchedVia === '__builtin_jira' || (connDef && connDef.kind === 'jira');
       const isSalesforceRef = fetchedVia === '__builtin_salesforce' || (connDef && connDef.kind === 'salesforce');
@@ -9494,7 +9501,7 @@ class Component extends DCLogic {
       const linkedColId = Object.keys(fieldDefs).find(colId => {
         const r = issue.fieldRefs && issue.fieldRefs[colId];
         if (!r || r.system === 'wigwag') return false;
-        const resolved = resolveRefSystem(r.href, { connectedSources: this.state.connectedSources });
+        const resolved = resolveRefSystem(r.href, { connectedSources: this.connectedSourcesForDispatch() });
         return resolved && resolved.kind === 'github';
       });
       const ref = linkedColId ? issue.fieldRefs[linkedColId] : null;

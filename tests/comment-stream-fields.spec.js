@@ -268,29 +268,15 @@ test.describe('Comment stream fields', () => {
   });
 });
 
+// Format v2 (tracker #227, 3212e2ff): migrateLegacyComments (the
+// function the removed "old top-level `comments` array migrates..."
+// test exercised) is retired entirely -- "brutal migration" stance, see
+// docs/FORMAT_V2.md: a one-time rewrite of the one real file, not
+// permanent dual-format tolerance baked into every load. The comment
+// field's own synthesis-when-missing behavior (ensureCommentsFieldDef,
+// the test just below) is a separate, still-real mechanism and is
+// unaffected.
 test.describe('Comment stream fields: legacy migration', () => {
-  test('an old top-level `comments` array migrates to commentStreams.comments on load, and is written back to disk', async ({ page }) => {
-    await h.gotoTracker(page);
-
-    const seedDoc = await h.idbGetProjectDoc(page, 'demo-milestone');
-    seedDoc.issues[0].comments = [{ id: 'legacy-c1', author: 'Old Author', email: 'old@example.com', time: 'Jan 1, 2020', text: 'a legacy comment', sortKey: 123 }];
-    delete seedDoc.issues[0].commentStreams;
-    await h.idbSetProjectDoc(page, 'demo-milestone', seedDoc);
-    await page.reload();
-    await page.waitForTimeout(400);
-
-    const onDisk = await h.idbGetProjectDoc(page, 'demo-milestone').then(doc => {
-      const iss = doc.issues[0];
-      return { hasOldKey: 'comments' in iss, migratedText: iss.commentStreams && iss.commentStreams.comments && iss.commentStreams.comments[0] && iss.commentStreams.comments[0].text };
-    });
-    expect(onDisk.hasOldKey).toBe(false);
-    expect(onDisk.migratedText).toBe('a legacy comment');
-
-    await page.locator('[data-testid=comment-indicator]').first().click();
-    await page.waitForTimeout(200);
-    await expect(page.locator('[data-testid=comment-md]').filter({ hasText: 'a legacy comment' })).toHaveCount(1);
-  });
-
   test('a project with no comment-stream field at all (very old schema) gets "Comments" synthesized automatically', async ({ page }) => {
     await h.gotoTracker(page);
 
@@ -336,10 +322,11 @@ test.describe('Comment stream fields: mentions are uniform across every field', 
       fieldDefs: { title: { label: 'Issue', type: 'text' }, update: { label: 'Update', type: 'commentStream' } },
       columnOrder: [], hiddenFieldIds: [],
       issues: [{
-        id: 'local1', num: 1, fieldRefs: {}, fieldLoading: {},
-        values: { title: 'Other local project issue' },
-        commentStreams: { update: [{ id: 'cm_update_1', author: 'jordan', email: 'jordan@example.com', time: 'Aug 2', text: 'hey @tom@example.com can you check this update', sortKey: Date.now() + 1000 }] },
-        history: []
+        id: 'local1', fieldRefs: {}, fieldLoading: {},
+        fields: {
+          title: { history: [{ id: 'local1-title', actor: 'jordan', value: 'Other local project issue', sortKey: 1, sig: null, pubKey: null }] },
+          update: { history: [{ id: 'cm_update_1', actor: 'jordan', text: 'hey @tom@example.com can you check this update', sortKey: Date.now() + 1000, sig: null, pubKey: null }] }
+        }
       }],
       githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: ''
     };

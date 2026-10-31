@@ -190,8 +190,8 @@ test.describe('Lazy localStorage cleanup (tracker #187, Phase 7)', () => {
     // IndexedDB directly, never rendered) -- this test drives the real
     // UI (switcher, project settings, delete), so it needs real
     // renderable issues, same shape as the app's own demo fixture.
-    const renderableDocA = { ...docA, issues: [{ id: 'a1', num: 1, fieldRefs: {}, fieldLoading: {}, comments: [], history: [{ id: 'ha1', time: new Date().toISOString(), actor: 'Tester', email: 'tester@example.com', text: 'Set Issue to "Issue A1"', field: 'title', value: 'Issue A1', origin: 'authored', sortKey: 1, sig: null, sigRedacted: null, pubKey: null }] }] };
-    const renderableDocB = { ...docB, issues: [{ id: 'b1', num: 1, fieldRefs: {}, fieldLoading: {}, comments: [], history: [{ id: 'hb1', time: new Date().toISOString(), actor: 'Tester', email: 'tester@example.com', text: 'Set Issue to "Issue B1"', field: 'title', value: 'Issue B1', origin: 'authored', sortKey: 1, sig: null, sigRedacted: null, pubKey: null }] }] };
+    const renderableDocA = { ...docA, issues: [{ id: 'a1', fieldRefs: {}, fieldLoading: {}, fields: { title: { history: [{ id: 'ha1', actor: 'Tester', value: 'Issue A1', sortKey: 1, sig: null, pubKey: null }] } } }] };
+    const renderableDocB = { ...docB, issues: [{ id: 'b1', fieldRefs: {}, fieldLoading: {}, fields: { title: { history: [{ id: 'hb1', actor: 'Tester', value: 'Issue B1', sortKey: 1, sig: null, pubKey: null }] } } }] };
     await page.addInitScript(seedLegacyLocalStorage, { PROJ_A, PROJ_B, docA: renderableDocA, docB: renderableDocB, mergeLogA });
     await page.goto('/wigwag.html', { waitUntil: 'networkidle' });
     await h.waitForBootSplashGone(page);

@@ -188,7 +188,7 @@ test.describe('Bulk actions: Set field', () => {
 
     const idx = { activeMilestoneId: await h.activeMilestoneId(page) };
     const before = await h.idbGetProjectDoc(page, idx.activeMilestoneId);
-    const beforeCounts = before.issues.slice(0, 2).map(iss => iss.history.length);
+    const beforeCounts = before.issues.slice(0, 2).map(iss => h.issueFieldHistory(iss, 'priority').length);
 
     await page.locator('[data-testid=bulk-set-field-btn]').click();
     await page.locator('[data-testid=bulk-field-row][data-col=priority]').click();
@@ -198,7 +198,7 @@ test.describe('Bulk actions: Set field', () => {
 
     await expect(page.locator('[data-testid=bulk-value-picker]')).toHaveCount(0);
     const after = await h.idbGetProjectDoc(page, idx.activeMilestoneId);
-    const afterCounts = after.issues.slice(0, 2).map(iss => iss.history.length);
+    const afterCounts = after.issues.slice(0, 2).map(iss => h.issueFieldHistory(iss, 'priority').length);
     expect(afterCounts).toEqual(beforeCounts.map(c => c + 1));
     await expect(page.locator('[data-testid=row]').nth(0).locator('[data-testid=field-cell][data-col=priority]')).toContainText('P0');
     await expect(page.locator('[data-testid=row]').nth(1).locator('[data-testid=field-cell][data-col=priority]')).toContainText('P0');
@@ -212,12 +212,7 @@ test.describe('Bulk actions: Set field', () => {
     const idx = { activeMilestoneId: await h.activeMilestoneId(page) };
     {
       const doc = await h.idbGetProjectDoc(page, idx.activeMilestoneId);
-      const maxSortKey = Math.max(0, ...doc.issues[0].history.map(h => h.sortKey || 0));
-      doc.issues[0].history.push({
-        id: 'test-preexisting-teams', time: 'now', actor: 'test', email: 'test@example.com',
-        text: 'Delivery teams set to platform, ops', field: 'teams', value: ['platform', 'ops'],
-        origin: 'authored', sortKey: maxSortKey + 1, sig: null, sigRedacted: null, pubKey: null
-      });
+      h.pushFieldEntry(doc.issues[0], 'teams', ['platform', 'ops'], { id: 'test-preexisting-teams' });
       await h.idbSetProjectDoc(page, idx.activeMilestoneId, doc);
     }
     await page.reload({ waitUntil: 'networkidle' });
@@ -241,7 +236,7 @@ test.describe('Bulk actions: Set field', () => {
     await page.waitForTimeout(300);
 
     const doc = await h.idbGetProjectDoc(page, idx.activeMilestoneId);
-    const latestTeamsEntry = doc.issues[0].history.filter(hEntry => hEntry.field === 'teams').slice(-1)[0];
+    const latestTeamsEntry = h.latestFieldHistoryEntry(doc.issues[0], 'teams');
     expect(latestTeamsEntry.value).toHaveLength(1);
   });
 
@@ -255,16 +250,13 @@ test.describe('Bulk actions: Set field', () => {
     const idx = { activeMilestoneId: await h.activeMilestoneId(page) };
     {
       const doc = await h.idbGetProjectDoc(page, idx.activeMilestoneId);
-      const maxSortKey = Math.max(0, ...doc.issues[0].history.map(h => h.sortKey || 0));
-      doc.issues[0].history.push({
-        id: 'test-link-force', time: 'now', actor: 'test', email: 'test@example.com', text: 'Linked', field: 'title', value: doc.issues[0].history.slice(-1)[0].value,
-        // "bug" (not the seed's existing "enhancement") so the resettle
-        // below actually produces a CHANGED value -- a no-op recompute
-        // never commits a new entry, so it would never record a local
-        // bind-state either (see logDerivedChanges: it only logs, and
-        // only recordLocalDerivedEntryId's for, fields that actually changed).
-        fieldRef: { system: 'github', owner: 'acme', repo: 'demo', num: 99, labels: ['bug'] }, origin: 'authored', sortKey: maxSortKey + 1, sig: null, sigRedacted: null, pubKey: null
-      });
+      const titleText = h.latestFieldValue(doc.issues[0], 'title').title || h.latestFieldValue(doc.issues[0], 'title');
+      // "bug" (not the seed's existing "enhancement") so the resettle
+      // below actually produces a CHANGED value -- a no-op recompute
+      // never commits a new entry, so it would never record a local
+      // bind-state either (see logDerivedChanges: it only logs, and
+      // only recordLocalDerivedEntryId's for, fields that actually changed).
+      h.pushFieldEntry(doc.issues[0], 'title', titleText, { id: 'test-link-force', href: h.githubHref('acme', 'demo', 99) });
       await h.idbSetProjectDoc(page, idx.activeMilestoneId, doc);
     }
     await page.reload({ waitUntil: 'networkidle' });
@@ -311,11 +303,7 @@ test.describe('Bulk actions: Refresh', () => {
     const idx = { activeMilestoneId: await h.activeMilestoneId(page) };
     {
       const doc = await h.idbGetProjectDoc(page, idx.activeMilestoneId);
-      const maxSortKey = Math.max(0, ...doc.issues[0].history.map(h => h.sortKey || 0));
-      doc.issues[0].history.push({
-        id: 'test-link', time: 'now', actor: 'test', email: 'test@example.com', text: 'Linked', field: 'title', value: 'Fresh title',
-        fieldRef: { system: 'github', owner: 'acme', repo: 'demo', num: 42, labels: [] }, origin: 'authored', sortKey: maxSortKey + 1, sig: null, sigRedacted: null, pubKey: null
-      });
+      h.pushFieldEntry(doc.issues[0], 'title', 'Fresh title', { id: 'test-link', href: h.githubHref('acme', 'demo', 42) });
       await h.idbSetProjectDoc(page, idx.activeMilestoneId, doc);
     }
     await page.reload({ waitUntil: 'networkidle' });
@@ -340,11 +328,7 @@ test.describe('Bulk actions: Refresh', () => {
     });
     {
       const doc = await h.idbGetProjectDoc(page, idx.activeMilestoneId);
-      const maxSortKey = Math.max(0, ...doc.issues[0].history.map(h => h.sortKey || 0));
-      doc.issues[0].history.push({
-        id: 'test-link2', time: 'now', actor: 'test', email: 'test@example.com', text: 'Linked', field: 'title', value: 'Fresh title',
-        fieldRef: { system: 'github', owner: 'acme', repo: 'demo', num: 42, labels: [] }, origin: 'authored', sortKey: maxSortKey + 1, sig: null, sigRedacted: null, pubKey: null
-      });
+      h.pushFieldEntry(doc.issues[0], 'title', 'Fresh title', { id: 'test-link2', href: h.githubHref('acme', 'demo', 42) });
       await h.idbSetProjectDoc(page, idx.activeMilestoneId, doc);
     }
     await page.reload({ waitUntil: 'networkidle' });
@@ -374,11 +358,7 @@ test.describe('Bulk actions: Refresh -- staged job (2+ rows)', () => {
     const pid = await h.activeMilestoneId(page);
     const doc = await h.idbGetProjectDoc(page, pid);
     for (const i of [0, 1]) {
-      const maxSortKey = Math.max(0, ...doc.issues[i].history.map(hh => hh.sortKey || 0));
-      doc.issues[i].history.push({
-        id: 'test-link-' + i, time: 'now', actor: 'test', email: 'test@example.com', text: 'Linked', field: 'title', value: 'Old ' + i,
-        fieldRef: { system: 'github', owner: 'acme', repo: 'demo', num: i + 1 }, origin: 'authored', sortKey: maxSortKey + 1, sig: null, sigRedacted: null, pubKey: null
-      });
+      h.pushFieldEntry(doc.issues[i], 'title', 'Old ' + i, { id: 'test-link-' + i, href: h.githubHref('acme', 'demo', i + 1) });
     }
     await h.idbSetProjectDoc(page, pid, doc);
     await page.reload({ waitUntil: 'networkidle' });
@@ -400,7 +380,7 @@ test.describe('Bulk actions: Refresh -- staged job (2+ rows)', () => {
     });
     await seedTwoLinkedRows(page);
 
-    const histLenBefore = (await h.readActiveMilestoneDoc(page)).issues[0].history.length;
+    const histLenBefore = h.issueHistoryEntryCount((await h.readActiveMilestoneDoc(page)).issues[0]);
     await page.locator('[data-testid=row]').nth(0).locator('[data-testid=row-select-checkbox]').click();
     await page.locator('[data-testid=row]').nth(1).locator('[data-testid=row-select-checkbox]').click({ modifiers: ['ControlOrMeta'] });
     await page.locator('[data-testid=bulk-refresh-btn]').click();
@@ -412,7 +392,7 @@ test.describe('Bulk actions: Refresh -- staged job (2+ rows)', () => {
     await expect(page.locator('[data-testid=bulk-action-bar]')).toHaveCount(0);
     const title0Mid = (await page.locator('[data-testid=row]').nth(0).locator('[data-testid=title-cell]').textContent()).trim();
     expect(title0Mid).toContain('Old 0');
-    expect((await h.readActiveMilestoneDoc(page)).issues[0].history.length).toBe(histLenBefore);
+    expect(h.issueHistoryEntryCount((await h.readActiveMilestoneDoc(page)).issues[0])).toBe(histLenBefore);
 
     await page.waitForTimeout(600);
 
@@ -556,14 +536,8 @@ test.describe('Bulk actions: Refresh -- staged job (2+ rows)', () => {
     const pid = await h.activeMilestoneId(page);
     {
       const doc = await h.idbGetProjectDoc(page, pid);
-      const maxSortKey = Math.max(0, ...doc.issues[0].history.map(hh => hh.sortKey || 0));
-      doc.issues[0].history.push({
-        id: 'test-title-link', time: 'now', actor: 'test', email: 'test@example.com', text: 'Linked', field: 'title', value: 'Old Title',
-        fieldRef: { system: 'github', owner: 'acme', repo: 'demo', num: 1 }, origin: 'authored', sortKey: maxSortKey + 1, sig: null, sigRedacted: null, pubKey: null
-      });
-      doc.issues[0].history.push({
-        id: 'test-related-seed', time: 'now', actor: 'test', email: 'test@example.com', text: 'Related set', field: 'linked', value: 'placeholder', origin: 'authored', sortKey: maxSortKey + 2, sig: null, sigRedacted: null, pubKey: null
-      });
+      h.pushFieldEntry(doc.issues[0], 'title', 'Old Title', { id: 'test-title-link', href: h.githubHref('acme', 'demo', 1) });
+      h.pushFieldEntry(doc.issues[0], 'linked', 'placeholder', { id: 'test-related-seed' });
       await h.idbSetProjectDoc(page, pid, doc);
     }
     await page.reload({ waitUntil: 'networkidle' });
@@ -636,15 +610,8 @@ test.describe('Bulk actions: Refresh -- staged job (2+ rows)', () => {
     const pid = await h.activeMilestoneId(page);
     {
       const doc = await h.idbGetProjectDoc(page, pid);
-      const maxSortKey = Math.max(0, ...doc.issues[0].history.map(hh => hh.sortKey || 0));
-      doc.issues[0].history.push({
-        id: 'test-link', time: 'now', actor: 'test', email: 'test@example.com', text: 'Linked', field: 'title', value: 'Stable title',
-        fieldRef: { system: 'github', owner: 'acme', repo: 'demo', num: 1 }, origin: 'authored', sortKey: maxSortKey + 1, sig: null, sigRedacted: null, pubKey: null
-      });
-      doc.issues[0].history.push({
-        id: 'test-type', time: 'now', actor: 'test', email: 'test@example.com', text: 'Type set', field: 'type', value: 'enhancement',
-        origin: 'derived', sortKey: maxSortKey + 2, sig: null, sigRedacted: null, pubKey: null
-      });
+      h.pushFieldEntry(doc.issues[0], 'title', 'Stable title', { id: 'test-link', href: h.githubHref('acme', 'demo', 1) });
+      h.pushFieldEntry(doc.issues[0], 'type', 'enhancement', { id: 'test-type' });
       await h.idbSetProjectDoc(page, pid, doc);
     }
     await page.reload({ waitUntil: 'networkidle' });
@@ -690,11 +657,7 @@ test.describe('Bulk actions: Refresh -- staged job (2+ rows)', () => {
     const pid = await h.activeMilestoneId(page);
     {
       const doc = await h.idbGetProjectDoc(page, pid);
-      const maxSortKey = Math.max(0, ...doc.issues[0].history.map(hh => hh.sortKey || 0));
-      doc.issues[0].history.push({
-        id: 'test-link', time: 'now', actor: 'test', email: 'test@example.com', text: 'Linked', field: 'title', value: 'Old title',
-        fieldRef: { system: 'github', owner: 'acme', repo: 'demo', num: 1 }, origin: 'authored', sortKey: maxSortKey + 1, sig: null, sigRedacted: null, pubKey: null
-      });
+      h.pushFieldEntry(doc.issues[0], 'title', 'Old title', { id: 'test-link', href: h.githubHref('acme', 'demo', 1) });
       await h.idbSetProjectDoc(page, pid, doc);
     }
     await page.reload({ waitUntil: 'networkidle' });
@@ -707,11 +670,15 @@ test.describe('Bulk actions: Refresh -- staged job (2+ rows)', () => {
     await page.locator('[data-testid=btn-merge-primary]').click();
     await page.waitForTimeout(400);
 
+    // Format v2 drops origin:'derived' entirely (a rule-derived write is
+    // just an ordinary entry now, see docs/FORMAT_V2.md) -- what's left
+    // to check is the actual observable result: a new 'type' entry was
+    // written, with the value the live-fetched labels actually produce.
     const doc = await h.idbGetProjectDoc(page, pid);
     const iss0 = doc.issues.find(i => i.id === 'i1');
-    const typeEntries = iss0.history.filter(hh => hh.field === 'type');
+    const typeEntries = h.issueFieldHistory(iss0, 'type');
     expect(typeEntries.length).toBeGreaterThan(0);
-    expect(typeEntries[typeEntries.length - 1].origin).toBe('derived');
+    expect(typeEntries[typeEntries.length - 1].value).toBe('bug');
   });
 
   // Live feedback from Tom: after accepting a staged refresh's merge, the
@@ -736,11 +703,7 @@ test.describe('Bulk actions: Refresh -- staged job (2+ rows)', () => {
     const pid = await h.activeMilestoneId(page);
     {
       const doc = await h.idbGetProjectDoc(page, pid);
-      const maxSortKey = Math.max(0, ...doc.issues[0].history.map(hh => hh.sortKey || 0));
-      doc.issues[0].history.push({
-        id: 'test-link', time: 'now', actor: 'test', email: 'test@example.com', text: 'Linked', field: 'title', value: 'Old title',
-        fieldRef: { system: 'github', owner: 'acme', repo: 'demo', num: 1 }, origin: 'authored', sortKey: maxSortKey + 1, sig: null, sigRedacted: null, pubKey: null
-      });
+      h.pushFieldEntry(doc.issues[0], 'title', 'Old title', { id: 'test-link', href: h.githubHref('acme', 'demo', 1) });
       await h.idbSetProjectDoc(page, pid, doc);
     }
     await page.reload({ waitUntil: 'networkidle' });
@@ -793,14 +756,8 @@ test.describe('Bulk actions: Refresh -- staged job (2+ rows)', () => {
     const pid = await h.activeMilestoneId(page);
     {
       const doc = await h.idbGetProjectDoc(page, pid);
-      const maxSortKey = Math.max(0, ...doc.issues[0].history.map(hh => hh.sortKey || 0));
-      doc.issues[0].history.push({
-        id: 'test-title-link', time: 'now', actor: 'test', email: 'test@example.com', text: 'Linked', field: 'title', value: 'Old Title',
-        fieldRef: { system: 'github', owner: 'acme', repo: 'demo', num: 1 }, origin: 'authored', sortKey: maxSortKey + 1, sig: null, sigRedacted: null, pubKey: null
-      });
-      doc.issues[0].history.push({
-        id: 'test-related-seed', time: 'now', actor: 'test', email: 'test@example.com', text: 'Related set', field: 'linked', value: 'placeholder', origin: 'authored', sortKey: maxSortKey + 2, sig: null, sigRedacted: null, pubKey: null
-      });
+      h.pushFieldEntry(doc.issues[0], 'title', 'Old Title', { id: 'test-title-link', href: h.githubHref('acme', 'demo', 1) });
+      h.pushFieldEntry(doc.issues[0], 'linked', 'placeholder', { id: 'test-related-seed' });
       await h.idbSetProjectDoc(page, pid, doc);
     }
     await page.reload({ waitUntil: 'networkidle' });
@@ -895,14 +852,8 @@ test.describe('Bulk actions: Refresh -- staged job (2+ rows)', () => {
     const pid = await h.activeMilestoneId(page);
     {
       const doc = await h.idbGetProjectDoc(page, pid);
-      const maxSortKey = Math.max(0, ...doc.issues[0].history.map(hh => hh.sortKey || 0));
-      doc.issues[0].history.push({
-        id: 'test-title-link', time: 'now', actor: 'test', email: 'test@example.com', text: 'Linked', field: 'title', value: 'Old Title',
-        fieldRef: { system: 'github', owner: 'acme', repo: 'demo', num: 1 }, origin: 'authored', sortKey: maxSortKey + 1, sig: null, sigRedacted: null, pubKey: null
-      });
-      doc.issues[0].history.push({
-        id: 'test-related-seed', time: 'now', actor: 'test', email: 'test@example.com', text: 'Related set', field: 'linked', value: 'placeholder', origin: 'authored', sortKey: maxSortKey + 2, sig: null, sigRedacted: null, pubKey: null
-      });
+      h.pushFieldEntry(doc.issues[0], 'title', 'Old Title', { id: 'test-title-link', href: h.githubHref('acme', 'demo', 1) });
+      h.pushFieldEntry(doc.issues[0], 'linked', 'placeholder', { id: 'test-related-seed' });
       await h.idbSetProjectDoc(page, pid, doc);
     }
     await page.reload({ waitUntil: 'networkidle' });
@@ -975,20 +926,13 @@ test.describe('Bulk actions: Refresh -- staged job (2+ rows)', () => {
     {
       const doc = await h.idbGetProjectDoc(page, pid);
       for (const i of [0, 1]) {
-        const maxSortKey = Math.max(0, ...doc.issues[i].history.map(hh => hh.sortKey || 0));
-        doc.issues[i].history.push({
-          id: 'test-link-' + i, time: 'now', actor: 'test', email: 'test@example.com', text: 'Linked', field: 'title', value: 'Same ' + i,
-          fieldRef: { system: 'github', owner: 'acme', repo: 'demo', num: i + 1 }, origin: 'authored', sortKey: maxSortKey + 1, sig: null, sigRedacted: null, pubKey: null
-        });
+        h.pushFieldEntry(doc.issues[i], 'title', 'Same ' + i, { id: 'test-link-' + i, href: h.githubHref('acme', 'demo', i + 1) });
         // Live data (an empty labels array, matching the mock below) now
         // genuinely drives the bound "Type" field's recompute even when
         // the root link's own value/fieldRef don't change -- align it
         // here so this stays a true no-op, not an incidental Bug ->
         // Enhancement change the test wasn't about.
-        doc.issues[i].history.push({
-          id: 'test-type-' + i, time: 'now', actor: 'test', email: 'test@example.com', text: 'Type set', field: 'type', value: 'enhancement',
-          origin: 'derived', sortKey: maxSortKey + 2, sig: null, sigRedacted: null, pubKey: null
-        });
+        h.pushFieldEntry(doc.issues[i], 'type', 'enhancement', { id: 'test-type-' + i });
       }
       await h.idbSetProjectDoc(page, pid, doc);
     }
@@ -1018,11 +962,7 @@ test.describe('Bulk actions: Refresh -- staged job (2+ rows)', () => {
     {
       const doc = await h.idbGetProjectDoc(page, pid);
       for (const i of [0, 1]) {
-        const maxSortKey = Math.max(0, ...doc.issues[i].history.map(hh => hh.sortKey || 0));
-        doc.issues[i].history.push({
-          id: 'test-link-' + i, time: 'now', actor: 'test', email: 'test@example.com', text: 'Linked', field: 'title', value: 'Old ' + i,
-          fieldRef: { system: 'github', owner: 'acme', repo: 'demo', num: i + 1 }, origin: 'authored', sortKey: maxSortKey + 1, sig: null, sigRedacted: null, pubKey: null
-        });
+        h.pushFieldEntry(doc.issues[i], 'title', 'Old ' + i, { id: 'test-link-' + i, href: h.githubHref('acme', 'demo', i + 1) });
       }
       await h.idbSetProjectDoc(page, pid, doc);
     }
@@ -1054,7 +994,12 @@ test.describe('Bulk actions: Refresh -- staged job (2+ rows)', () => {
     await h.gotoTracker(page);
     await page.evaluate(() => {
       localStorage.setItem('git_native_tracker_connected_sources_v1', JSON.stringify({ connectors: [
-        { id: 'conn_linear', key: 'linear', name: 'Linear', glyph: 'L', color: 'red', patterns: [],
+        // Format v2: a connector resolves purely from href now -- rootUrl
+        // for host-matching (resolveRefSystem), patterns for re-deriving
+        // matchedId from a persisted href (matchedIdFromHref) -- no more
+        // stored connectorId/matchedId on the ref itself (docs/FORMAT_V2.md).
+        { id: 'conn_linear', key: 'linear', name: 'Linear', glyph: 'L', color: 'red', rootUrl: 'https://linear.app',
+          patterns: [{ regex: 'https://linear\\.app/x/(.+)' }],
           macro: "async (id) => ({ title: 'Fresh ' + id, state: 'In Progress', url: 'https://linear.app/x/' + id })",
           credentialConfigured: true }
       ] }));
@@ -1063,12 +1008,7 @@ test.describe('Bulk actions: Refresh -- staged job (2+ rows)', () => {
     {
       const doc = await h.idbGetProjectDoc(page, pid);
       for (const i of [0, 1]) {
-        const maxSortKey = Math.max(0, ...doc.issues[i].history.map(hh => hh.sortKey || 0));
-        doc.issues[i].history.push({
-          id: 'test-link-' + i, time: 'now', actor: 'test', email: 'test@example.com', text: 'Linked', field: 'title', value: 'Old ' + i,
-          fieldRef: { system: 'connector', connectorId: 'conn_linear', connectorKey: 'linear', matchedId: 'ENG-' + i },
-          origin: 'authored', sortKey: maxSortKey + 1, sig: null, sigRedacted: null, pubKey: null
-        });
+        h.pushFieldEntry(doc.issues[i], 'title', 'Old ' + i, { id: 'test-link-' + i, href: 'https://linear.app/x/ENG-' + i });
       }
       await h.idbSetProjectDoc(page, pid, doc);
     }
@@ -1119,7 +1059,7 @@ test.describe('Bulk actions: Delete', () => {
     for (const id of idsToDelete) {
       const iss = after.issues.find(i => i.id === id);
       expect(iss, 'deleted issue must still exist in storage').toBeTruthy();
-      expect(iss.history.some(h => h.field === '__deleted__' && h.value === true)).toBe(true);
+      expect(h.issueFieldHistory(iss, '__deleted__').some(hh => hh.value === true)).toBe(true);
     }
     await expect(page.locator('[data-testid=bulk-action-bar]')).toHaveCount(0);
   });

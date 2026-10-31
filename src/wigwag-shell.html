@@ -1514,7 +1514,18 @@ function deriveIssueValues(issue, fieldDefs) {
     // way -- these fields are computed, not editable).
     if (def.type === 'timestamp') { values[colId] = issueTimestampValue(issue, colId); continue; }
     const latest = latestFieldEntry(issue, colId);
-    if (latest && latest.value !== undefined) { values[colId] = latest.value; continue; }
+    if (latest && latest.value !== undefined) {
+      const v = latest.value;
+      // Format v2: a linked field's real ref is folded INTO value now
+      // ({title, href} or {title, wigwag:{...}} -- see docs/FORMAT_V2.md),
+      // but `values[colId]` has always been the plain display value
+      // (compared against, typed into cells, rendered directly) with the
+      // ref itself a separate, sibling concern (deriveIssueFieldRefs) --
+      // unwrap back to just the title string here so every existing
+      // caller of values[colId] keeps seeing exactly what it always did.
+      values[colId] = (v && typeof v === 'object' && !Array.isArray(v) && 'title' in v) ? v.title : v;
+      continue;
+    }
     values[colId] = def.type === 'multiselect' ? [] : (def.type === 'text' || def.type === 'issue' ? '' : null);
   }
   return values;
@@ -1529,13 +1540,20 @@ function deriveIssueValues(issue, fieldDefs) {
 // that code doesn't need to change its own input shape to match --
 // same "derive a convenience view, never persist it" discipline
 // `values` itself already follows.
+// Not gated on fieldDefs[colId].type === 'issue' -- v1 never required
+// that either (a field's value simply carrying an object shape with its
+// own href/wigwag key was always enough, regardless of declared type;
+// confirmed live via the demo fixture's own 'title', type:'text', which
+// still carries a real GitHub link and feeds a rule bound to it). Keeping
+// that same permissiveness avoids a real functional regression for any
+// non-issue-typed field that happens to carry a link today.
 function deriveIssueFieldRefs(issue, fieldDefs) {
   const fieldRefs = {};
   for (const colId in fieldDefs) {
-    if (fieldDefs[colId].type !== 'issue') continue;
     const latest = latestFieldEntry(issue, colId);
     const v = latest && latest.value;
-    if (!v || typeof v !== 'object') continue;
+    if (!v || typeof v !== 'object' || Array.isArray(v)) continue; // a multiselect value is an array, never a ref
+    if (!v.wigwag && !v.href) continue; // not a ref-shaped object at all (e.g. a field-def value on project history)
     fieldRefs[colId] = v.wigwag ? { system: 'wigwag', ...v.wigwag } : { href: v.href || null };
   }
   return fieldRefs;

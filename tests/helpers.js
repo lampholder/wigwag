@@ -18,9 +18,12 @@ const demoFieldsLine = demoLines.find(l => l.type === 'fields');
 const demoIssues = demoLines.filter(l => l.type === 'issue');
 const demoDoc = {
   fieldDefs: demoFieldsLine.fields, columnOrder: demoFieldsLine.columnOrder, hiddenFieldIds: [],
+  // Format v2 (docs/FORMAT_V2.md): an issue's real data lives in
+  // issue.fields[colId].history now -- .values/.fieldRefs are always
+  // re-derived fresh on load (hydrateIssue), never trusted from storage,
+  // so there's nothing to precompute here.
   issues: demoIssues.map(iss => ({
-    id: iss.id, num: iss.num, fieldRefs: iss.fieldRefs || {}, fieldLoading: {},
-    values: iss.values, comments: iss.comments, history: iss.history
+    id: iss.id, fieldRefs: {}, fieldLoading: {}, fields: iss.fields
   })),
   githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: ''
 };
@@ -270,18 +273,63 @@ async function readActiveMilestoneDoc(page) {
 async function writeActiveMilestoneDoc(page, doc) {
   await idbSetProjectDoc(page, await activeMilestoneId(page), doc);
 }
-// values/fieldRefs are no longer persisted/exported directly -- history is
-// the sole source of truth. Mirrors the app's own deriveIssueFieldRefs:
-// latest history entry for this field that explicitly carries a fieldRef.
+// Format v2 (docs/FORMAT_V2.md): a field's own history is
+// issue.fields[colId].history now, not a slice of one flat array filtered
+// by h.field. values/fieldRefs are still never persisted/exported
+// directly -- history remains the sole source of truth.
+function issueFieldHistory(issue, colId) {
+  return (issue.fields && issue.fields[colId] && issue.fields[colId].history) || [];
+}
+function latestFieldHistoryEntry(issue, colId) {
+  const history = issueFieldHistory(issue, colId);
+  if (!history.length) return undefined;
+  return history.reduce((a, b) => (b.sortKey > a.sortKey ? b : a));
+}
+// fieldRef folded into value now: {title, href} (or the wigwag shape) when
+// linked, a plain string/other when not -- mirrors deriveIssueFieldRefs.
 function latestFieldRef(issue, colId) {
-  const entries = (issue.history || []).filter(hh => hh.field === colId && hh.fieldRef !== undefined);
-  if (!entries.length) return undefined;
-  return entries.reduce((a, b) => (b.sortKey > a.sortKey ? b : a)).fieldRef;
+  const latest = latestFieldHistoryEntry(issue, colId);
+  return (latest && latest.value && typeof latest.value === 'object') ? latest.value : undefined;
 }
 function latestFieldValue(issue, colId) {
-  const entries = (issue.history || []).filter(hh => hh.field === colId && hh.value !== undefined);
-  if (!entries.length) return undefined;
-  return entries.reduce((a, b) => (b.sortKey > a.sortKey ? b : a)).value;
+  const latest = latestFieldHistoryEntry(issue, colId);
+  return latest ? latest.value : undefined;
+}
+// Test-fixture convenience: appends one raw field-value entry directly to
+// a raw (not-yet-hydrated) issue doc, the same shape appendSignedHistory
+// itself produces (minus a real signature -- these are never verified in
+// tests). sortKey auto-advances past every existing entry ACROSS THE
+// WHOLE ISSUE (every field), matching the old single-flat-array
+// Math.max(...issue.history.map(h=>h.sortKey)) pattern this replaces, so
+// relative ordering between fields stays correct. Pass `href` to produce
+// a linked issue-type field's {title, href} value shape.
+function pushFieldEntry(issue, colId, value, opts) {
+  opts = opts || {};
+  let maxSortKey = 0;
+  for (const cId in (issue.fields || {})) {
+    for (const hh of (issue.fields[cId].history || [])) { if ((hh.sortKey || 0) > maxSortKey) maxSortKey = hh.sortKey; }
+  }
+  if (!issue.fields) issue.fields = {};
+  if (!issue.fields[colId]) issue.fields[colId] = { history: [] };
+  const entry = {
+    id: opts.id || ('test-' + colId + '-' + (maxSortKey + 1)),
+    actor: opts.actor || 'test',
+    value: opts.href ? { title: value, href: opts.href } : value,
+    sortKey: opts.sortKey || (maxSortKey + 1),
+    sig: null, pubKey: null
+  };
+  issue.fields[colId].history.push(entry);
+  return entry;
+}
+function githubHref(owner, repo, num) { return 'https://github.com/' + owner + '/' + repo + '/issues/' + num; }
+// Total entry count across every field on an issue -- the generic
+// replacement for the old flat issue.history.length, for a test that just
+// wants to know "did something new get written" without caring which
+// field(s).
+function issueHistoryEntryCount(issue) {
+  let n = 0;
+  for (const colId in (issue.fields || {})) n += (issue.fields[colId].history || []).length;
+  return n;
 }
 
 // Idempotent -- the pill itself is a plain toggle (click closes it if
@@ -1238,10 +1286,32 @@ async function getHistoryEntries(page) {
 // Reads an issue's history log directly from persisted state — more direct
 // than getHistoryEntries (which scrapes the slide-over's DOM and requires it
 // to be open) for tests that just need to confirm a specific event happened.
+// Format v2: a field-value entry no longer carries its own narrative
+// `.text` (see docs/FORMAT_V2.md) -- reconstructs the same "field set to
+// value" text the real app's Activity feed now generates
+// (buildIssueHistoryActivityEntries in src/wigwag-app.js). A test
+// asserting on one of the OLD distinct verbs ("Refreshing…", "X
+// refreshed from…", "Could not fetch…") is asserting on behavior that no
+// longer exists at all (refresh/fetch/error are no longer narrated, or
+// for a failed fetch, logged to history at all) -- that's a per-test
+// fixup, not something this helper can paper over.
 async function getHistoryEntriesFor(page, issueId) {
   const d = await readActiveMilestoneDoc(page);
   const iss = d.issues.find(i => i.id === issueId);
-  return iss ? iss.history.map(h => h.text) : [];
+  if (!iss) return [];
+  const fieldDefs = d.fieldDefs || {};
+  const entries = [];
+  for (const colId in (iss.fields || {})) {
+    const def = fieldDefs[colId];
+    for (const hEntry of (iss.fields[colId].history || [])) {
+      const text = (def && def.type === 'commentStream') ? hEntry.text
+        : colId === '__deleted__' ? 'Deleted issue'
+        : `${(def && def.label) || colId} set to ${hEntry.value}`;
+      entries.push({ sortKey: hEntry.sortKey || 0, text });
+    }
+  }
+  entries.sort((a, b) => a.sortKey - b.sortKey);
+  return entries.map(e => e.text);
 }
 
 module.exports = {
@@ -1284,6 +1354,11 @@ module.exports = {
   readSourceViewText,
   latestFieldRef,
   latestFieldValue,
+  issueFieldHistory,
+  latestFieldHistoryEntry,
+  pushFieldEntry,
+  githubHref,
+  issueHistoryEntryCount,
   openTrackerSwitcher,
   addBlankProject,
   renameActiveProject,

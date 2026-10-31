@@ -387,11 +387,7 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
     await h.gotoTracker(page);
     const doc = await h.readActiveMilestoneDoc(page);
     const issue = doc.issues[0];
-    issue.history.push({
-      id: 'h-gh-delete-test', field: 'linked', value: 'octocat/Hello-World#1', text: 'Related linked',
-      fieldRef: { href: 'https://github.com/octocat/Hello-World/issues/1', fetchedVia: '__builtin_github' },
-      origin: 'authored', sortKey: 9301, sig: null, pubKey: null
-    });
+    h.pushFieldEntry(issue, 'linked', 'octocat/Hello-World#1', { id: 'h-gh-delete-test', href: 'https://github.com/octocat/Hello-World/issues/1', sortKey: 9301 });
     await h.writeActiveMilestoneDoc(page, doc);
     await page.reload({ waitUntil: 'networkidle' });
     await h.waitForBootSplashGone(page);
@@ -434,11 +430,7 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
     await h.gotoTracker(page);
     const doc = await h.readActiveMilestoneDoc(page);
     const issue = doc.issues[0];
-    issue.history.push({
-      id: 'h-jira2-delete-test', field: 'linked', value: 'SEC-1', text: 'Related linked',
-      fieldRef: { href: 'https://second.atlassian.net/browse/SEC-1', fetchedVia: 'conn_second_jira' },
-      origin: 'authored', sortKey: 9401, sig: null, pubKey: null
-    });
+    h.pushFieldEntry(issue, 'linked', 'SEC-1', { id: 'h-jira2-delete-test', href: 'https://second.atlassian.net/browse/SEC-1', sortKey: 9401 });
     await h.writeActiveMilestoneDoc(page, doc);
     await page.reload({ waitUntil: 'networkidle' });
     await h.waitForBootSplashGone(page);

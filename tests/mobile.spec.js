@@ -13,12 +13,11 @@ test.use({ viewport: { width: 390, height: 844 } });
 const FIXTURE_ID = 'deadbee0-1111-2222-3333-444455556666';
 async function seedJumpFixture(page) {
   const doc = await h.readActiveMilestoneDoc(page);
-  doc.issues.push({
-    id: FIXTURE_ID, num: (doc.issues.reduce((m, i) => Math.max(m, i.num || 0), 0)) + 1, fieldRefs: {}, fieldLoading: {},
-    values: { title: 'Fixture jump target', type: 'chore', priority: 'p2', rag: null, teams: [], mitigation: '', linked: '' },
-    comments: [],
-    history: [{ time: 'Aug 1', actor: 'tom', text: 'Created', sortKey: 1 }]
-  });
+  const fixtureIssue = { id: FIXTURE_ID, fieldRefs: {}, fieldLoading: {}, fields: {} };
+  h.pushFieldEntry(fixtureIssue, 'title', 'Fixture jump target');
+  h.pushFieldEntry(fixtureIssue, 'type', 'chore');
+  h.pushFieldEntry(fixtureIssue, 'priority', 'p2');
+  doc.issues.push(fixtureIssue);
   await h.writeActiveMilestoneDoc(page, doc);
   await page.reload({ waitUntil: 'networkidle' });
   await page.waitForTimeout(300);
@@ -287,12 +286,8 @@ test.describe('M2: switcher sheet', () => {
     await h.idbSetProjectDoc(page, 'other-project', {
       fieldDefs: { title: { label: 'Issue', type: 'issue' } },
       issues: [{
-        id: 'op-live-1', num: 1, fieldRefs: {}, fieldLoading: {}, comments: [],
-        history: [{
-          id: 'op-live-1-title', time: new Date().toISOString(), actor: 'Peer', email: 'peer@example.com',
-          text: 'Set Issue to "Cross-tab mobile count test"', field: 'title', value: 'Cross-tab mobile count test',
-          origin: 'authored', sortKey: 1, sig: null, sigRedacted: null, pubKey: null
-        }]
+        id: 'op-live-1', fieldRefs: {}, fieldLoading: {},
+        fields: { title: { history: [{ id: 'op-live-1-title', actor: 'peer@example.com', value: 'Cross-tab mobile count test', sortKey: 1, sig: null, pubKey: null }] } }
       }],
       githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: ''
     });
@@ -434,7 +429,7 @@ test.describe('M4: paste sheet', () => {
   test('pasting valid JSONL into the merge sheet applies it (same onSubmitPasteMerge desktop uses)', async ({ page }) => {
     const pastedJsonl = [
       JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, columnOrder: [] }),
-      JSON.stringify({ type: 'issue', id: 'mobile-pasted-merge-1', num: 300, fieldRefs: {}, values: { title: 'Pasted-in via mobile merge sheet' }, comments: [], history: [] })
+      JSON.stringify({ type: 'issue', id: 'mobile-pasted-merge-1', fields: { title: { history: [{ id: 'mpm1-title', actor: 'test', value: 'Pasted-in via mobile merge sheet', sortKey: 1, sig: null, pubKey: null }] } } })
     ].join('\n');
 
     await page.locator('[data-testid=mobile-toolbar-receive]').click();
@@ -566,10 +561,7 @@ test.describe('M7: row detail', () => {
   test('a "Description" field is promoted full-width beneath the title, markdown-rendered, and excluded from the fields grid', async ({ page }) => {
     const doc = await h.readActiveMilestoneDoc(page);
     doc.fieldDefs.description = { label: 'Description', type: 'text' };
-    doc.issues[0].history.push({
-      id: 'test-desc-1', time: 'Aug 1', actor: 'tom', email: '', text: 'Description set',
-      field: 'description', value: 'This is the **full** description body.', sortKey: 100
-    });
+    h.pushFieldEntry(doc.issues[0], 'description', 'This is the **full** description body.', { id: 'test-desc-1' });
     await h.writeActiveMilestoneDoc(page, doc);
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
@@ -593,7 +585,7 @@ test.describe('M7: row detail', () => {
     const projectId = await h.activeMilestoneId(page);
     const doc = await h.readActiveMilestoneDoc(page);
     const issue = doc.issues[0];
-    const latestTypeEntry = issue.history.filter(e => e.field === 'type').slice(-1)[0];
+    const latestTypeEntry = h.latestFieldHistoryEntry(issue, 'type');
     await page.evaluate(({ projectId, issueId, entryId }) => {
       const KEY = 'git_native_tracker_local_derived_entry_ids_v1';
       const all = JSON.parse(localStorage.getItem(KEY) || '{}');

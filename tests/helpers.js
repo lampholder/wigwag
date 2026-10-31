@@ -287,9 +287,14 @@ function latestFieldHistoryEntry(issue, colId) {
 }
 // fieldRef folded into value now: {title, href} (or the wigwag shape) when
 // linked, a plain string/other when not -- mirrors deriveIssueFieldRefs.
+// Returns null (not undefined) when unlinked -- deriveIssueFieldRefs
+// itself never produces a key at all for an unlinked field, so null
+// reads as "explicitly nothing" the same way a test asserting toBeNull()
+// on a deliberately-de-linked field already expects.
 function latestFieldRef(issue, colId) {
   const latest = latestFieldHistoryEntry(issue, colId);
-  return (latest && latest.value && typeof latest.value === 'object') ? latest.value : undefined;
+  const v = latest && latest.value;
+  return (v && typeof v === 'object' && !Array.isArray(v) && (v.href !== undefined || v.wigwag)) ? v : null;
 }
 function latestFieldValue(issue, colId) {
   const latest = latestFieldHistoryEntry(issue, colId);
@@ -322,6 +327,30 @@ function pushFieldEntry(issue, colId, value, opts) {
   return entry;
 }
 function githubHref(owner, repo, num) { return 'https://github.com/' + owner + '/' + repo + '/issues/' + num; }
+// Same convenience as pushFieldEntry, for a comment-stream field --
+// carries `text` instead of `value` (format v2's own distinction between
+// a field-value entry and a comment entry). Defaults colId to 'comments',
+// the grandfathered built-in comment-stream field id every demo-fixture
+// issue already has.
+function pushCommentEntry(issue, text, opts) {
+  opts = opts || {};
+  const colId = opts.colId || 'comments';
+  let maxSortKey = 0;
+  for (const cId in (issue.fields || {})) {
+    for (const hh of (issue.fields[cId].history || [])) { if ((hh.sortKey || 0) > maxSortKey) maxSortKey = hh.sortKey; }
+  }
+  if (!issue.fields) issue.fields = {};
+  if (!issue.fields[colId]) issue.fields[colId] = { history: [] };
+  const entry = {
+    id: opts.id || ('test-c-' + (maxSortKey + 1)),
+    actor: opts.actor || 'test',
+    text,
+    sortKey: opts.sortKey || (maxSortKey + 1),
+    sig: null, pubKey: null
+  };
+  issue.fields[colId].history.push(entry);
+  return entry;
+}
 // Total entry count across every field on an issue -- the generic
 // replacement for the old flat issue.history.length, for a test that just
 // wants to know "did something new get written" without caring which
@@ -1357,6 +1386,7 @@ module.exports = {
   issueFieldHistory,
   latestFieldHistoryEntry,
   pushFieldEntry,
+  pushCommentEntry,
   githubHref,
   issueHistoryEntryCount,
   openTrackerSwitcher,

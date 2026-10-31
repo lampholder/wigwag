@@ -11,7 +11,7 @@
 const {
   xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, columnFilterIsActive, dateFilterPresetRanges, parseFilterQuery, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, isPastedTextASingleUrl, wrapSelectionWithMarkdownLink, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, deriveFieldDefs, effectiveFieldDefs, deriveProjectName, PROJECT_NAME_FIELD_ID, deriveProjectNotes, PROJECT_NOTES_FIELD_ID, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, principalKind, SIGN_ALG, JOSE_ALG_ES256, signEntryPayload, verifyEntryPayload, signableEntryPayload, signableProjectEntryPayload, redactedEntryPayload, redactedProjectEntryPayload, signableCommentEntryPayload, signableProjectCommentEntryPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER
 ,
-  buildSource, normalizeRef, sourceRefHasFullData, evalRule, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, fieldLocalBindState, liveBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, builtinKindConfigured, builtinKindReachable, resolveRefSystem, parseGithubUrl, parseJiraKey, parseSalesforceId, hostFromUrl,
+  buildSource, normalizeRef, sourceRefHasFullData, evalRule, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, fieldLocalBindState, liveBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, builtinKindConfigured, builtinKindReachable, resolveRefSystem, parseGithubUrl, parseJiraKey, parseSalesforceId, hostFromUrl, buildWigwagUri, parseWigwagUri,
   CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, newFieldId, newOptionId, pickConnectorFields, connectorLinkText, compileConnectorMacro,
   importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry,
   squashHistory, redactEntry, redactProjectEntry, displayValueForHistory, buildSourceText, humanFileSize, parseJsonl, entryKey, unionByKey, mergeIssuePair, computeIssueMerge, mergeHasRealChanges, computeFieldDefsMerge, computeDerivedChangeEntries, buildGithubContentsUrl, buildGithubContentsHeaders, buildGithubCommitMessage, pullGithubFile, pushGithubFile, probeGithubRepoAccess, issueCreatedAt, computeHeaderMeshTriangles, computeHeaderCompression, cellPaddingForWidth, computeAffordanceFade,
@@ -880,14 +880,23 @@ class Component extends DCLogic {
   // concat is fine.
   // Format v2: a comment-stream field is just another entry in
   // issue.fields now (its own colId, e.g. the grandfathered 'comments'
-  // or a new commentStream__<name> id) -- identified by fieldDefs'
-  // type:'commentStream', not by a separate issue.commentStreams
-  // structure any more (see docs/FORMAT_V2.md).
+  // or a new commentStream__<name> id) -- no more separate
+  // issue.commentStreams structure (see docs/FORMAT_V2.md). Identified
+  // structurally (an entry carries `text`, never `value` -- the two are
+  // mutually exclusive by construction, confirmed: the one other case
+  // that used to produce a text-only field entry, a fetch-failure log,
+  // is retired entirely), NOT via this.state.fieldDefs -- a live-
+  // reported regression found via mentions.spec.js: setState is
+  // batched, so a caller that just set fresh fieldDefs via setState
+  // (_applyRemoteDocUpdate, on a brand-new project's very first
+  // connect) and immediately calls this synchronously afterward could
+  // still read the OLD, pre-update fieldDefs here, silently finding
+  // zero comment-stream fields on an issue that very much has one.
   allCommentStreamEntries(issue) {
-    const fieldDefs = this.effectiveFieldDefs();
     const entries = [];
     for (const colId in (issue.fields || {})) {
-      if (fieldDefs[colId] && fieldDefs[colId].type === 'commentStream') entries.push(...(issue.fields[colId].history || []));
+      const history = issue.fields[colId].history || [];
+      if (history.length && history[0].text !== undefined && history[0].value === undefined) entries.push(...history);
     }
     return entries;
   }
@@ -3222,13 +3231,21 @@ class Component extends DCLogic {
   // Format v2: an issue-level entry drops text/origin entirely (field
   // becomes the fields-map key, not stored on the entry itself) and
   // folds fieldRef into value as {title, href} when the field is linked
-  // -- see docs/FORMAT_V2.md. Every call site keeps passing `field` (the
-  // colId) and may still pass a `text`/`origin` (now silently ignored --
-  // left harmless rather than ripped out of every caller, since neither
-  // carries any remaining meaning to strip by hand at each site).
+  // -- see docs/FORMAT_V2.md. One uniform shape for every system,
+  // wigwag included: a wigwag-internal cross-project link's own href is
+  // just a wigwag: URI (buildWigwagUri), resolved back into
+  // {system:'wigwag', projectId, issueId, from, path, ref} on read by
+  // deriveIssueFieldRefs (parseWigwagUri) -- this closes the "known
+  // open item" FORMAT_V2.md itself flagged as not worked out, per Tom's
+  // own suggestion to give it an href too instead of a second shape.
+  // Every call site keeps passing `field` (the colId) and may still
+  // pass a `text`/`origin` (now silently ignored -- left harmless
+  // rather than ripped out of every caller, since neither carries any
+  // remaining meaning to strip by hand at each site).
   appendSignedHistory(issueId, { field, value, fieldRef }) {
     const colId = field;
-    const finalValue = (fieldRef && fieldRef.href) ? { title: value, href: fieldRef.href } : value;
+    const href = fieldRef && fieldRef.system === 'wigwag' ? buildWigwagUri(fieldRef) : (fieldRef && fieldRef.href);
+    const finalValue = href ? { title: value, href } : value;
     const entryBase = {
       id: crypto.randomUUID ? crypto.randomUUID() : 'h-' + Date.now() + '-' + Math.random().toString(36).slice(2),
       actor: this.displayName(),
@@ -6717,16 +6734,24 @@ class Component extends DCLogic {
       // above) so a new comment doesn't fire BOTH a "commented" and a
       // generic "Update on ..." notification for the same entry. `text`
       // is gone from a plain field-value entry (see docs/FORMAT_V2.md),
-      // so there's no per-entry message left to show beyond the generic
-      // fallback.
+      // so the notification body is reconstructed the same "field set to
+      // value" way the Activity feed already does
+      // (buildIssueHistoryActivityEntries), not a generic fallback.
       const fieldDefs = this.effectiveFieldDefs();
       for (const colId in (iss.fields || {})) {
-        if (fieldDefs[colId] && fieldDefs[colId].type === 'commentStream') continue;
-        for (const h of (iss.fields[colId].history || [])) {
+        const def = fieldDefs[colId];
+        const fieldHistory = iss.fields[colId].history || [];
+        // Same structural (not fieldDefs-based) comment-stream detection
+        // as allCommentStreamEntries -- see its own comment for the
+        // real, live-reported setState-batching race this avoids.
+        if (fieldHistory.length && fieldHistory[0].text !== undefined && fieldHistory[0].value === undefined) continue;
+        for (const h of fieldHistory) {
           const key = entryKey(h);
           if (alreadyNotified.has(key) || newlyNotified.includes(key)) continue;
           if (h.actor && h.actor === email) continue;
-          const fired = fire('Update on ' + (iss.values.title || 'an issue'), 'A field changed', () => this.openSlideOver(iss.id), key);
+          const body = colId === ISSUE_DELETED_FIELD_ID ? 'Deleted issue'
+            : ((def && def.label) || colId) + ' set to ' + (def ? displayValueForHistory(def, h.value) : h.value);
+          const fired = fire('Update on ' + (iss.values.title || 'an issue'), body, () => this.openSlideOver(iss.id), key);
           if (fired) newlyNotified.push(key);
         }
       }

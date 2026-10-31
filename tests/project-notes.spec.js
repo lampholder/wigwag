@@ -570,7 +570,7 @@ test.describe('Project comments merge by union, not by presence', () => {
     const lines = await exportCurrentProjectLines(page);
     const fieldsLine = lines.find(l => l.type === 'fields');
     fieldsLine.projectComments = [
-      { id: 'incoming-comment-1', author: 'dave', email: 'dave@wigwag.dev', time: 'Aug 2, 1:00pm', text: 'Incoming comment B.', sortKey: Date.now() - 5000 }
+      { id: 'incoming-comment-1', actor: 'dave@wigwag.dev', text: 'Incoming comment B.', sortKey: Date.now() - 5000, sig: null, pubKey: null }
     ];
     await importLines(page, lines, { filename: 'reimport-comments.jsonl' });
 
@@ -591,7 +591,7 @@ test.describe('Project comments merge by union, not by presence', () => {
     const lines = await exportCurrentProjectLines(page);
     const fieldsLine = lines.find(l => l.type === 'fields');
     fieldsLine.projectComments = [
-      { id: 'incoming-only-1', author: 'dave', email: 'dave@wigwag.dev', time: 'Aug 2, 1:00pm', text: 'Only remote comment.', sortKey: Date.now() - 5000 }
+      { id: 'incoming-only-1', actor: 'dave@wigwag.dev', text: 'Only remote comment.', sortKey: Date.now() - 5000, sig: null, pubKey: null }
     ];
     await importLines(page, lines, { filename: 'adopt-comments.jsonl' });
     await expect(page.locator('[data-testid=btn-merge-primary]')).toBeEnabled();

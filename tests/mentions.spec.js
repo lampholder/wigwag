@@ -138,7 +138,7 @@ test.describe('Settings: mention notifications toggle', () => {
     const demoLines = fs.readFileSync(path.join(__dirname, 'fixtures', 'demo-milestone.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
     const remote = JSON.parse(JSON.stringify(demoLines));
     const i5 = remote.find(l => l.type === 'issue' && l.id === 'i5');
-    i5.comments.push({ id: 'cm_preexisting', author: 'jordan', email: 'jordan@example.com', time: 'Aug 2', text: 'hey @tom@example.com can you take a look?', sortKey: Date.now() + 1000 });
+    h.pushCommentEntry(i5, 'hey @tom@example.com can you take a look?', { id: 'cm_preexisting', actor: 'jordan@example.com', sortKey: Date.now() + 1000 });
     // This mention is synced in and read *before* notifications are ever
     // turned on -- notifications aren't enabled yet, so nothing fires here.
     gh.getResponses = [{ status: 200, sha: 'sha-1-preexisting', text: remote.map(l => JSON.stringify(l)).join('\n') }];
@@ -157,7 +157,7 @@ test.describe('Settings: mention notifications toggle', () => {
     // edit, so it's a genuinely new blob sha and actually gets merged again)
     // must not re-fire it.
     const remoteAgain = JSON.parse(JSON.stringify(remote));
-    remoteAgain.find(l => l.type === 'issue' && l.id === 'i2').values.title += ' (edited)';
+    h.pushFieldEntry(remoteAgain.find(l => l.type === 'issue' && l.id === 'i2'), 'title', 'ACME – New rooms added to spaces don\'t show until sync (edited)', { id: 'edit-i2-title' });
     gh.getResponses = [{ status: 200, sha: 'sha-2-resync-same-mention', text: remoteAgain.map(l => JSON.stringify(l)).join('\n') }];
     await page.waitForTimeout(6000); // past a full poll interval
     expect(await page.evaluate(() => window.__notifications.length)).toBe(0);
@@ -165,7 +165,7 @@ test.describe('Settings: mention notifications toggle', () => {
     // A genuinely new mention afterward still fires -- seeding only
     // suppressed the pre-existing backlog, not mentions going forward.
     const remoteNew = JSON.parse(JSON.stringify(remoteAgain));
-    remoteNew.find(l => l.type === 'issue' && l.id === 'i5').comments.push({ id: 'cm_after_enable', author: 'jordan', email: 'jordan@example.com', time: 'Aug 2', text: 'following up @tom@example.com', sortKey: Date.now() + 2000 });
+    h.pushCommentEntry(remoteNew.find(l => l.type === 'issue' && l.id === 'i5'), 'following up @tom@example.com', { id: 'cm_after_enable', actor: 'jordan@example.com', sortKey: Date.now() + 2000 });
     gh.getResponses = [{ status: 200, sha: 'sha-3-genuinely-new', text: remoteNew.map(l => JSON.stringify(l)).join('\n') }];
     await h.waitUntil(() => page.evaluate(() => window.__notifications.length > 0), 12000);
     expect(await page.evaluate(() => window.__notifications.length)).toBe(1);
@@ -324,9 +324,9 @@ test.describe('Mention notifications: firing on a background poll', () => {
     const remote = JSON.parse(JSON.stringify(demoLines));
     const i2 = remote.find(l => l.type === 'issue' && l.id === 'i2');
     // A self-mention (author === the mentioned identity) must never notify.
-    i2.comments.push({ id: 'cm_self', author: 'tom', email: 'tom@example.com', time: 'Aug 2', text: 'note to self @tom@example.com', sortKey: Date.now() + 500 });
+    h.pushCommentEntry(i2, 'note to self @tom@example.com', { id: 'cm_self', actor: 'tom@example.com', sortKey: Date.now() + 500 });
     const i5 = remote.find(l => l.type === 'issue' && l.id === 'i5');
-    i5.comments.push({ id: 'cm_mention', author: 'jordan', email: 'jordan@example.com', time: 'Aug 2', text: 'hey @tom@example.com can you take a look?', sortKey: Date.now() + 1000 });
+    h.pushCommentEntry(i5, 'hey @tom@example.com can you take a look?', { id: 'cm_mention', actor: 'jordan@example.com', sortKey: Date.now() + 1000 });
     gh.getResponses = [{ status: 200, sha: 'sha-remote-mention-1', text: remote.map(l => JSON.stringify(l)).join('\n') }];
 
     await h.waitUntil(() => page.evaluate(() => window.__notifications.length > 0), 12000);
@@ -364,7 +364,7 @@ test.describe('Mention notifications: firing on a background poll', () => {
     const demoLines = fs.readFileSync(path.join(__dirname, 'fixtures', 'demo-milestone.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
     const remote = JSON.parse(JSON.stringify(demoLines));
     const i5 = remote.find(l => l.type === 'issue' && l.id === 'i5');
-    i5.comments.push({ id: 'cm_tagtest', author: 'jordan', email: 'jordan@example.com', time: 'Aug 2', text: 'hey @tom@example.com tagging test', sortKey: Date.now() + 1000 });
+    h.pushCommentEntry(i5, 'hey @tom@example.com tagging test', { id: 'cm_tagtest', actor: 'jordan@example.com', sortKey: Date.now() + 1000 });
     gh.getResponses = [{ status: 200, sha: 'sha-remote-mention-tag', text: remote.map(l => JSON.stringify(l)).join('\n') }];
 
     await h.waitUntil(() => page.evaluate(() => window.__notifications.length > 0), 12000);
@@ -394,14 +394,19 @@ test.describe('Mention notifications: firing on a background poll', () => {
     const demoLines = fs.readFileSync(path.join(__dirname, 'fixtures', 'demo-milestone.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
     const remote = JSON.parse(JSON.stringify(demoLines));
     const i5 = remote.find(l => l.type === 'issue' && l.id === 'i5');
-    i5.comments.push({ id: 'cm_connect', author: 'jordan', email: 'jordan@example.com', time: 'Aug 2', text: 'hey @tom@example.com can you take a look?', sortKey: Date.now() + 1000 });
-    // The mention is already baked into the very first successful pull --
-    // set up before setGithubRepoSync's own reload, so the notification (if
-    // it fires) can only have come from that initial connect, not the
-    // 5-second background poll this suite sets elsewhere.
+    h.pushCommentEntry(i5, 'hey @tom@example.com can you take a look?', { id: 'cm_connect', actor: 'jordan@example.com', sortKey: Date.now() + 1000 });
     gh.getResponses = [{ status: 200, sha: 'sha-remote-mention-on-connect', text: remote.map(l => JSON.stringify(l)).join('\n') }];
+    // onGithubConnectionSettingChange fires a real connectGithubRepo() the
+    // moment the repo field looks valid (pre-existing behavior, confirmed
+    // -- re-verifies against a changed target immediately rather than
+    // coasting on stale status) -- that's the "very first connect" this
+    // test is actually about, happening right here as setGithubRepoSync
+    // fills the field, not later. A page.reload() after this point would
+    // re-run every addInitScript (including the one seeding
+    // window.__notifications = []), destroying the evidence that this
+    // already-real connect's own merge correctly fired a notification --
+    // so this deliberately checks in place, with no reload at all.
     await h.setGithubRepoSync(page, { repo: REPO, token: 'ghp_faketoken' });
-    await page.reload({ waitUntil: 'networkidle' });
 
     // Well under the 5s poll interval this suite runs with -- a notification
     // showing up this fast can only be the initial connect's own merge.
@@ -425,10 +430,11 @@ test.describe('Mention notifications: firing on a background poll', () => {
     const otherDoc = {
       fieldDefs: { title: { label: 'Issue', type: 'text' } }, columnOrder: [], hiddenFieldIds: [],
       issues: [{
-        id: 'local1', num: 1, fieldRefs: {}, fieldLoading: {},
-        values: { title: 'Other local project issue' },
-        comments: [{ id: 'cm_local_switch', author: 'jordan', email: 'jordan@example.com', time: 'Aug 2', text: 'hey @tom@example.com take a look here too', sortKey: Date.now() + 1000 }],
-        history: []
+        id: 'local1', fieldRefs: {}, fieldLoading: {},
+        fields: {
+          title: { history: [{ id: 'local1-title', actor: 'jordan@example.com', value: 'Other local project issue', sortKey: 1, sig: null, pubKey: null }] },
+          comments: { history: [{ id: 'cm_local_switch', actor: 'jordan@example.com', text: 'hey @tom@example.com take a look here too', sortKey: Date.now() + 1000, sig: null, pubKey: null }] }
+        }
       }],
       githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: ''
     };
@@ -480,7 +486,7 @@ test.describe('Mention notifications: firing on a background poll', () => {
     const demoLines = fs.readFileSync(path.join(__dirname, 'fixtures', 'demo-milestone.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
     const remote = JSON.parse(JSON.stringify(demoLines));
     const i5 = remote.find(l => l.type === 'issue' && l.id === 'i5');
-    i5.comments.push({ id: 'cm_click', author: 'jordan', email: 'jordan@example.com', time: 'Aug 2', text: 'cc @tom@example.com', sortKey: Date.now() + 1000 });
+    h.pushCommentEntry(i5, 'cc @tom@example.com', { id: 'cm_click', actor: 'jordan@example.com', sortKey: Date.now() + 1000 });
     gh.getResponses = [{ status: 200, sha: 'sha-remote-mention-2', text: remote.map(l => JSON.stringify(l)).join('\n') }];
 
     await h.waitUntil(() => page.evaluate(() => window.__notifications.length > 0), 12000);
@@ -507,7 +513,7 @@ test.describe('Mention notifications: firing on a background poll', () => {
     const demoLines = fs.readFileSync(path.join(__dirname, 'fixtures', 'demo-milestone.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
     const remote = JSON.parse(JSON.stringify(demoLines));
     const i5 = remote.find(l => l.type === 'issue' && l.id === 'i5');
-    i5.comments.push({ id: 'cm_bare', author: 'jordan', email: 'jordan@example.com', time: 'Aug 2', text: 'my email is tom@example.com fyi, no @ needed', sortKey: Date.now() + 1000 });
+    h.pushCommentEntry(i5, 'my email is tom@example.com fyi, no @ needed', { id: 'cm_bare', actor: 'jordan@example.com', sortKey: Date.now() + 1000 });
     gh.getResponses = [{ status: 200, sha: 'sha-remote-bare-email', text: remote.map(l => JSON.stringify(l)).join('\n') }];
 
     await h.waitUntil(() => page.evaluate(() => window.__notifications.length > 0), 12000);
@@ -533,7 +539,7 @@ test.describe('Mention notifications: firing on a background poll', () => {
     const demoLines = fs.readFileSync(path.join(__dirname, 'fixtures', 'demo-milestone.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
     const remote = JSON.parse(JSON.stringify(demoLines));
     const i5 = remote.find(l => l.type === 'issue' && l.id === 'i5');
-    i5.comments.push({ id: 'cm_substring', author: 'jordan', email: 'jordan@example.com', time: 'Aug 2', text: 'reached out to nottom@example.com and tom@example.com.evil.com, no real match here', sortKey: Date.now() + 1000 });
+    h.pushCommentEntry(i5, 'reached out to nottom@example.com and tom@example.com.evil.com, no real match here', { id: 'cm_substring', actor: 'jordan@example.com', sortKey: Date.now() + 1000 });
     gh.getResponses = [{ status: 200, sha: 'sha-remote-substring-email', text: remote.map(l => JSON.stringify(l)).join('\n') }];
 
     await page.waitForTimeout(6000); // past a full poll interval with no notification expected
@@ -558,7 +564,7 @@ test.describe('Mention notifications: firing on a background poll', () => {
     const demoLines = fs.readFileSync(path.join(__dirname, 'fixtures', 'demo-milestone.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
     const remote = JSON.parse(JSON.stringify(demoLines));
     const i5 = remote.find(l => l.type === 'issue' && l.id === 'i5');
-    i5.comments.push({ id: 'cm_repeat', author: 'jordan', email: 'jordan@example.com', time: 'Aug 2', text: 'cc @tom@example.com', sortKey: Date.now() + 1000 });
+    h.pushCommentEntry(i5, 'cc @tom@example.com', { id: 'cm_repeat', actor: 'jordan@example.com', sortKey: Date.now() + 1000 });
     const remoteSha = 'sha-remote-mention-repeat';
     gh.getResponses = [{ status: 200, sha: remoteSha, text: remote.map(l => JSON.stringify(l)).join('\n') }];
 
@@ -621,11 +627,11 @@ test.describe('Issue subscriptions', () => {
     const demoLines = fs.readFileSync(path.join(__dirname, 'fixtures', 'demo-milestone.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
     const remote = JSON.parse(JSON.stringify(demoLines));
     const i5 = remote.find(l => l.type === 'issue' && l.id === 'i5');
-    i5.comments.push({ id: 'cm_plain', author: 'jordan', email: 'jordan@example.com', time: 'Aug 2', text: 'just an update, no mention here', sortKey: Date.now() + 1000 });
+    h.pushCommentEntry(i5, 'just an update, no mention here', { id: 'cm_plain', actor: 'jordan@example.com', sortKey: Date.now() + 1000 });
     // A different, unsubscribed issue also gets a plain comment -- must
     // NOT fire (not subscribed, doesn't mention the reader either).
     const i2 = remote.find(l => l.type === 'issue' && l.id === 'i2');
-    i2.comments.push({ id: 'cm_other_issue', author: 'jordan', email: 'jordan@example.com', time: 'Aug 2', text: 'unrelated comment on a different issue', sortKey: Date.now() + 1000 });
+    h.pushCommentEntry(i2, 'unrelated comment on a different issue', { id: 'cm_other_issue', actor: 'jordan@example.com', sortKey: Date.now() + 1000 });
     gh.getResponses = [{ status: 200, sha: 'sha-remote-sub-comment', text: remote.map(l => JSON.stringify(l)).join('\n') }];
 
     await h.waitUntil(() => page.evaluate(() => window.__notifications.length > 0), 12000);
@@ -656,7 +662,7 @@ test.describe('Issue subscriptions', () => {
     const demoLines = fs.readFileSync(path.join(__dirname, 'fixtures', 'demo-milestone.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
     const remote = JSON.parse(JSON.stringify(demoLines));
     const i5 = remote.find(l => l.type === 'issue' && l.id === 'i5');
-    i5.history.push({ id: 'ext_h_sub', time: 'Aug 2', actor: 'jordan', email: 'jordan@example.com', text: 'Mitigation set to "Root cause identified"', field: 'mitigation', value: 'Root cause identified', origin: 'authored', sortKey: Date.now() + 1000, sig: null, pubKey: null });
+    h.pushFieldEntry(i5, 'mitigation', 'Root cause identified', { id: 'ext_h_sub', actor: 'jordan@example.com', sortKey: Date.now() + 1000 });
     gh.getResponses = [{ status: 200, sha: 'sha-remote-sub-history', text: remote.map(l => JSON.stringify(l)).join('\n') }];
 
     await h.waitUntil(() => page.evaluate(() => window.__notifications.length > 0), 12000);
@@ -690,7 +696,7 @@ test.describe('Issue subscriptions', () => {
     const demoLines = fs.readFileSync(path.join(__dirname, 'fixtures', 'demo-milestone.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
     const remote = JSON.parse(JSON.stringify(demoLines));
     const i5 = remote.find(l => l.type === 'issue' && l.id === 'i5');
-    i5.comments.push({ id: 'cm_after_unsub', author: 'jordan', email: 'jordan@example.com', time: 'Aug 2', text: 'no longer subscribed to this', sortKey: Date.now() + 1000 });
+    h.pushCommentEntry(i5, 'no longer subscribed to this', { id: 'cm_after_unsub', actor: 'jordan@example.com', sortKey: Date.now() + 1000 });
     gh.getResponses = [{ status: 200, sha: 'sha-remote-unsub', text: remote.map(l => JSON.stringify(l)).join('\n') }];
 
     await page.waitForTimeout(6000);

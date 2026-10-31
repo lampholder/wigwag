@@ -238,7 +238,7 @@ test.describe('Tracker switcher', () => {
   test('importing a file for a genuinely new project creates a separate milestone without touching the current one', async ({ page }) => {
     const pastedJsonl = [
       JSON.stringify({ type: 'fields', fields: { title: { label: 'Issue', type: 'text' } }, id: 'genuinely-new-project', name: 'Genuinely New' }),
-      JSON.stringify({ type: 'issue', id: 'gn1', num: 1, fieldRefs: {}, values: { title: 'New project issue' }, comments: [], history: [] })
+      JSON.stringify({ type: 'issue', id: 'gn1', fields: { title: { history: [{ id: 'gn1-title', actor: 'test', value: 'New project issue', sortKey: 1, sig: null, pubKey: null }] } } })
     ].join('\n');
 
     await page.locator('[data-testid=btn-import-merge]').click();
@@ -321,9 +321,7 @@ test.describe('Tracker switcher', () => {
     // accept path rather than just re-proving "Not now" above.
     const lines2 = exportedText.trim().split('\n').map(l => JSON.parse(l));
     const issue2 = lines2.find(l => l.type === 'issue' && l.id === 'i2');
-    issue2.commentStreams = issue2.commentStreams || {};
-    issue2.commentStreams.comments = issue2.commentStreams.comments || [];
-    issue2.commentStreams.comments.push({ author: 'jordan', time: 'Aug 2', text: 'Reimport note', sortKey: 99999 });
+    h.pushCommentEntry(issue2, 'Reimport note', { id: 'reimport-note', actor: 'jordan', sortKey: 99999 });
     const reimportText2 = lines2.map(l => JSON.stringify(l)).join('\n');
 
     await page.locator('[data-testid=btn-import-merge]').click();
@@ -398,7 +396,7 @@ test.describe('Fresh-install bootstrap wire format stability', () => {
       }));
       localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
         fieldDefs: { title: { label: 'Issue', type: 'text' } },
-        issues: [{ id: 'i1', num: 1, fieldRefs: {}, fieldLoading: {}, values: { title: 'My real issue' }, comments: [], history: [] }],
+        issues: [{ id: 'i1', fieldRefs: {}, fieldLoading: {}, fields: { title: { history: [{ id: 'i1-title', actor: 'test', value: 'My real issue', sortKey: 1, sig: null, pubKey: null }] } } }],
         hiddenFieldIds: [], githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '',
         projectNotes: '', projectComments: []
       }));

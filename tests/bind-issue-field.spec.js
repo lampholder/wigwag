@@ -156,20 +156,20 @@ test.describe('Binding an issue-type field to another field ("copy field")', () 
     // title) -- re-reading it from the real latest entry rather than
     // hardcoding it, so this test can't silently drift from reality the
     // way a hand-typed copy of the string already has once.
-    const currentEntry = iss.history.filter(hh => hh.field === remedyId).reduce((a, b) => (b.sortKey > a.sortKey ? b : a));
+    const currentEntry = h.latestFieldHistoryEntry(iss, remedyId);
     const currentValue = currentEntry.value;
+    // Format v2 folds a link's ref into value itself ({title, href} --
+    // see docs/FORMAT_V2.md) -- a "stray plain-value commit" (same
+    // display text, but structurally unlinked, no ref) is now just the
+    // bare title string, not the whole object.
+    const plainText = (currentValue && typeof currentValue === 'object') ? currentValue.title : currentValue;
     // sortKey must genuinely be the LATEST -- real entries use real
     // epoch-ms sortKeys (via nextSortKey/advanceSortKey), not small
     // sequential numbers, so this has to exceed whatever's already
     // there or it's silently not "latest" at all and this test proves
     // nothing (caught by first writing this test with a toy sortKey:
     // 99999 and watching it get ignored).
-    const maxSortKey = Math.max(...iss.history.map(hh => hh.sortKey || 0));
-    iss.history.push({
-      id: 'h-stray-wipe', field: remedyId, text: 'Remedy set to "stray plain-value commit"',
-      value: currentValue, fieldRef: null,
-      origin: 'authored', sortKey: maxSortKey + 1, sig: null, pubKey: null
-    });
+    h.pushFieldEntry(iss, remedyId, plainText, { id: 'h-stray-wipe' });
     await h.writeActiveMilestoneDoc(page, doc);
 
     // Confirm the stray entry really did become the latest BEFORE
@@ -285,7 +285,7 @@ test.describe('Binding an issue-type field to another field ("copy field")', () 
     // work around to be tested.
     const doc = await h.readActiveMilestoneDoc(page);
     const iss = doc.issues.find(i => i.id === 'i1');
-    iss.history.push({ id: 'h_clear_related', time: 'Sep 1', actor: 'test', text: 'Related cleared', field: 'linked', value: '', sortKey: Date.now() });
+    h.pushFieldEntry(iss, 'linked', '', { id: 'h_clear_related' });
     await h.writeActiveMilestoneDoc(page, doc);
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(400);
@@ -358,6 +358,6 @@ test.describe('Binding an issue-type field to another field ("copy field")', () 
     await expect(h.fieldCell(page, 1, remedyId).locator('a')).toHaveCount(1); // still a real pill
     const doc = await h.readActiveMilestoneDoc(page);
     const iss = doc.issues.find(i => i.id === 'i1');
-    expect(h.latestFieldRef(iss, remedyId)).toEqual({ fetchedVia: '__builtin_github', href: 'https://github.com/octocat/Hello-World/issues/1' });
+    expect(h.latestFieldRef(iss, remedyId)).toEqual({ title: 'Edited README via GitHub', href: 'https://github.com/octocat/Hello-World/issues/1' });
   });
 });

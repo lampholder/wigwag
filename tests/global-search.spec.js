@@ -102,12 +102,11 @@ test.describe('Global search: matching and results', () => {
     // real hex-dash id, same style tracker #62's own id-jump tests used.
     const doc = await h.readActiveMilestoneDoc(page);
     const hexId = 'deadbee0-1111-2222-3333-444455556666';
-    doc.issues.push({
-      id: hexId, num: (doc.issues.reduce((m, i) => Math.max(m, i.num || 0), 0)) + 1, fieldRefs: {}, fieldLoading: {},
-      values: { title: 'Hex id fixture', type: 'chore', priority: 'p2', rag: null, teams: [], mitigation: '', linked: '' },
-      commentStreams: {},
-      history: [{ time: 'Aug 1', actor: 'tom', text: 'Created', sortKey: 1 }]
-    });
+    const hexIssue = { id: hexId, fieldRefs: {}, fieldLoading: {}, fields: {} };
+    h.pushFieldEntry(hexIssue, 'title', 'Hex id fixture');
+    h.pushFieldEntry(hexIssue, 'type', 'chore');
+    h.pushFieldEntry(hexIssue, 'priority', 'p2');
+    doc.issues.push(hexIssue);
     await h.writeActiveMilestoneDoc(page, doc);
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
@@ -342,12 +341,8 @@ test.describe('Global search: cold multi-project boot', () => {
       localStorage.setItem('git_native_tracker_v1:' + OTHER_ID, JSON.stringify({
         fieldDefs: { title: { label: 'Issue', type: 'issue' } },
         issues: [{
-          id: 'cb-1', num: 1, fieldRefs: {}, fieldLoading: {}, comments: [],
-          history: [{
-            id: 'cb-1-title', time: new Date().toISOString(), actor: 'Peer', email: 'peer@example.com',
-            text: 'Set Issue to "Findable after cold boot"', field: 'title', value: 'Findable after cold boot',
-            origin: 'authored', sortKey: 1, sig: null, sigRedacted: null, pubKey: null
-          }]
+          id: 'cb-1', fieldRefs: {}, fieldLoading: {},
+          fields: { title: { history: [{ id: 'cb-1-title', actor: 'peer@example.com', value: 'Findable after cold boot', sortKey: 1, sig: null, pubKey: null }] } }
         }],
         githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: ''
       }));

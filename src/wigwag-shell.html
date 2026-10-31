@@ -1547,14 +1547,49 @@ function deriveIssueValues(issue, fieldDefs) {
 // still carries a real GitHub link and feeds a rule bound to it). Keeping
 // that same permissiveness avoids a real functional regression for any
 // non-issue-typed field that happens to carry a link today.
+// Format v2: a wigwag-internal cross-project link folds into the exact
+// same {title, href} shape every other system uses now -- a wigwag:
+// URI string, not a separate sub-object -- closing the "known open
+// item" FORMAT_V2.md itself left unresolved (suggested by Tom: just
+// give it an href too, like everything else). Mirrors
+// wigwagUrlMatch's own 'project' form exactly (src/wigwag-app.js) --
+// a wigwag ref is always normalized to that form before it's ever
+// folded into a value (resolveWigwagProjectId resolves a 'remote'-form
+// pasted reference down to a real local projectId first), so only this
+// one form needs a pure, portable round-trip here.
+function buildWigwagUri({ projectId, issueId, from, path, ref }) {
+  let uri = 'wigwag:/project/' + encodeURIComponent(projectId);
+  if (issueId) uri += '/issue/' + encodeURIComponent(issueId);
+  const params = [];
+  if (from) params.push('from=' + encodeURIComponent(from));
+  if (path) params.push('path=' + encodeURIComponent(path));
+  if (ref) params.push('ref=' + encodeURIComponent(ref));
+  if (params.length) uri += '?' + params.join('&');
+  return uri;
+}
+function parseWigwagUri(href) {
+  const t = (href || '').trim();
+  const m = t.match(/^wigwag:\/project\/([^\/?\s]+)(?:\/issue\/([^\/?\s]+))?\/?(?:\?(\S*))?$/);
+  if (!m) return null;
+  const q = {};
+  if (m[3]) {
+    for (const pair of m[3].split('&')) {
+      const eq = pair.indexOf('=');
+      const k = eq === -1 ? pair : pair.slice(0, eq);
+      const v = eq === -1 ? '' : pair.slice(eq + 1);
+      if (k) q[decodeURIComponent(k)] = decodeURIComponent(v);
+    }
+  }
+  return { projectId: decodeURIComponent(m[1]), issueId: m[2] ? decodeURIComponent(m[2]) : null, from: q.from || null, path: q.path || null, ref: q.ref || null };
+}
 function deriveIssueFieldRefs(issue, fieldDefs) {
   const fieldRefs = {};
   for (const colId in fieldDefs) {
     const latest = latestFieldEntry(issue, colId);
     const v = latest && latest.value;
-    if (!v || typeof v !== 'object' || Array.isArray(v)) continue; // a multiselect value is an array, never a ref
-    if (!v.wigwag && !v.href) continue; // not a ref-shaped object at all (e.g. a field-def value on project history)
-    fieldRefs[colId] = v.wigwag ? { system: 'wigwag', ...v.wigwag } : { href: v.href || null };
+    if (!v || typeof v !== 'object' || Array.isArray(v) || !v.href) continue; // a multiselect value is an array, never a ref; a value with no href at all isn't ref-shaped (e.g. a field-def value on project history)
+    const wg = parseWigwagUri(v.href);
+    fieldRefs[colId] = wg ? { system: 'wigwag', ...wg } : { href: v.href };
   }
   return fieldRefs;
 }
@@ -2224,17 +2259,33 @@ function hostFromUrl(text) {
 // one kind that's still real without one (see connectedSourcesForDispatch,
 // src/wigwag-app.js, which is expected to have already appended its own
 // always-reachable stand-in to ctx.connectedSources before this runs).
-// Known, deliberately-deferred gap: a connector with more than one real
-// root URL can't be told apart by a single host -- out of scope until
-// that's a real need, not a regression (today's model is one `rootUrl`
-// per connector entry already).
+// Known, deliberately-deferred gap: a SINGLE connector entry with more
+// than one real root URL can't be told apart by one host -- out of
+// scope until that's a real need (today's model is one `rootUrl` per
+// connector entry). That's distinct from -- and does NOT excuse -- the
+// ordinary multi-INSTANCE case (two separate Jira connector rows, each
+// with its own single rootUrl, the shipped connector-management
+// feature): pickByKind below host-matches among same-kind candidates
+// first, falling back to the first one only when no row's rootUrl
+// matches (or none is configured, e.g. GitHub's zero-config tolerance)
+// -- confirmed live via connected-sources-settings.spec.js's own
+// "deleting one of 2 Jira instances leaves the other fully functional"
+// coverage, which a bare same-kind find() always resolved to whichever
+// instance happened to be first, regardless of which one a given href
+// actually belonged to.
 function resolveRefSystem(href, ctx) {
   if (!href) return null;
   const connectedSources = (ctx && ctx.connectedSources) || [];
-  if (parseGithubUrl(href)) return { kind: 'github', connector: connectedSources.find(c => c.kind === 'github') || null };
-  if (parseJiraKey(href)) return { kind: 'jira', connector: connectedSources.find(c => c.kind === 'jira') || null };
-  if (parseSalesforceId(href)) return { kind: 'salesforce', connector: connectedSources.find(c => c.kind === 'salesforce') || null };
   const host = hostFromUrl(href);
+  const pickByKind = (kind) => {
+    const candidates = connectedSources.filter(c => c.kind === kind);
+    if (!candidates.length) return null;
+    const hostMatch = host && candidates.find(c => c.rootUrl && hostFromUrl(c.rootUrl) === host);
+    return hostMatch || candidates[0];
+  };
+  if (parseGithubUrl(href)) return { kind: 'github', connector: pickByKind('github') };
+  if (parseJiraKey(href)) return { kind: 'jira', connector: pickByKind('jira') };
+  if (parseSalesforceId(href)) return { kind: 'salesforce', connector: pickByKind('salesforce') };
   if (host) {
     const c = connectedSources.find(c => !c.kind && c.enabled !== false && c.rootUrl && hostFromUrl(c.rootUrl) === host);
     if (c) return { kind: null, connector: c };
@@ -4945,7 +4996,7 @@ async function probeMatrixRoomAccess({ fetchImpl, homeserverUrl, accessToken, ro
 }
 
 const WigwagCoreExports = {
-  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, xlsxDateTimeSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_NS, storageNamespacePrefix, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, LAYOUT_PROPOSAL_DEVICE_ID_KEY, CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, slugifyLabel, uniqueSlugId, newFieldId, newOptionId, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, tokenizeFilterQuery, parseFilterQuery, issueMatchesFieldToken, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, pickConnectorFields, connectorLinkText, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, deriveFieldDefs, effectiveFieldDefs, PROJECT_NAME_FIELD_ID, deriveProjectName, PROJECT_NOTES_FIELD_ID, deriveProjectNotes, simpleStringHash, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, issueTimestampValue, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, MATRIX_USER_ID_RE, principalKind, identityPrincipal, SIGN_ALG, JOSE_ALG_ES256, base64UrlFromBytes, bytesFromBase64Url, signEntryPayload, verifyEntryPayload, signableEntryPayload, signableProjectEntryPayload, redactedEntryPayload, redactedProjectEntryPayload, signableCommentEntryPayload, signableProjectCommentEntryPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, normalizeRef, sourceRefHasFullData, evalRule, compileConnectorMacro, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, resolveRefSystem, parseGithubUrl, parseJiraKey, parseSalesforceId, hostFromUrl, builtinKindConfigured, builtinKindReachable, fieldLocalBindState, liveBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, issueCreatedAt,
+  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, xlsxDateTimeSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_NS, storageNamespacePrefix, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, LAYOUT_PROPOSAL_DEVICE_ID_KEY, CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, slugifyLabel, uniqueSlugId, newFieldId, newOptionId, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, tokenizeFilterQuery, parseFilterQuery, issueMatchesFieldToken, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, pickConnectorFields, connectorLinkText, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, deriveFieldDefs, effectiveFieldDefs, PROJECT_NAME_FIELD_ID, deriveProjectName, PROJECT_NOTES_FIELD_ID, deriveProjectNotes, simpleStringHash, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, issueTimestampValue, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, MATRIX_USER_ID_RE, principalKind, identityPrincipal, SIGN_ALG, JOSE_ALG_ES256, base64UrlFromBytes, bytesFromBase64Url, signEntryPayload, verifyEntryPayload, signableEntryPayload, signableProjectEntryPayload, redactedEntryPayload, redactedProjectEntryPayload, signableCommentEntryPayload, signableProjectCommentEntryPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, normalizeRef, sourceRefHasFullData, evalRule, compileConnectorMacro, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, resolveRefSystem, parseGithubUrl, parseJiraKey, parseSalesforceId, hostFromUrl, buildWigwagUri, parseWigwagUri, builtinKindConfigured, builtinKindReachable, fieldLocalBindState, liveBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, issueCreatedAt,
   importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry,
   squashHistory, redactEntry, redactProjectEntry, displayValueForHistory, buildSourceText, keyRegistryEncoder, rehydrateKeyRef, humanFileSize, parseJsonl, entryKey, unionByKey, mergeIssuePair, computeIssueMerge, mergeHasRealChanges, computeFieldDefsMerge, computeDerivedChangeEntries,
   isPastedTextASingleUrl, wrapSelectionWithMarkdownLink,

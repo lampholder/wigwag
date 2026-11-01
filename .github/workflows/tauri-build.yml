@@ -197,6 +197,15 @@ jobs:
 
   release:
     needs: build
+    # Scoped to this throwaway branch only (tauri-downloads-fix): a
+    # manual workflow_dispatch run has no branch restriction otherwise,
+    # and the release job itself was never gated on event_name/ref at
+    # all -- so dispatching this one-off migration-helper build would
+    # otherwise publish it as the new public "latest" release and flip
+    # the auto-updater pointer to it. Never merge this guard back to
+    # main; it exists only so this branch can be built via Actions
+    # without that side effect.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write

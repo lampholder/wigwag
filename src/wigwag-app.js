@@ -8610,7 +8610,7 @@ class Component extends DCLogic {
   // since history needs to stay reachable, just not inline in the grid.
   buildCommentStreamCell(issue, colId, readOnly) {
     const s = this.state;
-    const entries = latestCommentsById((issue.fields[colId] && issue.fields[colId].history) || []).sort((a, b) => b.sortKey - a.sortKey);
+    const entries = latestCommentsById((issue.fields && issue.fields[colId] && issue.fields[colId].history) || []).sort((a, b) => b.sortKey - a.sortKey);
     const latest = entries[0] || null;
     const isSelected = s.selectedCell && s.selectedCell.issueId === issue.id && s.selectedCell.colId === colId;
     const popoverOpen = !readOnly && s.activeCell && s.activeCell.issueId === issue.id && s.activeCell.colId === colId;

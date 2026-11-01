@@ -1551,7 +1551,15 @@ function issueIsDeleted(issue) {
 // would be exactly the kind of "dual-format support forever" this
 // migration's own stance explicitly rejected.
 function hydrateIssue(issue, fieldDefs) {
-  return { ...issue, values: deriveIssueValues(issue, fieldDefs), fieldRefs: deriveIssueFieldRefs(issue, fieldDefs), fieldLoading: {}, deleted: issueIsDeleted(issue) };
+  // `fields` is the one thing every single call site downstream
+  // assumes is always a real object, never undefined -- confirmed
+  // live regression: a raw issue missing it entirely (whatever the
+  // upstream cause) crashed deep in rendering (buildCommentStreamCell)
+  // on ordinary page load, with no import/create action involved,
+  // because this was the one place that should have guaranteed it and
+  // didn't. Guaranteed here, once, rather than scattered defensively
+  // across every reader.
+  return { ...issue, fields: issue.fields || {}, values: deriveIssueValues(issue, fieldDefs), fieldRefs: deriveIssueFieldRefs(issue, fieldDefs), fieldLoading: {}, deleted: issueIsDeleted(issue) };
 }
 // Project-level counterpart to deriveIssueValues -- but unlike issue
 // values (where the SET of fields is fixed by fieldDefs and every value

@@ -87,7 +87,12 @@ test.describe('IndexedDB migration-in (shadow copy, tracker #187)', () => {
     const idbDocA = await rawIdbGet(page, 'projectDocs', PROJ_A);
     // hydrateIssue() also backfills a `deleted: false` tombstone flag --
     // same category of enrichment as the created/updated field defs below.
-    expect(idbDocA.issues).toEqual(docA.issues.map(iss => ({ ...iss, deleted: false })));
+    // It also now guarantees `fields` exists (`issue.fields || {}`) --
+    // this seed issue predates format v2 and has no `fields` key at all,
+    // so the persisted (hydrated) copy picks up `fields: {}` too, unlike
+    // `values`/`fieldRefs`/`fieldLoading`, which persist() strips back out
+    // as purely derived.
+    expect(idbDocA.issues).toEqual(docA.issues.map(iss => ({ ...iss, fields: iss.fields || {}, deleted: false })));
     expect(idbDocA.projectNotes).toBe(docA.projectNotes);
     expect(idbDocA.projectHistory.some(h => h.field === 'created' && h.origin === 'legacy-backfill')).toBe(true);
     expect(idbDocA.projectHistory.some(h => h.field === 'updated' && h.origin === 'legacy-backfill')).toBe(true);

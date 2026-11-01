@@ -7300,6 +7300,41 @@ class Component extends DCLogic {
     '\\/:*?"<>|'.split('').forEach(ch => { out = out.split(ch).join('-'); });
     return out.trim() || 'tracker';
   }
+  // One real signed "Save full project file…" export per LOCAL project
+  // (not just the currently active one -- same docStore.getDoc +
+  // hydrateProject/hydrateIssue pattern stageRefreshJob already uses to
+  // read another project's data without switching into it), zipped
+  // together via the existing xlsxBuildZip (a plain, format-agnostic
+  // zip builder despite the name -- entries are just {name, content}
+  // strings). A disambiguating numeric suffix handles two projects that
+  // happen to share a sanitized filename.
+  async buildAllProjectsZip() {
+    const s = this.state;
+    const usedNames = new Set();
+    const entries = [];
+    for (const meta of s.projects) {
+      const doc = await docStore.getDoc(meta.id);
+      if (!doc) continue;
+      const { fieldDefs, projectHistory, projectNotes } = hydrateProject(doc.fieldDefs, doc.projectHistory || [], doc.projectNotes || '');
+      const issues = (doc.issues || []).map(iss => hydrateIssue(iss, fieldDefs));
+      const recordsBody = buildSourceText('full', {
+        projectId: meta.id, projectName: meta.name,
+        fieldDefs, projectHistory, projectNotes,
+        projectComments: doc.projectComments, issues
+      });
+      const envelope = await buildExportEnvelope({
+        exportedBy: s.identityEmail || '', exportedAt: new Date().toISOString(),
+        project: meta.name, tracker: 'Issues', recordsBody,
+        publicKeyJwk: s.identityPublicKeyJwk, privateKeyJwk: s.identityPrivateKeyJwk
+      });
+      let name = this.sanitizeFilename(meta.name || 'tracker') + '.jsonl';
+      let suffix = 2;
+      while (usedNames.has(name)) { name = this.sanitizeFilename(meta.name || 'tracker') + ' (' + suffix + ').jsonl'; suffix++; }
+      usedNames.add(name);
+      entries.push({ name, content: JSON.stringify(envelope) + '\n' + recordsBody });
+    }
+    return xlsxBuildZip(entries);
+  }
   exportFilename(ext) {
     const meta = this.state.projects.find(m => m.id === this.state.projectId);
     const name = this.sanitizeFilename(meta ? meta.name : 'tracker');
@@ -7377,7 +7412,25 @@ class Component extends DCLogic {
       : liveIssues;
     return buildXlsxWorkbook({ sheetName: meta ? meta.name : 'Sheet1', colIds, fieldDefs: s.fieldDefs, issues: issuesForXlsx });
   }
+  // Downloads never actually worked in the real desktop app: every export
+  // path (JSONL/CSV/XLSX/HTML) funneled through the browser-only Blob+
+  // <a download> mechanism below, which WRY's webview has no native
+  // download manager to catch -- it silently did nothing. Tauri-aware
+  // now: when the dialog/fs plugins are present, shows a real native
+  // "Save As" dialog and writes the file directly. `text` may be a
+  // plain string (JSONL/CSV/HTML) or a Uint8Array (XLSX/zip bytes) --
+  // fs.writeFile always wants bytes, so a string input is encoded here
+  // rather than needing two separate write calls.
+  isTauriDownloadRuntime = () => !!(window.__TAURI__ && window.__TAURI__.dialog && window.__TAURI__.fs);
   downloadTextFile(text, filename, mimeType) {
+    if (this.isTauriDownloadRuntime()) {
+      const bytes = typeof text === 'string' ? new TextEncoder().encode(text) : text;
+      window.__TAURI__.dialog.save({ defaultPath: filename }).then(path => {
+        if (!path) return; // user cancelled the save dialog
+        return window.__TAURI__.fs.writeFile(path, bytes);
+      }).catch(err => window.alert('Could not save the file: ' + err.message));
+      return;
+    }
     const blob = new Blob([text], { type: mimeType || 'application/octet-stream' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -10235,6 +10288,12 @@ class Component extends DCLogic {
         this.buildHtmlExport()
           .then(html => this.downloadTextFile(html, this.exportFilename('html'), 'text/html'))
           .catch(err => window.alert('Could not build the HTML export: ' + err.message));
+      },
+      onExportAllProjects: () => {
+        this.setState({ exportMenuOpen: false });
+        this.buildAllProjectsZip()
+          .then(zipBytes => this.downloadTextFile(zipBytes, 'wigwag-all-projects-' + new Date().toISOString().slice(0, 10) + '.zip', 'application/zip'))
+          .catch(err => window.alert('Could not build the all-projects download: ' + err.message));
       },
       sourceView: s.sourceViewOpen,
       notSourceView: !s.sourceViewOpen,

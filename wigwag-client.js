@@ -30,6 +30,7 @@ const { chromium } = require('playwright');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const { FORMAT_VERSION } = require('./wigwag-core.js');
 
 const REPO_ROOT = __dirname;
 const DEFAULT_TRACKER_FILE = path.join(REPO_ROOT, 'wigwag_tracker');
@@ -60,11 +61,70 @@ function repoLocationFromTrackerLink(identityPath) {
   const text = fs.readFileSync(identityPath, 'utf8');
   const linkMatch = text.match(/wigwag:\/\S+/);
   if (!linkMatch) return null;
-  let from;
-  try { from = new URL(linkMatch[0]).searchParams.get('from'); } catch (e) { return null; }
+  let url;
+  try { url = new URL(linkMatch[0]); } catch (e) { return null; }
+  const from = url.searchParams.get('from');
   const m = from && from.match(/^github\.com\/([^/]+)\/([^/]+)$/);
   if (!m) return null;
-  return { repoOwner: m[1], repoName: m[2] };
+  return { repoOwner: m[1], repoName: m[2], repoPath: url.searchParams.get('path') || 'tracker.jsonl' };
+}
+
+// Incident, 2026-10-31 (tracker issue d5e8dbe6) -- happened TWICE that
+// day, the second time from this very check's own first version: connect()
+// launches a LOCAL wigwag.html build and points its real Connect Remote
+// flow at the live file -- if that local build's own FORMAT_VERSION
+// doesn't match what's actually on the remote, the app has no
+// backward-compat read path (by design, see docs/FORMAT_V2.md) and
+// silently hydrates every issue as empty, then happily pushes that
+// blanked state back to GitHub as if it were a real sync. Checked via a
+// plain, unauthenticated raw-content fetch -- deliberately NOT through
+// the local app itself, so this check can never be fooled by the exact
+// bug it exists to catch.
+//
+// Returns 'missing' when the remote genuinely doesn't have this file
+// yet (confirmed via a real 404 -- nothing there to blank, safe to
+// proceed), the real formatVersion number when a 'fields' line was
+// found, or null for every other case: network failure, a non-200/404
+// status, a readable file with no 'fields' line at all. The FIRST
+// version of this function returned null for all of those and its
+// caller treated null as "inconclusive, skip the check" -- which is
+// exactly how this same incident happened a second time, from the
+// safety check itself, that same day: a transient read failure was
+// silently treated as "must be fine." The caller now fails CLOSED --
+// null blocks the connection, same as a confirmed mismatch -- so
+// "couldn't tell" and "confirmed wrong" are both refused; only
+// 'missing' or a confirmed version match let the connection proceed.
+async function fetchRemoteFormatVersion(repoOwner, repoName, repoPath) {
+  const url = `https://raw.githubusercontent.com/${repoOwner}/${repoName}/HEAD/${repoPath}`;
+  // Node's built-in fetch (undici) doesn't honor HTTP_PROXY/HTTPS_PROXY
+  // on its own (confirmed live in this project's own sandboxed dev
+  // container, which forces all outbound traffic through a proxy
+  // sidecar -- see CLAUDE.md) -- curl does, so it's the fallback for an
+  // environment where a bare fetch can't resolve DNS at all. A real
+  // unprivileged machine (CI, a contributor's own laptop) just succeeds
+  // on the first try and never reaches the fallback.
+  const { text, status } = await (async () => {
+    try {
+      const res = await fetch(url);
+      return { text: res.ok ? await res.text() : null, status: res.status };
+    } catch (e) {
+      try {
+        const { execFileSync } = require('child_process');
+        const out = execFileSync('curl', ['-s', '-w', '\n%{http_code}', url], { encoding: 'utf8' });
+        const idx = out.lastIndexOf('\n');
+        return { text: out.slice(0, idx), status: parseInt(out.slice(idx + 1), 10) };
+      } catch (e2) { return { text: null, status: null }; }
+    }
+  })();
+  if (status !== 200 || text == null) return status === 404 ? 'missing' : null;
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    let obj;
+    try { obj = JSON.parse(line); } catch (e) { continue; }
+    if (obj.type === 'fields') return obj.formatVersion || 1; // absent formatVersion predates the field existing at all -- that's v1
+    if (obj.type === 'wigwag.export') continue; // the signed envelope line, if present -- the real schema line follows it
+  }
+  return null; // no 'fields' line found at all -- can't tell, don't block on an inconclusive read
 }
 
 // A throwaway static file server -- same job as tests/static-server.js,
@@ -264,6 +324,39 @@ async function connect(opts = {}) {
   }
   const repoOwner = opts.repoOwner || linkLocation.repoOwner;
   const repoName = opts.repoName || linkLocation.repoName;
+  const repoPath = opts.repoPath || (linkLocation && linkLocation.repoPath) || 'tracker.jsonl';
+
+  // See fetchRemoteFormatVersion's own comment -- this is the one check
+  // standing between a format mismatch and silently blanking the live
+  // file, so it runs BEFORE any browser/write-capable session exists,
+  // not as an afterthought once already connected. opts.skipFormatCheck
+  // exists only for this function's own tests against a fixture repo,
+  // never for real tracker use -- don't pass it to bypass this.
+  //
+  // Fails CLOSED: only 'missing' (confirmed nothing there yet) or a
+  // confirmed exact version match are allowed through. Every other
+  // outcome -- a confirmed mismatch, OR an inconclusive read (null) --
+  // refuses to connect. An earlier version of this check whitelisted
+  // the mismatch case and let null silently proceed; that is the exact
+  // shape of bug this check exists to catch, and it reproduced the live
+  // incident a second time, from this check itself, on 2026-10-31
+  // (tracker issue d5e8dbe6). "Couldn't confirm it's safe" must refuse,
+  // the same as "confirmed it's not safe" -- never treated as "assume
+  // it's fine."
+  if (!opts.skipFormatCheck) {
+    const remoteFormatVersion = await fetchRemoteFormatVersion(repoOwner, repoName, repoPath);
+    const confirmedSafe = remoteFormatVersion === 'missing' || remoteFormatVersion === FORMAT_VERSION;
+    if (!confirmedSafe) {
+      throw new Error(
+        `Refusing to connect: could not confirm ${repoOwner}/${repoName}/${repoPath} is formatVersion ${FORMAT_VERSION} ` +
+        `(read: ${remoteFormatVersion === null ? 'inconclusive -- network failure, or no "fields" line found' : remoteFormatVersion}). ` +
+        `This local wigwag.html build only has a safe read path for formatVersion ${FORMAT_VERSION}. ` +
+        `Connecting without a confirmed match previously blanked every issue on this exact tracker -- TWICE, the ` +
+        `second time from an earlier, fail-open version of this very check (2026-10-31, tracker issue d5e8dbe6) -- ` +
+        `do not bypass this without first confirming the remote's real format by hand.`
+      );
+    }
+  }
 
   let server = null;
   let baseUrl = opts.baseUrl || process.env.WIGWAG_URL;

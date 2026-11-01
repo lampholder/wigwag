@@ -29,7 +29,11 @@ test.describe('wigwag: links -- issue-type fields', () => {
 
     const doc = await h.readActiveMilestoneDoc(page);
     const iss = doc.issues.find(i => i.id === 'i1');
-    expect(h.latestFieldRef(iss, 'linked')).toEqual({ system: 'wigwag', projectId: 'demo-milestone', issueId: 'i2', from: null, path: null, ref: null });
+    // Format v2: a wigwag ref's persisted shape is {title, href} like
+    // every other system, with href itself a wigwag: URI -- decode it
+    // to assert the structured fields.
+    const ref = h.latestFieldRef(iss, 'linked');
+    expect(h.parseWigwagHref(ref.href)).toEqual({ projectId: 'demo-milestone', issueId: 'i2', from: null, path: null, ref: null });
   });
 
   test('pasting the already-canonical wigwag: form resolves identically (idempotent re-paste)', async ({ page }) => {
@@ -49,7 +53,7 @@ test.describe('wigwag: links -- issue-type fields', () => {
     await expect(cell).toContainText('Delivery tracker');
     const doc = await h.readActiveMilestoneDoc(page);
     const ref = h.latestFieldRef(doc.issues.find(i => i.id === 'i1'), 'linked');
-    expect(ref).toEqual({ system: 'wigwag', projectId: 'demo-milestone', issueId: null, from: null, path: null, ref: null });
+    expect(h.parseWigwagHref(ref.href)).toEqual({ projectId: 'demo-milestone', issueId: null, from: null, path: null, ref: null });
   });
 
   test('re-opening the field for edit shows the canonical wigwag: URI, not the raw pasted link', async ({ page }) => {
@@ -151,8 +155,9 @@ test.describe('wigwag: links -- issue-type fields', () => {
     const iss = doc.issues.find(i => i.id === 'i1');
     // Format v2 never logs a fetch error to signed history at all any
     // more (see docs/FORMAT_V2.md) -- what's left to check is the real
-    // observable result: the link resolved to a real wigwag ref.
-    expect(h.latestFieldRef(iss, 'linked').system).toBe('wigwag');
+    // observable result: the link resolved to a real wigwag ref (a
+    // wigwag: URI href).
+    expect(h.latestFieldRef(iss, 'linked').href).toMatch(/^wigwag:/);
   });
 
   test('pasting a wigwag link while creating a new item resolves the title immediately, no "Fetching…" flash', async ({ page }) => {
@@ -163,10 +168,12 @@ test.describe('wigwag: links -- issue-type fields', () => {
     await page.waitForTimeout(300);
     const doc = await h.readActiveMilestoneDoc(page);
     const created = doc.issues[doc.issues.length - 1];
-    const title = h.latestFieldValue(created, 'title');
+    // A linked title's value is {title, href} -- the display text is
+    // the .title half of it, not the raw value itself.
+    const title = h.latestFieldRef(created, 'title').title;
     expect(title).toContain('Delivery tracker');
     expect(title).not.toContain('Fetching');
-    expect(h.latestFieldRef(created, 'title')).toEqual({ system: 'wigwag', projectId: 'demo-milestone', issueId: 'i3', from: null, path: null, ref: null });
+    expect(h.parseWigwagHref(h.latestFieldRef(created, 'title').href)).toEqual({ projectId: 'demo-milestone', issueId: 'i3', from: null, path: null, ref: null });
   });
 });
 
@@ -334,7 +341,8 @@ test.describe('wigwag: links -- prose (comments, notes, multiline text fields)',
 
     const doc = await h.readActiveMilestoneDoc(page);
     const iss = doc.issues.find(i => i.id === 'i1');
-    const lastComment = iss.commentStreams.comments[iss.commentStreams.comments.length - 1];
+    const comments = h.issueFieldHistory(iss, 'comments');
+    const lastComment = comments[comments.length - 1];
     expect(lastComment.text).toBe('See wigwag:/project/demo-milestone/issue/i2 for context.');
 
     const commentMd = page.locator('[data-testid=comment-md]').last();
@@ -365,7 +373,7 @@ test.describe('wigwag: links -- prose (comments, notes, multiline text fields)',
     await page.waitForTimeout(400);
     const doc = await h.readActiveMilestoneDoc(page);
     const iss = doc.issues.find(i => i.id === 'i2');
-    const live = iss.commentStreams.comments.filter(c => !c.redacted);
+    const live = h.issueFieldHistory(iss, 'comments').filter(c => !c.redacted);
     expect(live[live.length - 1].text).toBe('Updated: wigwag:/project/demo-milestone/issue/i1');
   });
 
@@ -416,7 +424,7 @@ test.describe('wigwag: links -- grammar (?from=, wigwag:/remote/..., unknown-pro
     await page.keyboard.press('Control+Enter');
     await page.waitForTimeout(400);
     const doc = await h.readActiveMilestoneDoc(page);
-    const lastComment = doc.issues.find(i => i.id === 'i1').commentStreams.comments.slice(-1)[0];
+    const lastComment = h.issueFieldHistory(doc.issues.find(i => i.id === 'i1'), 'comments').slice(-1)[0];
     expect(lastComment.text).toBe('See wigwag:/project/demo-milestone/issue/i2?from=github.com%2Facme%2Fdemo&path=tracker.jsonl for context.');
   });
 
@@ -445,7 +453,7 @@ test.describe('wigwag: links -- grammar (?from=, wigwag:/remote/..., unknown-pro
 
     const doc = await h.readActiveMilestoneDoc(page);
     const ref = h.latestFieldRef(doc.issues.find(i => i.id === 'i2'), 'linked');
-    expect(ref).toEqual({ system: 'wigwag', projectId: 'demo-milestone', issueId: 'i1', from: null, path: null, ref: null });
+    expect(h.parseWigwagHref(ref.href)).toEqual({ projectId: 'demo-milestone', issueId: 'i1', from: null, path: null, ref: null });
   });
 
   test('a wigwag:/remote/... link with no local match falls through to plain text, not a broken link', async ({ page }) => {
@@ -493,17 +501,17 @@ test.describe('wigwag: links -- grammar (?from=, wigwag:/remote/..., unknown-pro
     await page.waitForTimeout(300);
 
     let doc = await h.readActiveMilestoneDoc(page);
-    let ref = h.latestFieldRef(doc.issues.find(i => i.num === 2), 'linked');
-    expect(ref).toMatchObject({
-      system: 'wigwag', projectId: 'does-not-exist-here',
+    let ref = h.latestFieldRef(doc.issues.find(i => i.id === 'i2'), 'linked');
+    expect(h.parseWigwagHref(ref.href)).toMatchObject({
+      projectId: 'does-not-exist-here',
       from: 'github.com/lampholder/wigwag', path: 'projects/roadmap/tracker.jsonl', ref: 'main'
     });
 
     await h.refreshRow(page, 2);
     await page.waitForTimeout(300);
     doc = await h.readActiveMilestoneDoc(page);
-    ref = h.latestFieldRef(doc.issues.find(i => i.num === 2), 'linked');
-    expect(ref).toMatchObject({ from: 'github.com/lampholder/wigwag', path: 'projects/roadmap/tracker.jsonl', ref: 'main' });
+    ref = h.latestFieldRef(doc.issues.find(i => i.id === 'i2'), 'linked');
+    expect(h.parseWigwagHref(ref.href)).toMatchObject({ from: 'github.com/lampholder/wigwag', path: 'projects/roadmap/tracker.jsonl', ref: 'main' });
   });
 
   test('clicking an unresolvable project/ field pill opens the inline notice with Connect Remote pre-fillable from its own from=/path=/ref=', async ({ page }) => {

@@ -121,8 +121,8 @@ test.describe('Bulk-link issues from a multi-line paste', () => {
     // one -- confirm it actually fired by checking a real entry landed
     // for the bound field itself, not the (removed) narrative text.
     const doc = await h.idbGetProjectDoc(page, await h.activeMilestoneId(page));
-    const createdIssue = doc.issues.find(i => i.num === 10);
-    expect(createdIssue.history.some(hh => hh.field === 'type')).toBe(true);
+    const createdIssue = doc.issues.find(i => h.latestFieldValue(i, 'title') && h.latestFieldValue(i, 'title').title === 'Edited README via GitHub');
+    expect(h.issueFieldHistory(createdIssue, 'type').length).toBeGreaterThan(0);
   });
 
   test('cancelling from the review modal creates nothing', async ({ page }) => {

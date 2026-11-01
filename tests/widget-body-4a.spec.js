@@ -7,8 +7,12 @@
 const { test, expect } = require('@playwright/test');
 const h = require('./helpers');
 
-function entryEvent({ issueId, stream, entry, projectId }) {
-  const content = { v: 1, scope: 'issue', issueId, stream: stream || null, entry };
+// Format v2: an issue-scope entry no longer carries its own field id on
+// itself (that became the fields-map key) -- the envelope must say which
+// field this entry belongs to via content.field, not a nested entry.field
+// or the old content.stream tag (see entryFromMatrixEvent, wigwag-core.js).
+function entryEvent({ issueId, field, entry, projectId }) {
+  const content = { v: 1, scope: 'issue', issueId, field: field || null, entry };
   if (projectId) content.projectId = projectId;
   return { type: 'work.wigwag.entry', content };
 }
@@ -23,7 +27,7 @@ async function openColumnMenuInFrame(frame, colId) {
 function seedIssues(titles) {
   const out = [];
   titles.forEach((title, i) => {
-    out.push(entryEvent({ issueId: 'i' + i, entry: { id: 'h' + i, field: 'title', value: title, sortKey: i + 1, origin: 'authored' } }));
+    out.push(entryEvent({ issueId: 'i' + i, field: 'title', entry: { id: 'h' + i, value: title, sortKey: i + 1, actor: 'test', sig: null, pubKey: null } }));
   });
   return out;
 }

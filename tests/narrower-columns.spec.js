@@ -88,7 +88,7 @@ test.describe('Responsive column narrowing', () => {
     const projectId = await h.activeMilestoneId(page);
     const doc = await h.readActiveMilestoneDoc(page);
     const i1 = doc.issues.find(i => i.id === 'i1');
-    const latestTypeEntry = i1.history.filter(e => e.field === 'type').slice(-1)[0];
+    const latestTypeEntry = h.latestFieldHistoryEntry(i1, 'type');
     await page.evaluate(({ projectId, issueId, entryId }) => {
       const KEY = 'git_native_tracker_local_derived_entry_ids_v1';
       const all = JSON.parse(localStorage.getItem(KEY) || '{}');

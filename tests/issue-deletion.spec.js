@@ -70,7 +70,7 @@ test.describe('Issue deletion: in-app confirm modal + tombstone', () => {
 
     const doc = await h.idbGetProjectDoc(page, 'demo-milestone');
     expect(doc.issues.length).toBe(9); // still present in storage
-    const tombstoned = doc.issues.find(i => (i.history || []).some(hh => hh.field === '__deleted__' && hh.value === true));
+    const tombstoned = doc.issues.find(i => h.issueFieldHistory(i, '__deleted__').some(hh => hh.value === true));
     expect(tombstoned).toBeTruthy();
 
     // Survives a fresh hydrate/reload -- stays hidden, doesn't resurrect.
@@ -96,7 +96,7 @@ test.describe('Issue deletion: in-app confirm modal + tombstone', () => {
     await page.waitForTimeout(200);
     const doc = await h.idbGetProjectDoc(page, 'demo-milestone');
     expect(doc.issues.length).toBe(9); // full fidelity kept for another party/device to see the deletion
-    const liveCount = doc.issues.filter(i => !(i.history || []).some(hh => hh.field === '__deleted__' && hh.value === true)).length;
+    const liveCount = doc.issues.filter(i => !h.issueFieldHistory(i, '__deleted__').some(hh => hh.value === true)).length;
     expect(liveCount).toBe(8); // matches what buildSourceText('squashed', ...) would keep, and what the grid shows
   });
 });

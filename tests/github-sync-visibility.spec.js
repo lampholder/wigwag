@@ -71,8 +71,8 @@ test.describe('GitHub sync visibility gating', () => {
     // Neither edit was lost -- both eventually land in the shared document,
     // regardless of which tab's push happened to win the race.
     const docA = await h.readActiveMilestoneDoc(page);
-    const i1History = docA.issues.find(i => i.id === 'i1').history;
-    const i2History = docA.issues.find(i => i.id === 'i2').history;
+    const i1History = h.issueFieldHistory(docA.issues.find(i => i.id === 'i1'), 'mitigation');
+    const i2History = h.issueFieldHistory(docA.issues.find(i => i.id === 'i2'), 'mitigation');
     expect(i1History.some(hh => hh.value === 'from tab A')).toBe(true);
     expect(i2History.some(hh => hh.value === 'from tab B')).toBe(true);
   });

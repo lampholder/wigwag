@@ -300,6 +300,36 @@ function latestFieldValue(issue, colId) {
   const latest = latestFieldHistoryEntry(issue, colId);
   return latest ? latest.value : undefined;
 }
+// Mirrors wigwag-core.js's buildWigwagUri/parseWigwagUri exactly -- a
+// wigwag-internal ref's persisted href IS a wigwag: URI string now (no
+// separate structured sub-object), so a test asserting on its decoded
+// fields (projectId/issueId/from/path/ref) needs to parse it the same
+// way the real app does, rather than matching the raw URI string.
+function buildWigwagHref({ projectId, issueId, from, path, ref }) {
+  let uri = 'wigwag:/project/' + encodeURIComponent(projectId);
+  if (issueId) uri += '/issue/' + encodeURIComponent(issueId);
+  const params = [];
+  if (from) params.push('from=' + encodeURIComponent(from));
+  if (path) params.push('path=' + encodeURIComponent(path));
+  if (ref) params.push('ref=' + encodeURIComponent(ref));
+  if (params.length) uri += '?' + params.join('&');
+  return uri;
+}
+function parseWigwagHref(href) {
+  const t = (href || '').trim();
+  const m = t.match(/^wigwag:\/project\/([^\/?\s]+)(?:\/issue\/([^\/?\s]+))?\/?(?:\?(\S*))?$/);
+  if (!m) return null;
+  const q = {};
+  if (m[3]) {
+    for (const pair of m[3].split('&')) {
+      const eq = pair.indexOf('=');
+      const k = eq === -1 ? pair : pair.slice(0, eq);
+      const v = eq === -1 ? '' : pair.slice(eq + 1);
+      if (k) q[decodeURIComponent(k)] = decodeURIComponent(v);
+    }
+  }
+  return { projectId: decodeURIComponent(m[1]), issueId: m[2] ? decodeURIComponent(m[2]) : null, from: q.from || null, path: q.path || null, ref: q.ref || null };
+}
 // Test-fixture convenience: appends one raw field-value entry directly to
 // a raw (not-yet-hydrated) issue doc, the same shape appendSignedHistory
 // itself produces (minus a real signature -- these are never verified in
@@ -1383,6 +1413,8 @@ async function getHistoryEntriesFor(page, issueId) {
 }
 
 module.exports = {
+  buildWigwagHref,
+  parseWigwagHref,
   TRACKER_PATH,
   DEMO_MILESTONE_NAME,
   gotoTracker,

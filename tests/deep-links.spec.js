@@ -122,9 +122,8 @@ test.describe('Deep links', () => {
       const parsed = JSON.parse(clip);
       expect(parsed.type).toBe('issue');
       expect(parsed.id).toBe('i1');
-      expect(parsed.num).toBe(1);
-      expect(Array.isArray(parsed.history)).toBe(true);
-      expect(parsed.history.length).toBeGreaterThan(0);
+      expect(typeof parsed.fields).toBe('object');
+      expect(Object.keys(parsed.fields).length).toBeGreaterThan(0);
       // Pretty-printed, not a compact JSONL line -- this is for pasting into
       // a chat/ticket to inspect, not for re-applying as an update.
       expect(clip).toContain('\n  "id": "i1"');

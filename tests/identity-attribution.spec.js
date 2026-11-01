@@ -34,7 +34,7 @@ test.describe('Late-bound identity: the attribution gate', () => {
   test('Cancel abandons the pending edit entirely -- nothing commits, the project stays unattributed, and the cell can be edited again cleanly', async ({ page }) => {
     await h.gotoTrackerWithSharedProject(page);
     const before = await h.readActiveMilestoneDoc(page);
-    const historyLenBefore = before.issues[0].history.length;
+    const historyLenBefore = h.issueHistoryEntryCount(before.issues[0]);
 
     await h.clickFieldToEdit(page, 1, 'mitigation');
     await page.keyboard.press('Control+A');
@@ -47,7 +47,7 @@ test.describe('Late-bound identity: the attribution gate', () => {
     await expect(page.locator('[data-testid=attribution-gate-modal]')).toHaveCount(0);
 
     const doc = await h.readActiveMilestoneDoc(page);
-    expect(doc.issues[0].history.length).toBe(historyLenBefore); // nothing new landed
+    expect(h.issueHistoryEntryCount(doc.issues[0])).toBe(historyLenBefore); // nothing new landed
     const projects = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1')).milestones);
     expect(projects.find(p => p.id === h.SHARED_PROJECT_ID).identityId).toBeNull();
 
@@ -80,8 +80,8 @@ test.describe('Late-bound identity: the attribution gate', () => {
     await expect(h.fieldCell(page, 1, 'mitigation')).toContainText('Root cause identified');
 
     const doc = await h.readActiveMilestoneDoc(page);
-    const entry = doc.issues[0].history.filter(hh => hh.field === 'mitigation').pop();
-    expect(entry.email).toBe(h.DEMO_IDENTITY_EMAIL);
+    const entry = h.latestFieldHistoryEntry(doc.issues[0], 'mitigation');
+    expect(entry.actor).toBe(h.DEMO_IDENTITY_EMAIL);
 
     const projects = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1')).milestones);
     expect(projects.find(p => p.id === h.SHARED_PROJECT_ID).identityId).toBe(h.SHARED_PERSONAL_IDENTITY_ID);
@@ -131,8 +131,8 @@ test.describe('Late-bound identity: the attribution gate', () => {
     await page.waitForTimeout(300);
 
     const doc = await h.readActiveMilestoneDoc(page);
-    const entry = doc.issues[0].history.filter(hh => hh.field === 'mitigation').pop();
-    expect(entry.email).toBe('ben@northwind.com');
+    const entry = h.latestFieldHistoryEntry(doc.issues[0], 'mitigation');
+    expect(entry.actor).toBe('ben@northwind.com');
   });
 
   test('a write while a different identity is active than the project\'s own derived identity re-prompts with mismatch copy, pre-selecting the project\'s stored identity', async ({ page, context }) => {

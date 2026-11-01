@@ -134,10 +134,8 @@ test.describe('Kanban grouping', () => {
     const doc = await h.readActiveMilestoneDoc(page);
     const iss = doc.issues.find(i => i.id.startsWith(issueId));
     expect(iss).toBeTruthy();
-    const priorityHistory = iss.history.filter(hh => hh.field === 'priority');
-    const last = priorityHistory[priorityHistory.length - 1];
+    const last = h.latestFieldHistoryEntry(iss, 'priority');
     expect(last.value).toBe('p1');
-    expect(last.text).toContain('Priority set to P1');
   });
 
   test('dropping a card on the trailing "No <field>" column clears the value', async ({ page }) => {
@@ -184,8 +182,11 @@ test.describe('Kanban grouping', () => {
     // values/fieldRefs aren't persisted on the raw stored doc (derived
     // fresh at runtime, see docs/FORMAT.md) -- read the title the same
     // way, straight off its own latest history entry.
-    const i1Title = i1.history.filter(e => e.field === 'title').reduce((a, b) => (b.sortKey > (a ? a.sortKey : -Infinity) ? b : a), null).value;
-    const latestTypeEntry = i1.history.filter(e => e.field === 'type').slice(-1)[0];
+    // A linked title's value is {title, href} -- unwrap to the plain
+    // text, same as deriveIssueValues does at runtime.
+    const i1TitleValue = h.latestFieldHistoryEntry(i1, 'title').value;
+    const i1Title = (i1TitleValue && typeof i1TitleValue === 'object') ? i1TitleValue.title : i1TitleValue;
+    const latestTypeEntry = h.latestFieldHistoryEntry(i1, 'type');
     await page.evaluate(({ projectId, issueId, entryId }) => {
       const KEY = 'git_native_tracker_local_derived_entry_ids_v1';
       const all = JSON.parse(localStorage.getItem(KEY) || '{}');

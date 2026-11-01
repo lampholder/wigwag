@@ -251,24 +251,26 @@ test.describe('Bulk actions: Set field', () => {
     {
       const doc = await h.idbGetProjectDoc(page, idx.activeMilestoneId);
       const titleText = h.latestFieldValue(doc.issues[0], 'title').title || h.latestFieldValue(doc.issues[0], 'title');
-      // "bug" (not the seed's existing "enhancement") so the resettle
-      // below actually produces a CHANGED value -- a no-op recompute
-      // never commits a new entry, so it would never record a local
-      // bind-state either (see logDerivedChanges: it only logs, and
-      // only recordLocalDerivedEntryId's for, fields that actually changed).
-      h.pushFieldEntry(doc.issues[0], 'title', titleText, { id: 'test-link-force', href: h.githubHref('acme', 'demo', 99) });
+      // Format v2: a persisted fieldRef is always trimmed to {title, href}
+      // now -- there's no more embedding labels directly on the ref the
+      // way v1 did (sourceRefHasFullData is unconditionally false for any
+      // real system), so a passive resettle (no live fetch in hand) can
+      // never recompute a rich-field rule like Type's
+      // source.github.labels.includes("bug") -- only a real refresh
+      // (applyLiveLinkedRules, with genuine fetched data) can. Point the
+      // link at octocat/Hello-World#3, a real fixture repo mockGithubApi
+      // actually serves labels:['bug'] for, instead of a fictional one.
+      h.pushFieldEntry(doc.issues[0], 'title', titleText, { id: 'test-link-force', href: h.githubHref('octocat', 'Hello-World', 3) });
       await h.idbSetProjectDoc(page, idx.activeMilestoneId, doc);
     }
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForTimeout(300);
 
-    // Boot alone never runs a settle pass (deriveIssueValues just reads
-    // whatever's already in history) -- editing an unrelated field on the
-    // same issue triggers the real commit->settle->log path, which is
-    // what actually records a local bind-state for 'type' against the
-    // fieldRef just forced in above.
-    await h.clickFieldToEdit(page, 1, 'mitigation');
-    await h.typeAndCommit(page, 'unrelated edit to force a real local derive');
+    // A real refresh of the linked title -- not a passive resettle via an
+    // unrelated edit -- is what actually fetches the fixture's real "bug"
+    // label and records a local bind-state for 'type' against it (see
+    // applyLiveLinkedRules/recordLocalDerivedEntryId).
+    await h.refreshRow(page, 1);
     await page.waitForTimeout(300);
 
     await page.locator('[data-testid=row]').nth(0).locator('[data-testid=row-select-checkbox]').click();

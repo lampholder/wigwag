@@ -33,6 +33,31 @@ function parseJsonlRaw(text) {
   return text.split('\n').filter(l => l.trim()).map(l => JSON.parse(l));
 }
 
+// commentStreams (v1) / a commentStream-typed field's own history (v2)
+// is a map keyed by STREAM/FIELD id, not a single fixed "comments" key
+// -- a project can have more than one comment-stream field. Returns
+// {streamKey: {count, latestText}} for every stream actually present
+// on this issue, on EITHER side -- v1's raw.commentStreams[streamKey]
+// or v2's raw.fields[streamKey].history, whichever shape this
+// particular raw object has (v1 input vs. v2 output; deliberately not
+// dispatched by fieldDefs type, so this works even for a stream whose
+// field definition didn't survive migration -- exactly the class of
+// bug this is here to catch, not assume away).
+function commentStreamsOf(raw) {
+  const result = {};
+  for (const streamKey in (raw.commentStreams || {})) {
+    const entries = (raw.commentStreams[streamKey] || []).filter(c => !c.redacted);
+    result[streamKey] = { count: entries.length, latestText: entries.length ? entries.reduce((a, b) => (b.sortKey > a.sortKey ? b : a)).text : null };
+  }
+  for (const colId in (raw.fields || {})) {
+    const history = raw.fields[colId].history || [];
+    if (!history.length || history[0].text === undefined || history[0].value !== undefined) continue; // structural comment-stream detection, same as the real app's own
+    const entries = history.filter(c => !c.redacted);
+    result[colId] = { count: entries.length, latestText: entries.length ? entries.reduce((a, b) => (b.sortKey > a.sortKey ? b : a)).text : null };
+  }
+  return result;
+}
+
 function summarize(filePath, core) {
   const lines = parseJsonlRaw(fs.readFileSync(filePath, 'utf8'));
   const fieldsLine = lines.find(o => o.type === 'fields');
@@ -43,13 +68,7 @@ function summarize(filePath, core) {
     if (raw.type !== 'issue') continue;
     const hydrated = core.hydrateIssue(raw, fieldDefs);
     const values = core.deriveIssueValues(hydrated, fieldDefs);
-    // Comment text/count the uniform way regardless of shape: v1 keeps
-    // it in commentStreams.comments, v2 in fields.comments.history
-    // (text-bearing entries) -- read both, whichever is present.
-    const rawComments = (raw.commentStreams && raw.commentStreams.comments) || (raw.fields && raw.fields.comments && raw.fields.comments.history) || [];
-    const liveComments = rawComments.filter(c => !c.redacted);
-    const latestComment = liveComments.length ? liveComments.reduce((a, b) => (b.sortKey > a.sortKey ? b : a)) : null;
-    issues[raw.id] = { values, commentCount: liveComments.length, latestCommentText: latestComment ? latestComment.text : null };
+    issues[raw.id] = { values, commentStreams: commentStreamsOf(raw) };
   }
   return { fieldDefs, issues };
 }
@@ -75,13 +94,21 @@ function verify(originalPath, migratedPath, oldCorePath) {
     // check issueCreatedAt/issueTimestampValue already do; the real
     // signal is every OTHER field's value surviving intact.
     for (const colId in b.values) {
-      if (colId === 'created' || colId === 'updated' || colId === 'comments') continue;
+      // Any comment-stream field (the default "comments" or a custom
+      // one) is excluded here -- deriveIssueValues doesn't even cover
+      // them meaningfully, they're compared properly below instead.
+      if (colId === 'created' || colId === 'updated' || (a.commentStreams[colId] || b.commentStreams[colId])) continue;
       const bv = JSON.stringify(b.values[colId]);
       const av = JSON.stringify(a.values[colId]);
       if (bv !== av) mismatches.push({ id, colId, before: b.values[colId], after: a.values[colId] });
     }
-    if (b.commentCount !== a.commentCount) mismatches.push({ id, colId: 'comments.count', before: b.commentCount, after: a.commentCount });
-    if (b.latestCommentText !== a.latestCommentText) mismatches.push({ id, colId: 'comments.latestText', before: b.latestCommentText, after: a.latestCommentText });
+    const streamKeys = new Set([...Object.keys(b.commentStreams), ...Object.keys(a.commentStreams)]);
+    for (const streamKey of streamKeys) {
+      const bs = b.commentStreams[streamKey] || { count: 0, latestText: null };
+      const as = a.commentStreams[streamKey] || { count: 0, latestText: null };
+      if (bs.count !== as.count) mismatches.push({ id, colId: streamKey + '.count', before: bs.count, after: as.count });
+      if (bs.latestText !== as.latestText) mismatches.push({ id, colId: streamKey + '.latestText', before: bs.latestText, after: as.latestText });
+    }
   }
 
   const ok = missing.length === 0 && extra.length === 0 && mismatches.length === 0;

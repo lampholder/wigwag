@@ -122,9 +122,17 @@ function migrateIssue(issue) {
     if (!fields[h.field]) fields[h.field] = { history: [] };
     fields[h.field].history.push(migrateHistoryEntry(h));
   }
-  const comments = (issue.commentStreams && issue.commentStreams.comments) || [];
-  if (comments.length) {
-    fields.comments = { history: comments.map(migrateCommentEntry) };
+  // `commentStreams` is a generic map keyed by field id, not a single
+  // fixed "comments" key -- v1 supports more than one comment-stream-
+  // type field per project (confirmed via v1's own
+  // issueActivitySortKeys: `for (const stream in (issue.commentStreams
+  // || {}))`). A real, confirmed migration bug found live: hardcoding
+  // `.comments` here silently dropped every OTHER comment-stream
+  // field's entire thread -- the default "Comments" field survived,
+  // any custom one didn't.
+  for (const streamKey in (issue.commentStreams || {})) {
+    const comments = issue.commentStreams[streamKey] || [];
+    if (comments.length) fields[streamKey] = { history: comments.map(migrateCommentEntry) };
   }
   return { type: 'issue', id: issue.id, fields };
 }

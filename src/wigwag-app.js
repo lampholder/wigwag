@@ -896,7 +896,13 @@ class Component extends DCLogic {
     const entries = [];
     for (const colId in (issue.fields || {})) {
       const history = issue.fields[colId].history || [];
-      if (history.length && history[0].text !== undefined && history[0].value === undefined) entries.push(...history);
+      // Checking only history[0] (an earlier version of this check)
+      // misdetects whenever the FIRST entry happens to be a redacted
+      // tombstone -- that carries neither `text` nor `value`, same as a
+      // redacted plain-value entry -- silently dropping the whole
+      // field's real comments from mention-scanning. Must check every
+      // entry, not just the first.
+      if (history.some(h => h.text !== undefined)) entries.push(...history);
     }
     return entries;
   }
@@ -6811,8 +6817,13 @@ class Component extends DCLogic {
         const fieldHistory = iss.fields[colId].history || [];
         // Same structural (not fieldDefs-based) comment-stream detection
         // as allCommentStreamEntries -- see its own comment for the
-        // real, live-reported setState-batching race this avoids.
-        if (fieldHistory.length && fieldHistory[0].text !== undefined && fieldHistory[0].value === undefined) continue;
+        // real, live-reported setState-batching race this avoids. Checks
+        // every entry, not just the first -- a leading redacted
+        // tombstone carries neither `text` nor `value`, so checking only
+        // fieldHistory[0] would misdetect a real comment-stream field as
+        // a plain value field whenever its oldest comment happened to be
+        // deleted.
+        if (fieldHistory.some(h => h.text !== undefined)) continue;
         for (const h of fieldHistory) {
           const key = entryKey(h);
           if (alreadyNotified.has(key) || newlyNotified.includes(key)) continue;

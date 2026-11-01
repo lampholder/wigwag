@@ -224,15 +224,27 @@ async function cmdShow(doc, idPrefix) {
   const activity = [];
   for (const colId in issue.fields) {
     const def = doc.fieldDefs[colId];
-    for (const h of (issue.fields[colId].history || [])) {
-      if (def && def.type === 'commentStream') {
-        activity.push({ sortKey: h.sortKey, text: h.redacted ? '(redacted)' : `${h.actor}: ${h.text}` });
-      } else {
-        const text = h.redacted ? '(redacted)'
-          : colId === core.ISSUE_DELETED_FIELD_ID ? 'Deleted issue'
-          : `${(def && def.label) || colId} set to ${def ? core.displayValueForHistory(def, h.value) : h.value}`;
-        activity.push({ sortKey: h.sortKey, text });
+    if (def && def.type === 'commentStream') {
+      // A comment's history can hold more than one entry sharing the
+      // same id -- editing a comment redacts the old content and
+      // appends the new text under that same id, same as the real
+      // app's own comment threads. Printing raw entries here would
+      // show an edited comment as two unrelated lines, an old
+      // '(redacted)' tombstone plus the new text -- reading as "this
+      // comment got deleted" when it was actually just edited (a real,
+      // live-reported point of confusion). core.latestCommentsById
+      // collapses each id down to its current state, same as the
+      // real app's Comments tab.
+      for (const c of core.latestCommentsById(issue.fields[colId].history || [])) {
+        activity.push({ sortKey: c.sortKey, text: c.redacted ? '(redacted)' : `${c.actor}: ${c.text}${c.wasEdited ? ' (edited)' : ''}` });
       }
+      continue;
+    }
+    for (const h of (issue.fields[colId].history || [])) {
+      const text = h.redacted ? '(redacted)'
+        : colId === core.ISSUE_DELETED_FIELD_ID ? 'Deleted issue'
+        : `${(def && def.label) || colId} set to ${def ? core.displayValueForHistory(def, h.value) : h.value}`;
+      activity.push({ sortKey: h.sortKey, text });
     }
   }
   activity.sort((a, b) => (a.sortKey || 0) - (b.sortKey || 0));

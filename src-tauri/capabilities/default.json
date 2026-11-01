@@ -15,6 +15,12 @@
     "core:window:allow-maximize",
     "core:window:allow-unmaximize",
     "core:window:allow-toggle-maximize",
-    "core:window:allow-start-dragging"
+    "core:window:allow-start-dragging",
+    "dialog:allow-save",
+    "fs:allow-write-file",
+    "fs:allow-download-write-recursive",
+    "fs:allow-home-write-recursive",
+    "fs:allow-desktop-write-recursive",
+    "fs:allow-document-write-recursive"
   ]
 }

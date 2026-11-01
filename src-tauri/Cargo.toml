@@ -13,6 +13,16 @@ tauri-plugin-opener = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+# Tracker: desktop downloads never actually worked -- the app's own
+# export paths (JSONL/CSV/XLSX/HTML) all funnel through a plain
+# Blob+<a download> browser mechanism (downloadTextFile in
+# src/wigwag-app.js), which WRY's webview has no native download
+# manager to catch; with no fs/dialog plugin wired up there was no
+# fallback either, so every export silently did nothing in the real
+# desktop app. Adding both so a Tauri-aware downloadTextFile can show
+# a real native save dialog and write the file directly.
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Connected Sources (Phase 1). reqwest pinned to match the version already

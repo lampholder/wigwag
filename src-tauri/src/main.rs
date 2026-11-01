@@ -60,6 +60,8 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .manage(ConnectedSourcesHttp::default())
         .invoke_handler(tauri::generate_handler![
             connected_source_ping,

@@ -3406,6 +3406,71 @@ test.describe('Share menu restructure', () => {
     expect(relsXml).toContain('TargetMode="External"');
     expect(relsXml).toMatch(/Target="https:\/\/github\.com\/[^"]+"/);
   });
+
+  // "Download all projects" is the one export that isn't scoped to the
+  // currently-active project -- it walks every LOCAL project via
+  // docStore, not this.state, so a second project (created here, which
+  // switches the active one) must still show up in the zip alongside
+  // the original.
+  test('"Download all projects (.zip)…" zips up every local project\'s full file, not just the active one', async ({ page }) => {
+    const firstName = (await page.locator('[data-testid=tracker-name-title]').textContent()).trim();
+    await h.openTrackerSwitcher(page);
+    await h.createNamedBlankProject(page, 'A second project for the zip');
+    await page.waitForTimeout(300);
+
+    await page.locator('[data-testid=btn-export]').click();
+    await page.waitForTimeout(150);
+    const [dl] = await Promise.all([
+      page.waitForEvent('download'),
+      page.locator('[data-testid=btn-export-all-projects]').click(),
+    ]);
+    expect(dl.suggestedFilename()).toMatch(/^wigwag-all-projects-\d{4}-\d{2}-\d{2}\.zip$/);
+
+    const fs = require('fs');
+    const zlib = require('zlib');
+    const buf = fs.readFileSync(await dl.path());
+    expect(buf.slice(0, 4).toString('hex')).toBe('504b0304'); // PK\x03\x04 -- a real zip
+
+    function findEOCD(b) {
+      for (let i = b.length - 22; i >= 0; i--) if (b.readUInt32LE(i) === 0x06054b50) return i;
+      throw new Error('no end-of-central-directory record found');
+    }
+    const eocd = findEOCD(buf);
+    const cdOffset = buf.readUInt32LE(eocd + 16);
+    const cdEntries = buf.readUInt16LE(eocd + 10);
+    let offset = cdOffset;
+    const parts = {};
+    for (let i = 0; i < cdEntries; i++) {
+      const compSize = buf.readUInt32LE(offset + 20);
+      const nameLen = buf.readUInt16LE(offset + 28);
+      const extraLen = buf.readUInt16LE(offset + 30);
+      const commentLen = buf.readUInt16LE(offset + 32);
+      const localHeaderOffset = buf.readUInt32LE(offset + 42);
+      const name = buf.toString('utf8', offset + 46, offset + 46 + nameLen);
+      const lh = localHeaderOffset;
+      const lhNameLen = buf.readUInt16LE(lh + 26);
+      const lhExtraLen = buf.readUInt16LE(lh + 28);
+      const dataStart = lh + 30 + lhNameLen + lhExtraLen;
+      parts[name] = zlib.inflateRawSync(buf.slice(dataStart, dataStart + compSize)).toString('utf8');
+      offset += 46 + nameLen + extraLen + commentLen;
+    }
+
+    expect(Object.keys(parts).length).toBeGreaterThanOrEqual(2);
+    const firstEntry = parts[firstName + '.jsonl'];
+    const secondEntry = parts['A second project for the zip.jsonl'];
+    expect(firstEntry, 'the original project should be in the zip, not just the active one').toBeTruthy();
+    expect(secondEntry, 'the newly-created second project should be in the zip').toBeTruthy();
+
+    // Each entry is a real signed export -- envelope line, then the
+    // records body -- same shape "Save full project file…" produces for
+    // a single project.
+    for (const [name, text] of [['first', firstEntry], ['second', secondEntry]]) {
+      const lines = text.trim().split('\n');
+      const envelope = JSON.parse(lines[0]);
+      expect(envelope.type, name + ' entry should start with a real export envelope').toBe('wigwag.export');
+      expect(JSON.parse(lines[1]).type, name + ' entry\'s first record should be the project schema line').toBe('fields');
+    }
+  });
 });
 
 test.describe('Project panel button + header hover', () => {

@@ -38,20 +38,28 @@ function parseJsonlRaw(text) {
 // -- a project can have more than one comment-stream field. Returns
 // {streamKey: {count, latestText}} for every stream actually present
 // on this issue, on EITHER side -- v1's raw.commentStreams[streamKey]
-// or v2's raw.fields[streamKey].history, whichever shape this
-// particular raw object has (v1 input vs. v2 output; deliberately not
-// dispatched by fieldDefs type, so this works even for a stream whose
-// field definition didn't survive migration -- exactly the class of
-// bug this is here to catch, not assume away).
-function commentStreamsOf(raw) {
+// or v2's raw.fields[streamKey].history.
+//
+// The v2 side is dispatched by the REAL field type (fieldDefs[colId]
+// .type === 'commentStream'), not by guessing from entry shape. An
+// earlier version of this function inspected only history[0] to guess
+// -- which silently misclassified any comment-stream field whose FIRST
+// entry happened to be a redacted tombstone, since a redacted entry
+// carries no `text` key at all (same content-free shape a redacted
+// plain-value entry has). That false negative excluded the whole field
+// from comparison, masking a real comment that migrated just fine --
+// confirmed live: a field with [redacted-tombstone, real-comment] in
+// that order read as "0 comments" post-migration here even though the
+// migrated file actually had the real comment intact.
+function commentStreamsOf(raw, fieldDefs) {
   const result = {};
   for (const streamKey in (raw.commentStreams || {})) {
     const entries = (raw.commentStreams[streamKey] || []).filter(c => !c.redacted);
     result[streamKey] = { count: entries.length, latestText: entries.length ? entries.reduce((a, b) => (b.sortKey > a.sortKey ? b : a)).text : null };
   }
   for (const colId in (raw.fields || {})) {
+    if (!fieldDefs[colId] || fieldDefs[colId].type !== 'commentStream') continue;
     const history = raw.fields[colId].history || [];
-    if (!history.length || history[0].text === undefined || history[0].value !== undefined) continue; // structural comment-stream detection, same as the real app's own
     const entries = history.filter(c => !c.redacted);
     result[colId] = { count: entries.length, latestText: entries.length ? entries.reduce((a, b) => (b.sortKey > a.sortKey ? b : a)).text : null };
   }
@@ -68,7 +76,7 @@ function summarize(filePath, core) {
     if (raw.type !== 'issue') continue;
     const hydrated = core.hydrateIssue(raw, fieldDefs);
     const values = core.deriveIssueValues(hydrated, fieldDefs);
-    issues[raw.id] = { values, commentStreams: commentStreamsOf(raw) };
+    issues[raw.id] = { values, commentStreams: commentStreamsOf(raw, fieldDefs) };
   }
   return { fieldDefs, issues };
 }

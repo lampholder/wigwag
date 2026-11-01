@@ -37,3 +37,23 @@ console.log(`${entries.length} history entries for this field on issue ${issue.i
 for (const h of entries) {
   console.log('  { ' + Object.keys(h).map(k => k + ': ' + shapeOf(h[k])).join(', ') + ' }');
 }
+
+// commentStreams is a SEPARATE array, keyed by stream/field id, not part
+// of `history` at all -- a comment-stream-type field's real entries live
+// here, never under the `.history` filter above.
+const comments = (issue.commentStreams && issue.commentStreams[colId]) || [];
+console.log(`${comments.length} commentStreams["${colId}"] entries on issue ${issue.id}:`);
+for (const c of comments) {
+  console.log('  { ' + Object.keys(c).map(k => k + ': ' + shapeOf(c[k])).join(', ') + ' }');
+}
+
+// v2 output shape: fields[colId].history, mixing value-entries and
+// comment-entries under one key -- print it too if present, so the same
+// invocation works against a migrated file as well as the original.
+if (issue.fields && issue.fields[colId]) {
+  const v2entries = issue.fields[colId].history || [];
+  console.log(`${v2entries.length} fields["${colId}"].history (v2) entries on issue ${issue.id}:`);
+  for (const h of v2entries) {
+    console.log('  { ' + Object.keys(h).map(k => k + ': ' + shapeOf(h[k])).join(', ') + ' }');
+  }
+}

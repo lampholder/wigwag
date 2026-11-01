@@ -1,5 +1,22 @@
 # Tracker file format (v1)
 
+> **The per-issue JSONL shape described below (the `issue` line:
+> `history`, `commentStreams`, `num`, flat field-tagged entries) is
+> SUPERSEDED.** `formatVersion` is now `2` (tracker issue 3212e2ff) —
+> an issue's own history moved from one flat array to a per-field
+> `fields` map (`issue.fields[colId].history`), `num`/`commentStreams`/
+> `fetchedVia`/`matchedId`/`origin`/per-entry `text` are gone, and
+> every linked-field value (GitHub/Jira/Salesforce/custom connector/
+> wigwag-internal alike) unified onto one `{title, href}` shape. See
+> `docs/FORMAT_V2.md` for the current, authoritative per-issue shape.
+> Everything else in THIS document — the `fields`-type schema line,
+> project-level history, Matrix room backing, the merge algorithm,
+> export modes — still describes real, mostly-unchanged behavior, but
+> has not yet been individually re-audited line-by-line against the v2
+> implementation; treat any example JSON showing an `issue` line's own
+> internals as v1-shaped and outdated, cross-check against the real
+> code for anything load-bearing.
+>
 > This document describes the format actually shipped by
 > `wigwag.html` — the single bundled app that is now
 > the real thing. An earlier prototype (a separate `schema/tracker.schema.json`

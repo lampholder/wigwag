@@ -1,12 +1,36 @@
-# Tracker file format (v2) — DRAFT SPEC, not yet implemented
+# Tracker file format (v2) — per-issue JSONL shape (CURRENT, implemented)
 
-> This document describes a **proposed** redesign of the per-issue JSONL
-> shape documented in `docs/FORMAT.md` (the currently-shipped v1 format).
-> Nothing in this file is implemented yet — see the companion migration
-> plan (filed as a real tracker issue, not a local TODO file, per this
-> project's own convention) for how to get from here to there. Until
-> that lands, `docs/FORMAT.md` remains authoritative for what
-> `wigwag.html` actually reads and writes.
+> This document describes the per-issue JSONL shape as actually
+> implemented (tracker issue 3212e2ff) — `formatVersion: 2`. It
+> supersedes the per-issue sections of `docs/FORMAT.md` (the v1
+> format this redesign replaced). `docs/FORMAT.md` itself has not yet
+> been fully rewritten to match line-by-line (project-level history,
+> Matrix room backing, merge algorithm, and export-mode sections there
+> still describe v1 in places) — this file is the authoritative
+> reference for the per-issue shape specifically until that broader
+> rewrite happens. Two corrections against the original draft below,
+> found during implementation and real-world test verification:
+>
+> - **Field ids are NOT retroactively renamed.** The `type__name`
+>   scheme (`newFieldId`/`newOptionId` in wigwag-core.js) applies only
+>   to fields/options created *after* this redesign shipped. An
+>   existing field (from before this landed, or from the one-time
+>   migration of a pre-v2 file) keeps whatever id it already had
+>   forever — there is no bulk-rename step. The worked example below
+>   showing `issue__key`/`select__priority`/`select__rag` describes
+>   what a *freshly created* field looks like, not a guarantee about
+>   any specific existing field's id.
+> - **The wigwag-internal ref shape was resolved, and resolved
+>   DIFFERENTLY than this draft speculated** (see "Known open items"
+>   at the bottom, which is now stale on this point): it did NOT get
+>   its own distinct fold-into-`value` shape. Instead (a mid-
+>   implementation design simplification), it uses the exact same
+>   `{title, href}` shape as every other system, with `href` being a
+>   literal `wigwag:` URI string (e.g.
+>   `wigwag:/project/<id>/issue/<id>?from=...&path=...&ref=...`),
+>   built/parsed by `buildWigwagUri`/`parseWigwagUri` (wigwag-core.js).
+>   There is no separate `wigwag` sub-object anywhere in the shipped
+>   shape.
 >
 > Context for why this exists: v1's `history` is a flat, chronologically
 > interleaved array across every field on an issue, with no field's
@@ -354,10 +378,27 @@ entry shape.
   regression (today's model is one `rootUrl` per connector entry
   already).
 
-## Known open items (not resolved in this draft)
+## Known open items (as shipped)
 
-- The wigwag-internal ref shape (`system:'wigwag'`, no `href`) needs its
-  own fold-into-`value` shape, analogous to but distinct from
-  `{title, href}` — not sketched here.
-- Collision-suffix scheme for field/option slugs (exact algorithm) not
-  specified, just the existence of the escape hatch.
+- The wigwag-internal ref shape resolved to the exact same
+  `{title, href}` shape as every other system (see the correction note
+  at the top of this document) — the "needs its own distinct shape"
+  framing below is the one part of the original draft that shipped
+  differently. `buildWigwagUri(ref)` / `parseWigwagUri(href)`
+  (wigwag-core.js) build/parse the `wigwag:` URI; both mirror the
+  existing `wigwagUrlMatch` 'project'-form regex exactly, for
+  round-tripping.
+- Collision-suffix scheme for field/option slugs: implemented as
+  `uniqueSlugId(base, existingIds)` (wigwag-core.js) — appends a short
+  numeric suffix only when `base` already collides with an existing id.
+- **Genuinely still-open gaps** (found during the real test-suite
+  conversion, filed as tracker issue d5e8dbe6, not fixed as part of
+  this redesign): the rule-builder's live results-table preview can
+  never show a rich external field (source.github.labels, etc.) for
+  any row, since it evaluates via buildSource directly with no live-
+  fetch mechanism of its own, and no rich payload is ever cached
+  anywhere under this redesign (by design) for it to read back. A
+  custom (macro) connector with no configured `rootUrl` can't be
+  re-identified by its persisted href alone on refresh, since its own
+  identification mechanism (pattern matching) is keyed to the
+  originally-pasted text, not the href the macro's fetch produced.

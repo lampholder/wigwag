@@ -73,19 +73,28 @@
 
 const fs = require('fs');
 
+// v1's real maximalist fieldRef shapes (confirmed against real linked
+// data, not just the design doc's sketch): a Jira ref carries
+// `browseUrl` directly; a GitHub ref carries `owner`/`repo`/`num` with
+// no URL of its own (the browse URL was always reconstructed from
+// those three, never stored); Salesforce carries an `id` but this
+// migration has never seen a real Salesforce-linked field to confirm
+// its exact URL convention against, so it deliberately falls back to
+// a titled-but-unlinked value (href: null) for that one system rather
+// than guess at a URL shape with nothing real to verify it against.
+function hrefFromFieldRef(ref) {
+  if (ref.href) return ref.href;
+  if (ref.browseUrl) return ref.browseUrl;
+  if (ref.owner && ref.repo && ref.num) return `https://github.com/${ref.owner}/${ref.repo}/issues/${ref.num}`;
+  return null;
+}
+
 function migrateHistoryEntry(h) {
   // A tombstone: content-free by design, stays content-free. Preserve
   // the SHAPE other redacted entries have elsewhere in this codebase
   // (id/actor/sortKey/redacted, no value) rather than inventing one.
   if (h.redacted) return { id: h.id, actor: h.actor, sortKey: h.sortKey, redacted: true, sig: null };
-  // fieldRef (always literally `null` in every real entry this was
-  // tested against -- nothing in this tracker was ever actually
-  // linked to GitHub/Jira/Salesforce) folds into `value` as {title,
-  // href} when truthy; a plain value passes through unchanged
-  // otherwise. Implemented for completeness/future-proofing even
-  // though the one real file this was verified against never
-  // exercises the truthy branch.
-  const value = h.fieldRef ? { title: h.value, href: h.fieldRef.href || h.fieldRef.browseUrl || null } : h.value;
+  const value = h.fieldRef ? { title: h.value, href: hrefFromFieldRef(h.fieldRef) } : h.value;
   return { id: h.id, actor: h.actor, value, sortKey: h.sortKey, sig: null, pubKey: null };
 }
 
@@ -99,6 +108,17 @@ function migrateIssue(issue) {
   for (const h of (issue.history || [])) {
     if (!h.field) continue; // narrative-only entry ("Created", "Merged in from import") -- nothing to preserve
     if (h.field === 'created' || h.field === 'updated') continue; // always derived, never stored, under v1 OR v2
+    // A real, confirmed v1 entry shape: `field` set, but no `value` and
+    // no `fieldRef` at all -- a leftover "could not fetch" / in-flight-
+    // link operational entry from before this field's own link
+    // resolved (or failed to). Same "never log fetch errors/transient
+    // state to signed history" principle format v2 already applies
+    // going forward (see docs/FORMAT_V2.md) -- nothing here to
+    // preserve, and if left in, it becomes the LATEST entry for this
+    // field purely by sortKey, shadowing every real value entry before
+    // it (confirmed live: this exact case turned a real, resolved
+    // title into an empty string post-migration).
+    if (h.value === undefined && !h.redacted) continue;
     if (!fields[h.field]) fields[h.field] = { history: [] };
     fields[h.field].history.push(migrateHistoryEntry(h));
   }

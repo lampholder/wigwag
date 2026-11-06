@@ -1331,9 +1331,22 @@ if (new URLSearchParams(location.search).get('widgetId')) {
     // correctly grants the room creator access with no power_levels event
     // at all, so this must never short-circuit to false before that check
     // runs (live-reported, tracker #169/4f07e72b follow-up).
+    //
+    // This one shared boolean gates every moderator-only action (create
+    // project, propose layout, rename a project), but the required power
+    // level only varies by event type on a room with a CUSTOM per-event
+    // power_levels.events override -- the common case falls back to the
+    // same state_default for any type. Checks WIGWAG_MATRIX_PROJECT_STATE_TYPE
+    // specifically (creating a project is the most fundamental of the
+    // gated actions -- nothing else is possible in the room without one)
+    // rather than WIGWAG_MATRIX_LAYOUT_PROPOSAL_TYPE, which this
+    // previously (and wrongly) hardcoded -- a leftover from when this
+    // function was introduced for the layout-proposal feature specifically
+    // (tracker #169/4f07e72b) and then reused generically without being
+    // updated for its other callers.
     function currentIsModerator() {
       const ev = latestStateEventOfType('m.room.power_levels', '');
-      const result = core.isModeratorForStateEvent(ev ? ev.content : null, resolvedMatrixUserId, core.WIGWAG_MATRIX_LAYOUT_PROPOSAL_TYPE, roomCreatorSender);
+      const result = core.isModeratorForStateEvent(ev ? ev.content : null, resolvedMatrixUserId, core.WIGWAG_MATRIX_PROJECT_STATE_TYPE, roomCreatorSender);
       return result;
     }
     // Extracted (tracker #169/4f07e72b follow-up, 2026-10-02) from what
@@ -1463,12 +1476,53 @@ if (new URLSearchParams(location.search).get('widgetId')) {
     // in order) since this wasn't verified against real Element before
     // today -- logged raw above so a wrong guess here is diagnosable
     // immediately rather than silently doing nothing.
+    // Live-reported (Tom, 2026-11-06): real Element's update_state push, at
+    // least the FIRST one after capabilities are granted, batches every
+    // newly-subscribed state-event type into ONE push shaped
+    // {state: [MatrixEvent, ...]} -- a raw event per entry, each with its
+    // own type/state_key/content -- not the single flat {type, content,
+    // state_key} (or {event: {...}}) shape this previously only tried.
+    // Confirmed live: a room's real m.room.power_levels content arrived in
+    // exactly this batched shape, silently dropped by the old parsing --
+    // the EXACT push that should have delivered a correct, immediate
+    // moderator-status update instead did nothing, leaving a genuinely
+    // power-level-100 user stuck seeing "ask a moderator" because the
+    // separate read_events poll-based fallback (this file's only other
+    // path to the same data) kept returning an empty result for this
+    // room (a stale/empty "current state" read is the same confirmed-live
+    // Element unreliability already documented for work.wigwag.layout-
+    // proposal above, just newly observed for power_levels/room_create
+    // too). Each event in a batch is processed through the exact same
+    // per-event logic as the single-event shapes, unchanged.
     async function onPushedStateUpdate(data) {
       if (!data || typeof data !== 'object') return;
+      if (Array.isArray(data.state)) {
+        for (const ev of data.state) await onPushedStateUpdate(ev);
+        return;
+      }
       const type = data.type || (data.event && data.event.type);
       const stateKey = ('state_key' in data) ? data.state_key : (data.event && data.event.state_key);
       const content = data.content || (data.event && data.event.content);
       if (!type || stateKey === undefined || !content) return;
+      // m.room.create (2026-11-06, found alongside the power_levels fix
+      // above): the room creator's own moderator access depends on
+      // roomCreatorSender, a variable only ever set via transport.
+      // getRoomCreator()'s polling path -- a pushed m.room.create event
+      // was previously just dropped into remoteRawEvents generically
+      // (nothing ever reads m.room.create back out of there), never
+      // updating roomCreatorSender at all. Same bug class as the
+      // power_levels one above, just not what bit Tom's specific report
+      // (he isn't the room creator in that room) -- a room creator whose
+      // OWN session hit the same batched-push parsing gap would have
+      // been just as stuck, via this path instead. `sender` lives at the
+      // top level of a raw Matrix event (unsigned/event_id/room_id are
+      // siblings, not nested under content) -- same field getRoomCreator
+      // already reads.
+      if (type === 'm.room.create' && data.sender) {
+        roomCreatorSender = data.sender;
+        localStorage.postMessageToFrame({ type: 'wigwag:moderator-status', isModerator: currentIsModerator() });
+        return;
+      }
       // work.wigwag.project (2026-10-03): unlike the other state-shaped
       // types this function handles, a project needs real discovery
       // (discoverProjects + bootstrapLocalStorage) when it's a brand new

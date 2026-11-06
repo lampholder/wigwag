@@ -768,6 +768,75 @@ test.describe('wigwag-matrix-host.html: widget-embedded transport', () => {
     await expect(frame.locator('[data-testid=layout-proposal-banner]')).toContainText('Alex');
   });
 
+  // Live-reported (Tom, 2026-11-06): real Element's FIRST update_state
+  // push after capabilities are granted batches every newly-subscribed
+  // state-event type into one push shaped {state: [MatrixEvent, ...]} --
+  // not the single flat {type, content, state_key} shape every other
+  // update_state test above uses. The old parsing silently dropped this
+  // shape entirely, so a real room's genuinely-granting power_levels
+  // content (confirmed live: the connecting user really was at power
+  // level 100) never reached currentIsModerator() -- and the separate
+  // read_events poll fallback (powerLevels: null here, matching the
+  // real confirmed-empty response Tom's own room returned) never
+  // recovered it either. Reproduces the exact batched shape from Tom's
+  // own pasted console log.
+  test('a BATCHED toWidget update_state push ({state: [...]}) delivers power_levels correctly -- the real Element shape, not just the single-event one', async ({ page }) => {
+    await h.gotoFakeWidgetHost(page, {
+      roomId: '!batchpush:example.org', roomName: 'Batch Push Room',
+      initialEntries: [],
+      powerLevels: null // simulates read_events genuinely returning nothing for power_levels, same as Tom's own room
+    });
+    const frame = page.frameLocator('#widget').frameLocator('#frame');
+    await expect(frame.locator('[data-testid=room-no-projects]')).toBeVisible();
+    await expect(frame.locator('[data-testid=btn-create-first-room-project]')).toHaveCount(0);
+
+    const realWorldPowerLevels = {
+      ban: 50, events: { 'm.room.avatar': 50, 'm.room.canonical_alias': 50, 'm.room.history_visibility': 100, 'm.room.name': 50, 'm.room.power_levels': 100 },
+      events_default: 0, invite: 0, kick: 50, redact: 50, state_default: 50,
+      users: { '@someone-else:example.org': 100, '@fake-user:example.org': 100 }, // '@fake-user:example.org' is gotoFakeWidgetHost's own default connecting user
+      users_default: 0
+    };
+    await page.evaluate((content) => {
+      document.querySelector('#widget').contentWindow.postMessage({
+        api: 'toWidget', widgetId: 'test-widget-1', requestId: 'push-batch-1', action: 'update_state',
+        data: { state: [
+          { type: 'm.room.power_levels', state_key: '', content, sender: '@someone-else:example.org', origin_server_ts: Date.now(), event_id: '$pl1', room_id: '!batchpush:example.org', unsigned: { age: 1 } },
+          { type: 'm.room.create', state_key: '', content: { creator: '@someone-else:example.org', room_version: '6' }, sender: '@someone-else:example.org', origin_server_ts: Date.now(), event_id: '$create1', room_id: '!batchpush:example.org', unsigned: { age: 1 } }
+        ] }
+      }, '*');
+    }, realWorldPowerLevels);
+
+    await expect(frame.locator('[data-testid=btn-create-first-room-project]')).toBeVisible();
+  });
+
+  // Companion to the batched-push test above: the SAME batch shape also
+  // carries m.room.create, which must independently update
+  // roomCreatorSender (a variable previously only ever set via
+  // transport.getRoomCreator()'s own polling, never from a pushed
+  // event) -- not just power_levels. Uses a NON-granting power_levels so
+  // only the room-creator fallback can possibly explain success.
+  test('the SAME batched push also updates roomCreatorSender from a pushed m.room.create, independent of power_levels', async ({ page }) => {
+    await h.gotoFakeWidgetHost(page, {
+      roomId: '!batchpush2:example.org', roomName: 'Batch Push Room 2',
+      initialEntries: [],
+      powerLevels: { ban: 50, events: {}, events_default: 0, invite: 0, kick: 50, redact: 50, state_default: 50, users: {}, users_default: 0 } // present, but grants nobody
+    });
+    const frame = page.frameLocator('#widget').frameLocator('#frame');
+    await expect(frame.locator('[data-testid=btn-create-first-room-project]')).toHaveCount(0);
+
+    await page.evaluate(() => {
+      document.querySelector('#widget').contentWindow.postMessage({
+        api: 'toWidget', widgetId: 'test-widget-1', requestId: 'push-batch-2', action: 'update_state',
+        data: { state: [
+          // 'test-widget-1'/'@fake-user:example.org' is gotoFakeWidgetHost's own default connecting user -- IS the room creator here
+          { type: 'm.room.create', state_key: '', content: { creator: '@fake-user:example.org', room_version: '6' }, sender: '@fake-user:example.org', origin_server_ts: Date.now(), event_id: '$create2', room_id: '!batchpush2:example.org', unsigned: { age: 1 } }
+        ] }
+      }, '*');
+    });
+
+    await expect(frame.locator('[data-testid=btn-create-first-room-project]')).toBeVisible();
+  });
+
   // Live-reported (Tom, 2026-10-02): the timestamp never-regress guard
   // above only stops a stale read_events answer from overwriting a value
   // ALREADY known to be fresher -- it does nothing on a genuinely FRESH

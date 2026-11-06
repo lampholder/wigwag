@@ -42,15 +42,74 @@ fn connected_source_ping() -> String {
 #[cfg(target_os = "macos")]
 const MAC_TRAFFIC_LIGHT_POSITION: (f64, f64) = (16.0, 22.0);
 
+// Shared by the macOS main-window setup below AND open_project_window --
+// every window this app ever creates (the first one, on macOS, or any
+// later one) gets the same base chrome (from the single configured
+// window in tauri.conf.json/tauri.macos.conf.json -- size/decorations/
+// titleBarStyle/hiddenTitle all come along for free via from_config)
+// plus the same macOS traffic-light inset. label/url/title are the only
+// per-window overrides; everything else is config-driven and platform-
+// resolved already, so this never needs its own per-platform branches
+// beyond the traffic-light cfg.
+fn build_wigwag_window(
+    app: &tauri::AppHandle,
+    label: String,
+    url: tauri::WebviewUrl,
+    title: String,
+) -> tauri::Result<tauri::WebviewWindow> {
+    let mut config = app.config().app.windows[0].clone();
+    config.label = label;
+    config.url = url;
+    let builder = tauri::WebviewWindowBuilder::from_config(app, &config)?.title(title);
+    #[cfg(target_os = "macos")]
+    let builder = builder.traffic_light_position(tauri::LogicalPosition::new(
+        MAC_TRAFFIC_LIGHT_POSITION.0,
+        MAC_TRAFFIC_LIGHT_POSITION.1,
+    ));
+    builder.build()
+}
+
 #[cfg(target_os = "macos")]
 fn create_main_window(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    let config = app.config().app.windows[0].clone();
-    tauri::WebviewWindowBuilder::from_config(app.handle(), &config)?
-        .traffic_light_position(tauri::LogicalPosition::new(
-            MAC_TRAFFIC_LIGHT_POSITION.0,
-            MAC_TRAFFIC_LIGHT_POSITION.1,
-        ))
-        .build()?;
+    build_wigwag_window(
+        &app.handle().clone(),
+        "main".into(),
+        tauri::WebviewUrl::App("index.html".into()),
+        "Wigwag".into(),
+    )?;
+    Ok(())
+}
+
+// Tracker: multiple independent windows, same underlying data (Tom:
+// "look at two projects simultaneously/on different desktops"). The
+// window itself is the only genuinely new piece -- it boots straight
+// into the existing #/project/<id> deep-link route (resolveDeepLinkFromHash,
+// src/wigwag-app.js), which already calls switchProject/switchIdentity
+// and so already lands the per-TAB sessionStorage[SESSION_PROJECT_KEY]
+// write that makes this window's active project independent of every
+// other window/tab -- that plumbing is unchanged and already tested
+// (tests/cross-tab-sync.spec.js), just newly reachable from a second OS
+// window instead of a second browser tab. project_id/project_name come
+// straight from the switcher row the user right-clicked (src/wigwag-
+// app.js); project_name is only used for the window title, set here so
+// there's no flash of a generic title before the frontend boots and
+// could rename it itself.
+#[tauri::command]
+fn open_project_window(
+    app: tauri::AppHandle,
+    project_id: String,
+    project_name: String,
+) -> Result<(), String> {
+    let label = format!(
+        "win-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_nanos()
+    );
+    let url = tauri::WebviewUrl::App(format!("index.html#/project/{}", project_id).into());
+    let title = format!("Wigwag — {}", project_name);
+    build_wigwag_window(&app, label, url, title).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -68,7 +127,8 @@ fn main() {
             connected_source_fetch,
             connected_source_set_credential,
             connected_source_get_credential,
-            connected_source_delete_credential
+            connected_source_delete_credential,
+            open_project_window
         ])
         .setup(|_app| {
             #[cfg(target_os = "macos")]

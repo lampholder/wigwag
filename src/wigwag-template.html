@@ -119,6 +119,11 @@
     <span data-testid="app-update-dismiss" sc-camel-on-click="{{ onDismissAppUpdate }}" style="cursor:pointer; font-size:15px; color: var(--text-secondary); padding:2px 4px; flex-shrink:0;">✕</span>
   </div>
 </sc-if>
+<sc-if value="{{ switcherRowContextMenu.open }}" hint-placeholder-val="{{ false }}">
+  <div data-testid="switcher-row-context-menu" style="position:fixed; top:{{ switcherRowContextMenu.y }}px; left:{{ switcherRowContextMenu.x }}px; background:var(--surface); border:1px solid var(--border); border-radius:8px; box-shadow:0 10px 26px var(--shadow-menu); z-index:150; padding:4px; min-width:170px; font-size:12.5px;">
+    <div data-testid="switcher-row-context-open-new-window" sc-camel-on-click="{{ switcherRowContextMenu.onOpenInNewWindow }}" style="padding:7px 10px; border-radius:5px; cursor:pointer; color: var(--text-primary); white-space:nowrap;" style-hover="background: var(--n22);">Open in new window</div>
+  </div>
+</sc-if>
 <sc-if value="{{ notUnknownProjectCold }}" hint-placeholder-val="{{ true }}">
 <sc-if value="{{ isDesktopViewport }}" hint-placeholder-val="{{ true }}">
 <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; background: var(--surface-page); {{ appRootHeightStyle }} display:flex; flex-direction:column; color: var(--text-primary);">
@@ -248,7 +253,7 @@
               </div>
               <div style="flex:1; overflow-y:auto; max-height:260px;">
                 <sc-for list="{{ switcher.projects }}" as="proj" hint-placeholder-count="2">
-                  <div data-testid="switcher-project-row" data-project-id="{{ proj.id }}" sc-camel-on-click="{{ proj.onSelect }}" style="display:flex; align-items:center; gap:10px; padding:9px 14px; cursor:pointer; border-radius:6px; background:{{ proj.bg }};" style-hover="background: var(--n22);">
+                  <div data-testid="switcher-project-row" data-project-id="{{ proj.id }}" sc-camel-on-click="{{ proj.onSelect }}" sc-camel-on-context-menu="{{ proj.onContextMenu }}" style="display:flex; align-items:center; gap:10px; padding:9px 14px; cursor:pointer; border-radius:6px; background:{{ proj.bg }};" style-hover="background: var(--n22);">
                     <span style="flex:1; min-width:0; font-size:13px; color: var(--n23); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ proj.name }}</span>
                     <sc-if value="{{ proj.isActive }}" hint-placeholder-val="{{ false }}"><span style="color:var(--accent-ink); font-size:12px; flex-shrink:0;">✓</span></sc-if>
                   </div>
@@ -408,7 +413,7 @@
               </div>
               <div style="flex:1; overflow-y:auto; max-height:260px;">
                 <sc-for list="{{ switcher.projects }}" as="proj" hint-placeholder-count="2">
-                  <div data-testid="switcher-project-row" data-project-id="{{ proj.id }}" sc-camel-on-click="{{ proj.onSelect }}" style="display:flex; align-items:center; gap:10px; padding:9px 14px; cursor:pointer; border-radius:6px; background:{{ proj.bg }};" style-hover="background: var(--n22);">
+                  <div data-testid="switcher-project-row" data-project-id="{{ proj.id }}" sc-camel-on-click="{{ proj.onSelect }}" sc-camel-on-context-menu="{{ proj.onContextMenu }}" style="display:flex; align-items:center; gap:10px; padding:9px 14px; cursor:pointer; border-radius:6px; background:{{ proj.bg }};" style-hover="background: var(--n22);">
                     <span style="flex:1; min-width:0; font-size:13px; color: var(--n23); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ proj.name }}</span>
                     <sc-if value="{{ proj.isActive }}" hint-placeholder-val="{{ false }}"><span style="color:var(--accent-ink); font-size:12px; flex-shrink:0;">✓</span></sc-if>
                   </div>

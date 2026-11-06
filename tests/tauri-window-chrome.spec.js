@@ -36,6 +36,19 @@ async function stubPlatform(page, platform) {
   }, platform);
 }
 
+// window.__TAURI__.core.invoke is the real call surface for any plain
+// Rust #[tauri::command] (open_project_window included) -- see
+// connected_source_* for the existing pattern this mirrors. Tracks
+// every call so a test can assert the command name and args, without
+// a real Rust process behind it.
+async function stubTauriInvoke(page) {
+  await page.addInitScript(() => {
+    window.__invokeCalls = [];
+    window.__TAURI__ = window.__TAURI__ || {};
+    window.__TAURI__.core = { invoke: (cmd, args) => { window.__invokeCalls.push({ cmd, args }); return Promise.resolve(); } };
+  });
+}
+
 test.describe('Tauri windowed-mode titlebar', () => {
   test('outside the Tauri runtime, no window-control buttons render -- native OS chrome is still in play there', async ({ page }) => {
     await h.gotoTracker(page);
@@ -182,5 +195,64 @@ test.describe('Tauri windowed-mode: table region fills the window', () => {
     expect(flexGrow).toBe('1');
     const tableBox = await page.locator('[data-testid=table-scroll-wrap]').boundingBox();
     expect(tableBox.height).toBeGreaterThan(600);
+  });
+});
+
+// Tracker: multiple independent windows, same underlying data (Tom:
+// "look at two projects simultaneously/on different desktops"). The
+// new window itself (a real OS window, a real second webview) can't be
+// spawned or observed in this sandbox -- no display server, and no
+// Tauri test harness exists for this suite regardless. What IS fully
+// testable here: that right-click on a switcher project row invokes
+// the real Rust command with the right args when in Tauri, and is a
+// complete no-op (native browser menu, untouched) everywhere else. The
+// underlying "two independent contexts, same live-synced data" behavior
+// this new window relies on is already proven by the full
+// cross-tab-sync.spec.js suite (same mechanism, via tabs) -- not
+// re-tested here.
+test.describe('"Open in new window" (switcher project row right-click)', () => {
+  test('outside the Tauri runtime, right-click does nothing custom -- no popover, no preventDefault (native menu stays in play)', async ({ page }) => {
+    await h.gotoTracker(page);
+    await h.openTrackerSwitcher(page);
+    const row = page.locator('[data-testid=switcher-project-row]').first();
+    await row.click({ button: 'right' });
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=switcher-row-context-menu]')).toHaveCount(0);
+  });
+
+  test('in Tauri, right-clicking a project row opens a popover; "Open in new window" invokes open_project_window with that project\'s id and name', async ({ page }) => {
+    await stubTauriWindow(page);
+    await stubTauriInvoke(page);
+    await h.gotoTracker(page);
+    await h.openTrackerSwitcher(page);
+    await h.createNamedBlankProject(page, 'Second project for right-click');
+    await h.openTrackerSwitcher(page);
+
+    const row = h.milestoneRow(page, 'Second project for right-click');
+    const projectId = await row.getAttribute('data-project-id');
+    await row.click({ button: 'right' });
+
+    const menu = page.locator('[data-testid=switcher-row-context-menu]');
+    await expect(menu).toBeVisible();
+    await expect(menu).toContainText('Open in new window');
+
+    await page.locator('[data-testid=switcher-row-context-open-new-window]').click();
+    await expect(menu).toHaveCount(0); // closes itself after firing
+
+    const calls = await page.evaluate(() => window.__invokeCalls);
+    expect(calls).toEqual([{ cmd: 'open_project_window', args: { projectId, projectName: 'Second project for right-click' } }]);
+  });
+
+  test('the popover dismisses on outside click, same as every other overlay', async ({ page }) => {
+    await stubTauriWindow(page);
+    await stubTauriInvoke(page);
+    await h.gotoTracker(page);
+    await h.openTrackerSwitcher(page);
+    const row = page.locator('[data-testid=switcher-project-row]').first();
+    await row.click({ button: 'right' });
+    await expect(page.locator('[data-testid=switcher-row-context-menu]')).toBeVisible();
+
+    await page.mouse.click(640, 400);
+    await expect(page.locator('[data-testid=switcher-row-context-menu]')).toHaveCount(0);
   });
 });

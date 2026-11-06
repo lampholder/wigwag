@@ -1554,6 +1554,20 @@ class Component extends DCLogic {
         localStorage.setItem(PROJECTS_KEY, payloadJson);
       }
       sessionStorage.setItem(SESSION_PROJECT_KEY, this.state.projectId);
+      // Multiple independent windows (tracker: "look at two projects
+      // simultaneously/on different desktops"): the OS-level window
+      // title is per-window already (set at window-creation time for a
+      // new window opened via the switcher's "Open in new window"), but
+      // should stay in sync if THIS window later switches to a
+      // different project via its own switcher too -- otherwise the
+      // title would keep naming whichever project the window opened
+      // with forever. Deduped on projectId so this doesn't fire an IPC
+      // call on every unrelated render.
+      if (this.isTauriWindowedRuntime() && this.state.projectId !== this._lastSetWindowTitleProjectId) {
+        this._lastSetWindowTitleProjectId = this.state.projectId;
+        const meta = this.state.projects.find(p => p.id === this.state.projectId);
+        if (meta) window.__TAURI__.window.getCurrentWindow().setTitle('Wigwag — ' + meta.name).catch(() => {});
+      }
     } catch (e) { console.warn('[tracker] failed to save project index:', e); }
   }
   // Switches the active project. No manual "snapshot" of the OLD
@@ -1799,7 +1813,7 @@ class Component extends DCLogic {
       // UI state (menus, active/selected cell, add-item draft, slide-over)
       // plus what it implies (drag state, field-editor/color-picker modals,
       // an in-progress rename).
-      settingsOpen: false, exportMenuOpen: false, proposeLayoutConfirmOpen: false, sendCopied: false, sourceViewOpen: false, addFieldOpen: false,
+      settingsOpen: false, exportMenuOpen: false, proposeLayoutConfirmOpen: false, sendCopied: false, sourceViewOpen: false, addFieldOpen: false, switcherRowContextMenu: null,
       addItemOpen: false, addItemDraft: '', filterQuery: '', widgetFilterOpen: false, jumpDismissed: false, jumpActiveIndex: 0, filterSuggestDismissed: true, filterSuggestActiveIndex: 0, sort: this.sortFor(id), sortSnapshot: computeSortSnapshot(this.sortFor(id), hydratedIssues, hydratedFieldDefs), columnFilters: this.columnFiltersFor(id),
       columnFilterExcludedIds: computeColumnFilterExcludedIds(this.columnFiltersFor(id), hydratedIssues, hydratedFieldDefs),
       draggingColId: null, dragOverColId: null, dragOverSide: null, openColMenuId: null,
@@ -2130,6 +2144,9 @@ class Component extends DCLogic {
       }
       if (s.statusBarOverflowOpen && !e.target.closest('[data-testid="app-status-bar"]')) {
         patch = Object.assign(patch || {}, { statusBarOverflowOpen: false });
+      }
+      if (s.switcherRowContextMenu && !e.target.closest('[data-testid="switcher-row-context-menu"]')) {
+        patch = Object.assign(patch || {}, { switcherRowContextMenu: null });
       }
       if (!s.jumpDismissed && !e.target.closest('[data-testid="filter-input-wrap"]') && !e.target.closest('[data-testid="jump-panel"]') && !e.target.closest('[data-testid="mobile-filter-header"]') && !e.target.closest('[data-testid="mobile-row-list"]')) {
         patch = Object.assign(patch || {}, { jumpDismissed: true });
@@ -3678,6 +3695,7 @@ class Component extends DCLogic {
     pushNotificationsError: '',
     statusBarOverflowOpen: false,
     statusBarRowFits: true,
+    switcherRowContextMenu: null,
     settingsOpen: false,
     settingsSection: 'identity',
     exportMenuOpen: false,
@@ -6600,6 +6618,19 @@ class Component extends DCLogic {
   onWindowMinimize = () => window.__TAURI__.window.getCurrentWindow().minimize();
   onWindowToggleMaximize = () => window.__TAURI__.window.getCurrentWindow().toggleMaximize();
   onWindowClose = () => window.__TAURI__.window.getCurrentWindow().close();
+  // Multiple independent windows, same data (tracker: "look at two
+  // projects simultaneously/on different desktops"). The new window
+  // boots straight into the existing #/project/<id> deep-link route
+  // (resolveDeepLinkFromHash), which already calls switchProject/
+  // switchIdentity -- no new boot-time logic needed here, this just
+  // asks Rust to create the window at that URL. open_project_window is
+  // a real Rust command (src-tauri/src/main.rs), not the JS-exposed
+  // window.__TAURI__.window.WebviewWindow constructor, so no window-
+  // create ACL permission is needed on this side.
+  openProjectInNewWindow = (projectId, projectName) => {
+    window.__TAURI__.core.invoke('open_project_window', { projectId, projectName })
+      .catch(err => window.alert('Could not open a new window: ' + err.message));
+  };
   checkNotificationPermission = async () => {
     if (this.isTauriNotificationRuntime()) {
       const granted = await window.__TAURI__.notification.isPermissionGranted();
@@ -9504,7 +9535,16 @@ class Component extends DCLogic {
     const switcherProjectRows = switcherProjectsInScope(switcherScopeId).map(p => ({
       id: p.id, name: p.name, isActive: p.id === s.projectId,
       bg: p.id === s.projectId ? 'var(--c25)' : 'transparent',
-      onSelect: () => this.selectSwitcherProject(p)
+      onSelect: () => this.selectSwitcherProject(p),
+      // "Open in new window" (right-click) only makes sense as a real OS
+      // window, i.e. only inside the Tauri app -- left as the browser's
+      // own native context menu everywhere else (no preventDefault, no
+      // popover) rather than showing an item that can't do anything.
+      onContextMenu: (e) => {
+        if (!this.isTauriWindowedRuntime()) return;
+        e.preventDefault();
+        this.setState({ switcherRowContextMenu: { projectId: p.id, name: p.name, x: e.clientX, y: e.clientY } });
+      }
     }));
     const switcherBreadcrumbIdentityLabel = switcherActiveProject
       ? (switcherActiveProject.identityId ? ((s.identities.find(i => i.id === switcherActiveProject.identityId) || {}).label || '') : 'Shared with you')
@@ -9570,6 +9610,17 @@ class Component extends DCLogic {
         this.setState({ switcherOpen: false });
       }
     };
+    // Right-click "Open in new window" on a switcher project row --
+    // first context-menu UI in this codebase, so deliberately minimal
+    // (one item, no submenu machinery) rather than building out a
+    // generic framework nothing else needs yet.
+    const switcherRowContextMenu = s.switcherRowContextMenu ? {
+      open: true, x: s.switcherRowContextMenu.x, y: s.switcherRowContextMenu.y,
+      onOpenInNewWindow: () => {
+        this.openProjectInNewWindow(s.switcherRowContextMenu.projectId, s.switcherRowContextMenu.name);
+        this.setState({ switcherRowContextMenu: null });
+      }
+    } : { open: false, x: 0, y: 0, onOpenInNewWindow: () => {} };
     const emailGate = {
       open: s.emailGateOpen,
       draft: s.emailGateDraft,
@@ -9885,6 +9936,7 @@ class Component extends DCLogic {
     return {
       ident,
       switcher,
+      switcherRowContextMenu,
       globalSearch: this.globalSearchVals(),
       emailGate,
       attributionGate,

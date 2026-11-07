@@ -1572,7 +1572,7 @@ class Component extends DCLogic {
         const title = meta ? ('Wigwag — ' + meta.name) : 'Wigwag';
         if (title !== this._lastSetWindowTitle) {
           this._lastSetWindowTitle = title;
-          window.__TAURI__.window.getCurrentWindow().setTitle(title).catch(() => {});
+          window.__TAURI__.window.getCurrentWindow().setTitle(title).catch(err => console.warn('[tracker] setTitle failed:', err));
         }
       }
     } catch (e) { console.warn('[tracker] failed to save project index:', e); }

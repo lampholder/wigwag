@@ -249,6 +249,59 @@ test.describe('Multiple identities: switcher scopes, projects, breadcrumb', () =
     expect(activeIdentityId).toBe('identity-b');
   });
 
+  // Tracker 46b36422: replaces the old global "Download all projects"
+  // Send-menu button (removed -- see interaction.spec.js), which bundled
+  // every local project regardless of identity. This is the real point
+  // of the redesign: Personal's download must contain ONLY Personal's
+  // own project, never Northwind's, even though both exist locally in
+  // the same browser.
+  test('the Identity panel\'s "Download all projects" zips only THIS identity\'s own projects, never another identity\'s', async ({ page }) => {
+    await h.openTrackerSwitcher(page);
+    const personalRow = page.locator('[data-testid=switcher-scope-row]').filter({ hasText: 'Personal' });
+    await personalRow.locator('[data-testid=switcher-scope-settings-btn]').click();
+    await page.waitForTimeout(150);
+
+    const [dl] = await Promise.all([
+      page.waitForEvent('download'),
+      page.locator('[data-testid=btn-download-identity-projects]').click(),
+    ]);
+    expect(dl.suggestedFilename()).toBe('Personal - all projects.zip');
+
+    const fs = require('fs');
+    const zlib = require('zlib');
+    const buf = fs.readFileSync(await dl.path());
+    expect(buf.slice(0, 4).toString('hex')).toBe('504b0304'); // PK\x03\x04 -- a real zip
+
+    function findEOCD(b) {
+      for (let i = b.length - 22; i >= 0; i--) if (b.readUInt32LE(i) === 0x06054b50) return i;
+      throw new Error('no end-of-central-directory record found');
+    }
+    const eocd = findEOCD(buf);
+    const cdOffset = buf.readUInt32LE(eocd + 16);
+    const cdEntries = buf.readUInt16LE(eocd + 10);
+    let offset = cdOffset;
+    const parts = {};
+    for (let i = 0; i < cdEntries; i++) {
+      const compSize = buf.readUInt32LE(offset + 20);
+      const nameLen = buf.readUInt16LE(offset + 28);
+      const extraLen = buf.readUInt16LE(offset + 30);
+      const commentLen = buf.readUInt16LE(offset + 32);
+      const localHeaderOffset = buf.readUInt32LE(offset + 42);
+      const name = buf.toString('utf8', offset + 46, offset + 46 + nameLen);
+      const lh = localHeaderOffset;
+      const lhNameLen = buf.readUInt16LE(lh + 26);
+      const lhExtraLen = buf.readUInt16LE(lh + 28);
+      const dataStart = lh + 30 + lhNameLen + lhExtraLen;
+      parts[name] = zlib.inflateRawSync(buf.slice(dataStart, dataStart + compSize)).toString('utf8');
+      offset += 46 + nameLen + extraLen + commentLen;
+    }
+
+    expect(Object.keys(parts)).toEqual(['Project A.jsonl']); // Project B1/B2 (Northwind's) must never appear
+    const lines = parts['Project A.jsonl'].trim().split('\n');
+    expect(JSON.parse(lines[0]).type).toBe('wigwag.export');
+    expect(JSON.parse(lines[1]).type).toBe('fields');
+  });
+
   test('"Shared with you" has no settings cog -- there is no identity to configure', async ({ page }) => {
     // seedTwoIdentities' own addInitScript reapplies on every navigation
     // (with no "already seeded" guard, unlike seedDemoMilestone), so a

@@ -326,13 +326,6 @@
                 <div style="font-size:11.5px; color: var(--text-secondary); margin-top:2px; line-height:1.4;">A single page anyone can open in a browser</div>
               </div>
             </div>
-            <div data-testid="btn-export-all-projects" sc-camel-on-click="{{ onExportAllProjects }}" style="display:flex; align-items:flex-start; gap:10px; padding:10px 14px; cursor:pointer; border-top:1px solid var(--n33);" style-hover="background: var(--surface-hover);">
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0; margin-top:2px; color: var(--text-tertiary);"><path d="M2 6.5h12v7a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z"></path><path d="M2 6.5l1.2-3.5a1 1 0 0 1 .95-.7h7.7a1 1 0 0 1 .95.7L14 6.5"></path><path d="M6.5 9l1.5 1.5L9.5 9"></path><path d="M8 6v4.3"></path></svg>
-              <div style="flex:1; min-width:0;">
-                <div style="font-size:13px; font-weight:500;">Download all projects (.zip)…</div>
-                <div style="font-size:11.5px; color: var(--text-secondary); margin-top:2px; line-height:1.4;">Every local project's full file, zipped together</div>
-              </div>
-            </div>
           </div>
         </sc-if>
       </div>      <div data-testid="apply-update-menu-wrap" style="position:relative;">
@@ -474,13 +467,6 @@
               <div style="flex:1; min-width:0;">
                 <div style="font-size:13px; font-weight:500;">Save as interactive HTML…</div>
                 <div style="font-size:11.5px; color: var(--text-secondary); margin-top:2px; line-height:1.4;">A single page anyone can open in a browser</div>
-              </div>
-            </div>
-            <div data-testid="btn-export-all-projects" sc-camel-on-click="{{ onExportAllProjects }}" style="display:flex; align-items:flex-start; gap:10px; padding:10px 14px; cursor:pointer; border-top:1px solid var(--n33);" style-hover="background: var(--surface-hover);">
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0; margin-top:2px; color: var(--text-tertiary);"><path d="M2 6.5h12v7a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z"></path><path d="M2 6.5l1.2-3.5a1 1 0 0 1 .95-.7h7.7a1 1 0 0 1 .95.7L14 6.5"></path><path d="M6.5 9l1.5 1.5L9.5 9"></path><path d="M8 6v4.3"></path></svg>
-              <div style="flex:1; min-width:0;">
-                <div style="font-size:13px; font-weight:500;">Download all projects (.zip)…</div>
-                <div style="font-size:11.5px; color: var(--text-secondary); margin-top:2px; line-height:1.4;">Every local project's full file, zipped together</div>
               </div>
             </div>
           </div>
@@ -2733,6 +2719,12 @@
                       <span style="color: var(--text-secondary);">Projects</span>
                       <span style="color: var(--n13);">{{ identityDetail.projectCountLabel }}</span>
                     </div>
+                    <div style="border-top:1px solid var(--border-subtle); margin:20px 0 16px; max-width:420px;"></div>
+                    <button data-testid="btn-download-identity-projects" sc-camel-on-click="{{ identityDetail.onDownloadAllProjects }}" style="display:flex; align-items:center; gap:8px; width:100%; max-width:420px; box-sizing:border-box; padding:7px 10px; border:1px solid var(--border); background:var(--surface); border-radius:6px; font-size:12.5px; font-weight:500; cursor:pointer; font-family:inherit; color:inherit;" style-hover="background: var(--surface-hover);">
+                      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0; color: var(--text-tertiary);"><path d="M2 6.5h12v7a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z"></path><path d="M2 6.5l1.2-3.5a1 1 0 0 1 .95-.7h7.7a1 1 0 0 1 .95.7L14 6.5"></path><path d="M6.5 9l1.5 1.5L9.5 9"></path><path d="M8 6v4.3"></path></svg>
+                      Download all projects (.zip)
+                    </button>
+                    <div style="font-size:10.5px; color: var(--text-tertiary); line-height:1.4; margin-top:6px; max-width:420px;">Everything this identity owns bundled into one zip.</div>
                     <div style="font-size:10.5px; color: var(--text-tertiary); line-height:1.4; margin-top:14px; max-width:420px;">Add or switch identities from the identity menu in the header.</div>
                   </sc-if>
                   <sc-if value="{{ settingsIsRemoteDataStores }}" hint-placeholder-val="{{ false }}">

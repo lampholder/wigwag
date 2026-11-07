@@ -7526,19 +7526,32 @@ class Component extends DCLogic {
     '\\/:*?"<>|'.split('').forEach(ch => { out = out.split(ch).join('-'); });
     return out.trim() || 'tracker';
   }
-  // One real signed "Save full project file…" export per LOCAL project
-  // (not just the currently active one -- same docStore.getDoc +
-  // hydrateProject/hydrateIssue pattern stageRefreshJob already uses to
-  // read another project's data without switching into it), zipped
-  // together via the existing xlsxBuildZip (a plain, format-agnostic
-  // zip builder despite the name -- entries are just {name, content}
-  // strings). A disambiguating numeric suffix handles two projects that
-  // happen to share a sanitized filename.
-  async buildAllProjectsZip() {
+  // One real signed "Save full project file…" export per project OWNED
+  // BY ONE IDENTITY (tracker 46b36422: the original version of this
+  // bundled every local project regardless of identity -- "you shouldn't
+  // send all your projects" across an identity boundary that's meant to
+  // stay strictly separate, so this is scoped by identityId instead, and
+  // only reachable from that identity's own Settings panel, not a
+  // global Send-menu button). Same docStore.getDoc + hydrateProject/
+  // hydrateIssue pattern stageRefreshJob already uses to read another
+  // project's data without switching into it, zipped together via the
+  // existing xlsxBuildZip (a plain, format-agnostic zip builder despite
+  // the name -- entries are just {name, content} strings). A
+  // disambiguating numeric suffix handles two projects that happen to
+  // share a sanitized filename.
+  async buildIdentityProjectsZip(identityId) {
     const s = this.state;
+    // Sourced from the identity record itself, not s.identityEmail/
+    // s.identityPublicKeyJwk/s.identityPrivateKeyJwk -- those happen to
+    // match identityId today (the only call site switches to this
+    // identity before ever reaching this), but reading them from the
+    // identity directly means this function is correct regardless, not
+    // reliant on that always being true.
+    const identity = s.identities.find(i => i.id === identityId) || {};
     const usedNames = new Set();
     const entries = [];
     for (const meta of s.projects) {
+      if (meta.identityId !== identityId) continue;
       const doc = await docStore.getDoc(meta.id);
       if (!doc) continue;
       const { fieldDefs, projectHistory, projectNotes } = hydrateProject(doc.fieldDefs, doc.projectHistory || [], doc.projectNotes || '');
@@ -7549,9 +7562,9 @@ class Component extends DCLogic {
         projectComments: doc.projectComments, issues
       });
       const envelope = await buildExportEnvelope({
-        exportedBy: s.identityEmail || '', exportedAt: new Date().toISOString(),
+        exportedBy: identity.email || '', exportedAt: new Date().toISOString(),
         project: meta.name, tracker: 'Issues', recordsBody,
-        publicKeyJwk: s.identityPublicKeyJwk, privateKeyJwk: s.identityPrivateKeyJwk
+        publicKeyJwk: identity.signingPublicKeyJwk, privateKeyJwk: identity.signingPrivateKeyJwk
       });
       let name = this.sanitizeFilename(meta.name || 'tracker') + '.jsonl';
       let suffix = 2;
@@ -10461,7 +10474,20 @@ class Component extends DCLogic {
       onCloseSettings: () => this.setState({ settingsOpen: false }),
       identityDetail: {
         signing: (activeIdentity && activeIdentity.signingPublicKeyJwk && activeIdentity.signingPublicKeyJwk.x) || (activeIdentity && activeIdentity.signingPublicKeyJwk ? 'Generated in this browser' : 'None yet'),
-        projectCountLabel: activeIdentity ? countLabel(projectCount(activeIdentity.id)) : '—'
+        projectCountLabel: activeIdentity ? countLabel(projectCount(activeIdentity.id)) : '—',
+        // Tracker 46b36422: replaces the old global "Download all
+        // projects" Send-menu button, which bundled every local project
+        // regardless of identity -- "you shouldn't send all your
+        // projects" across an identity boundary that's meant to stay
+        // strictly separate. Scoped to just this identity's own
+        // projects instead, reachable only from its own Settings panel.
+        onDownloadAllProjects: () => {
+          if (!activeIdentity) return;
+          if (projectCount(activeIdentity.id) === 0) { window.alert('This identity has no projects to download.'); return; }
+          this.buildIdentityProjectsZip(activeIdentity.id)
+            .then(zipBytes => this.downloadTextFile(zipBytes, this.sanitizeFilename(activeIdentity.label || 'identity') + ' - all projects.zip', 'application/zip'))
+            .catch(err => window.alert('Could not build the all-projects download: ' + err.message));
+        }
       },
       onExportCsv: () => this.downloadTextFile('\uFEFF' + this.buildCsvText(), this.exportFilename('csv'), 'text/csv'),
       onExportXlsx: () => this.buildXlsxBytes().then(bytes => this.downloadTextFile(bytes, this.exportFilename('xlsx'), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')),
@@ -10541,12 +10567,6 @@ class Component extends DCLogic {
         this.buildHtmlExport()
           .then(html => this.downloadTextFile(html, this.exportFilename('html'), 'text/html'))
           .catch(err => window.alert('Could not build the HTML export: ' + err.message));
-      },
-      onExportAllProjects: () => {
-        this.setState({ exportMenuOpen: false });
-        this.buildAllProjectsZip()
-          .then(zipBytes => this.downloadTextFile(zipBytes, 'wigwag-all-projects-' + new Date().toISOString().slice(0, 10) + '.zip', 'application/zip'))
-          .catch(err => window.alert('Could not build the all-projects download: ' + err.message));
       },
       sourceView: s.sourceViewOpen,
       notSourceView: !s.sourceViewOpen,

@@ -1570,9 +1570,24 @@ class Component extends DCLogic {
       if (this.isTauriWindowedRuntime()) {
         const meta = this.state.projects.find(p => p.id === this.state.projectId);
         const title = meta ? ('Wigwag — ' + meta.name) : 'Wigwag';
+        // Live-reported (Tom): the name didn't show on first load, only
+        // after an explicit switch/rename. Root cause -- this used to
+        // mark _lastSetWindowTitle as done BEFORE the Tauri call was
+        // confirmed to succeed, so if the very first attempt (the
+        // earliest possible moment in boot, when the native window may
+        // not be fully ready yet) failed or raced, the cache was already
+        // poisoned with the correct-looking value forever, even though
+        // the real native title never actually changed -- nothing would
+        // ever retry it. A later switch/rename produces a genuinely
+        // different title string, bypassing the poisoned cache and
+        // succeeding, which is exactly the split Tom saw. Only caching
+        // on CONFIRMED success means any later render recomputing the
+        // same (still-not-actually-applied) title tries again instead of
+        // assuming it already landed.
         if (title !== this._lastSetWindowTitle) {
-          this._lastSetWindowTitle = title;
-          window.__TAURI__.window.getCurrentWindow().setTitle(title).catch(err => console.warn('[tracker] setTitle failed:', err));
+          window.__TAURI__.window.getCurrentWindow().setTitle(title)
+            .then(() => { this._lastSetWindowTitle = title; })
+            .catch(err => console.warn('[tracker] setTitle failed:', err));
         }
       }
     } catch (e) { console.warn('[tracker] failed to save project index:', e); }

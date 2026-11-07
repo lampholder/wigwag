@@ -10,17 +10,23 @@
 const { test, expect } = require('@playwright/test');
 const h = require('./helpers');
 
-async function stubTauriWindow(page, { version, updater = false } = {}) {
-  await page.addInitScript(({ appVersion, withUpdater }) => {
+async function stubTauriWindow(page, { version, updater = false, failFirstNSetTitleCalls = 0 } = {}) {
+  await page.addInitScript(({ appVersion, withUpdater, failFirstN }) => {
     window.__windowCalls = { minimize: 0, toggleMaximize: 0, close: 0 };
-    window.__titleCalls = [];
+    window.__titleCalls = []; // every ATTEMPT, including ones that go on to fail
+    window.__titleCallAttempts = 0;
     window.__TAURI__ = window.__TAURI__ || {};
     window.__TAURI__.window = {
       getCurrentWindow: () => ({
         minimize: () => { window.__windowCalls.minimize++; },
         toggleMaximize: () => { window.__windowCalls.toggleMaximize++; },
         close: () => { window.__windowCalls.close++; },
-        setTitle: (t) => { window.__titleCalls.push(t); return Promise.resolve(); },
+        setTitle: (t) => {
+          window.__titleCallAttempts++;
+          if (window.__titleCallAttempts <= failFirstN) return Promise.reject(new Error('simulated setTitle failure'));
+          window.__titleCalls.push(t);
+          return Promise.resolve();
+        },
       })
     };
     if (appVersion) {
@@ -30,7 +36,7 @@ async function stubTauriWindow(page, { version, updater = false } = {}) {
       window.__updaterCheckCalls = 0;
       window.__TAURI__.updater = { check: () => { window.__updaterCheckCalls++; return Promise.resolve(null); } };
     }
-  }, { appVersion: version, withUpdater: updater });
+  }, { appVersion: version, withUpdater: updater, failFirstN: failFirstNSetTitleCalls });
 }
 async function stubPlatform(page, platform) {
   await page.addInitScript((p) => {
@@ -282,7 +288,16 @@ test.describe('Tauri windowed-mode: OS window title tracks the active project', 
     // the final state.
     await h.createNamedBlankProject(page, 'Second Project');
     await page.waitForTimeout(400);
-    expect(await page.evaluate(() => window.__titleCalls)).toEqual(['Wigwag — Delivery tracker', 'Wigwag — Untitled Project 1', 'Wigwag — Second Project']);
+    // Dedupe adjacent repeats before comparing -- the cache only updates
+    // on a CONFIRMED successful setTitle (see persistProjectIndex's own
+    // comment on why that matters for retrying a failed attempt), so two
+    // renders computing the same title in the same tick can both fire
+    // before either resolves. Harmless (an identical title set twice),
+    // but means the exact call count isn't the thing worth asserting --
+    // the real sequence of DISTINCT titles is.
+    const calls = await page.evaluate(() => window.__titleCalls);
+    const distinct = calls.filter((c, i) => c !== calls[i - 1]);
+    expect(distinct).toEqual(['Wigwag — Delivery tracker', 'Wigwag — Untitled Project 1', 'Wigwag — Second Project']);
   });
 
   // Live-reported (Tom): an earlier version of this deduped on projectId
@@ -304,5 +319,24 @@ test.describe('Tauri windowed-mode: OS window title tracks the active project', 
     await h.createNamedBlankProject(page, 'Second Project');
     await page.waitForTimeout(400);
     expect(await page.evaluate(() => window.__titleCalls)).toBeUndefined();
+  });
+
+  // Live-reported (Tom): the name didn't show on first load, only after
+  // an explicit switch/rename -- see persistProjectIndex's own comment
+  // for the full root-cause story. Boot genuinely produces more than one
+  // componentDidUpdate call with the SAME computed title (the boot
+  // splash's own fade-phase state transitions) even with zero user
+  // interaction -- forcing the very first attempt to fail simulates the
+  // real race, and a later same-title render during that same boot
+  // sequence must retry it rather than treating the failed attempt as
+  // done.
+  test('a failed first setTitle attempt at boot is retried by a later render, not left stuck forever', async ({ page }) => {
+    await stubTauriWindow(page, { failFirstNSetTitleCalls: 1 });
+    await h.gotoTracker(page);
+    await page.waitForTimeout(600); // past the boot splash's own fade-phase settling renders
+    expect(await page.evaluate(() => window.__titleCallAttempts)).toBeGreaterThan(1); // at least one retry beyond the forced failure
+    const calls = await page.evaluate(() => window.__titleCalls);
+    expect(calls.length).toBeGreaterThan(0); // it DID land eventually, just not on attempt 1
+    expect(calls.every(c => c === 'Wigwag — Delivery tracker')).toBe(true);
   });
 });

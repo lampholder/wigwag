@@ -679,7 +679,7 @@ if (new URLSearchParams(location.search).get('widgetId')) {
           // Temporary diagnostic (live bug, tracker #169/4f07e72b follow-up):
           // confirming the REAL shape Element sends here before trusting any
           // particular parse of it.
-          console.log('[wigwag-widget] update_state push data at', Date.now(), ':', JSON.stringify(msg.data));
+          console.log('[wigwag-widget] update_state push data:', JSON.stringify(msg.data));
           try { pushedStateUpdateCallback(msg.data); } catch (e) { console.warn('[wigwag-widget] pushedStateUpdateCallback failed:', e); }
         }
         else if (msg.action === 'send_event' && pushedTimelineEventCallback) {
@@ -1347,11 +1347,6 @@ if (new URLSearchParams(location.search).get('widgetId')) {
     function currentIsModerator() {
       const ev = latestStateEventOfType('m.room.power_levels', '');
       const result = core.isModeratorForStateEvent(ev ? ev.content : null, resolvedMatrixUserId, core.WIGWAG_MATRIX_PROJECT_STATE_TYPE, roomCreatorSender);
-      // Temporary diagnostic (live bug, still unresolved after the
-      // batched-update_state fix): confirming what this actually sees at
-      // the moment it's called, since the fix alone did not resolve the
-      // live report.
-      console.log('[wigwag-widget] currentIsModerator():', { resolvedMatrixUserId, roomCreatorSender, powerLevelsContent: ev ? ev.content : null, result });
       return result;
     }
     // Extracted (tracker #169/4f07e72b follow-up, 2026-10-02) from what
@@ -1502,19 +1497,13 @@ if (new URLSearchParams(location.search).get('widgetId')) {
     async function onPushedStateUpdate(data) {
       if (!data || typeof data !== 'object') return;
       if (Array.isArray(data.state)) {
-        console.log('[wigwag-widget] onPushedStateUpdate: batched push, ' + data.state.length + ' event(s)');
         for (const ev of data.state) await onPushedStateUpdate(ev);
         return;
       }
       const type = data.type || (data.event && data.event.type);
       const stateKey = ('state_key' in data) ? data.state_key : (data.event && data.event.state_key);
       const content = data.content || (data.event && data.event.content);
-      // Temporary diagnostic (live bug, still unresolved after the
-      // batched-update_state fix): confirming this per-event parse
-      // actually resolves type/stateKey/content for each entry in the
-      // batch, rather than silently bailing on one of them.
-      console.log('[wigwag-widget] onPushedStateUpdate: parsed one event ->', { type, stateKey, hasContent: !!content, sender: data.sender });
-      if (!type || stateKey === undefined || !content) { console.warn('[wigwag-widget] onPushedStateUpdate: bailing, missing type/stateKey/content'); return; }
+      if (!type || stateKey === undefined || !content) return;
       // m.room.create (2026-11-06, found alongside the power_levels fix
       // above): the room creator's own moderator access depends on
       // roomCreatorSender, a variable only ever set via transport.
@@ -2126,11 +2115,6 @@ if (new URLSearchParams(location.search).get('widgetId')) {
     function onFrameMessage(e) {
       if (!e.data) return;
       if (e.data.type === 'wigwag:hello') {
-        // Temporary diagnostic (live bug, still unresolved after the
-        // batched-update_state fix): confirming exactly when the iframe's
-        // own hello fires relative to the update_state push's own logging
-        // above, and what isModerator this handshake actually sends.
-        console.log('[wigwag-widget] received wigwag:hello at', Date.now(), '-- about to send hello-ack with isModerator:', currentIsModerator());
         if (e.source) e.source.postMessage({
           type: 'wigwag:hello-ack',
           capabilities: { mode: 'room', multiIdentity: false, sharedProjectContext: true },

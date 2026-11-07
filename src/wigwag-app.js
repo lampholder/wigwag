@@ -1558,15 +1558,22 @@ class Component extends DCLogic {
       // simultaneously/on different desktops"): the OS-level window
       // title is per-window already (set at window-creation time for a
       // new window opened via the switcher's "Open in new window"), but
-      // should stay in sync if THIS window later switches to a
-      // different project via its own switcher too -- otherwise the
-      // title would keep naming whichever project the window opened
-      // with forever. Deduped on projectId so this doesn't fire an IPC
-      // call on every unrelated render.
-      if (this.isTauriWindowedRuntime() && this.state.projectId !== this._lastSetWindowTitleProjectId) {
-        this._lastSetWindowTitleProjectId = this.state.projectId;
+      // must always reflect whatever THIS window currently has open --
+      // every window, including the first/main one, not just ones opened
+      // via that menu. Live-reported (Tom): deduping on projectId alone
+      // (an earlier version of this) missed renaming the CURRENTLY-active
+      // project without switching away from it -- the id never changes,
+      // so the title silently never updated. Dedupes on the computed
+      // title string itself instead, so both a switch AND a rename of
+      // the active project are caught, while still skipping the IPC call
+      // on every unrelated render.
+      if (this.isTauriWindowedRuntime()) {
         const meta = this.state.projects.find(p => p.id === this.state.projectId);
-        if (meta) window.__TAURI__.window.getCurrentWindow().setTitle('Wigwag — ' + meta.name).catch(() => {});
+        const title = meta ? ('Wigwag — ' + meta.name) : 'Wigwag';
+        if (title !== this._lastSetWindowTitle) {
+          this._lastSetWindowTitle = title;
+          window.__TAURI__.window.getCurrentWindow().setTitle(title).catch(() => {});
+        }
       }
     } catch (e) { console.warn('[tracker] failed to save project index:', e); }
   }

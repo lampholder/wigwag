@@ -120,7 +120,7 @@
   </div>
 </sc-if>
 <sc-if value="{{ switcherRowContextMenu.open }}" hint-placeholder-val="{{ false }}">
-  <div data-testid="switcher-row-context-menu" style="position:fixed; top:{{ switcherRowContextMenu.y }}px; left:{{ switcherRowContextMenu.x }}px; background:var(--surface); border:1px solid var(--border); border-radius:8px; box-shadow:0 10px 26px var(--shadow-menu); z-index:150; padding:4px; min-width:170px; font-size:12.5px;">
+  <div data-testid="switcher-row-context-menu" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; position:fixed; top:{{ switcherRowContextMenu.y }}px; left:{{ switcherRowContextMenu.x }}px; background:var(--surface); border:1px solid var(--border); border-radius:8px; box-shadow:0 10px 26px var(--shadow-menu); z-index:150; padding:4px; min-width:170px; font-size:12.5px;">
     <div data-testid="switcher-row-context-open-new-window" sc-camel-on-click="{{ switcherRowContextMenu.onOpenInNewWindow }}" style="padding:7px 10px; border-radius:5px; cursor:pointer; color: var(--text-primary); white-space:nowrap;" style-hover="background: var(--n22);">Open in new window</div>
   </div>
 </sc-if>

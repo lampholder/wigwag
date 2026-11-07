@@ -13,12 +13,14 @@ const h = require('./helpers');
 async function stubTauriWindow(page, { version, updater = false } = {}) {
   await page.addInitScript(({ appVersion, withUpdater }) => {
     window.__windowCalls = { minimize: 0, toggleMaximize: 0, close: 0 };
+    window.__titleCalls = [];
     window.__TAURI__ = window.__TAURI__ || {};
     window.__TAURI__.window = {
       getCurrentWindow: () => ({
         minimize: () => { window.__windowCalls.minimize++; },
         toggleMaximize: () => { window.__windowCalls.toggleMaximize++; },
         close: () => { window.__windowCalls.close++; },
+        setTitle: (t) => { window.__titleCalls.push(t); return Promise.resolve(); },
       })
     };
     if (appVersion) {
@@ -254,5 +256,53 @@ test.describe('"Open in new window" (switcher project row right-click)', () => {
 
     await page.mouse.click(640, 400);
     await expect(page.locator('[data-testid=switcher-row-context-menu]')).toHaveCount(0);
+  });
+});
+
+// Tracker: multiple independent windows. The OS-level window title must
+// always reflect whatever project THIS window currently has open --
+// every window, including the first/main one (set once at boot here,
+// not just at creation time for a window opened via "Open in new
+// window"), and kept in sync afterward.
+test.describe('Tauri windowed-mode: OS window title tracks the active project', () => {
+  test('the title reflects the active project right from boot, not just after opening a new window', async ({ page }) => {
+    await stubTauriWindow(page);
+    await h.gotoTracker(page);
+    await page.waitForTimeout(400);
+    expect(await page.evaluate(() => window.__titleCalls)).toEqual(['Wigwag — Delivery tracker']);
+  });
+
+  test('switching the active project in this window updates its title', async ({ page }) => {
+    await stubTauriWindow(page);
+    await h.gotoTracker(page);
+    await h.openTrackerSwitcher(page);
+    // createNamedBlankProject is create-then-rename as two real, separate
+    // steps -- the title correctly tracks the switch to the new (still
+    // default-named) project first, then the rename, rather than only
+    // the final state.
+    await h.createNamedBlankProject(page, 'Second Project');
+    await page.waitForTimeout(400);
+    expect(await page.evaluate(() => window.__titleCalls)).toEqual(['Wigwag — Delivery tracker', 'Wigwag — Untitled Project 1', 'Wigwag — Second Project']);
+  });
+
+  // Live-reported (Tom): an earlier version of this deduped on projectId
+  // alone -- renaming the CURRENTLY-active project without switching
+  // away from it left the title stale forever, since the id never
+  // changes. Dedupes on the computed title string itself instead.
+  test('renaming the currently-active project updates its title too, even with no switch involved', async ({ page }) => {
+    await stubTauriWindow(page);
+    await h.gotoTracker(page);
+    await page.waitForTimeout(400);
+    await h.renameActiveProject(page, 'Renamed Without Switching');
+    await page.waitForTimeout(400);
+    expect(await page.evaluate(() => window.__titleCalls)).toEqual(['Wigwag — Delivery tracker', 'Wigwag — Renamed Without Switching']);
+  });
+
+  test('outside the Tauri runtime, no setTitle call is ever attempted', async ({ page }) => {
+    await h.gotoTracker(page);
+    await h.openTrackerSwitcher(page);
+    await h.createNamedBlankProject(page, 'Second Project');
+    await page.waitForTimeout(400);
+    expect(await page.evaluate(() => window.__titleCalls)).toBeUndefined();
   });
 });

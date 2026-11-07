@@ -837,6 +837,41 @@ test.describe('wigwag-matrix-host.html: widget-embedded transport', () => {
     await expect(frame.locator('[data-testid=btn-create-first-room-project]')).toBeVisible();
   });
 
+  // Live-reported (Tom, 2026-11-07): the batched-push fix above (both
+  // tests passing) still did not resolve Tom's live report -- this is
+  // why. connect()'s own power_levels retry cascade (triggered here via
+  // powerLevels: null, matching Tom's actual room where read_events
+  // genuinely came back empty) takes ~3s to exhaust. The REAL
+  // window.addEventListener('message', ...) listener is live from page
+  // load, independent of connect()'s progress -- so a push landing WHILE
+  // that cascade is still running (scheduled here via addInitScript's own
+  // setTimeout, so it fires client-side regardless of this test's own
+  // await structure) used to get silently discarded: connect() finished
+  // its OWN (failed) retry and did a hard `remoteRawEvents = <fresh>`
+  // overwrite, wiping out what the early push had already correctly set.
+  test('a push landing WHILE connect() is still mid-retry (not after) is not wiped out by connect()\'s own later overwrite', async ({ page }) => {
+    await page.addInitScript(() => {
+      const send = () => {
+        const target = document.querySelector('#widget');
+        if (!target || !target.contentWindow) { setTimeout(send, 25); return; } // iframe not created yet -- keep trying, still well inside the ~3s retry window
+        target.contentWindow.postMessage({
+          api: 'toWidget', widgetId: 'test-widget-1', requestId: 'push-mid-retry', action: 'update_state',
+          data: { state: [
+            { type: 'm.room.power_levels', state_key: '', content: { ban: 50, events: {}, events_default: 0, invite: 0, kick: 50, redact: 50, state_default: 50, users: { '@fake-user:example.org': 100 }, users_default: 0 }, sender: '@someone-else:example.org', origin_server_ts: Date.now(), event_id: '$pl-midrace', room_id: '!midrace:example.org', unsigned: { age: 1 } }
+          ] }
+        }, '*');
+      };
+      setTimeout(send, 150); // well before connect()'s own ~3s power_levels retry cascade exhausts
+    });
+    await h.gotoFakeWidgetHost(page, {
+      roomId: '!midrace:example.org', roomName: 'Mid-Retry Race Room',
+      initialEntries: [],
+      powerLevels: null // forces the real retry cascade to run its full course, same as Tom's room
+    });
+    const frame = page.frameLocator('#widget').frameLocator('#frame');
+    await expect(frame.locator('[data-testid=btn-create-first-room-project]')).toBeVisible();
+  });
+
   // Live-reported (Tom, 2026-10-02): the timestamp never-regress guard
   // above only stops a stale read_events answer from overwriting a value
   // ALREADY known to be fresher -- it does nothing on a genuinely FRESH

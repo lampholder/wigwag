@@ -2384,7 +2384,30 @@ if (new URLSearchParams(location.search).get('widgetId')) {
         if (powerLevelsResult.status === 'ok' && powerLevelsResult.content) {
           seededExtraStateEvents.push({ type: 'm.room.power_levels', state_key: '', content: powerLevelsResult.content });
         }
-        remoteRawEvents = snapshotItems.concat(tailItems).map(item => ({ type: core.WIGWAG_MATRIX_ENTRY_TYPE, content: core.matrixEventContentFromEntry(item) })).concat(projectStateEvents).concat(layoutAndPowerLevelEvents).concat(seededExtraStateEvents);
+        // Live-reported (Tom, 2026-11-07), root cause of the batched-push
+        // fix not actually resolving the live report: this used to be a
+        // hard overwrite (`remoteRawEvents = <freshly built array>`), on
+        // the assumption that nothing could have touched remoteRawEvents
+        // yet at this point in a fresh connect. False -- the real
+        // window.addEventListener('message', ...) listener (near the top
+        // of this file) is live from page load, independent of connect()'s
+        // own progress, so a genuinely early toWidget update_state push
+        // (confirmed live: Element can push power_levels/room_create
+        // within milliseconds of capabilities being granted, well before
+        // this retry cascade finishes) already lands via
+        // onPushedStateUpdate while THIS function is still awaiting its
+        // own (confirmed-unreliable) read_events-based retries above.
+        // Overwriting wholesale here silently discarded that already-
+        // correct value the moment this function's OWN read came back
+        // empty -- confirmed live via currentIsModerator()'s own
+        // diagnostic: powerLevelsContent went from correctly populated
+        // (right after the push) to null (right before wigwag:hello-ack)
+        // with nothing in between except this exact line. Concatenating
+        // onto whatever's already there instead preserves an early push's
+        // contribution; for the overwhelmingly common case (no push landed
+        // before this point, remoteRawEvents is still []), concat onto []
+        // is a no-op, identical to the old behavior.
+        remoteRawEvents = remoteRawEvents.concat(snapshotItems.concat(tailItems).map(item => ({ type: core.WIGWAG_MATRIX_ENTRY_TYPE, content: core.matrixEventContentFromEntry(item) })).concat(projectStateEvents).concat(layoutAndPowerLevelEvents).concat(seededExtraStateEvents));
         for (const [projectId, snap] of snapshotsByProject) {
           lastSnapshotEntryCount.set(projectId, snap.items.length);
           if (snap.createdAt) lastSnapshotAt.set(projectId, snap.createdAt);

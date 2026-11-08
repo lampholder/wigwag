@@ -110,7 +110,18 @@ async function fetchRemoteFormatVersion(repoOwner, repoName, repoPath) {
     } catch (e) {
       try {
         const { execFileSync } = require('child_process');
-        const out = execFileSync('curl', ['-s', '-w', '\n%{http_code}', url], { encoding: 'utf8' });
+        // Live-caught (2026-11-08): Node's execFileSync defaults maxBuffer
+        // to 1MB -- fine when this safety check was written, but
+        // tracker.jsonl has since grown past it (confirmed: 1,092,126
+        // bytes, just over the 1,048,576-byte default), so curl's own
+        // real output was silently truncated into an ENOBUFS throw here,
+        // landing in the outer catch as {text:null, status:null} --
+        // which the caller then (correctly, by design) treats as
+        // "inconclusive, fail closed," refusing every connection
+        // deterministically, not flakily, from that point on. 64MB is
+        // generous headroom past any size this file is likely to reach
+        // for a long while.
+        const out = execFileSync('curl', ['-s', '-w', '\n%{http_code}', url], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
         const idx = out.lastIndexOf('\n');
         return { text: out.slice(0, idx), status: parseInt(out.slice(idx + 1), 10) };
       } catch (e2) { return { text: null, status: null }; }

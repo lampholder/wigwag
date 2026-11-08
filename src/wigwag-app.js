@@ -2278,17 +2278,6 @@ class Component extends DCLogic {
       this.setState({ addItemOpen: true });
     };
     document.addEventListener('keydown', this._onGlobalKeyDown);
-    this._onGithubOAuthMessage = (e) => {
-      const data = e.data;
-      if (!data || data.source !== 'github-oauth') return;
-      if (!this._githubOAuthState || data.state !== this._githubOAuthState) return;
-      if (!this._githubOAuthExpectedOrigin || e.origin !== this._githubOAuthExpectedOrigin) return;
-      this._githubOAuthState = null;
-      this._githubOAuthExpectedOrigin = null;
-      if (data.token) { this.updateActiveIdentityField('githubToken', data.token, 'githubToken'); this.setState({ githubSyncError: '' }); }
-      else if (data.error) this.setState({ githubSyncError: data.error });
-    };
-    window.addEventListener('message', this._onGithubOAuthMessage);
     this._onStorageEvent = (e) => {
       if (e.storageArea !== localStorage) return;
       if (e.key === PROJECTS_KEY) {
@@ -2559,7 +2548,6 @@ class Component extends DCLogic {
     document.removeEventListener('click', this._onExternalLinkClick, true);
     document.removeEventListener('mousedown', this._onOutsideMouseDown, true);
     document.removeEventListener('keydown', this._onGlobalKeyDown);
-    window.removeEventListener('message', this._onGithubOAuthMessage);
     window.removeEventListener('storage', this._onStorageEvent);
     if (this._docSyncChannel) this._docSyncChannel.close();
     document.removeEventListener('visibilitychange', this._onVisibilityChange);
@@ -2569,22 +2557,6 @@ class Component extends DCLogic {
     document.removeEventListener('mousedown', this._onAppearanceOutsideClick, true);
     if (this._mobileMq) this._mobileMq.removeEventListener('change', this._onMobileMqChange);
     window.removeEventListener('popstate', this._onPopState);
-  }
-  // Popup, not a full-page redirect -- this app can carry unsaved local
-  // edits, and a popup that posts a message back and self-closes leaves the
-  // main tab's own state untouched. GitHub Apps reuse the same
-  // authorize/callback shape as classic OAuth Apps (permissions are
-  // configured on the App itself, not via a scope param).
-  signInWithGithub() {
-    const clientId = (this.state.githubOAuthClientId || '').trim();
-    const proxyUrl = (this.state.githubOAuthProxyUrl || 'http://localhost:8935').trim().replace(/\/$/, '');
-    if (!clientId) { this.setState({ githubSyncError: 'Set an OAuth Client ID in Settings first.' }); return; }
-    const state = Math.random().toString(36).slice(2) + Date.now().toString(36);
-    this._githubOAuthState = state;
-    this._githubOAuthExpectedOrigin = new URL(proxyUrl).origin;
-    const redirectUri = proxyUrl + '/callback';
-    const authUrl = 'https://github.com/login/oauth/authorize?client_id=' + encodeURIComponent(clientId) + '&redirect_uri=' + encodeURIComponent(redirectUri) + '&state=' + encodeURIComponent(state);
-    window.open(authUrl, 'github-oauth', 'width=600,height=700');
   }
   // Lazily generates a per-browser ECDSA keypair the first time the app
   // runs with none saved yet. The private key never leaves localStorage
@@ -3401,8 +3373,6 @@ class Component extends DCLogic {
       if (!saved || typeof saved !== 'object') return;
       Object.assign(this.state, {
         githubToken: saved.githubToken || this.state.githubToken,
-        githubOAuthClientId: saved.githubOAuthClientId || this.state.githubOAuthClientId,
-        githubOAuthProxyUrl: saved.githubOAuthProxyUrl || this.state.githubOAuthProxyUrl,
         identityEmail: saved.identityEmail || this.state.identityEmail,
         identityPublicKeyJwk: saved.identityPublicKeyJwk || this.state.identityPublicKeyJwk,
         identityPrivateKeyJwk: saved.identityPrivateKeyJwk || this.state.identityPrivateKeyJwk,
@@ -3419,7 +3389,6 @@ class Component extends DCLogic {
       const s = this.state;
       localStorage.setItem(SECRETS_KEY, JSON.stringify(Object.assign({
         githubToken: s.githubToken,
-        githubOAuthClientId: s.githubOAuthClientId, githubOAuthProxyUrl: s.githubOAuthProxyUrl,
         identityEmail: s.identityEmail,
         identityPublicKeyJwk: s.identityPublicKeyJwk, identityPrivateKeyJwk: s.identityPrivateKeyJwk,
         knownIdentities: s.knownIdentities
@@ -3722,8 +3691,6 @@ class Component extends DCLogic {
     githubRepoPath: 'tracker.jsonl',
     githubRepoBranch: '',
     githubTokenOverride: '',
-    githubOAuthClientId: '',
-    githubOAuthProxyUrl: 'http://localhost:8935',
     githubSyncStatus: 'disconnected',
     githubSyncError: '',
     githubLastSyncedAt: null,
@@ -10281,11 +10248,6 @@ class Component extends DCLogic {
       settingsModalTransformOffset: s.connectorFormVisible ? '-100vw' : '0',
       githubToken: s.githubToken,
       onGithubTokenChange: e => this.updateActiveIdentityField('githubToken', e.target.value, 'githubToken'),
-      githubOAuthClientId: s.githubOAuthClientId,
-      onGithubOAuthClientIdChange: e => this.setState({ githubOAuthClientId: e.target.value.trim() }),
-      githubOAuthProxyUrl: s.githubOAuthProxyUrl,
-      onGithubOAuthProxyUrlChange: e => this.setState({ githubOAuthProxyUrl: e.target.value.trim() }),
-      onSignInWithGithub: () => this.signInWithGithub(),
       githubRepo: s.githubRepo,
       onGithubRepoChange: e => this.onGithubConnectionSettingChange({ githubRepo: e.target.value.trim() }),
       githubRepoPath: s.githubRepoPath,

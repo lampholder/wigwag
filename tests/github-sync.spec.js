@@ -715,3 +715,53 @@ test.describe('GitHub OAuth sign-in popup handshake', () => {
     await expect(page.locator('[data-testid=settings-github-token]')).toHaveValue('');
   });
 });
+
+// GitHub token provisioning Commit 4 (tracker 1e557816): a 401 is a
+// different, actionable situation from a generic sync failure --
+// retrying can never fix a rejected credential. Both pull (connect) and
+// push now surface a clear message and route the sync indicator's click
+// straight to the token list for regeneration, instead of a generic
+// "GitHub sync failed" and a retry that's guaranteed to fail the same
+// way again.
+test.describe('GitHub sync: 401 (rejected token) handling', () => {
+  test('connecting with a rejected token shows a clear message, and clicking the indicator opens the token list instead of retrying', async ({ page }) => {
+    const gh = h.mockGithubContentsApi(page, REPO);
+    // Registered AFTER mockGithubContentsApi's own contents-GET route --
+    // Playwright gives the most-recently-registered matching route
+    // priority, so this overrides it for this one test without needing
+    // getResponses to support an arbitrary status (it only distinguishes
+    // 404 vs "anything else is a success" today).
+    await page.route(new RegExp('^https://api\\.github\\.com/repos/' + REPO.replace(/\//g, '\\/') + '/contents/'), async (route) => {
+      await route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ message: 'Bad credentials' }) });
+    });
+
+    await h.gotoTracker(page);
+    await h.setGithubRepoSync(page, { repo: REPO, token: 'ghp_a_bad_token' });
+    await page.waitForTimeout(400);
+    expect(gh.pushCount).toBe(0); // never falls through to "treat as empty repo, push"
+
+    const indicator = page.locator('[data-testid=footer-github-sync]');
+    await expect(indicator).toHaveAttribute('title', /rejected this token/);
+
+    const [popup] = await Promise.all([
+      page.waitForEvent('popup'),
+      indicator.click()
+    ]);
+    expect(popup.url()).toContain('https://github.com/settings/personal-access-tokens');
+  });
+
+  test('a push that gets rejected (token revoked mid-session) shows the same clear message, not a generic failure', async ({ page }) => {
+    const gh = h.mockGithubContentsApi(page, REPO);
+    gh.getResponses = [{ status: 404 }]; // empty repo -- connect falls through to push
+    await page.route(new RegExp('^https://api\\.github\\.com/repos/' + REPO.replace(/\//g, '\\/') + '/commits/'), async (route) => {
+      await route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ message: 'Bad credentials' }) });
+    });
+
+    await h.gotoTracker(page);
+    await h.setGithubRepoSync(page, { repo: REPO, token: 'ghp_a_bad_token' });
+    await page.waitForTimeout(400);
+    expect(gh.pushCount).toBe(0);
+
+    await expect(page.locator('[data-testid=footer-github-sync]')).toHaveAttribute('title', /rejected this token/);
+  });
+});

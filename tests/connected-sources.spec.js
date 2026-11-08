@@ -390,8 +390,8 @@ test.describe('Connected Sources (Phase 1): paste dispatch + macro engine', () =
 // guard inside it means whichever addInitScript runs first wins, so a
 // test needing a different set of repos/fixtures must supply its own,
 // self-contained like this one, not try to layer on top.
-function seedGithubBuiltinWithRepos(page, { confirmedRepos, issueFixtures = {} } = {}) {
-  return page.addInitScript(({ confirmedRepos, issueFixtures }) => {
+function seedGithubBuiltinWithRepos(page, { confirmedRepos, issueFixtures = {}, force401 = false } = {}) {
+  return page.addInitScript(({ confirmedRepos, issueFixtures, force401 }) => {
     localStorage.setItem('git_native_tracker_connected_sources_v1', JSON.stringify({
       connectors: [{ id: '__builtin_github', key: 'github', kind: 'github', name: 'GitHub', builtin: true, rootUrl: 'https://api.github.com', credentialConfigured: true, confirmedRepos, enabled: true }]
     }));
@@ -400,6 +400,7 @@ function seedGithubBuiltinWithRepos(page, { confirmedRepos, issueFixtures = {} }
       invoke: (cmd, args) => {
         if (cmd === 'connected_source_get_credential') return Promise.resolve('a-real-secret');
         if (cmd === 'connected_source_fetch') {
+          if (force401) return Promise.resolve({ status: 401, headers: {}, body: JSON.stringify({ message: 'Bad credentials' }) });
           const m = args.url.match(/\/repos\/([^/]+\/[^/]+\/issues\/\d+)$/);
           const fixture = m && issueFixtures[m[1]];
           if (fixture) return Promise.resolve({ status: 200, headers: {}, body: JSON.stringify(fixture) });
@@ -409,7 +410,7 @@ function seedGithubBuiltinWithRepos(page, { confirmedRepos, issueFixtures = {} }
         return Promise.resolve(null);
       }
     };
-  }, { confirmedRepos, issueFixtures });
+  }, { confirmedRepos, issueFixtures, force401 });
 }
 
 test.describe('GitHub token provisioning: bare "#N" disambiguation against a connector\'s confirmed repos', () => {
@@ -467,5 +468,39 @@ test.describe('GitHub token provisioning: bare "#N" disambiguation against a con
     await h.waitForTitleResolved(page, 3);
     const anchor = h.titleCell(page, 3).locator('a');
     await expect(anchor).toHaveAttribute('href', 'https://github.com/acme/infra/issues/42');
+  });
+});
+
+// GitHub token provisioning Commit 4 (tracker 1e557816): a rejected
+// token on a REFRESH of an already-linked field must behave exactly
+// like any other refresh failure -- the existing resolved title is
+// preserved, not regressed to a bare placeholder (same contract
+// external-auth.spec.js's Jira equivalent already covers; this is the
+// GitHub-specific, 401-specific case stageFieldRefresh's new branch
+// handles). The improved error message itself has no UI surface to
+// assert against today (fetch errors were already never written to
+// visible history or the bulk-refresh-progress panel -- console.error
+// only, per Format v2) -- this test covers the one thing that IS
+// user-visible: nothing regresses.
+test.describe('GitHub token provisioning: a rejected token on refresh never regresses an already-resolved title', () => {
+  test('refreshing a linked field against a 401-returning credential keeps the existing resolved title', async ({ page }) => {
+    await seedGithubBuiltinWithRepos(page, {
+      confirmedRepos: ['acme/app'],
+      issueFixtures: { 'acme/app/issues/42': { title: 'Fix the login button', state: 'open', labels: [] } }
+    });
+    await h.gotoTracker(page);
+    await h.clickTitleToEdit(page, 3);
+    await h.pasteText(page, '#42');
+    await page.keyboard.press('Tab');
+    await h.waitForTitleResolved(page, 3);
+    await expect(h.titleCell(page, 3)).toContainText('acme/app#42');
+
+    await page.evaluate(() => { window.__TAURI__.core.invoke = (cmd) => cmd === 'connected_source_get_credential' ? Promise.resolve('a-real-secret') : cmd === 'connected_source_fetch' ? Promise.resolve({ status: 401, headers: {}, body: JSON.stringify({ message: 'Bad credentials' }) }) : Promise.resolve(null); });
+    await h.refreshRow(page, 3);
+    await page.waitForTimeout(500);
+
+    await expect(h.titleCell(page, 3)).toContainText('acme/app#42');
+    const anchor = h.titleCell(page, 3).locator('a');
+    await expect(anchor).toHaveAttribute('href', 'https://github.com/acme/app/issues/42');
   });
 });

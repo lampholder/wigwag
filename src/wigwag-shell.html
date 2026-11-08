@@ -4098,6 +4098,12 @@ async function pullGithubFile({ fetchImpl, repo, path, branch, token, etag }) {
   }
   if (res.status === 304) return { status: 'not-modified' };
   if (res.status === 404) return { status: 'not-found' };
+  // Same real distinction probeGithubRepoAccess already draws for the
+  // connect-remote-repo picker (tracker 1e557816, Commit 4) -- a bad/
+  // expired/revoked credential is a different, actionable situation
+  // from a generic failure, worth its own caller-visible status rather
+  // than folding into 'error'.
+  if (res.status === 401) return { status: 'unauthorized' };
   if (!res.ok) return { status: 'error', message: 'GitHub returned ' + res.status };
   const newEtag = res.headers.get('ETag') || null;
   const sha = newEtag ? newEtag.replace(/^W\//, '').replace(/^"|"$/g, '') : null;
@@ -4139,6 +4145,7 @@ async function pushGithubFile({ fetchImpl, repo, path, branch, token, text, sha,
   let resolvedBranch = (branch || '').trim();
   if (!resolvedBranch) {
     const repoRes = await call('GET', base);
+    if (repoRes.status === 401) return { status: 'unauthorized' };
     if (!repoRes.ok) return { status: 'error', message: repoRes.networkError || ('GitHub returned ' + repoRes.status) };
     resolvedBranch = repoRes.data.default_branch;
   }
@@ -4178,6 +4185,13 @@ async function pushGithubFile({ fetchImpl, repo, path, branch, token, text, sha,
     } else if (!fileRes.ok && fileRes.status !== 404) {
       return { status: 'error', message: 'GitHub returned ' + fileRes.status };
     }
+  } else if (commitRes.status === 401) {
+    // The earliest authenticated call in this whole sequence -- if the
+    // credential is bad, it fails here, consistently, every time; a
+    // later call (blob/tree/commit/ref creation) would only ever see
+    // the exact same 401 with the exact same cause, so this is the one
+    // place worth distinguishing it from a generic error.
+    return { status: 'unauthorized' };
   } else if (commitRes.status === 404 || commitRes.status === 409) {
     // A genuinely empty repo/branch (zero commits) can't be bootstrapped
     // through the Git Data API at all -- confirmed live against a real,

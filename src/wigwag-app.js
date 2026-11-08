@@ -5052,6 +5052,15 @@ class Component extends DCLogic {
     try {
       fetched = await this.fetchLinkData(fetchedVia, matchedId, connector, { onRetry, fetchCache });
     } catch (err) {
+      // tracker 1e557816, Commit 4: a 401 means the credential itself
+      // is rejected -- retrying (withRetry already excludes 401 from
+      // its own retryable set, see its own comment) or waiting it out
+      // can never help, unlike a genuine transient failure. Named
+      // distinctly so the user knows to go fix the credential, not
+      // just "try refreshing again".
+      if (kind === 'github' && err.status === 401) {
+        return { failed: true, errorText: 'GitHub rejected this token for ' + systemLabel + ' -- it may have expired or been revoked. Regenerate it at ' + GITHUB_TOKEN_LIST_URL };
+      }
       return { failed: true, errorText: 'Could not fetch from ' + systemLabel + ' (' + err.message + ')' };
     }
     const { data, href } = fetched;
@@ -7775,7 +7784,11 @@ class Component extends DCLogic {
   }
   onGithubSyncIndicatorClick() {
     const status = this.state.githubSyncStatus;
-    if (status === 'error') this.connectGithubRepo();
+    // Retrying a connect can never fix a rejected credential -- it would
+    // just fail the exact same way again. Route straight to where it
+    // gets fixed instead (tracker 1e557816, Commit 4).
+    if (status === 'error' && this.state.githubSyncTokenExpired) window.open(GITHUB_TOKEN_LIST_URL, '_blank', 'noopener');
+    else if (status === 'error') this.connectGithubRepo();
     else window.open(this.githubFileUrl(), '_blank', 'noopener');
   }
   githubFileUrl() {
@@ -7795,7 +7808,7 @@ class Component extends DCLogic {
     this._githubFileSha = null;
     this._githubEtag = null;
     this._githubLastSyncedText = null;
-    this.setState({ ...patch, githubSyncStatus: 'disconnected', githubSyncError: '' }, () => {
+    this.setState({ ...patch, githubSyncStatus: 'disconnected', githubSyncError: '', githubSyncTokenExpired: false }, () => {
       if (document.hidden) return; // onBecameVisible picks this up once the tab is actually visible
       if ((this.state.githubRepo || '').trim().includes('/')) this.connectGithubRepo();
     });
@@ -7809,7 +7822,7 @@ class Component extends DCLogic {
   async connectGithubRepo() {
     const repo = (this.state.githubRepo || '').trim();
     if (!repo.includes('/')) {
-      this.setState({ githubSyncStatus: 'error', githubSyncError: 'Set "owner/repo" in Settings first.' });
+      this.setState({ githubSyncStatus: 'error', githubSyncError: 'Set "owner/repo" in Settings first.', githubSyncTokenExpired: false });
       return;
     }
     // Captured up front -- a stale fetch resolving after the user has
@@ -7825,8 +7838,12 @@ class Component extends DCLogic {
     const result = await pullGithubFile({ fetchImpl: fetch, repo, path, branch, token });
     if (this.state.projectId !== id) return;
     if (result.status === 'not-found') { await this.pushToGithub(); return; }
+    if (result.status === 'unauthorized') {
+      this.setState(this.githubUnauthorizedSyncPatch());
+      return;
+    }
     if (result.status !== 'ok') {
-      this.setState({ githubSyncStatus: 'error', githubSyncError: result.message || 'GitHub sync failed' });
+      this.setState({ githubSyncStatus: 'error', githubSyncError: result.message || 'GitHub sync failed', githubSyncTokenExpired: false });
       return;
     }
     this._githubEtag = result.etag;
@@ -7846,10 +7863,21 @@ class Component extends DCLogic {
       if (this.state.projectId !== id) return;
       const inboundInfo = { exportedBy: envelope ? envelope.exported_by : '', exportedAt: envelope ? envelope.exported_at : null, provenance, fingerprint, envelope };
       this.startMerge(parsed, inboundInfo);
-      this.setState({ githubSyncStatus: 'synced', githubSyncError: '', githubLastSyncedAt: Date.now() });
+      this.setState({ githubSyncStatus: 'synced', githubSyncError: '', githubSyncTokenExpired: false, githubLastSyncedAt: Date.now() });
     } catch (err) {
-      if (this.state.projectId === id) this.setState({ githubSyncStatus: 'error', githubSyncError: err.message });
+      if (this.state.projectId === id) this.setState({ githubSyncStatus: 'error', githubSyncError: err.message, githubSyncTokenExpired: false });
     }
+  }
+  // tracker 1e557816, Commit 4: a 401 from either pull or push is a
+  // different, actionable situation from a generic sync failure --
+  // GitHub rejected the credential outright, retrying the SAME request
+  // can never fix that (unlike a transient network/5xx blip). Centralized
+  // here so connectGithubRepo/pushToGithub both produce the exact same
+  // message + flag, and onGithubSyncIndicatorClick can route to
+  // regenerating the token (GITHUB_TOKEN_LIST_URL) instead of blindly
+  // retrying a connect that's guaranteed to fail the same way again.
+  githubUnauthorizedSyncPatch() {
+    return { githubSyncStatus: 'error', githubSyncTokenExpired: true, githubSyncError: 'GitHub rejected this token -- it may have expired or been revoked. Regenerate it on GitHub, then try again.' };
   }
   // Background polling: every VISIBLE tab periodically re-checks the
   // remote file so a collaborator's push shows up without anyone
@@ -7879,7 +7907,7 @@ class Component extends DCLogic {
     try {
       const result = await pullGithubFile({ fetchImpl: fetch, repo, path, branch, token, etag: this._githubEtag });
       if (this.state.projectId !== id) return; // switched away while this was in flight
-      if (result.status === 'not-modified' || result.status === 'not-found' || result.status === 'error') return;
+      if (result.status === 'not-modified' || result.status === 'not-found' || result.status === 'error' || result.status === 'unauthorized') return;
       this._githubEtag = result.etag || this._githubEtag;
       if (result.sha === this._githubFileSha) return;
       const parsed = this.parseJsonl(result.text);
@@ -7892,7 +7920,7 @@ class Component extends DCLogic {
       if (this.state.projectId !== id) return;
       const inboundInfo = { exportedBy: envelope ? envelope.exported_by : '', exportedAt: envelope ? envelope.exported_at : null, provenance, fingerprint, envelope };
       this.startMerge(parsed, inboundInfo);
-      this.setState({ githubSyncStatus: 'synced', githubSyncError: '', githubLastSyncedAt: Date.now() });
+      this.setState({ githubSyncStatus: 'synced', githubSyncError: '', githubSyncTokenExpired: false, githubLastSyncedAt: Date.now() });
     } catch (e) {
       // quiet -- see method comment
     }
@@ -7954,13 +7982,17 @@ class Component extends DCLogic {
       if (this.state.projectId === id && depth <= 3 && this.buildSourceText('full') !== this._githubLastSyncedText) await this.pushToGithub(depth);
       return;
     }
+    if (result.status === 'unauthorized') {
+      this.setState(this.githubUnauthorizedSyncPatch());
+      return;
+    }
     if (result.status !== 'ok') {
-      this.setState({ githubSyncStatus: 'error', githubSyncError: result.message || 'GitHub sync failed' });
+      this.setState({ githubSyncStatus: 'error', githubSyncError: result.message || 'GitHub sync failed', githubSyncTokenExpired: false });
       return;
     }
     this._githubFileSha = result.sha;
     this._githubLastSyncedText = recordsBody;
-    this.setState({ githubSyncStatus: 'synced', githubSyncError: '', githubLastSyncedAt: Date.now() });
+    this.setState({ githubSyncStatus: 'synced', githubSyncError: '', githubSyncTokenExpired: false, githubLastSyncedAt: Date.now() });
   }
   // Debounced auto-push: fires a few seconds after the exportable state
   // (fieldDefs/issues/columnOrder, via buildSourceText) actually stops

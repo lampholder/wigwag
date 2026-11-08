@@ -377,3 +377,95 @@ test.describe('Connected Sources (Phase 1): paste dispatch + macro engine', () =
     await expect(page.locator('[data-testid=bulk-paste-unlinked-count]')).toContainText('1 will be added, unlinked');
   });
 });
+
+// GitHub token provisioning Commit 3 (tracker 1e557816): a bare "#123"
+// paste resolves against the builtin GitHub connector's OWN confirmed-
+// repos list (set by confirmGithubCredentialRepos, Commit 2) rather than
+// ever guessing which repo it means -- zero confirmed repos is a
+// non-match (same as today, before this connector existed at all); one
+// resolves directly; 2+ opens the existing ambiguous-match picker,
+// generalized to show repo-qualified rows. Deliberately does NOT reuse
+// h.mockGithubApi -- that closes over its own fixed GITHUB_FIXTURES
+// table (only one repo) and the `window.__TAURI__.core = ... || ...`
+// guard inside it means whichever addInitScript runs first wins, so a
+// test needing a different set of repos/fixtures must supply its own,
+// self-contained like this one, not try to layer on top.
+function seedGithubBuiltinWithRepos(page, { confirmedRepos, issueFixtures = {} } = {}) {
+  return page.addInitScript(({ confirmedRepos, issueFixtures }) => {
+    localStorage.setItem('git_native_tracker_connected_sources_v1', JSON.stringify({
+      connectors: [{ id: '__builtin_github', key: 'github', kind: 'github', name: 'GitHub', builtin: true, rootUrl: 'https://api.github.com', credentialConfigured: true, confirmedRepos, enabled: true }]
+    }));
+    window.__TAURI__ = window.__TAURI__ || {};
+    window.__TAURI__.core = {
+      invoke: (cmd, args) => {
+        if (cmd === 'connected_source_get_credential') return Promise.resolve('a-real-secret');
+        if (cmd === 'connected_source_fetch') {
+          const m = args.url.match(/\/repos\/([^/]+\/[^/]+\/issues\/\d+)$/);
+          const fixture = m && issueFixtures[m[1]];
+          if (fixture) return Promise.resolve({ status: 200, headers: {}, body: JSON.stringify(fixture) });
+          return Promise.resolve({ status: 404, headers: {}, body: JSON.stringify({ message: 'Not Found' }) });
+        }
+        if (cmd === 'plugin:opener|open_url') { window.open(args.url, '_blank'); return Promise.resolve(null); }
+        return Promise.resolve(null);
+      }
+    };
+  }, { confirmedRepos, issueFixtures });
+}
+
+test.describe('GitHub token provisioning: bare "#N" disambiguation against a connector\'s confirmed repos', () => {
+  test('zero confirmed repos: a bare #N is left as plain text, same as no connector configured at all', async ({ page }) => {
+    await seedGithubBuiltinWithRepos(page, { confirmedRepos: [] });
+    await h.gotoTracker(page);
+    await h.clickTitleToEdit(page, 3);
+    await h.pasteText(page, '#42');
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(400);
+
+    await expect(page.locator('[data-testid=connector-picker-popover]')).toHaveCount(0);
+    const doc = await h.readActiveMilestoneDoc(page);
+    const issue = doc.issues.find(i => i.id === 'i3');
+    expect(h.latestFieldValue(issue, 'title')).toBe('#42');
+    expect(h.latestFieldRef(issue, 'title')).toBeFalsy();
+  });
+
+  test('exactly one confirmed repo: a bare #N resolves directly against it, no picker', async ({ page }) => {
+    await seedGithubBuiltinWithRepos(page, {
+      confirmedRepos: ['acme/app'],
+      issueFixtures: { 'acme/app/issues/42': { title: 'Fix the login button', state: 'open', labels: [] } }
+    });
+    await h.gotoTracker(page);
+    await h.clickTitleToEdit(page, 3);
+    await h.pasteText(page, '#42');
+    await page.keyboard.press('Tab');
+    await h.waitForTitleResolved(page, 3);
+
+    await expect(page.locator('[data-testid=connector-picker-popover]')).toHaveCount(0);
+    const anchor = h.titleCell(page, 3).locator('a');
+    await expect(anchor).toHaveAttribute('href', 'https://github.com/acme/app/issues/42');
+  });
+
+  test('two confirmed repos: a bare #N opens the picker with repo-qualified rows; picking one resolves against that repo specifically', async ({ page }) => {
+    await seedGithubBuiltinWithRepos(page, {
+      confirmedRepos: ['acme/app', 'acme/infra'],
+      issueFixtures: {
+        'acme/app/issues/42': { title: 'App-side issue', state: 'open', labels: [] },
+        'acme/infra/issues/42': { title: 'Infra-side issue', state: 'open', labels: [] }
+      }
+    });
+    await h.gotoTracker(page);
+    await h.clickTitleToEdit(page, 3);
+    await h.pasteText(page, '#42');
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(300);
+
+    const popover = page.locator('[data-testid=connector-picker-popover]');
+    await expect(popover).toBeVisible();
+    await expect(popover).toContainText('GitHub · acme/app');
+    await expect(popover).toContainText('GitHub · acme/infra');
+
+    await popover.locator('div', { hasText: 'GitHub · acme/infra' }).last().click();
+    await h.waitForTitleResolved(page, 3);
+    const anchor = h.titleCell(page, 3).locator('a');
+    await expect(anchor).toHaveAttribute('href', 'https://github.com/acme/infra/issues/42');
+  });
+});

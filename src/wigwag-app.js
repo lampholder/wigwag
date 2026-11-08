@@ -3863,6 +3863,12 @@ class Component extends DCLogic {
     if (shorthand) return { owner: shorthand[1], repo: shorthand[2], num: shorthand[3] };
     return null;
   }
+  // Same duplication-for-consistency as parseGithubUrl just above --
+  // real logic lives in wigwag-core.js's parseGithubShortId, this is
+  // just the this.-callable mirror connectorMatches below uses.
+  parseGithubShortId(text) {
+    return parseGithubShortId(text);
+  }
   // Pure shape recognition only -- gating (is this kind even reachable
   // right now) and the {fetchedVia, matchedId, href} paste-dispatch
   // shape live in connectorMatches below, which reuses these directly
@@ -3926,6 +3932,29 @@ class Component extends DCLogic {
       if (c.enabled === false) continue;
       if (c.kind) {
         if (!builtinKindReachable(c, ctx)) continue;
+        // A bare "#123" never carries which repo it means on its own --
+        // unlike parseGithubUrl's owner/repo#N forms below, it only ever
+        // resolves against THIS connector's own confirmed-repos list
+        // (set once its credential has been verified live against the
+        // API -- see confirmGithubCredentialRepos, Commit 2). Zero
+        // confirmed repos (never verified, or verification failed) means
+        // no candidates at all, same as any other non-match -- never
+        // guess. One candidate per confirmed repo, same as a connector
+        // whose patterns happen to match more than one way; the existing
+        // ambiguous-match picker already generalizes to show them (see
+        // connectorPickerMatches' repo-qualified name below).
+        if (c.kind === 'github') {
+          const shortNum = this.parseGithubShortId(t);
+          if (shortNum != null) {
+            for (const full of (c.confirmedRepos || [])) {
+              const slash = full.indexOf('/');
+              if (slash < 0) continue;
+              const owner = full.slice(0, slash), repo = full.slice(slash + 1);
+              kindMatches.push({ connector: c, fetchedVia: c.id, matchedId: { owner, repo, num: shortNum }, href: 'https://github.com/' + owner + '/' + repo + '/issues/' + shortNum });
+            }
+            continue;
+          }
+        }
         const matchedId = c.kind === 'github' ? this.parseGithubUrl(t)
           : c.kind === 'jira' ? this.parseJiraKey(t)
           : c.kind === 'salesforce' ? this.parseSalesforceId(t)
@@ -10477,7 +10506,15 @@ class Component extends DCLogic {
       checkForUpdatesLabel: s.updateCheckState === 'checking' ? 'Checking\u2026' : s.updateCheckState === 'none' ? 'Up to date' : s.updateCheckState === 'error' ? 'Check failed' : s.updateCheckState === 'available' ? 'Update available' : 'Check for updates',
       onCheckForUpdatesClick: () => this.checkForUpdate(),
       connectorPickerMatches: s.connectorPickerOpen ? s.connectorPickerOpen.matches.map(m => ({
-        glyph: m.connector.glyph, color: m.connector.color, name: m.connector.name,
+        glyph: m.connector.glyph, color: m.connector.color,
+        // A bare "#123" disambiguated against one connector's own
+        // multiple confirmed repos (Commit 3, tracker 1e557816) produces
+        // several candidates that all share the same connector --
+        // without the repo suffix here they'd render as identical rows
+        // ("GitHub", "GitHub", ...) with no way to tell them apart.
+        name: (m.connector.kind === 'github' && m.matchedId && m.matchedId.owner)
+          ? m.connector.name + ' · ' + m.matchedId.owner + '/' + m.matchedId.repo
+          : m.connector.name,
         // A kind-tagged match (github/jira/salesforce) carries no
         // glyph/color of its own (those are macro-connector-only
         // fields) -- logoKind names which real brand mark the template

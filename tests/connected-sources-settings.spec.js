@@ -614,8 +614,8 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
 // connected-sources.spec.js's own stubTauriInvoke shape, but keyed on
 // command name since this flow calls set_credential, get_credential AND
 // fetch in sequence (saveBuiltinForm), not just fetch.
-async function stubTauriWithGithubRepos(page, { repoFullNames = null, fetchStatus = 200 } = {}) {
-  await page.addInitScript(({ repoFullNames, fetchStatus }) => {
+async function stubTauriWithGithubRepos(page, { repoFullNames = null, fetchStatus = 200, expirationHeader = null } = {}) {
+  await page.addInitScript(({ repoFullNames, fetchStatus, expirationHeader }) => {
     window.__invokeCalls = [];
     window.__TAURI__ = window.__TAURI__ || {};
     window.__TAURI__.core = {
@@ -625,12 +625,13 @@ async function stubTauriWithGithubRepos(page, { repoFullNames = null, fetchStatu
         if (cmd === 'connected_source_get_credential') return Promise.resolve('a-real-secret');
         if (cmd === 'connected_source_fetch') {
           const body = fetchStatus === 200 ? JSON.stringify((repoFullNames || []).map(full_name => ({ full_name }))) : JSON.stringify({ message: 'Bad credentials' });
-          return Promise.resolve({ status: fetchStatus, headers: {}, body });
+          const headers = expirationHeader ? { 'github-authentication-token-expiration': expirationHeader } : {};
+          return Promise.resolve({ status: fetchStatus, headers, body });
         }
         return Promise.resolve(null);
       }
     };
-  }, { repoFullNames, fetchStatus });
+  }, { repoFullNames, fetchStatus, expirationHeader });
 }
 
 test.describe('GitHub token provisioning: confirmation fetch on credential save', () => {
@@ -646,7 +647,7 @@ test.describe('GitHub token provisioning: confirmation fetch on credential save'
     await expect(page.locator('[data-testid=connector-form-modal]')).toBeHidden();
 
     const row = page.locator('[data-testid=connected-source-row]', { hasText: 'GitHub' });
-    await expect(row.locator('[data-testid=connected-source-confirmed-repos]')).toHaveText('Can see: acme/app, acme/infra');
+    await expect(row.locator('[data-testid=connected-source-confirmed-repos]')).toHaveText('Can see: acme/app, acme/infra · No expiry');
 
     const calls = await page.evaluate(() => window.__invokeCalls);
     const fetchCall = calls.find(c => c.cmd === 'connected_source_fetch');
@@ -666,6 +667,24 @@ test.describe('GitHub token provisioning: confirmation fetch on credential save'
 
     const row = page.locator('[data-testid=connected-source-row]', { hasText: 'GitHub' });
     await expect(row.locator('[data-testid=connected-source-confirmed-repos]')).toHaveText('Couldn\'t verify this token\'s access');
+  });
+
+  // Follow-up to Commit 2 (tracker 1e557816): GitHub's own real
+  // GitHub-Authentication-Token-Expiration response header, read off
+  // the same confirmation call, not a second request or a guess.
+  test('a confirmed credential with a real expiry shows the actual date GitHub reports', async ({ page }) => {
+    await stubTauriWithGithubRepos(page, { repoFullNames: ['acme/app'], expirationHeader: '2026-12-31 23:59:59 UTC' });
+    await h.seedAllBuiltinConnectors(page);
+    await h.gotoTracker(page);
+    await h.openSettingsSection(page, 'connectedDataSources');
+
+    await page.locator('[data-testid=connected-source-row]', { hasText: 'GitHub' }).locator('[data-testid=btn-edit-connected-source]').click();
+    await page.locator('[data-testid=builtin-credential-input]').fill('a-new-token');
+    await page.locator('[data-testid=btn-save-builtin-source]').click();
+    await expect(page.locator('[data-testid=connector-form-modal]')).toBeHidden();
+
+    const row = page.locator('[data-testid=connected-source-row]', { hasText: 'GitHub' });
+    await expect(row.locator('[data-testid=connected-source-confirmed-repos]')).toHaveText('Can see: acme/app · Expires Dec 31, 2026');
   });
 
   test('editing a connector WITHOUT typing a new credential never re-confirms (no fetch call at all)', async ({ page }) => {

@@ -3351,3 +3351,27 @@ function compileMacroAndRun(macroSource, id, credential) {
   const fetchImpl = async () => ({ ok: true, status: 200, json: async () => ({}), text: async () => '' });
   return factory(fetchImpl)(id, credential);
 }
+
+// parseGithubTokenExpiryHeader (tracker 1e557816): GitHub's own
+// GitHub-Authentication-Token-Expiration response header isn't nailed
+// down to one exact format by official docs (confirmed via
+// cross-referencing other clients, e.g. Composer) -- these cover every
+// shape actually seen in the wild plus the "give up cleanly" path,
+// since a wrong parse here would show a wrong expiry date, worse than
+// showing none at all.
+test('parseGithubTokenExpiryHeader: a straight ISO-ish value parses directly', () => {
+  assert.equal(core.parseGithubTokenExpiryHeader('2026-12-31T23:59:59Z'), new Date('2026-12-31T23:59:59Z').toISOString());
+});
+test('parseGithubTokenExpiryHeader: "YYYY-MM-DD HH:MM:SS UTC" normalizes correctly', () => {
+  assert.equal(core.parseGithubTokenExpiryHeader('2026-12-31 23:59:59 UTC'), new Date('2026-12-31T23:59:59Z').toISOString());
+});
+test('parseGithubTokenExpiryHeader: "YYYY-MM-DD HH:MM:SS +offset" normalizes correctly', () => {
+  assert.equal(core.parseGithubTokenExpiryHeader('2026-12-31 23:59:59 -0800'), new Date('2026-12-31T23:59:59-0800').toISOString());
+});
+test('parseGithubTokenExpiryHeader: missing/empty value means "no expiry", not an error', () => {
+  assert.equal(core.parseGithubTokenExpiryHeader(null), null);
+  assert.equal(core.parseGithubTokenExpiryHeader(''), null);
+});
+test('parseGithubTokenExpiryHeader: genuinely unparseable input gives up cleanly rather than guessing', () => {
+  assert.equal(core.parseGithubTokenExpiryHeader('not a date at all'), null);
+});

@@ -2731,6 +2731,10 @@
                   <sc-if value="{{ settingsIsRemoteDataStores }}" hint-placeholder-val="{{ false }}">
                     <div style="font-size:11px; font-weight:600; letter-spacing:0.04em; color: var(--text-muted); margin-bottom:6px;">GITHUB TOKEN</div>
                     <input data-testid="settings-github-token" type="password" placeholder="ghp_… (repo access)" value="{{ githubToken }}" sc-camel-on-change="{{ onGithubTokenChange }}" style="width:100%; max-width:420px; box-sizing:border-box; padding:6px 8px; border:1px solid var(--border); border-radius:6px; font-size:13px; font-family:inherit; margin-bottom:4px; background:transparent;">
+                    <a data-testid="settings-github-token-create-link" href="{{ githubTokenCreateUrl }}" target="_blank" style="display:inline-block; font-size:10.5px; color: var(--accent-ink); margin-bottom:6px; text-decoration:none;">Create a token on GitHub →</a>
+                    <sc-if value="{{ showGithubTokenConfirmedText }}" hint-placeholder-val="{{ false }}">
+                      <div data-testid="settings-github-token-confirmed" style="font-size:10.5px; color: var(--text-tertiary); line-height:1.4; margin-bottom:6px;">{{ githubTokenConfirmedText }}</div>
+                    </sc-if>
                     <div style="font-size:10.5px; color: var(--text-tertiary); line-height:1.4; max-width:420px;">Needed for private repos, and used by default for pushing/pulling ANY project's own data that doesn't set its own token (Project panel → Sync) — since this one is shared across every project, a classic token here reaches every repo it can see, not just the ones you mean to sync. Prefer setting a fine-grained PAT scoped to one repo per-project instead; keep this one only for projects that genuinely don't need isolation. Stored only in this browser's localStorage — never exported, never in "View source".</div>
                   </sc-if>
                   <sc-if value="{{ settingsIsNotifications }}" hint-placeholder-val="{{ false }}">

@@ -67,4 +67,100 @@ test.describe('GitHub token provisioning: deep-link "Create a token" UI', () => 
     expect(params.get('issues')).toBeNull();
     expect(params.get('expires_in')).toBe('90');
   });
+
+  test('the identity-level GITHUB TOKEN field shows a pre-filled token-creation link scoped for write access', async ({ page }) => {
+    await h.gotoTracker(page);
+    await h.openSettingsSection(page, 'remoteDataStores');
+
+    const link = page.locator('[data-testid=settings-github-token-create-link]');
+    await expect(link).toBeVisible();
+    const href = await link.getAttribute('href');
+    expect(href).toContain('https://github.com/settings/personal-access-tokens/new?');
+    const params = new URL(href).searchParams;
+    expect(params.get('name')).toBe('Wigwag — default token');
+    expect(params.get('contents')).toBe('write');
+    expect(params.get('expires_in')).toBe('90');
+  });
+});
+
+// GitHub token provisioning follow-up (tracker 1e557816): the
+// identity-level default token now gets the same confirmation
+// treatment the builtin connector already has (Commit 2) -- a repo
+// COUNT rather than a full list (this token is explicitly the broad,
+// shared one, see its own help text), plus whichever real expiry
+// GitHub's own GitHub-Authentication-Token-Expiration response header
+// reports -- confirmed via live research this session, not a guess or
+// user-re-entry.
+async function stubTauriWithGithubUserRepos(page, { repoCount = 0, expirationHeader = null, fetchStatus = 200 } = {}) {
+  await page.addInitScript(({ repoCount, expirationHeader, fetchStatus }) => {
+    window.__TAURI__ = window.__TAURI__ || {};
+    window.__TAURI__.core = {
+      invoke: (cmd) => {
+        if (cmd === 'connected_source_fetch') {
+          const headers = expirationHeader ? { 'github-authentication-token-expiration': expirationHeader } : {};
+          const body = fetchStatus === 200 ? JSON.stringify(Array.from({ length: repoCount }, (_, i) => ({ full_name: 'acme/repo' + i }))) : JSON.stringify({ message: 'Bad credentials' });
+          return Promise.resolve({ status: fetchStatus, headers, body });
+        }
+        return Promise.resolve(null);
+      }
+    };
+  }, { repoCount, expirationHeader, fetchStatus });
+}
+
+test.describe('GitHub token provisioning: identity-level token confirmation', () => {
+  test('typing a new identity-level token confirms repo count and expiry, shown next to the field', async ({ page }) => {
+    await stubTauriWithGithubUserRepos(page, { repoCount: 12, expirationHeader: '2026-12-31 23:59:59 UTC' });
+    await h.gotoTracker(page);
+    await h.openSettingsSection(page, 'remoteDataStores');
+
+    await page.locator('[data-testid=settings-github-token]').fill('ghp_a_real_token');
+    await page.waitForTimeout(300);
+
+    await expect(page.locator('[data-testid=settings-github-token-confirmed]')).toHaveText('Can see 12 repositories · Expires Dec 31, 2026');
+  });
+
+  test('a token with no expiry set shows "No expiry" rather than a blank', async ({ page }) => {
+    await stubTauriWithGithubUserRepos(page, { repoCount: 1 });
+    await h.gotoTracker(page);
+    await h.openSettingsSection(page, 'remoteDataStores');
+
+    await page.locator('[data-testid=settings-github-token]').fill('ghp_no_expiry_token');
+    await page.waitForTimeout(300);
+
+    await expect(page.locator('[data-testid=settings-github-token-confirmed]')).toHaveText('Can see 1 repository · No expiry');
+  });
+
+  test('a confirmation that fails (bad token) shows a clear note, not a stale/silent count', async ({ page }) => {
+    await stubTauriWithGithubUserRepos(page, { fetchStatus: 401 });
+    await h.gotoTracker(page);
+    await h.openSettingsSection(page, 'remoteDataStores');
+
+    await page.locator('[data-testid=settings-github-token]').fill('ghp_a_bad_token');
+    await page.waitForTimeout(300);
+
+    await expect(page.locator('[data-testid=settings-github-token-confirmed]')).toHaveText('Couldn\'t verify this token\'s access');
+  });
+
+  test('clearing the token clears the confirmed info entirely', async ({ page }) => {
+    await stubTauriWithGithubUserRepos(page, { repoCount: 5 });
+    await h.gotoTracker(page);
+    await h.openSettingsSection(page, 'remoteDataStores');
+
+    await page.locator('[data-testid=settings-github-token]').fill('ghp_a_real_token');
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=settings-github-token-confirmed]')).toBeVisible();
+
+    await page.locator('[data-testid=settings-github-token]').fill('');
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=settings-github-token-confirmed]')).toHaveCount(0);
+  });
+
+  test('outside Tauri, no confirmation is attempted at all (no keychain/unrestricted fetch there)', async ({ page }) => {
+    await h.gotoTracker(page);
+    await h.openSettingsSection(page, 'remoteDataStores');
+
+    await page.locator('[data-testid=settings-github-token]').fill('ghp_outside_tauri');
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=settings-github-token-confirmed]')).toHaveCount(0);
+  });
 });

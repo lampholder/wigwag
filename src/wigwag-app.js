@@ -11,7 +11,7 @@
 const {
   xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, columnFilterIsActive, dateFilterPresetRanges, parseFilterQuery, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, isPastedTextASingleUrl, wrapSelectionWithMarkdownLink, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, deriveFieldDefs, effectiveFieldDefs, deriveProjectName, PROJECT_NAME_FIELD_ID, deriveProjectNotes, PROJECT_NOTES_FIELD_ID, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, principalKind, SIGN_ALG, JOSE_ALG_ES256, signEntryPayload, verifyEntryPayload, signableEntryPayload, signableProjectEntryPayload, redactedEntryPayload, redactedProjectEntryPayload, signableCommentEntryPayload, signableProjectCommentEntryPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER
 ,
-  buildSource, normalizeRef, sourceRefHasFullData, evalRule, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, fieldLocalBindState, liveBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, builtinKindConfigured, builtinKindReachable, resolveRefSystem, parseGithubUrl, parseGithubShortId, githubTokenCreationUrl, GITHUB_TOKEN_LIST_URL, parseJiraKey, parseSalesforceId, hostFromUrl, buildWigwagUri, parseWigwagUri,
+  buildSource, normalizeRef, sourceRefHasFullData, evalRule, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, fieldLocalBindState, liveBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, builtinKindConfigured, builtinKindReachable, resolveRefSystem, parseGithubUrl, parseGithubShortId, githubTokenCreationUrl, GITHUB_TOKEN_LIST_URL, parseGithubTokenExpiryHeader, parseJiraKey, parseSalesforceId, hostFromUrl, buildWigwagUri, parseWigwagUri,
   CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, newFieldId, newOptionId, pickConnectorFields, connectorLinkText, compileConnectorMacro,
   importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry,
   squashHistory, redactEntry, redactProjectEntry, displayValueForHistory, buildSourceText, humanFileSize, parseJsonl, entryKey, unionByKey, mergeIssuePair, computeIssueMerge, mergeHasRealChanges, computeFieldDefsMerge, computeDerivedChangeEntries, buildGithubContentsUrl, buildGithubContentsHeaders, buildGithubCommitMessage, pullGithubFile, pushGithubFile, probeGithubRepoAccess, issueCreatedAt, computeHeaderMeshTriangles, computeHeaderCompression, cellPaddingForWidth, computeAffordanceFade,
@@ -685,6 +685,9 @@ class Component extends DCLogic {
     if (!active) return;
     this.state.identityEmail = active.email || '';
     this.state.githubToken = active.githubToken || '';
+    this.state.githubTokenConfirmedRepoCount = active.githubTokenConfirmedRepoCount; // undefined (never confirmed) preserved on purpose -- see state default's own comment
+    this.state.githubTokenExpiresAt = active.githubTokenExpiresAt || null;
+    this._lastConfirmedGithubToken = (active.githubToken || '').trim();
     Object.assign(this.state, identityProxyFieldsFrom(active));
     this.state.identityPublicKeyJwk = active.signingPublicKeyJwk || null;
     this.state.identityPrivateKeyJwk = active.signingPrivateKeyJwk || null;
@@ -3687,6 +3690,13 @@ class Component extends DCLogic {
     identityPrivateKeyJwk: null,
     knownIdentities: {},
     githubToken: '',
+    // undefined (never set) means "never confirmed" -- distinct from an
+    // explicit null, which confirmGithubIdentityToken sets only after a
+    // confirmation attempt actually failed. Both read as falsy via ==
+    // null, so the view-model checks === undefined specifically where
+    // that distinction matters (showGithubTokenConfirmedText).
+    githubTokenConfirmedRepoCount: undefined,
+    githubTokenExpiresAt: null,
     githubRepo: '',
     githubRepoPath: 'tracker.jsonl',
     githubRepoBranch: '',
@@ -4516,12 +4526,59 @@ class Component extends DCLogic {
       const headers = { Accept: 'application/vnd.github+json' };
       if (credential) headers.Authorization = 'Bearer ' + credential;
       const res = await this.connectorFetchShim()('https://api.github.com/user/repos?per_page=100&affiliation=owner,collaborator,organization_member', { headers });
-      if (!res.ok) return connectors.map(c => c.id === connectorId ? { ...c, confirmedRepos: null, confirmedReposAt: Date.now() } : c);
+      // Real GitHub sends GitHub-Authentication-Token-Expiration on any
+      // authenticated response when the PAT has an expiry -- read here
+      // for free, same call, rather than a guess or a second request
+      // (tracker 1e557816, follow-up to Commit 2/4).
+      const tokenExpiresAt = parseGithubTokenExpiryHeader(res.headers.get('github-authentication-token-expiration'));
+      if (!res.ok) return connectors.map(c => c.id === connectorId ? { ...c, confirmedRepos: null, confirmedReposAt: Date.now(), tokenExpiresAt: null } : c);
       const data = await res.json();
       const repos = (Array.isArray(data) ? data : []).map(r => r.full_name).filter(Boolean);
-      return connectors.map(c => c.id === connectorId ? { ...c, confirmedRepos: repos, confirmedReposAt: Date.now() } : c);
+      return connectors.map(c => c.id === connectorId ? { ...c, confirmedRepos: repos, confirmedReposAt: Date.now(), tokenExpiresAt } : c);
     } catch (e) {
       return connectors;
+    }
+  }
+  // Same confirmation idea as confirmGithubCredentialRepos just above,
+  // for the identity-level default token (githubToken) -- there's no
+  // connector id to scope this to, so the result is mirrored onto flat
+  // state via updateActiveIdentityField (same pattern githubToken
+  // itself already uses), which both persists it onto the active
+  // identity's own record and survives a later identity switch.
+  // Deliberately shows a REPO COUNT, not the full list a connector
+  // gets: this token is explicitly the broad, shared one (see its own
+  // Settings help text) -- a long repo list would undercut exactly the
+  // "this reaches everything" warning that copy already gives, where a
+  // count alone is enough signal without being unwieldy. _lastConfirmedGithubToken
+  // guards against refiring on every keystroke of an onChange-bound
+  // field (a real paste fires one change event with the full value;
+  // only an actual different value re-triggers this).
+  async confirmGithubIdentityToken(token) {
+    const trimmed = (token || '').trim();
+    if (trimmed === this._lastConfirmedGithubToken) return;
+    this._lastConfirmedGithubToken = trimmed;
+    if (!trimmed) {
+      // undefined, not null -- null means "confirmation attempted and
+      // failed" (shows an error note); a cleared field has nothing to
+      // report at all, same as never having confirmed anything.
+      this.updateActiveIdentityField('githubTokenConfirmedRepoCount', undefined, 'githubTokenConfirmedRepoCount');
+      this.updateActiveIdentityField('githubTokenExpiresAt', null, 'githubTokenExpiresAt');
+      return;
+    }
+    if (!this.isTauriConnectorRuntime()) return;
+    try {
+      const res = await this.connectorFetchShim()('https://api.github.com/user/repos?per_page=100', { headers: { Accept: 'application/vnd.github+json', Authorization: 'Bearer ' + trimmed } });
+      const tokenExpiresAt = parseGithubTokenExpiryHeader(res.headers.get('github-authentication-token-expiration'));
+      if (!res.ok) {
+        this.updateActiveIdentityField('githubTokenConfirmedRepoCount', null, 'githubTokenConfirmedRepoCount');
+        this.updateActiveIdentityField('githubTokenExpiresAt', null, 'githubTokenExpiresAt');
+        return;
+      }
+      const data = await res.json();
+      this.updateActiveIdentityField('githubTokenConfirmedRepoCount', Array.isArray(data) ? data.length : 0, 'githubTokenConfirmedRepoCount');
+      this.updateActiveIdentityField('githubTokenExpiresAt', tokenExpiresAt, 'githubTokenExpiresAt');
+    } catch (e) {
+      // swallow -- a nicety, never something that should block typing a token
     }
   }
   // Validates (non-blank name/macro, every non-blank pattern actually
@@ -10247,7 +10304,32 @@ class Component extends DCLogic {
       // uses, so both panels move in lockstep.
       settingsModalTransformOffset: s.connectorFormVisible ? '-100vw' : '0',
       githubToken: s.githubToken,
-      onGithubTokenChange: e => this.updateActiveIdentityField('githubToken', e.target.value, 'githubToken'),
+      onGithubTokenChange: e => { this.updateActiveIdentityField('githubToken', e.target.value, 'githubToken'); this.confirmGithubIdentityToken(e.target.value); },
+      // Same deep-link mechanism as the builtin connector/sync-override
+      // fields (tracker 1e557816) -- contents:write since this is the
+      // default SYNC token (pushes), not tied to any one project's name
+      // since it's identity-level and shared by design.
+      githubTokenCreateUrl: githubTokenCreationUrl({
+        name: 'Wigwag — default token',
+        description: 'Default sync token for this identity. Shared across every project that doesn\'t set its own -- prefer a per-project token instead where possible.',
+        permissions: { contents: 'write' },
+        expiresInDays: 90
+      }),
+      // Repo COUNT, not a list (unlike a connector's confirmedReposText)
+      // -- deliberately reinforces "this one's broad", see its own help
+      // text. 100 is per_page's own cap, not necessarily the real total
+      // -- shown as "100+" rather than implying that's the exact count.
+      githubTokenConfirmedText: (() => {
+        if (s.githubTokenConfirmedRepoCount === undefined) return '';
+        if (s.githubTokenConfirmedRepoCount === null) return 'Couldn\'t verify this token\'s access';
+        const n = s.githubTokenConfirmedRepoCount;
+        const repoPart = 'Can see ' + (n >= 100 ? '100+' : n) + ' repositor' + (n === 1 ? 'y' : 'ies');
+        const expiryPart = s.githubTokenExpiresAt
+          ? 'Expires ' + new Date(s.githubTokenExpiresAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+          : 'No expiry';
+        return repoPart + ' · ' + expiryPart;
+      })(),
+      showGithubTokenConfirmedText: s.githubTokenConfirmedRepoCount !== undefined,
       githubRepo: s.githubRepo,
       onGithubRepoChange: e => this.onGithubConnectionSettingChange({ githubRepo: e.target.value.trim() }),
       githubRepoPath: s.githubRepoPath,
@@ -10353,6 +10435,7 @@ class Component extends DCLogic {
               // confirmedRepos, so this is always blank for them.
               confirmedReposText: c.kind === 'github' && Array.isArray(c.confirmedRepos)
                 ? (c.confirmedRepos.length ? 'Can see: ' + c.confirmedRepos.join(', ') : 'Can see: no repositories')
+                  + ' · ' + (c.tokenExpiresAt ? 'Expires ' + new Date(c.tokenExpiresAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'No expiry')
                 : (c.kind === 'github' && c.confirmedRepos === null ? 'Couldn\'t verify this token\'s access' : ''),
               showConfirmedRepos: c.kind === 'github' && (Array.isArray(c.confirmedRepos) || c.confirmedRepos === null),
               statusLabel: !isEnabled ? 'Deactivated' : (configured ? 'Connected' : 'Not configured'),

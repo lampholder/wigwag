@@ -264,7 +264,7 @@ const BUILTIN_INTEGRATIONS = {
     rootUrlLabel: 'API base URL', rootUrlPlaceholder: 'https://api.github.com', rootUrlDefault: 'https://api.github.com',
     usernameLabel: null, usernamePlaceholder: '',
     credentialLabel: 'Personal access token', credentialPlaceholder: 'ghp_...',
-    helperText: 'A fine-grained or classic personal access token. Optional for public repos (unauthenticated requests are rate-limited); required for private ones.'
+    helperText: 'A fine-grained personal access token scoped to just the repo(s) this connector should see, recommended over a classic token (which can\'t be scoped to specific repos at all). Optional for public repos (unauthenticated requests are rate-limited); required for private ones.'
   },
   jira: {
     name: 'Jira', key: 'jira',

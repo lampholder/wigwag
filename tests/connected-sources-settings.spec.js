@@ -606,3 +606,81 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
     });
   });
 });
+
+// GitHub token provisioning Commit 2 (tracker 1e557816): confirming what
+// a newly-typed GitHub credential can actually see, via one real
+// GET /user/repos call through connected_source_fetch -- see
+// confirmGithubCredentialRepos, src/wigwag-app.js. Mirrors
+// connected-sources.spec.js's own stubTauriInvoke shape, but keyed on
+// command name since this flow calls set_credential, get_credential AND
+// fetch in sequence (saveBuiltinForm), not just fetch.
+async function stubTauriWithGithubRepos(page, { repoFullNames = null, fetchStatus = 200 } = {}) {
+  await page.addInitScript(({ repoFullNames, fetchStatus }) => {
+    window.__invokeCalls = [];
+    window.__TAURI__ = window.__TAURI__ || {};
+    window.__TAURI__.core = {
+      invoke: (cmd, args) => {
+        window.__invokeCalls.push({ cmd, args });
+        if (cmd === 'connected_source_set_credential') return Promise.resolve();
+        if (cmd === 'connected_source_get_credential') return Promise.resolve('a-real-secret');
+        if (cmd === 'connected_source_fetch') {
+          const body = fetchStatus === 200 ? JSON.stringify((repoFullNames || []).map(full_name => ({ full_name }))) : JSON.stringify({ message: 'Bad credentials' });
+          return Promise.resolve({ status: fetchStatus, headers: {}, body });
+        }
+        return Promise.resolve(null);
+      }
+    };
+  }, { repoFullNames, fetchStatus });
+}
+
+test.describe('GitHub token provisioning: confirmation fetch on credential save', () => {
+  test('saving a new GitHub credential confirms what it can see and shows the repo list on the row', async ({ page }) => {
+    await stubTauriWithGithubRepos(page, { repoFullNames: ['acme/app', 'acme/infra'] });
+    await h.seedAllBuiltinConnectors(page);
+    await h.gotoTracker(page);
+    await h.openSettingsSection(page, 'connectedDataSources');
+
+    await page.locator('[data-testid=connected-source-row]', { hasText: 'GitHub' }).locator('[data-testid=btn-edit-connected-source]').click();
+    await page.locator('[data-testid=builtin-credential-input]').fill('a-new-token');
+    await page.locator('[data-testid=btn-save-builtin-source]').click();
+    await expect(page.locator('[data-testid=connector-form-modal]')).toBeHidden();
+
+    const row = page.locator('[data-testid=connected-source-row]', { hasText: 'GitHub' });
+    await expect(row.locator('[data-testid=connected-source-confirmed-repos]')).toHaveText('Can see: acme/app, acme/infra');
+
+    const calls = await page.evaluate(() => window.__invokeCalls);
+    const fetchCall = calls.find(c => c.cmd === 'connected_source_fetch');
+    expect(fetchCall.args.url).toContain('https://api.github.com/user/repos');
+  });
+
+  test('a credential confirmation call that fails (e.g. a bad token) shows a clear note instead of a stale/silent repo list', async ({ page }) => {
+    await stubTauriWithGithubRepos(page, { fetchStatus: 401 });
+    await h.seedAllBuiltinConnectors(page);
+    await h.gotoTracker(page);
+    await h.openSettingsSection(page, 'connectedDataSources');
+
+    await page.locator('[data-testid=connected-source-row]', { hasText: 'GitHub' }).locator('[data-testid=btn-edit-connected-source]').click();
+    await page.locator('[data-testid=builtin-credential-input]').fill('a-bad-token');
+    await page.locator('[data-testid=btn-save-builtin-source]').click();
+    await expect(page.locator('[data-testid=connector-form-modal]')).toBeHidden();
+
+    const row = page.locator('[data-testid=connected-source-row]', { hasText: 'GitHub' });
+    await expect(row.locator('[data-testid=connected-source-confirmed-repos]')).toHaveText('Couldn\'t verify this token\'s access');
+  });
+
+  test('editing a connector WITHOUT typing a new credential never re-confirms (no fetch call at all)', async ({ page }) => {
+    await stubTauriWithGithubRepos(page, { repoFullNames: ['acme/app'] });
+    await h.seedAllBuiltinConnectors(page);
+    await h.gotoTracker(page);
+    await h.openSettingsSection(page, 'connectedDataSources');
+
+    await page.locator('[data-testid=connected-source-row]', { hasText: 'GitHub' }).locator('[data-testid=btn-edit-connected-source]').click();
+    await page.locator('[data-testid=builtin-root-url-input]').fill('https://api.github.com'); // a no-op edit, no credential typed
+    await page.locator('[data-testid=btn-save-builtin-source]').click();
+    await expect(page.locator('[data-testid=connector-form-modal]')).toBeHidden();
+
+    await expect(page.locator('[data-testid=connected-source-confirmed-repos]')).toHaveCount(0);
+    const calls = await page.evaluate(() => window.__invokeCalls);
+    expect(calls.find(c => c.cmd === 'connected_source_fetch')).toBeUndefined();
+  });
+});

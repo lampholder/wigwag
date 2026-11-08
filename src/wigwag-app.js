@@ -11,7 +11,7 @@
 const {
   xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, columnFilterIsActive, dateFilterPresetRanges, parseFilterQuery, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, isPastedTextASingleUrl, wrapSelectionWithMarkdownLink, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, deriveFieldDefs, effectiveFieldDefs, deriveProjectName, PROJECT_NAME_FIELD_ID, deriveProjectNotes, PROJECT_NOTES_FIELD_ID, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, principalKind, SIGN_ALG, JOSE_ALG_ES256, signEntryPayload, verifyEntryPayload, signableEntryPayload, signableProjectEntryPayload, redactedEntryPayload, redactedProjectEntryPayload, signableCommentEntryPayload, signableProjectCommentEntryPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER
 ,
-  buildSource, normalizeRef, sourceRefHasFullData, evalRule, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, fieldLocalBindState, liveBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, builtinKindConfigured, builtinKindReachable, resolveRefSystem, parseGithubUrl, parseJiraKey, parseSalesforceId, hostFromUrl, buildWigwagUri, parseWigwagUri,
+  buildSource, normalizeRef, sourceRefHasFullData, evalRule, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, fieldLocalBindState, liveBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, builtinKindConfigured, builtinKindReachable, resolveRefSystem, parseGithubUrl, parseGithubShortId, githubTokenCreationUrl, GITHUB_TOKEN_LIST_URL, parseJiraKey, parseSalesforceId, hostFromUrl, buildWigwagUri, parseWigwagUri,
   CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, newFieldId, newOptionId, pickConnectorFields, connectorLinkText, compileConnectorMacro,
   importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry,
   squashHistory, redactEntry, redactProjectEntry, displayValueForHistory, buildSourceText, humanFileSize, parseJsonl, entryKey, unionByKey, mergeIssuePair, computeIssueMerge, mergeHasRealChanges, computeFieldDefsMerge, computeDerivedChangeEntries, buildGithubContentsUrl, buildGithubContentsHeaders, buildGithubCommitMessage, pullGithubFile, pushGithubFile, probeGithubRepoAccess, issueCreatedAt, computeHeaderMeshTriangles, computeHeaderCompression, cellPaddingForWidth, computeAffordanceFade,
@@ -4474,8 +4474,35 @@ class Component extends DCLogic {
       next = existing.concat([{ id, key, kind: f.kind, name: spec.name, builtin: true, rootUrl, username, credentialConfigured: !!credentialTyped, enabled: true }]);
     }
     if (credentialTyped) await this.setConnectorCredential(id, credentialTyped);
+    if (credentialTyped && f.kind === 'github') next = await this.confirmGithubCredentialRepos(id, next);
     this.saveConnectedSources(next);
     this.cancelBuiltinForm();
+  }
+  // Only ever runs right after a NEW GitHub credential was typed and
+  // saved (see saveBuiltinForm) -- confirms what the token can actually
+  // see, right now, against the real API, so a wrong repo-selection
+  // mistake on GitHub's own page surfaces immediately instead of
+  // silently (tracker 1e557816, Commit 2). Takes/returns the connectors
+  // array being built up by the caller rather than touching state
+  // directly, same reason saveBuiltinForm itself defers its own
+  // saveConnectedSources call until after this resolves -- one state
+  // write, not two races. Deliberately swallows any failure into
+  // confirmedRepos staying unset -- this is a nicety, not something that
+  // should ever block a save the user already committed to.
+  async confirmGithubCredentialRepos(connectorId, connectors) {
+    if (!this.isTauriConnectorRuntime()) return connectors;
+    try {
+      const credential = await this.getConnectorCredential(connectorId);
+      const headers = { Accept: 'application/vnd.github+json' };
+      if (credential) headers.Authorization = 'Bearer ' + credential;
+      const res = await this.connectorFetchShim()('https://api.github.com/user/repos?per_page=100&affiliation=owner,collaborator,organization_member', { headers });
+      if (!res.ok) return connectors.map(c => c.id === connectorId ? { ...c, confirmedRepos: null, confirmedReposAt: Date.now() } : c);
+      const data = await res.json();
+      const repos = (Array.isArray(data) ? data : []).map(r => r.full_name).filter(Boolean);
+      return connectors.map(c => c.id === connectorId ? { ...c, confirmedRepos: repos, confirmedReposAt: Date.now() } : c);
+    } catch (e) {
+      return connectors;
+    }
   }
   // Validates (non-blank name/macro, every non-blank pattern actually
   // compiles) and re-checks defensively even though the Save button's
@@ -10182,6 +10209,16 @@ class Component extends DCLogic {
       onGithubRepoBranchChange: e => this.onGithubConnectionSettingChange({ githubRepoBranch: e.target.value.trim() }),
       githubTokenOverride: s.githubTokenOverride,
       onGithubTokenOverrideChange: e => this.onGithubConnectionSettingChange({ githubTokenOverride: e.target.value }),
+      // Same rationale as the builtin GitHub connector's create-token link
+      // (tracker 1e557816) -- sync needs write access (it pushes), so the
+      // minimum permission requested here is contents:write rather than
+      // enrichment's issues:read.
+      githubSyncTokenCreateUrl: githubTokenCreationUrl({
+        name: 'Wigwag sync — ' + ((s.projects.find(p => p.id === s.projectId) || {}).name || 'project'),
+        description: 'Write access for this project\'s sync target repo only. Select just that one repo.',
+        permissions: { contents: 'write' },
+        expiresInDays: 90
+      }),
       githubSyncVisible: !!(s.githubRepo && s.githubRepo.includes('/')),
       githubSyncColor: this.githubSyncColor(),
       onGithubSyncClick: () => this.onGithubSyncIndicatorClick(),
@@ -10261,6 +10298,16 @@ class Component extends DCLogic {
             return {
               id: c.id, name: c.name, logoKind: c.kind, builtin: true,
               patternSummaryText: (c.rootUrl || '').trim() || 'Not configured',
+              // Commit 2 (tracker 1e557816): what this GitHub token can
+              // actually see right now, confirmed live against the API
+              // when the credential was saved -- catches a wrong
+              // repo-selection mistake immediately instead of silently.
+              // Jira/Salesforce and custom connectors never set
+              // confirmedRepos, so this is always blank for them.
+              confirmedReposText: c.kind === 'github' && Array.isArray(c.confirmedRepos)
+                ? (c.confirmedRepos.length ? 'Can see: ' + c.confirmedRepos.join(', ') : 'Can see: no repositories')
+                : (c.kind === 'github' && c.confirmedRepos === null ? 'Couldn\'t verify this token\'s access' : ''),
+              showConfirmedRepos: c.kind === 'github' && (Array.isArray(c.confirmedRepos) || c.confirmedRepos === null),
               statusLabel: !isEnabled ? 'Deactivated' : (configured ? 'Connected' : 'Not configured'),
               statusColor: !isEnabled ? col('gray').dot : (configured ? col('green').dot : col('gray').dot),
               showEdit: !disabled, disabled, disabledNote: disabled ? 'Requires the desktop app' : '', rowOpacity: disabled ? '0.55' : '1',
@@ -10333,6 +10380,21 @@ class Component extends DCLogic {
           builtinCredentialValue: builtinDraft ? builtinDraft.credentialDraft : '', onBuiltinCredentialChange: e => this.updateBuiltinDraft({ credentialDraft: e.target.value }),
           builtinCredentialPlaceholder: (builtinDraft && builtinDraft.hasCredential) ? '•••••••••••••••• (unchanged)' : (builtinSpec ? builtinSpec.credentialPlaceholder : ''),
           builtinHelperText: builtinSpec ? builtinSpec.helperText : '',
+          // Fine-grained PATs are the only GitHub credential mechanism
+          // that's both genuinely repo-scoped by GitHub itself AND never
+          // touches any wigwag-operated infrastructure -- see the plan's
+          // rationale (tracker 1e557816). The link only ever appears for
+          // the GitHub builtin specifically (Jira/Salesforce have no
+          // equivalent pre-fillable creation page), pointed at this
+          // connector's own name so the token GitHub shows the user
+          // during creation is identifiable as belonging to it.
+          showGithubTokenCreateLink: builtinForm && builtinForm.kind === 'github',
+          githubTokenCreateUrl: (builtinForm && builtinForm.kind === 'github') ? githubTokenCreationUrl({
+            name: 'Wigwag — ' + (builtinSpec ? builtinSpec.name : 'GitHub'),
+            description: 'Read access for wigwag issue-link enrichment. Select only the repo(s) this connector should resolve against.',
+            permissions: { issues: 'read' },
+            expiresInDays: 90
+          }) : '',
           // GitHub alone can be edited/used outside Tauri (root URL,
           // anonymous access) -- but a typed token still can't actually
           // be SAVED without keychain access, so swap the usual storage

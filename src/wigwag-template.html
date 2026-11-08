@@ -2418,6 +2418,7 @@
         <div style="font-size:10.5px; color: var(--text-tertiary); line-height:1.4; max-width:420px; margin-bottom:14px;">Once set, this project's own data (not just linked issues) pushes/pulls here — the repo becomes the primary copy, with real commit history. Leave blank to keep working local-only; nothing here is required.</div>
         <input data-testid="settings-github-token-override" type="password" placeholder="Leave blank to use your identity's default token" value="{{ githubTokenOverride }}" sc-camel-on-change="{{ onGithubTokenOverrideChange }}" style="width:100%; max-width:420px; box-sizing:border-box; padding:6px 8px; border:1px solid var(--border); border-radius:6px; font-size:13px; font-family:inherit; margin-bottom:4px; background:transparent;">
         <div style="font-size:10.5px; color: var(--text-tertiary); line-height:1.4; max-width:420px;">Optional: a token scoped to just this project's repo (e.g. a fine-grained PAT with only this repo selected), instead of your identity's default (Settings → GitHub access). Needs write access to push.</div>
+        <a data-testid="settings-github-sync-create-token-link" href="{{ githubSyncTokenCreateUrl }}" target="_blank" style="display:inline-block; font-size:10.5px; color: var(--accent-ink); margin-top:8px; text-decoration:none;">Create a token on GitHub →</a>
       </div>
       </sc-if>
       </sc-if>
@@ -2800,6 +2801,9 @@
                               </sc-if>
                             </div>
                             <div style="font-size:11px; color: var(--text-tertiary); margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ src.patternSummaryText }}</div>
+                            <sc-if value="{{ src.showConfirmedRepos }}" hint-placeholder-val="{{ false }}">
+                              <div data-testid="connected-source-confirmed-repos" style="font-size:10.5px; color: var(--text-tertiary); margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ src.confirmedReposText }}</div>
+                            </sc-if>
                           </div>
                           <sc-if value="{{ src.disabled }}" hint-placeholder-val="{{ false }}">
                             <span data-testid="connected-source-disabled-note" style="flex-shrink:0; font-size:11px; color: var(--text-tertiary);">{{ src.disabledNote }}</span>
@@ -3004,6 +3008,9 @@
                               <div style="font-size:10px; font-weight:650; letter-spacing:0.04em; text-transform:uppercase; color: var(--text-tertiary); margin-bottom:4px;">{{ connectedSourcesSettings.builtinCredentialLabel }}</div>
                               <input data-testid="builtin-credential-input" type="password" value="{{ connectedSourcesSettings.builtinCredentialValue }}" sc-camel-on-change="{{ connectedSourcesSettings.onBuiltinCredentialChange }}" placeholder="{{ connectedSourcesSettings.builtinCredentialPlaceholder }}" style="width:100%; box-sizing:border-box; padding:6px 8px; border:1px solid var(--border); border-radius:6px; font-size:12.5px; font-family:ui-monospace,monospace; background:transparent;">
                               <div style="font-size:10.5px; color: var(--text-tertiary); line-height:1.45; margin-top:8px;">{{ connectedSourcesSettings.builtinHelperText }}</div>
+                              <sc-if value="{{ connectedSourcesSettings.showGithubTokenCreateLink }}" hint-placeholder-val="{{ false }}">
+                                <a data-testid="builtin-github-create-token-link" href="{{ connectedSourcesSettings.githubTokenCreateUrl }}" target="_blank" style="display:inline-block; font-size:10.5px; color: var(--accent-ink); margin-top:8px; text-decoration:none;">Create a token on GitHub →</a>
+                              </sc-if>
                               <div style="font-size:10.5px; color: var(--text-tertiary); line-height:1.4; margin-top:8px;">{{ connectedSourcesSettings.builtinKeychainNote }}</div>
                             </div>
                           </div>

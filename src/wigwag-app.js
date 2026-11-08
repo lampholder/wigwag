@@ -540,6 +540,30 @@ class Component extends DCLogic {
     await this.loadPersistedAsync();
     this.warmProjectSummaries().catch(e => console.warn('[tracker] failed to warm project summaries:', e));
     this.kickOffBootOverlayDismiss();
+    this.scheduleWindowTitleBootRetries();
+  }
+  // Live-reported (Tom), AGAIN, after persistProjectIndex's own
+  // retry-on-confirmed-failure fix: that fix only ever gets a retry
+  // OPPORTUNITY from some later render actually happening -- on a
+  // genuinely idle boot, the only renders guaranteed to occur at all are
+  // kickOffBootOverlayDismiss's own two splash fade-phase transitions,
+  // fixed at +260ms/+680ms from boot. The existing regression test
+  // (tauri-window-chrome.spec.js) proves the RETRY mechanism works
+  // within that window, against a mock that resolves/rejects instantly
+  // -- it can't prove a real native setTitle() IPC round-trip, racing
+  // actual window creation, always finishes within 680ms on every real
+  // machine/cold boot. If it doesn't, every attempt in that narrow
+  // window fails and nothing else ever re-renders to retry it,
+  // reproducing the exact "name doesn't appear on first load" report a
+  // second time. Backstops that with its own schedule, entirely
+  // decoupled from the splash's visual timing -- persistProjectIndex is
+  // already idempotent (skips once _lastSetWindowTitle actually
+  // confirms), so nudging it again here is free once it's already
+  // landed, and capped at 8s so a genuinely broken runtime doesn't retry
+  // forever.
+  scheduleWindowTitleBootRetries() {
+    if (!this.isTauriWindowedRuntime()) return;
+    [1000, 3000, 8000].forEach(ms => setTimeout(() => this.persistProjectIndex(), ms));
   }
   // Tracker #187, Phase 5: populates this._projectSummaries for every
   // project in the milestone list, not just the active one -- see

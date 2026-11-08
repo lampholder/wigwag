@@ -339,4 +339,27 @@ test.describe('Tauri windowed-mode: OS window title tracks the active project', 
     expect(calls.length).toBeGreaterThan(0); // it DID land eventually, just not on attempt 1
     expect(calls.every(c => c === 'Wigwag — Delivery tracker')).toBe(true);
   });
+
+  // Live-reported (Tom), a second time, after the fix above already
+  // shipped: the boot splash's own two fade-phase renders (+260ms/
+  // +680ms) are the ONLY retry opportunities on a genuinely idle boot --
+  // this test's mock (unlike the one above) fails BOTH of those, with
+  // zero further interaction, simulating a real native setTitle() IPC
+  // round-trip that's still racing window creation past that whole
+  // window on a slower boot. scheduleWindowTitleBootRetries' own
+  // schedule (1s/3s/8s, decoupled from the splash entirely) is what
+  // must land it here -- without that backstop this reproduces the
+  // exact original report a second time: nothing left to retry.
+  test('even if BOTH of the boot splash\'s own fade-phase attempts fail, the independent 1s/3s/8s backstop still lands the title with zero further interaction', async ({ page }) => {
+    await stubTauriWindow(page, { failFirstNSetTitleCalls: 2 });
+    await h.gotoTracker(page);
+    // Forcing BOTH of the splash's own two attempts to fail means
+    // nothing but the independent backstop schedule could possibly
+    // land this -- without it, __titleCalls would stay empty forever
+    // with zero further interaction.
+    await h.waitUntil(async () => (await page.evaluate(() => window.__titleCalls)).length > 0, 9000);
+    expect(await page.evaluate(() => window.__titleCallAttempts)).toBeGreaterThan(2); // at least one retry beyond both forced failures
+    const calls = await page.evaluate(() => window.__titleCalls);
+    expect(calls).toEqual(['Wigwag — Delivery tracker']);
+  });
 });

@@ -144,4 +144,32 @@ test.describe('Project switcher: folder tree', () => {
     await page.waitForTimeout(150);
     await expect(page.locator('[data-testid=switcher-project-row]')).toHaveCount(0);
   });
+
+  // Live-reported (Tom): the hover highlight was "really glitchy".
+  // Root cause -- the tree-line/icon/label layer sits at z-index:1 on
+  // TOP of the highlight pill (z-index:0, carrying style-hover), so
+  // without pointer-events:none on those overlay elements, the browser
+  // delivers mouse events to WHICHEVER layer is topmost at each exact
+  // pixel (confirmed via elementFromPoint: the label span, which spans
+  // most of the row's width via flex:1, was receiving the hover instead
+  // of the pill underneath almost everywhere) -- the pill's own hover
+  // state only ever engaged in the thin sliver of its own area the
+  // label/icon/lines didn't cover, flickering on/off as the mouse moved.
+  // Confirms the fix holds across the FULL row width, not just at one
+  // sampled point -- a single "hover works somewhere" check wouldn't
+  // have caught the original bug at all.
+  test('the hover highlight engages consistently across the full row width, not just a thin sliver (regression)', async ({ page }) => {
+    await seedProjectTreeFixture(page, ['Acme/Doggo/Source dog', 'Acme/Doggo/Train dog', 'Acme/Delivery tracker']);
+    await h.gotoTracker(page);
+    await h.openTrackerSwitcher(page);
+
+    const row = page.locator('[data-testid=switcher-project-row]').filter({ hasText: 'Delivery tracker' });
+    const box = await row.boundingBox();
+    for (const frac of [0.2, 0.4, 0.6, 0.8, 0.95]) {
+      await page.mouse.move(box.x + box.width * frac, box.y + box.height / 2);
+      await page.waitForTimeout(20);
+      const bg = await row.evaluate(el => getComputedStyle(el.querySelector('div')).backgroundColor);
+      expect(bg, `hover should be engaged at ${frac * 100}% across the row`).not.toBe('rgba(0, 0, 0, 0)');
+    }
+  });
 });

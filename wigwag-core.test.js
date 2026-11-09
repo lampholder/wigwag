@@ -3375,3 +3375,124 @@ test('parseGithubTokenExpiryHeader: missing/empty value means "no expiry", not a
 test('parseGithubTokenExpiryHeader: genuinely unparseable input gives up cleanly rather than guessing', () => {
   assert.equal(core.parseGithubTokenExpiryHeader('not a date at all'), null);
 });
+
+// buildProjectTree / flattenProjectTree (tracker 63f55b85, design
+// handoff folders.zip): the project switcher's folder-grouping-by-
+// name-prefix algorithm. `proj` below is a plain {id, name} stand-in --
+// only those two fields matter to this logic.
+function p(id, name) { return { id, name }; }
+
+test('buildProjectTree: two projects sharing a prefix group under one folder header', () => {
+  const tree = core.buildProjectTree([p('1', 'Acme/A'), p('2', 'Acme/B')]);
+  assert.equal(tree.length, 1);
+  assert.equal(tree[0].leaf, false);
+  assert.equal(tree[0].header, 'Acme');
+  assert.equal(tree[0].proj, null);
+  assert.deepEqual(tree[0].children.map(c => c.proj.id), ['1', '2']);
+});
+
+test('buildProjectTree: a single-item folder collapses to one flat "Prefix/Name" leaf, not a folder', () => {
+  const tree = core.buildProjectTree([p('1', 'Acme/Only')]);
+  assert.equal(tree.length, 1);
+  assert.equal(tree[0].leaf, true);
+  assert.equal(tree[0].label, 'Acme/Only');
+  assert.equal(tree[0].proj.id, '1');
+});
+
+test('buildProjectTree: a multi-level single-item chain collapses all the way, not just one level', () => {
+  const tree = core.buildProjectTree([p('1', 'Acme/Doggo/Source dog')]);
+  assert.equal(tree.length, 1);
+  assert.equal(tree[0].leaf, true);
+  assert.equal(tree[0].label, 'Acme/Doggo/Source dog');
+});
+
+test('buildProjectTree: a folder with only ONE direct child (even a multi-item one) merges headers rather than nesting two single-child levels', () => {
+  // Acme's only direct child is the Doggo group -- "exactly one item"
+  // applies per DIRECT child, not per total leaf count, so Acme and
+  // Doggo merge into one combined "Acme/Doggo" header instead of two
+  // separate nested folder rows. This is deliberate, not a bug: see the
+  // next test for the shape that keeps them separate (Acme needs a
+  // SECOND direct child to stop the merge).
+  const tree = core.buildProjectTree([p('1', 'Acme/Doggo/Source dog'), p('2', 'Acme/Doggo/Train dog')]);
+  assert.equal(tree.length, 1);
+  assert.equal(tree[0].leaf, false);
+  assert.equal(tree[0].header, 'Acme/Doggo');
+  assert.equal(tree[0].children.length, 2);
+});
+
+test('buildProjectTree: collapse still applies alongside OTHER unrelated top-level entries', () => {
+  // Same shape as the handoff's own screenshot: Acme has 3 direct
+  // children (Doggo/Delivery tracker/Rules demo), so Doggo stays its
+  // own separate folder level (no merge, per the test above) -- but
+  // the sibling "Boring/Test" is a lone child of its own unrelated
+  // prefix and must still collapse independently.
+  const tree = core.buildProjectTree([
+    p('1', 'Acme/Doggo/Source dog'), p('2', 'Acme/Doggo/Train dog'),
+    p('3', 'Acme/Delivery tracker'), p('4', 'Acme/Rules demo'),
+    p('5', 'Boring/Test')
+  ]);
+  assert.equal(tree.length, 2);
+  const acme = tree.find(n => !n.leaf && n.header === 'Acme');
+  assert.ok(acme);
+  assert.equal(acme.children.length, 3);
+  const doggo = acme.children.find(c => !c.leaf);
+  assert.equal(doggo.header, 'Doggo');
+  assert.equal(doggo.children.length, 2);
+  const boring = tree.find(n => n.leaf);
+  assert.equal(boring.label, 'Boring/Test');
+});
+
+test('buildProjectTree: exact-name collision makes that project the folder\'s own clickable header, not a child row', () => {
+  const tree = core.buildProjectTree([p('1', 'Acme'), p('2', 'Acme/Doggo')]);
+  assert.equal(tree.length, 1);
+  assert.equal(tree[0].leaf, false);
+  assert.equal(tree[0].header, 'Acme');
+  assert.equal(tree[0].proj.id, '1'); // the folder header IS project 1
+  assert.equal(tree[0].children.length, 1);
+  assert.equal(tree[0].children[0].proj.id, '2');
+});
+
+test('buildProjectTree: folders always sort before leaf projects at the same level, regardless of alphabetical order', () => {
+  // Pre-sorted alphabetically by the caller (as switcherProjectsInScope
+  // does) -- "Acme" would come first alphabetically, but as a lone leaf
+  // it must still sort AFTER the "Zebra" folder.
+  const tree = core.buildProjectTree([p('1', 'Acme'), p('2', 'Zebra/A'), p('3', 'Zebra/B')]);
+  assert.equal(tree.length, 2);
+  assert.equal(tree[0].header, 'Zebra'); // folder first
+  assert.equal(tree[1].label, 'Acme'); // leaf second
+});
+
+test('flattenProjectTree: depth, isLastInGroup, and guides are correct for a real multi-level tree', () => {
+  const tree = core.buildProjectTree([
+    p('1', 'Acme/Doggo/Source dog'), p('2', 'Acme/Doggo/Train dog'),
+    p('3', 'Acme/Delivery tracker'), p('4', 'Acme/Rules demo')
+  ]);
+  const rows = core.flattenProjectTree(tree);
+  // Acme(hdr,d0) > Doggo(hdr,d1) > Source dog(leaf,d2) > Train dog(leaf,d2,last) > Delivery tracker(leaf,d1) > Rules demo(leaf,d1,last)
+  assert.equal(rows.length, 6);
+  assert.deepEqual(rows.map(r => [r.type, r.depth, r.label]), [
+    ['header', 0, 'Acme'],
+    ['header', 1, 'Doggo'],
+    ['leaf', 2, 'Source dog'],
+    ['leaf', 2, 'Train dog'],
+    ['leaf', 1, 'Delivery tracker'],
+    ['leaf', 1, 'Rules demo']
+  ]);
+  const trainDog = rows[3];
+  assert.equal(trainDog.isLastInGroup, true); // last of Doggo's 2 children
+  assert.equal(trainDog.guides.length, 2); // [root-level ancestor (Acme), immediate-parent ancestor (Doggo)]
+  // guides[0] is Acme's OWN "is there more after me at the root" state --
+  // Acme is the only root-level item, so its branch is already closed:
+  // no pass-through guide is needed above Doggo for any of its children.
+  assert.equal(trainDog.guides[0], false);
+  const rulesDemo = rows[5];
+  assert.equal(rulesDemo.isLastInGroup, true); // last of Acme's children
+  assert.equal(rulesDemo.guides.length, 1);
+});
+
+test('flattenProjectTree: a display-only header (no project of its own) carries proj:null; a collision header carries the real proj', () => {
+  const displayOnly = core.flattenProjectTree(core.buildProjectTree([p('1', 'Acme/A'), p('2', 'Acme/B')]))[0];
+  assert.equal(displayOnly.proj, null);
+  const collision = core.flattenProjectTree(core.buildProjectTree([p('1', 'Acme'), p('2', 'Acme/Doggo')]))[0];
+  assert.equal(collision.proj.id, '1');
+});

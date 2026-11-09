@@ -253,9 +253,22 @@
               </div>
               <div style="flex:1; overflow-y:auto; max-height:260px;">
                 <sc-for list="{{ switcher.projects }}" as="proj" hint-placeholder-count="2">
-                  <div data-testid="switcher-project-row" data-project-id="{{ proj.id }}" sc-camel-on-click="{{ proj.onSelect }}" sc-camel-on-context-menu="{{ proj.onContextMenu }}" style="display:flex; align-items:center; gap:10px; padding:9px 14px; cursor:pointer; border-radius:6px; background:{{ proj.bg }};" style-hover="background: var(--n22);">
-                    <span style="flex:1; min-width:0; font-size:13px; color: var(--n23); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ proj.name }}</span>
-                    <sc-if value="{{ proj.isActive }}" hint-placeholder-val="{{ false }}"><span style="color:var(--accent-ink); font-size:12px; flex-shrink:0;">✓</span></sc-if>
+                  <div data-testid="switcher-project-row" data-project-id="{{ proj.id }}" sc-camel-on-click="{{ proj.onSelect }}" sc-camel-on-context-menu="{{ proj.onContextMenu }}" style="position:relative; display:flex; align-items:center; gap:{{ proj.gap }}; height:{{ proj.rowHeight }}px; padding:0 14px 0 {{ proj.indentPx }}px; cursor:{{ proj.cursor }}; font-size:{{ proj.fontSize }}; font-weight:400; letter-spacing:0.02em; line-height:1.3; color:{{ proj.color }}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                    <sc-if value="{{ proj.clickable }}" hint-placeholder-val="{{ true }}">
+                      <div style="position:absolute; left:{{ proj.highlightLeft }}px; right:8px; top:1px; bottom:1px; border-radius:6px; background:{{ proj.bg }}; z-index:0;" style-hover="background: var(--n22);"></div>
+                    </sc-if>
+                    <sc-for list="{{ proj.guideRows }}" as="g" hint-placeholder-count="0">
+                      <sc-if value="{{ g.on }}" hint-placeholder-val="{{ false }}"><div style="position:absolute; left:{{ g.left }}px; top:0; bottom:0; width:0; border-left:1px solid var(--border-strong); z-index:1;"></div></sc-if>
+                    </sc-for>
+                    <sc-if value="{{ proj.hasTrunk }}" hint-placeholder-val="{{ false }}">
+                      <div style="position:absolute; left:{{ proj.trunkLeft }}px; top:0; height:{{ proj.trunkHeight }}; width:0; border-left:1px solid var(--border-strong); z-index:1;"></div>
+                      <div style="position:absolute; left:{{ proj.trunkLeft }}px; top:50%; width:7px; height:0; border-top:1px solid var(--border-strong); z-index:1; transform:translateY(-50%);"></div>
+                    </sc-if>
+                    <sc-if value="{{ proj.isHeaderType }}" hint-placeholder-val="{{ false }}">
+                      <svg width="12" height="10" viewBox="0 0 16 13" fill="none" style="position:relative; z-index:1; flex-shrink:0; opacity:{{ proj.iconOpacity }}; color:{{ proj.color }};"><path d="M1 2.2C1 1.5 1.5 1 2.2 1H6l1.6 1.8h6.2c.7 0 1.2.5 1.2 1.2v6.8c0 .7-.5 1.2-1.2 1.2H2.2C1.5 12 1 11.5 1 10.8V2.2z" fill="currentColor"></path></svg>
+                    </sc-if>
+                    <span style="position:relative; z-index:1; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ proj.name }}</span>
+                    <sc-if value="{{ proj.isActive }}" hint-placeholder-val="{{ false }}"><span style="position:relative; z-index:1; color:var(--accent-ink); font-size:12px; flex-shrink:0;">✓</span></sc-if>
                   </div>
                 </sc-for>
               </div>
@@ -406,9 +419,22 @@
               </div>
               <div style="flex:1; overflow-y:auto; max-height:260px;">
                 <sc-for list="{{ switcher.projects }}" as="proj" hint-placeholder-count="2">
-                  <div data-testid="switcher-project-row" data-project-id="{{ proj.id }}" sc-camel-on-click="{{ proj.onSelect }}" sc-camel-on-context-menu="{{ proj.onContextMenu }}" style="display:flex; align-items:center; gap:10px; padding:9px 14px; cursor:pointer; border-radius:6px; background:{{ proj.bg }};" style-hover="background: var(--n22);">
-                    <span style="flex:1; min-width:0; font-size:13px; color: var(--n23); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ proj.name }}</span>
-                    <sc-if value="{{ proj.isActive }}" hint-placeholder-val="{{ false }}"><span style="color:var(--accent-ink); font-size:12px; flex-shrink:0;">✓</span></sc-if>
+                  <div data-testid="switcher-project-row" data-project-id="{{ proj.id }}" sc-camel-on-click="{{ proj.onSelect }}" sc-camel-on-context-menu="{{ proj.onContextMenu }}" style="position:relative; display:flex; align-items:center; gap:{{ proj.gap }}; height:{{ proj.rowHeight }}px; padding:0 14px 0 {{ proj.indentPx }}px; cursor:{{ proj.cursor }}; font-size:{{ proj.fontSize }}; font-weight:400; letter-spacing:0.02em; line-height:1.3; color:{{ proj.color }}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                    <sc-if value="{{ proj.clickable }}" hint-placeholder-val="{{ true }}">
+                      <div style="position:absolute; left:{{ proj.highlightLeft }}px; right:8px; top:1px; bottom:1px; border-radius:6px; background:{{ proj.bg }}; z-index:0;" style-hover="background: var(--n22);"></div>
+                    </sc-if>
+                    <sc-for list="{{ proj.guideRows }}" as="g" hint-placeholder-count="0">
+                      <sc-if value="{{ g.on }}" hint-placeholder-val="{{ false }}"><div style="position:absolute; left:{{ g.left }}px; top:0; bottom:0; width:0; border-left:1px solid var(--border-strong); z-index:1;"></div></sc-if>
+                    </sc-for>
+                    <sc-if value="{{ proj.hasTrunk }}" hint-placeholder-val="{{ false }}">
+                      <div style="position:absolute; left:{{ proj.trunkLeft }}px; top:0; height:{{ proj.trunkHeight }}; width:0; border-left:1px solid var(--border-strong); z-index:1;"></div>
+                      <div style="position:absolute; left:{{ proj.trunkLeft }}px; top:50%; width:7px; height:0; border-top:1px solid var(--border-strong); z-index:1; transform:translateY(-50%);"></div>
+                    </sc-if>
+                    <sc-if value="{{ proj.isHeaderType }}" hint-placeholder-val="{{ false }}">
+                      <svg width="12" height="10" viewBox="0 0 16 13" fill="none" style="position:relative; z-index:1; flex-shrink:0; opacity:{{ proj.iconOpacity }}; color:{{ proj.color }};"><path d="M1 2.2C1 1.5 1.5 1 2.2 1H6l1.6 1.8h6.2c.7 0 1.2.5 1.2 1.2v6.8c0 .7-.5 1.2-1.2 1.2H2.2C1.5 12 1 11.5 1 10.8V2.2z" fill="currentColor"></path></svg>
+                    </sc-if>
+                    <span style="position:relative; z-index:1; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ proj.name }}</span>
+                    <sc-if value="{{ proj.isActive }}" hint-placeholder-val="{{ false }}"><span style="position:relative; z-index:1; color:var(--accent-ink); font-size:12px; flex-shrink:0;">✓</span></sc-if>
                   </div>
                 </sc-for>
               </div>

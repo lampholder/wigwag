@@ -5047,6 +5047,77 @@ async function probeMatrixRoomAccess({ fetchImpl, homeserverUrl, accessToken, ro
   }
 }
 
+// Project switcher: groups an already-sorted list of projects into a
+// folder tree by '/'-delimited name-prefix segments (tracker 63f55b85,
+// design handoff folders.zip) -- "Acme/Doggo/Source dog" nests under
+// Acme -> Doggo. Pure structure only, no colors/handlers/active-state
+// (see flattenProjectTree below, and the app-side view-model that maps
+// its output) -- `projects` must already be in the caller's intended
+// display order (switcherProjectsInScope's own alphabetical sort); this
+// only reorders folders-before-leaves, stably, preserving that order
+// within each group.
+//
+// Collapse rule: a folder containing exactly one item (recursively)
+// isn't worth a folder row -- it folds back into a single leaf showing
+// the full "Prefix/Name" path, exactly like an ungrouped project (the
+// `while` loop below, walking back up a chain of single-child folders
+// as far as it goes). Exact-name collision: a project named exactly
+// "Acme" alongside others under "Acme/..." makes that project the
+// folder's own header (clickable, not a child row) -- `folderProj`.
+function buildProjectTree(projects) {
+  const entries = projects.map(p => ({ segments: (p.name || '').split('/'), proj: p }));
+  function siblings(ents) {
+    const order = []; const map = new Map();
+    ents.forEach(e => { const k = e.segments[0]; if (!map.has(k)) { map.set(k, []); order.push(k); } map.get(k).push(e); });
+    const nodes = [];
+    order.forEach(k => {
+      const group = map.get(k);
+      const exact = group.filter(e => e.segments.length === 1);
+      const deeper = group.filter(e => e.segments.length > 1).map(e => ({ segments: e.segments.slice(1), proj: e.proj }));
+      if (deeper.length === 0) { exact.forEach(e => nodes.push({ leaf: true, proj: e.proj, label: k })); return; }
+      let header = k;
+      let children = siblings(deeper);
+      const folderProj = exact.length ? exact[0].proj : null;
+      while (children.length === 1 && !folderProj) {
+        const only = children[0];
+        if (only.leaf) { nodes.push({ leaf: true, proj: only.proj, label: header + '/' + only.label }); header = null; children = null; break; }
+        header = header + '/' + only.header; children = only.children;
+      }
+      if (header !== null) nodes.push({ leaf: false, header, children, proj: folderProj });
+    });
+    nodes.sort((a, b) => (a.leaf === b.leaf) ? 0 : (a.leaf ? 1 : -1));
+    return nodes;
+  }
+  return siblings(entries);
+}
+// Flattens buildProjectTree's nested output into a flat row list,
+// depth-first, for straightforward list rendering -- each row:
+// {type:'header'|'leaf', depth, label, proj, isLastInGroup, guides}.
+// `proj` is null for a display-only folder header (no project of its
+// own); `guides[i]` is true when this row needs a plain pass-through
+// vertical guide line at ancestor depth i (that ancestor's own branch
+// hasn't closed yet) -- always one shorter than `depth` once the
+// caller drops the last entry, since the row's OWN immediate-parent
+// connection is drawn separately via its own elbow, not a guide (see
+// the app-side view-model, which also computes every pixel/color value
+// -- this stays structure-only, consistent with this file's existing
+// pure-core/app-view-model split, e.g. parseGithubUrl vs connectorMatches).
+function flattenProjectTree(nodes, depth, guides) {
+  depth = depth || 0;
+  guides = guides || [];
+  const rows = [];
+  nodes.forEach((node, i) => {
+    const isLast = i === nodes.length - 1;
+    if (node.leaf) {
+      rows.push({ type: 'leaf', depth, label: node.label, proj: node.proj, isLastInGroup: isLast, guides: guides.slice() });
+    } else {
+      rows.push({ type: 'header', depth, label: node.header, proj: node.proj || null, isLastInGroup: isLast, guides: guides.slice() });
+      rows.push.apply(rows, flattenProjectTree(node.children, depth + 1, guides.concat([!isLast])));
+    }
+  });
+  return rows;
+}
+
 const WigwagCoreExports = {
   xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, xlsxDateTimeSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_NS, storageNamespacePrefix, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, LAYOUT_PROPOSAL_DEVICE_ID_KEY, CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, slugifyLabel, uniqueSlugId, newFieldId, newOptionId, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, tokenizeFilterQuery, parseFilterQuery, issueMatchesFieldToken, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, pickConnectorFields, connectorLinkText, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, deriveFieldDefs, effectiveFieldDefs, PROJECT_NAME_FIELD_ID, deriveProjectName, PROJECT_NOTES_FIELD_ID, deriveProjectNotes, simpleStringHash, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, issueTimestampValue, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, MATRIX_USER_ID_RE, principalKind, identityPrincipal, SIGN_ALG, JOSE_ALG_ES256, base64UrlFromBytes, bytesFromBase64Url, signEntryPayload, verifyEntryPayload, signableEntryPayload, signableProjectEntryPayload, redactedEntryPayload, redactedProjectEntryPayload, signableCommentEntryPayload, signableProjectCommentEntryPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, normalizeRef, sourceRefHasFullData, evalRule, compileConnectorMacro, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, resolveRefSystem, parseGithubUrl, parseGithubShortId, githubTokenCreationUrl, GITHUB_TOKEN_LIST_URL, parseGithubTokenExpiryHeader, parseJiraKey, parseSalesforceId, hostFromUrl, buildWigwagUri, parseWigwagUri, builtinKindConfigured, builtinKindReachable, fieldLocalBindState, liveBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, issueCreatedAt,
   importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry,
@@ -5064,7 +5135,7 @@ const WigwagCoreExports = {
   WIGWAG_MATRIX_PROJECT_STATE_TYPE, matrixStateEventContentFromProjectCreation, projectIdFromMatrixStateEvent, sendMatrixProjectStateEvent, getMatrixRoomState,
   WIGWAG_MATRIX_LAYOUT_PROPOSAL_TYPE, matrixStateEventContentFromLayoutProposal, layoutProposalFromMatrixStateEvent, layoutProposalProjectId, sendMatrixLayoutProposal, isModeratorForStateEvent,
   WIGWAG_MATRIX_SNAPSHOT_TYPE, encryptSnapshotPayload, decryptSnapshotPayload, matrixEventContentFromSnapshotManifest, snapshotManifestFromMatrixEvent, findLatestSnapshotManifests, resolveSnapshotPayload, decodeAllMatrixEntryItems, sendMatrixSnapshotManifest,
-  resolveMatrixRoomAlias, fetchMatrixRoomEntries, sendMatrixEntry, probeMatrixRoomAccess,
+  resolveMatrixRoomAlias, fetchMatrixRoomEntries, sendMatrixEntry, probeMatrixRoomAccess, buildProjectTree, flattenProjectTree,
   fetchWithMatrixRetry429, uploadMatrixMedia, downloadMatrixMedia, parseMxcUri
 };
 

@@ -11,7 +11,7 @@
 const {
   xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, columnFilterIsActive, dateFilterPresetRanges, parseFilterQuery, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, isPastedTextASingleUrl, wrapSelectionWithMarkdownLink, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, deriveFieldDefs, effectiveFieldDefs, deriveProjectName, PROJECT_NAME_FIELD_ID, deriveProjectNotes, PROJECT_NOTES_FIELD_ID, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, principalKind, SIGN_ALG, JOSE_ALG_ES256, signEntryPayload, verifyEntryPayload, signableEntryPayload, signableProjectEntryPayload, redactedEntryPayload, redactedProjectEntryPayload, signableCommentEntryPayload, signableProjectCommentEntryPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER
 ,
-  buildSource, normalizeRef, sourceRefHasFullData, evalRule, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, fieldLocalBindState, liveBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, builtinKindConfigured, builtinKindReachable, resolveRefSystem, parseGithubUrl, parseGithubShortId, githubTokenCreationUrl, GITHUB_TOKEN_LIST_URL, parseGithubTokenExpiryHeader, parseJiraKey, parseSalesforceId, hostFromUrl, buildWigwagUri, parseWigwagUri,
+  buildSource, normalizeRef, sourceRefHasFullData, evalRule, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, fieldLocalBindState, liveBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, builtinKindConfigured, builtinKindReachable, resolveRefSystem, parseGithubUrl, parseGithubShortId, githubTokenCreationUrl, GITHUB_TOKEN_LIST_URL, parseGithubTokenExpiryHeader, parseJiraKey, parseSalesforceId, hostFromUrl, buildWigwagUri, parseWigwagUri, buildProjectTree, flattenProjectTree,
   CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, newFieldId, newOptionId, pickConnectorFields, connectorLinkText, compileConnectorMacro,
   importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry,
   squashHistory, redactEntry, redactProjectEntry, displayValueForHistory, buildSourceText, humanFileSize, parseJsonl, entryKey, unionByKey, mergeIssuePair, computeIssueMerge, mergeHasRealChanges, computeFieldDefsMerge, computeDerivedChangeEntries, buildGithubContentsUrl, buildGithubContentsHeaders, buildGithubCommitMessage, pullGithubFile, pushGithubFile, probeGithubRepoAccess, issueCreatedAt, computeHeaderMeshTriangles, computeHeaderCompression, cellPaddingForWidth, computeAffordanceFade,
@@ -9703,20 +9703,58 @@ class Component extends DCLogic {
       ? 'room'
       : (switcherScopeId === 'shared' ? 'Shared with you' : ((s.identities.find(i => i.id === switcherScopeId) || {}).label || ''));
     const switcherScopeLabel = switcherScopeId === 'shared' ? 'SHARED WITH YOU' : ('PROJECTS IN ' + switcherScopeName.toUpperCase());
-    const switcherProjectRows = switcherProjectsInScope(switcherScopeId).map(p => ({
-      id: p.id, name: p.name, isActive: p.id === s.projectId,
-      bg: p.id === s.projectId ? 'var(--c25)' : 'transparent',
-      onSelect: () => this.selectSwitcherProject(p),
-      // "Open in new window" (right-click) only makes sense as a real OS
-      // window, i.e. only inside the Tauri app -- left as the browser's
-      // own native context menu everywhere else (no preventDefault, no
-      // popover) rather than showing an item that can't do anything.
-      onContextMenu: (e) => {
-        if (!this.isTauriWindowedRuntime()) return;
-        e.preventDefault();
-        this.setState({ switcherRowContextMenu: { projectId: p.id, name: p.name, x: e.clientX, y: e.clientY } });
-      }
-    }));
+    // Folder tree by '/'-delimited name prefix (tracker 63f55b85, design
+    // handoff folders.zip) -- buildProjectTree/flattenProjectTree
+    // (wigwag-core.js) do the pure grouping/flattening; everything below
+    // is view-model only (colors, handlers, pixel offsets), same
+    // core-vs-app split as the rest of this file. A single unified row
+    // shape covers both the design's "display-only folder header" and
+    // "clickable folder header" row types (they differ only in a few
+    // style values, not structure) -- `clickable` gates those
+    // differences plus the highlight pill/checkmark/handlers, so there's
+    // one template block to keep in sync instead of two near-duplicates.
+    const switcherProjectsInView = switcherProjectsInScope(switcherScopeId);
+    const switcherProjectRows = flattenProjectTree(buildProjectTree(switcherProjectsInView)).map(row => {
+      const clickable = !!row.proj;
+      const isLeaf = row.type === 'leaf';
+      const isActive = clickable && row.proj.id === s.projectId;
+      return {
+        id: row.proj ? row.proj.id : '',
+        name: row.label,
+        depth: row.depth,
+        isHeaderType: !isLeaf,
+        // A header row's folder icon is itself a flex child, so its own
+        // gap value already provides most of icon-to-label spacing; a
+        // leaf row has no icon, so needs the larger gap directly between
+        // label and checkmark to match the original design's spacing.
+        gap: isLeaf ? '10px' : '6px',
+        clickable, cursor: clickable ? 'pointer' : 'default',
+        fontSize: (isLeaf || clickable) ? '13px' : '10.5px',
+        color: (isLeaf || clickable) ? 'var(--n23)' : 'var(--text-tertiary)',
+        iconOpacity: clickable ? 0.55 : 0.7,
+        rowHeight: (isLeaf || clickable) ? 28 : 24,
+        isActive, bg: isActive ? 'var(--c25)' : 'transparent',
+        // indentPx/highlightLeft/trunkLeft/trunkHeight/guideRows pixel
+        // formulas, and the elbow-tree-line design overall, are ported
+        // from the handoff's own reference prototype verbatim.
+        indentPx: 14 + row.depth * 22,
+        highlightLeft: row.depth === 0 ? 8 : (20 + (row.depth - 1) * 22) + 10,
+        trunkLeft: 20 + (row.depth - 1) * 22,
+        trunkHeight: row.isLastInGroup ? '50%' : '100%',
+        hasTrunk: row.depth > 0,
+        guideRows: row.guides.slice(0, -1).map((on, gi) => ({ on, left: 20 + gi * 22 })),
+        onSelect: clickable ? () => this.selectSwitcherProject(row.proj) : null,
+        // "Open in new window" (right-click) only makes sense as a real OS
+        // window, i.e. only inside the Tauri app -- left as the browser's
+        // own native context menu everywhere else (no preventDefault, no
+        // popover) rather than showing an item that can't do anything.
+        onContextMenu: clickable ? (e) => {
+          if (!this.isTauriWindowedRuntime()) return;
+          e.preventDefault();
+          this.setState({ switcherRowContextMenu: { projectId: row.proj.id, name: row.proj.name, x: e.clientX, y: e.clientY } });
+        } : null
+      };
+    });
     const switcherBreadcrumbIdentityLabel = switcherActiveProject
       ? (switcherActiveProject.identityId ? ((s.identities.find(i => i.id === switcherActiveProject.identityId) || {}).label || '') : 'Shared with you')
       : '';
@@ -9755,7 +9793,10 @@ class Component extends DCLogic {
       scopeLabel: switcherScopeLabel,
       scopeName: switcherScopeName,
       projects: switcherProjectRows,
-      noProjects: switcherProjectRows.length === 0,
+      // Real project count, not row count -- a folder tree has MORE rows
+      // than projects once display-only headers exist, so row-length
+      // would wrongly read as "has projects" even with zero of them.
+      noProjects: switcherProjectsInView.length === 0,
       // Tracker #169/4f07e72b follow-up: in Room Mode, "New project in..."
       // is subject to the exact same real, live moderator check as the
       // no-projects screen and the layout-proposal icon -- hidden for a

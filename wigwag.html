@@ -3250,6 +3250,178 @@ function parseJsonl(text, fallbackFieldDefs) {
   const projectHistory = fields ? backfillProjectHistory(fields, incomingProjectHistory || [], projectNotes) : (incomingProjectHistory || []);
   return { fields, projectHistory, issues: hydratedIssues, projectId, projectName, projectNotes, projectComments, formatVersion: incomingFormatVersion };
 }
+// Tracker 728eeac8: re-importing a CSV to update an existing project.
+// Tolerant RFC4180 tokenizer -- quoted fields ("" escaping, embedded
+// commas/quotes/newlines), CRLF or bare-LF row separators, a trailing
+// blank line ignored. Pure tokenization only, no header/type/schema
+// knowledge at all -- mirrors parseJsonl's own layering just above
+// (column/field/row resolution is buildCsvImportPlan below, a separate
+// step). A malformed/unclosed quote just absorbs the rest of the text
+// into one field rather than throwing -- same "recover what you can,
+// never fail the whole import" tolerance parseJsonl already has.
+function parseCsvText(text) {
+  const rows = [];
+  let row = [], field = '', inQuotes = false;
+  const s = text || '';
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (s[i + 1] === '"') { field += '"'; i++; } else { inQuotes = false; }
+      } else field += c;
+      continue;
+    }
+    if (c === '"') { inQuotes = true; continue; }
+    if (c === ',') { row.push(field); field = ''; continue; }
+    if (c === '\r' || c === '\n') {
+      if (c === '\r' && s[i + 1] === '\n') i++;
+      row.push(field); field = ''; rows.push(row); row = [];
+      continue;
+    }
+    field += c;
+  }
+  if (field !== '' || row.length) { row.push(field); rows.push(row); }
+  // A real trailing newline produces one spurious wholly-empty final row
+  // via the push above -- trim it, it's not a data row.
+  while (rows.length && rows[rows.length - 1].length === 1 && rows[rows.length - 1][0] === '') rows.pop();
+  if (!rows.length) return { headers: [], rows: [] };
+  return { headers: rows[0].map(h => h.trim()), rows: rows.slice(1) };
+}
+// The header text CSV export (buildCsvText, src/wigwag-app.js) writes
+// for its per-row identity column -- chosen to be unlikely for a real
+// user field to share, and never trusted positionally on import (only
+// by this exact header match, AND only if its values actually look
+// like real existing issue ids -- see buildCsvImportPlan).
+const CSV_ID_COLUMN_HEADER = 'Wigwag ID';
+// Sniffs which parser a pasted blob needs (the "Apply update" paste
+// path has no filename/extension to go on, unlike a real file pick) --
+// does the first non-blank line parse as JSON? Every real JSONL line is
+// `{"type":...}`; a CSV header row (e.g. "Title,Status,Priority")
+// essentially never parses as JSON on its own.
+function looksLikeCsvText(text) {
+  const firstLine = (text || '').split('\n').map(l => l.trim()).find(Boolean);
+  if (!firstLine) return false;
+  try { JSON.parse(firstLine); return false; } catch (e) { return true; }
+}
+// Cycles through the named palette by a field's current option count,
+// deterministic (same count always gives the same color), not random --
+// addFieldEditorOption (src/wigwag-app.js) hardcodes every new option
+// to 'gray' today; this is the first real auto-assignment anywhere.
+function nextPaletteColor(existingOptionCount) {
+  return PALETTE_ORDER[(existingOptionCount || 0) % PALETTE_ORDER.length];
+}
+// The real planning step: given a tokenized CSV (parseCsvText's output)
+// plus the CURRENT live project (fieldDefs/issues), works out everything
+// CSV-specific -- which columns are new fields, which select/multiselect
+// cell values are new options, and which row maps to which issue --
+// entirely as data, no mutation, no history/signing concerns (those are
+// an app-side job once the user has reviewed and confirmed this plan,
+// see confirmCsvImportReview in src/wigwag-app.js). Issue ids for
+// brand-new rows ARE minted here (crypto.randomUUID(), an already-
+// allowed dependency in this file per its own header comment) so the
+// plan's row->issue mapping is fully resolved and stable the moment
+// it's computed, not deferred to a second pass.
+//
+// opts.keyColumnId: which field to match CSV rows against when no
+// usable id column is found (defaults to the title/'issue'-typed
+// field). Caller-overridable -- see the review step's key-column picker.
+function buildCsvImportPlan(csv, fieldDefs, issues, opts) {
+  opts = opts || {};
+  const headers = csv.headers || [];
+  const rows = csv.rows || [];
+  const warnings = [];
+
+  // -- id column --------------------------------------------------------
+  const idColIndex = headers.findIndex(h => h.trim().toLowerCase() === CSV_ID_COLUMN_HEADER.toLowerCase());
+  const existingIds = new Set(issues.map(i => i.id));
+  let idColumnTrusted = false;
+  if (idColIndex !== -1) {
+    idColumnTrusted = rows.some(r => (r[idColIndex] || '').trim() && existingIds.has((r[idColIndex] || '').trim()));
+  }
+
+  // -- key column (fallback matching) ------------------------------------
+  const defaultKeyColId = opts.keyColumnId || Object.keys(fieldDefs).find(id => fieldDefs[id].type === 'issue') || null;
+  const keyColIndex = defaultKeyColId ? headers.findIndex(h => h.trim().toLowerCase() === (fieldDefs[defaultKeyColId].label || '').trim().toLowerCase()) : -1;
+  const keyValueToIssueIds = new Map();
+  if (keyColIndex !== -1) {
+    issues.forEach(iss => {
+      const v = String(iss.values ? iss.values[defaultKeyColId] : '').trim().toLowerCase();
+      if (!v) return;
+      if (!keyValueToIssueIds.has(v)) keyValueToIssueIds.set(v, []);
+      keyValueToIssueIds.get(v).push(iss.id);
+    });
+  }
+
+  // -- header -> field resolution ----------------------------------------
+  const READONLY_TYPES = new Set(['timestamp', 'commentStream']);
+  const headerPlans = []; // { header, colIndex, colId|null, isNew, readOnly, type }
+  headers.forEach((header, colIndex) => {
+    if (colIndex === idColIndex && idColumnTrusted) return; // consumed as the id column, not a data column
+    const trimmed = header.trim();
+    if (!trimmed) return;
+    const colId = Object.keys(fieldDefs).find(id => (fieldDefs[id].label || '').trim().toLowerCase() === trimmed.toLowerCase());
+    if (!colId) { headerPlans.push({ header: trimmed, colIndex, colId: null, isNew: true, readOnly: false, type: 'text' }); return; }
+    const def = fieldDefs[colId];
+    const readOnly = READONLY_TYPES.has(def.type) || !!def.linkedSourceId || !!def.rule;
+    headerPlans.push({ header: trimmed, colIndex, colId, isNew: false, readOnly, type: def.type });
+  });
+  const newFields = headerPlans.filter(h => h.isNew).map(h => ({ label: h.header, suggestedType: 'text' }));
+
+  // -- select/multiselect new-option detection ----------------------------
+  const newOptionsByField = {}; // colId -> [{label}]
+  headerPlans.forEach(hp => {
+    if (hp.readOnly || hp.isNew) return;
+    const def = fieldDefs[hp.colId];
+    if (def.type !== 'select' && def.type !== 'multiselect') return;
+    const existingLabels = new Set((def.options || []).map(o => o.label.toLowerCase()));
+    const seen = new Set();
+    rows.forEach(r => {
+      const raw = (r[hp.colIndex] || '').trim();
+      if (!raw) return;
+      const parts = def.type === 'multiselect' ? raw.split(';').map(p => p.trim()).filter(Boolean) : [raw];
+      parts.forEach(p => {
+        const key = p.toLowerCase();
+        if (existingLabels.has(key) || seen.has(key)) return;
+        seen.add(key);
+        (newOptionsByField[hp.colId] || (newOptionsByField[hp.colId] = [])).push({ label: p });
+      });
+    });
+  });
+
+  // -- row -> issue matching -----------------------------------------------
+  const matchedIssueIds = new Set();
+  let matchedByIdCount = 0, matchedByKeyCount = 0, newCount = 0;
+  const rowPlans = rows.map(r => {
+    const cells = headerPlans.filter(hp => !hp.readOnly).map(hp => ({ header: hp.header, text: (r[hp.colIndex] || '').trim() }));
+    let issueId = null, isNew = false;
+    const idVal = idColumnTrusted ? (r[idColIndex] || '').trim() : '';
+    if (idVal) {
+      issueId = idVal;
+      isNew = !existingIds.has(idVal);
+      if (!isNew) matchedByIdCount++;
+    } else if (keyColIndex !== -1) {
+      const keyVal = (r[keyColIndex] || '').trim().toLowerCase();
+      const candidates = keyVal ? (keyValueToIssueIds.get(keyVal) || []) : [];
+      if (candidates.length === 1) { issueId = candidates[0]; matchedByKeyCount++; }
+      else {
+        if (candidates.length > 1) warnings.push('Ambiguous match on "' + (r[keyColIndex] || '').trim() + '" (' + candidates.length + ' existing issues share this value) -- treated as new.');
+        issueId = crypto.randomUUID(); isNew = true;
+      }
+    } else {
+      issueId = crypto.randomUUID(); isNew = true;
+    }
+    if (isNew) newCount++; else matchedIssueIds.add(issueId);
+    return { issueId, isNew, cells };
+  });
+
+  const untouchedIssueIds = issues.map(i => i.id).filter(id => !matchedIssueIds.has(id));
+
+  return {
+    newFields, newOptionsByField, rowPlans, untouchedIssueIds, warnings,
+    idColumnTrusted, keyColumnId: keyColIndex !== -1 ? defaultKeyColId : null,
+    matchedByIdCount, matchedByKeyCount, newCount
+  };
+}
 // A stable identity for a history entry for union-dedup purposes. Real
 // entries always have an id; the original seed data's history predates
 // ids, so those fall back to a composite of their other fields --
@@ -5190,7 +5362,7 @@ function flattenProjectTree(nodes, depth, guides) {
 const WigwagCoreExports = {
   xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, xlsxDateTimeSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_NS, storageNamespacePrefix, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, LAYOUT_PROPOSAL_DEVICE_ID_KEY, CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, slugifyLabel, uniqueSlugId, newFieldId, newOptionId, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, tokenizeFilterQuery, parseFilterQuery, issueMatchesFieldToken, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, pickConnectorFields, connectorLinkText, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, deriveFieldDefs, effectiveFieldDefs, PROJECT_NAME_FIELD_ID, deriveProjectName, PROJECT_NOTES_FIELD_ID, deriveProjectNotes, simpleStringHash, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, issueTimestampValue, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, MATRIX_USER_ID_RE, principalKind, identityPrincipal, SIGN_ALG, JOSE_ALG_ES256, base64UrlFromBytes, bytesFromBase64Url, signEntryPayload, verifyEntryPayload, signableEntryPayload, signableProjectEntryPayload, redactedEntryPayload, redactedProjectEntryPayload, signableCommentEntryPayload, signableProjectCommentEntryPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, normalizeRef, sourceRefHasFullData, evalRule, compileConnectorMacro, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, resolveRefSystem, parseGithubUrl, parseGithubShortId, githubTokenCreationUrl, GITHUB_TOKEN_LIST_URL, parseGithubTokenExpiryHeader, parseJiraKey, parseSalesforceId, hostFromUrl, buildWigwagUri, parseWigwagUri, builtinKindConfigured, builtinKindReachable, fieldLocalBindState, liveBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, issueCreatedAt,
   importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry,
-  squashHistory, redactEntry, redactProjectEntry, displayValueForHistory, buildSourceText, keyRegistryEncoder, rehydrateKeyRef, humanFileSize, parseJsonl, entryKey, unionByKey, mergeIssuePair, computeIssueMerge, mergeHasRealChanges, computeFieldDefsMerge, computeDerivedChangeEntries,
+  squashHistory, redactEntry, redactProjectEntry, displayValueForHistory, buildSourceText, keyRegistryEncoder, rehydrateKeyRef, humanFileSize, parseJsonl, parseCsvText, CSV_ID_COLUMN_HEADER, looksLikeCsvText, nextPaletteColor, buildCsvImportPlan, entryKey, unionByKey, mergeIssuePair, computeIssueMerge, mergeHasRealChanges, computeFieldDefsMerge, computeDerivedChangeEntries,
   isPastedTextASingleUrl, wrapSelectionWithMarkdownLink,
   buildGithubContentsUrl, buildGithubContentsHeaders, buildGithubCommitMessage, pullGithubFile, pushGithubFile, probeGithubRepoAccess, computeHeaderMeshTriangles, columnFilterIsActive, localISODate, dateFilterPresetRanges,
   computeHeaderCompression, cellPaddingForWidth, computeAffordanceFade,

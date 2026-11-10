@@ -3496,3 +3496,127 @@ test('flattenProjectTree: a display-only header (no project of its own) carries 
   const collision = core.flattenProjectTree(core.buildProjectTree([p('1', 'Acme'), p('2', 'Acme/Doggo')]))[0];
   assert.equal(collision.proj.id, '1');
 });
+
+// parseCsvText / buildCsvImportPlan / nextPaletteColor / looksLikeCsvText
+// (tracker 728eeac8): re-importing a CSV to update an existing project.
+test('parseCsvText: plain unquoted rows', () => {
+  const { headers, rows } = core.parseCsvText('Title,Status\r\nFix bug,Todo\r\nWrite docs,Done\r\n');
+  assert.deepEqual(headers, ['Title', 'Status']);
+  assert.deepEqual(rows, [['Fix bug', 'Todo'], ['Write docs', 'Done']]);
+});
+test('parseCsvText: a quoted field containing a comma is kept as one field', () => {
+  const { rows } = core.parseCsvText('Title,Notes\n"Fix it","Needs a, b, and c"\n');
+  assert.deepEqual(rows, [['Fix it', 'Needs a, b, and c']]);
+});
+test('parseCsvText: a doubled quote inside a quoted field unescapes to one literal quote', () => {
+  const { rows } = core.parseCsvText('Title\n"She said ""hi"""\n');
+  assert.deepEqual(rows, [['She said "hi"']]);
+});
+test('parseCsvText: a quoted field containing an embedded newline stays one field, one row', () => {
+  const { rows } = core.parseCsvText('Title,Notes\n"Fix it","line one\nline two"\n');
+  assert.deepEqual(rows, [['Fix it', 'line one\nline two']]);
+});
+test('parseCsvText: bare LF row separators (not just CRLF) are tolerated', () => {
+  const { headers, rows } = core.parseCsvText('Title,Status\nFix bug,Todo\n');
+  assert.deepEqual(headers, ['Title', 'Status']);
+  assert.deepEqual(rows, [['Fix bug', 'Todo']]);
+});
+test('parseCsvText: a trailing blank line is not counted as a data row', () => {
+  const { rows } = core.parseCsvText('Title\nFix bug\n\n');
+  assert.equal(rows.length, 1);
+});
+test('parseCsvText: a header-only CSV (no data rows) returns zero rows, not an error', () => {
+  const { headers, rows } = core.parseCsvText('Title,Status\n');
+  assert.deepEqual(headers, ['Title', 'Status']);
+  assert.deepEqual(rows, []);
+});
+
+test('nextPaletteColor: cycles through all 8 named colors before repeating', () => {
+  const seen = Array.from({ length: 8 }, (_, i) => core.nextPaletteColor(i));
+  assert.equal(new Set(seen).size, 8);
+  assert.equal(core.nextPaletteColor(8), core.nextPaletteColor(0)); // wraps
+});
+
+test('looksLikeCsvText: a real JSONL line is not mistaken for CSV', () => {
+  assert.equal(core.looksLikeCsvText('{"type":"fields","fields":{}}\n{"type":"issue"}'), false);
+});
+test('looksLikeCsvText: a CSV header line is recognized', () => {
+  assert.equal(core.looksLikeCsvText('Title,Status,Priority\nFix bug,Todo,High'), true);
+});
+test('looksLikeCsvText: empty input defaults to "not CSV" (let existing JSONL-empty handling apply)', () => {
+  assert.equal(core.looksLikeCsvText(''), false);
+});
+
+const CSV_FIELD_DEFS = {
+  title: { label: 'Issue', type: 'issue' },
+  f_status: { label: 'Status', type: 'select', options: [{ id: 'opt_todo', label: 'Todo', color: 'amber' }, { id: 'opt_done', label: 'Done', color: 'green' }] },
+  f_tags: { label: 'Tags', type: 'multiselect', options: [{ id: 'opt_bug', label: 'Bug', color: 'red' }] },
+  f_created: { label: 'Created', type: 'timestamp' },
+  comments: { label: 'Comments', type: 'commentStream' }
+};
+function csvIssue(id, title, status, tags) {
+  return { id, values: { title, f_status: status, f_tags: tags || [] } };
+}
+const CSV_ISSUES = [
+  csvIssue('i1', 'Fix login bug', 'opt_todo', ['opt_bug']),
+  csvIssue('i2', 'Write docs', 'opt_done', [])
+];
+
+test('buildCsvImportPlan: a trustworthy "Wigwag ID" column takes priority over key-column matching', () => {
+  const csv = core.parseCsvText('Wigwag ID,Issue,Status\r\ni1,Fix login bug (edited),Done\r\n');
+  const plan = core.buildCsvImportPlan(csv, CSV_FIELD_DEFS, CSV_ISSUES, {});
+  assert.equal(plan.idColumnTrusted, true);
+  assert.equal(plan.rowPlans.length, 1);
+  assert.equal(plan.rowPlans[0].issueId, 'i1');
+  assert.equal(plan.rowPlans[0].isNew, false);
+  assert.equal(plan.matchedByIdCount, 1);
+});
+test('buildCsvImportPlan: a "Wigwag ID" column whose values match nothing real is not trusted, falls back to key-column matching', () => {
+  const csv = core.parseCsvText('Wigwag ID,Issue,Status\r\nsome-foreign-id,Fix login bug,Done\r\n');
+  const plan = core.buildCsvImportPlan(csv, CSV_FIELD_DEFS, CSV_ISSUES, {});
+  assert.equal(plan.idColumnTrusted, false);
+  assert.equal(plan.rowPlans[0].issueId, 'i1'); // matched by title instead
+  assert.equal(plan.matchedByKeyCount, 1);
+});
+test('buildCsvImportPlan: an ambiguous key-column match (two local issues share the value) is treated as new, with a warning', () => {
+  const issues = [csvIssue('i1', 'Same Title', 'opt_todo'), csvIssue('i2', 'Same Title', 'opt_done')];
+  const csv = core.parseCsvText('Issue,Status\r\nSame Title,Todo\r\n');
+  const plan = core.buildCsvImportPlan(csv, CSV_FIELD_DEFS, issues, {});
+  assert.equal(plan.rowPlans[0].isNew, true);
+  assert.equal(plan.warnings.length, 1);
+});
+test('buildCsvImportPlan: an unmatched header becomes a proposed new field, defaulted to text', () => {
+  const csv = core.parseCsvText('Issue,Owner\r\nFix login bug,Jane\r\n');
+  const plan = core.buildCsvImportPlan(csv, CSV_FIELD_DEFS, CSV_ISSUES, {});
+  assert.deepEqual(plan.newFields, [{ label: 'Owner', suggestedType: 'text' }]);
+});
+test('buildCsvImportPlan: an unmatched select-cell value becomes a proposed new option, deduped across rows', () => {
+  const csv = core.parseCsvText('Issue,Status\r\nFix login bug,Blocked\r\nWrite docs,Blocked\r\n');
+  const plan = core.buildCsvImportPlan(csv, CSV_FIELD_DEFS, CSV_ISSUES, {});
+  assert.deepEqual(plan.newOptionsByField.f_status, [{ label: 'Blocked' }]);
+});
+test('buildCsvImportPlan: multiselect cells split on ";" and each new value proposed once', () => {
+  const csv = core.parseCsvText('Issue,Tags\r\nFix login bug,Bug; Urgent\r\n');
+  const plan = core.buildCsvImportPlan(csv, CSV_FIELD_DEFS, CSV_ISSUES, {});
+  assert.deepEqual(plan.newOptionsByField.f_tags, [{ label: 'Urgent' }]); // "Bug" already exists
+});
+test('buildCsvImportPlan: timestamp/commentStream columns are matched for display but excluded from write-back cells', () => {
+  const csv = core.parseCsvText('Issue,Created,Comments\r\nFix login bug,2026-01-01,hello\r\n');
+  const plan = core.buildCsvImportPlan(csv, CSV_FIELD_DEFS, CSV_ISSUES, {});
+  const headers = plan.rowPlans[0].cells.map(c => c.header);
+  assert.ok(!headers.includes('Created'));
+  assert.ok(!headers.includes('Comments'));
+  assert.ok(headers.includes('Issue'));
+});
+test('buildCsvImportPlan: a local issue with no matching CSV row appears in untouchedIssueIds, never deleted', () => {
+  const csv = core.parseCsvText('Issue,Status\r\nFix login bug,Todo\r\n'); // "Write docs" (i2) absent
+  const plan = core.buildCsvImportPlan(csv, CSV_FIELD_DEFS, CSV_ISSUES, {});
+  assert.deepEqual(plan.untouchedIssueIds, ['i2']);
+});
+test('buildCsvImportPlan: a row matching nothing at all becomes a new issue with a freshly minted id', () => {
+  const csv = core.parseCsvText('Issue,Status\r\nBrand new ticket,Todo\r\n');
+  const plan = core.buildCsvImportPlan(csv, CSV_FIELD_DEFS, CSV_ISSUES, {});
+  assert.equal(plan.rowPlans[0].isNew, true);
+  assert.ok(plan.rowPlans[0].issueId); // a real id was minted, not left null
+  assert.equal(plan.newCount, 1);
+});

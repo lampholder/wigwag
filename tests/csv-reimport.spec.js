@@ -131,6 +131,67 @@ test.describe('CSV re-import', () => {
     await expect(page.locator('[data-testid=paste-merge-modal]')).toHaveCount(0);
   });
 
+  // Tom's live feedback after the first real re-import: empty rows (just
+  // commas -- a common spreadsheet-export artifact) got ingested as
+  // real new issues, and the key/title field silently went unpopulated
+  // whenever the CSV's own header text didn't match the field's label.
+  test('blank rows (just commas) are skipped entirely, not ingested as new issues', async ({ page }) => {
+    const docBefore = await h.readActiveMilestoneDoc(page);
+    const csv = csvText([
+      ['Issue', 'Priority'],
+      ["Users can't track work that lives outside GitHub", 'P1'],
+      ['', ''], ['', ''], ['', '']
+    ]);
+    await page.locator('[data-testid=merge-file-input]').setInputFiles({ name: 'export.csv', mimeType: 'text/csv', buffer: Buffer.from(csv) });
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=csv-import-summary]')).toContainText('3 blank rows skipped');
+    await expect(page.locator('[data-testid=csv-import-summary]')).not.toContainText(' new');
+
+    await page.locator('[data-testid=btn-csv-import-confirm]').click();
+    await page.waitForTimeout(300);
+    await page.locator('[data-testid=btn-merge-primary]').click();
+    await page.waitForTimeout(500);
+
+    const docAfter = await h.readActiveMilestoneDoc(page);
+    expect(docAfter.issues.length).toBe(docBefore.issues.length); // nothing new, the blank rows never became issues
+  });
+
+  test('a key-field header that doesn\'t match the field\'s label is unresolved by default -- confirm is disabled until a column is explicitly chosen', async ({ page }) => {
+    const csv = csvText([
+      ['Summary', 'Priority'],
+      ['Brand new row via mismatched header', 'P1']
+    ]);
+    await page.locator('[data-testid=merge-file-input]').setInputFiles({ name: 'export.csv', mimeType: 'text/csv', buffer: Buffer.from(csv) });
+    await page.waitForTimeout(300);
+
+    const confirmBtn = page.locator('[data-testid=btn-csv-import-confirm]');
+    await expect(confirmBtn).toHaveCSS('cursor', 'not-allowed');
+    await expect(page.locator('[data-testid=csv-import-key-unresolved-warning]')).toBeVisible();
+
+    // Clicking it while disabled does nothing at all.
+    await confirmBtn.click();
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=csv-import-card]')).toBeVisible();
+
+    // Explicitly mapping "Summary" to the key column resolves it, and
+    // confirming now writes straight into the real title field -- no
+    // spurious duplicate "Summary" field gets created for it.
+    await page.locator('[data-testid=csv-import-key-header]').selectOption('Summary');
+    await page.waitForTimeout(150);
+    await expect(confirmBtn).toHaveCSS('cursor', 'pointer');
+    await expect(page.locator('[data-testid=csv-import-new-field]')).toHaveCount(0);
+
+    await confirmBtn.click();
+    await page.waitForTimeout(300);
+    await page.locator('[data-testid=btn-merge-primary]').click();
+    await page.waitForTimeout(500);
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    expect(Object.keys(doc.fieldDefs).some(id => doc.fieldDefs[id].label === 'Summary')).toBe(false);
+    const newIssue = doc.issues.find(i => h.latestFieldHistoryEntry(i, 'title') && h.latestFieldHistoryEntry(i, 'title').value === 'Brand new row via mismatched header');
+    expect(newIssue).toBeTruthy();
+  });
+
   test('Cancel on the CSV review leaves the project completely untouched', async ({ page }) => {
     const docBefore = await h.readActiveMilestoneDoc(page);
     const csv = csvText([

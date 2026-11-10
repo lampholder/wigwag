@@ -3259,7 +3259,15 @@ function nextPaletteColor(existingOptionCount) {
 function buildCsvImportPlan(csv, fieldDefs, issues, opts) {
   opts = opts || {};
   const headers = csv.headers || [];
-  const rows = csv.rows || [];
+  // A spreadsheet export routinely pads thousands of trailing (or even
+  // interspersed) rows with nothing but commas -- every cell blank, but
+  // the right column count, so parseCsvText's own trailing-blank-LINE
+  // trim (which only catches a single wholly-empty line with no commas
+  // at all) never touches them. Drop any row that's blank in every
+  // cell before anything downstream can mistake it for a real new issue.
+  const allRows = csv.rows || [];
+  const rows = allRows.filter(r => r.some(cell => (cell || '').trim() !== ''));
+  const blankRowsSkipped = allRows.length - rows.length;
   const warnings = [];
 
   // -- id column --------------------------------------------------------
@@ -3270,9 +3278,33 @@ function buildCsvImportPlan(csv, fieldDefs, issues, opts) {
     idColumnTrusted = rows.some(r => (r[idColIndex] || '').trim() && existingIds.has((r[idColIndex] || '').trim()));
   }
 
-  // -- key column (fallback matching) ------------------------------------
+  // -- key column: WHICH FIELD rows are matched/populated against
+  // (keyFieldId), and WHICH CSV COLUMN actually supplies it (keyColIndex/
+  // keyHeaderText). These used to be assumed identical -- matched purely
+  // by an exact label match between the two -- which silently broke the
+  // moment a user's own CSV header didn't literally equal the field's
+  // label: matching failed AND the key/title field was left unpopulated
+  // on every new row (its text instead went into a spurious duplicate
+  // text field, since the header still resolved to *something*).
+  // opts.keyHeader lets the review step's own column picker pin the
+  // exact header explicitly -- when the caller passes that key at all
+  // (even as ''), it ALWAYS wins over a label-based guess, right or
+  // wrong, and '' means "explicitly unresolved", not "go guess again".
+  // With no opts.keyHeader key at all, fall back to a label-match guess
+  // purely to pre-fill the review step with something sensible -- never
+  // trusted silently, see keyHeaderAutoMatched below, which the review
+  // step uses to force an explicit confirm before import proceeds.
   const defaultKeyColId = opts.keyColumnId || Object.keys(fieldDefs).find(id => fieldDefs[id].type === 'issue') || null;
-  const keyColIndex = defaultKeyColId ? headers.findIndex(h => h.trim().toLowerCase() === (fieldDefs[defaultKeyColId].label || '').trim().toLowerCase()) : -1;
+  const keyHeaderOverridden = Object.prototype.hasOwnProperty.call(opts, 'keyHeader');
+  let keyColIndex = -1;
+  if (defaultKeyColId) {
+    if (keyHeaderOverridden) {
+      keyColIndex = opts.keyHeader ? headers.findIndex(h => h.trim().toLowerCase() === opts.keyHeader.trim().toLowerCase()) : -1;
+    } else {
+      keyColIndex = headers.findIndex(h => h.trim().toLowerCase() === (fieldDefs[defaultKeyColId].label || '').trim().toLowerCase());
+    }
+  }
+  const keyHeaderAutoMatched = !keyHeaderOverridden && keyColIndex !== -1;
   const keyValueToIssueIds = new Map();
   if (keyColIndex !== -1) {
     issues.forEach(iss => {
@@ -3290,6 +3322,13 @@ function buildCsvImportPlan(csv, fieldDefs, issues, opts) {
     if (colIndex === idColIndex && idColumnTrusted) return; // consumed as the id column, not a data column
     const trimmed = header.trim();
     if (!trimmed) return;
+    // The chosen key column always writes into the key field, regardless
+    // of its own label -- this is what actually fixes the key/title
+    // field going unpopulated when a CSV's header text doesn't match.
+    if (colIndex === keyColIndex && defaultKeyColId) {
+      headerPlans.push({ header: trimmed, colIndex, colId: defaultKeyColId, isNew: false, readOnly: false, type: fieldDefs[defaultKeyColId].type });
+      return;
+    }
     const colId = Object.keys(fieldDefs).find(id => (fieldDefs[id].label || '').trim().toLowerCase() === trimmed.toLowerCase());
     if (!colId) { headerPlans.push({ header: trimmed, colIndex, colId: null, isNew: true, readOnly: false, type: 'text' }); return; }
     const def = fieldDefs[colId];
@@ -3356,6 +3395,13 @@ function buildCsvImportPlan(csv, fieldDefs, issues, opts) {
   return {
     newFields, newOptionsByField, rowPlans, untouchedIssueIds, warnings,
     idColumnTrusted, keyColumnId: keyColIndex !== -1 ? defaultKeyColId : null,
+    // keyFieldId is the FIELD choice alone (always set when one exists,
+    // even before a CSV column has been resolved for it) -- the review
+    // step's field picker binds to this, not keyColumnId, so switching
+    // between "resolved"/"unresolved" never blanks that picker.
+    keyFieldId: defaultKeyColId,
+    keyHeaderText: keyColIndex !== -1 ? headers[keyColIndex].trim() : null,
+    keyHeaderAutoMatched, blankRowsSkipped,
     matchedByIdCount, matchedByKeyCount, newCount, matchedHeaderToColId
   };
 }

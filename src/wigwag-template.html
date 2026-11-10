@@ -3691,6 +3691,21 @@
             </sc-raw-select>
           </div>
 
+          <sc-if value="{{ csvImportReview.hasKeyField }}" hint-placeholder-val="{{ false }}">
+            <div style="margin-bottom:10px;">
+              <div style="font-size:11px; font-weight:600; letter-spacing:0.04em; color:var(--text-muted); margin-bottom:6px;">...USING CSV COLUMN</div>
+              <sc-raw-select data-testid="csv-import-key-header" value="{{ csvImportReview.keyHeaderText }}" sc-camel-on-change="{{ csvImportReview.onKeyHeaderChange }}" style="width:100%; box-sizing:border-box; padding:6px 8px; border:1px solid var(--border); border-radius:6px; font-size:13px; font-family:inherit;">
+                <option value="">— choose a column —</option>
+                <sc-for list="{{ csvImportReview.keyHeaderCandidates }}" as="kh" hint-placeholder-count="2">
+                  <option value="{{ kh.value }}">{{ kh.label }}</option>
+                </sc-for>
+              </sc-raw-select>
+              <sc-if value="{{ csvImportReview.keyFieldUnresolved }}" hint-placeholder-val="{{ false }}">
+                <div data-testid="csv-import-key-unresolved-warning" style="font-size:11.5px; color:var(--c30); margin-top:5px; line-height:1.4;">Pick which CSV column holds this field's value — otherwise it's left blank on every new/unmatched row.</div>
+              </sc-if>
+            </div>
+          </sc-if>
+
           <sc-if value="{{ csvImportReview.hasNewFields }}" hint-placeholder-val="{{ false }}">
             <div style="font-size:11px; font-weight:600; letter-spacing:0.04em; color:var(--text-muted); margin:14px 0 6px;">NEW FIELDS</div>
             <sc-for list="{{ csvImportReview.newFields }}" as="nf" hint-placeholder-count="2">
@@ -3732,7 +3747,7 @@
         <div style="padding:12px 20px 18px; display:flex; align-items:center; gap:10px; flex-shrink:0; border-top:1px solid var(--border-subtle);">
           <span style="flex:1;"></span>
           <span data-testid="btn-csv-import-cancel" sc-camel-on-click="{{ csvImportReview.onCancel }}" style="cursor:pointer; font-size:12.5px; color: var(--text-muted); padding:7px 12px; border-radius:6px;" style-hover="background:var(--n55);">Cancel</span>
-          <button data-testid="btn-csv-import-confirm" sc-camel-on-click="{{ csvImportReview.onConfirm }}" style="border:none; border-radius:6px; background: var(--accent-fill); color:var(--ink-on-accent); font-size:12.5px; font-weight:600; padding:8px 16px; cursor:pointer;" style-hover="background: var(--c22);">Review merge →</button>
+          <button data-testid="btn-csv-import-confirm" sc-camel-on-click="{{ csvImportReview.onConfirm }}" style="border:none; border-radius:6px; background: {{ csvImportReview.confirmBg }}; color: {{ csvImportReview.confirmColor }}; font-size:12.5px; font-weight:600; padding:8px 16px; cursor: {{ csvImportReview.confirmCursor }};">Review merge →</button>
         </div>
       </div>
     </div>

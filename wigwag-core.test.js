@@ -3625,3 +3625,63 @@ test('buildCsvImportPlan: a row matching nothing at all becomes a new issue with
   assert.ok(plan.rowPlans[0].issueId); // a real id was minted, not left null
   assert.equal(plan.newCount, 1);
 });
+
+// Tom's live feedback on the first real re-import (tracker 728eeac8):
+// empty rows (just commas, a common spreadsheet-export artifact) got
+// ingested as real new issues, and the key/title field went unpopulated
+// whenever the CSV's own header text didn't literally match the field's
+// label. Both fixed below.
+test('buildCsvImportPlan: a row that is blank in every cell (just commas) is skipped entirely, not treated as new', () => {
+  const csv = core.parseCsvText('Issue,Status\r\nFix login bug,Todo\r\n,\r\n,\r\n');
+  const plan = core.buildCsvImportPlan(csv, CSV_FIELD_DEFS, CSV_ISSUES, {});
+  assert.equal(plan.rowPlans.length, 1);
+  assert.equal(plan.newCount, 0);
+  assert.equal(plan.blankRowsSkipped, 2);
+});
+test('buildCsvImportPlan: a wholly blank final line (no commas at all) still counts toward blankRowsSkipped too', () => {
+  const csv = core.parseCsvText('Issue\r\nFix login bug\r\n\r\n');
+  const plan = core.buildCsvImportPlan(csv, CSV_FIELD_DEFS, CSV_ISSUES, {});
+  // parseCsvText itself already trims a single wholly-empty trailing
+  // line (no commas) before buildCsvImportPlan ever sees it -- nothing
+  // left here for blankRowsSkipped to count, by design (see its test
+  // under parseCsvText above); this just documents the two layers don't
+  // double-count the trailing-newline case.
+  assert.equal(plan.rowPlans.length, 1);
+  assert.equal(plan.blankRowsSkipped, 0);
+});
+test('buildCsvImportPlan: with no header matching the key field\'s label, the key field is unresolved -- not silently guessed', () => {
+  const csv = core.parseCsvText('Summary,Status\r\nFix login bug,Todo\r\n');
+  const plan = core.buildCsvImportPlan(csv, CSV_FIELD_DEFS, CSV_ISSUES, {});
+  assert.equal(plan.keyFieldId, 'title'); // a key FIELD is still chosen by default...
+  assert.equal(plan.keyColumnId, null);   // ...but no CSV column resolves it
+  assert.equal(plan.keyHeaderText, null);
+  assert.equal(plan.keyHeaderAutoMatched, false);
+  // and -- this was the actual bug -- "Summary" lands as a brand-new
+  // field, never into the real title field, so title is left blank.
+  assert.deepEqual(plan.newFields, [{ label: 'Summary', suggestedType: 'text' }]);
+  assert.equal(plan.rowPlans[0].cells.find(c => c.header === 'Issue'), undefined);
+});
+test('buildCsvImportPlan: opts.keyHeader explicitly maps a mismatched header onto the key field, fixing both matching and population', () => {
+  const csv = core.parseCsvText('Summary,Status\r\nFix login bug,Todo\r\n');
+  const plan = core.buildCsvImportPlan(csv, CSV_FIELD_DEFS, CSV_ISSUES, { keyHeader: 'Summary' });
+  assert.equal(plan.keyColumnId, 'title');
+  assert.equal(plan.keyHeaderText, 'Summary');
+  assert.equal(plan.keyHeaderAutoMatched, false); // explicit, not guessed
+  assert.equal(plan.rowPlans[0].isNew, false);
+  assert.equal(plan.rowPlans[0].issueId, 'i1'); // matched on "Summary" -> title's current value
+  const summaryCell = plan.rowPlans[0].cells.find(c => c.header === 'Summary');
+  assert.equal(summaryCell.text, 'Fix login bug'); // and still carries the value to write into title
+  assert.deepEqual(plan.newFields, []); // no longer mistaken for a brand-new field
+});
+test('buildCsvImportPlan: opts.keyHeader of \'\' explicitly means unresolved, even when a label match would otherwise succeed', () => {
+  const csv = core.parseCsvText('Issue,Status\r\nFix login bug,Todo\r\n');
+  const plan = core.buildCsvImportPlan(csv, CSV_FIELD_DEFS, CSV_ISSUES, { keyHeader: '' });
+  assert.equal(plan.keyColumnId, null);
+  assert.equal(plan.keyHeaderText, null);
+});
+test('buildCsvImportPlan: a header that does match the key field\'s label by default is flagged as auto-matched (a guess, not yet confirmed)', () => {
+  const csv = core.parseCsvText('Issue,Status\r\nFix login bug,Todo\r\n');
+  const plan = core.buildCsvImportPlan(csv, CSV_FIELD_DEFS, CSV_ISSUES, {});
+  assert.equal(plan.keyHeaderAutoMatched, true);
+  assert.equal(plan.keyHeaderText, 'Issue');
+});

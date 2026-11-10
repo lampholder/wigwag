@@ -3058,6 +3058,7 @@ class Component extends DCLogic {
     if (plan.matchedByKeyCount) summaryParts.push(plan.matchedByKeyCount + ' matched by key column');
     if (plan.newCount) summaryParts.push(plan.newCount + ' new');
     if (plan.untouchedIssueIds.length) summaryParts.push(plan.untouchedIssueIds.length + ' unchanged, left alone');
+    if (plan.blankRowsSkipped) summaryParts.push(plan.blankRowsSkipped + ' blank row' + (plan.blankRowsSkipped === 1 ? '' : 's') + ' skipped');
     // Deliberately excludes commentStream/timestamp/multiselect fields
     // as key-column candidates -- none of those are sensible things to
     // match a CSV row's own key cell against exactly.
@@ -3065,6 +3066,15 @@ class Component extends DCLogic {
       const t = s.fieldDefs[id].type;
       return t !== 'commentStream' && t !== 'timestamp' && t !== 'multiselect';
     });
+    // Tom's live feedback: a CSV column must be explicitly confirmed
+    // for the key/title field, not silently guessed by label match --
+    // this is what actually lets a mismatched header get caught and
+    // fixed by the user instead of leaving the key field blank.
+    const keyHeaderCandidates = (pending.csv.headers || [])
+      .map(h => h.trim()).filter(Boolean)
+      .filter(h => !(plan.idColumnTrusted && h.toLowerCase() === CSV_ID_COLUMN_HEADER.toLowerCase()));
+    const keyFieldUnresolved = !!plan.keyFieldId && !plan.keyHeaderText;
+    const canConfirm = !keyFieldUnresolved;
     return {
       newFields: plan.newFields.map(nf => ({
         header: nf.label,
@@ -3082,12 +3092,24 @@ class Component extends DCLogic {
       }),
       hasNewOptions: Object.keys(plan.newOptionsByField).length > 0,
       keyColumnCandidates: keyColumnCandidates.map(id => ({ id, label: s.fieldDefs[id].label || id })),
-      keyColumnId: plan.keyColumnId || '',
+      // Binds to keyFieldId (the FIELD choice alone), not keyColumnId --
+      // otherwise this picker would blank itself out the instant its
+      // header goes unresolved, even though a field IS still chosen.
+      keyColumnId: plan.keyFieldId || '',
       onKeyColumnChange: e => this.onCsvImportKeyColumnChange(e.target.value),
+      hasKeyField: !!plan.keyFieldId,
+      keyHeaderCandidates: keyHeaderCandidates.map(h => ({ value: h, label: h })),
+      keyHeaderText: plan.keyHeaderText || '',
+      onKeyHeaderChange: e => this.onCsvImportKeyHeaderChange(e.target.value),
+      keyFieldUnresolved,
       matchModeLabel,
       summaryLine: summaryParts.join(' · '),
       warnings: plan.warnings,
       hasWarnings: plan.warnings.length > 0,
+      canConfirm,
+      confirmCursor: canConfirm ? 'pointer' : 'not-allowed',
+      confirmBg: canConfirm ? 'var(--accent-fill)' : 'var(--n28)',
+      confirmColor: canConfirm ? 'var(--ink-on-accent)' : 'var(--text-muted)',
       onCancel: () => this.cancelCsvImportReview(),
       onConfirm: () => this.confirmCsvImportReview()
     };
@@ -8622,8 +8644,26 @@ class Component extends DCLogic {
   }
   onCsvImportKeyColumnChange(colId) {
     this.setState(s => {
+      // Switching the FIELD re-guesses a header for it from scratch
+      // (no keyHeader key passed) -- any header the user had explicitly
+      // picked for the PREVIOUS field isn't necessarily meaningful here.
       const plan = buildCsvImportPlan(s.pendingCsvImport.csv, this.state.fieldDefs, this.state.issues, { keyColumnId: colId });
-      return { pendingCsvImport: { ...s.pendingCsvImport, plan, keyColumnOverride: colId } };
+      return { pendingCsvImport: { ...s.pendingCsvImport, plan, keyColumnOverride: colId, keyHeaderOverride: null } };
+    });
+  }
+  // Tom's live feedback on the first real re-import (tracker 728eeac8
+  // comment thread): the key/title field silently went unpopulated
+  // whenever the CSV's own header text didn't literally match the
+  // field's label -- matching failed AND the text landed in a spurious
+  // duplicate field instead. Fixing that for real means a CSV column
+  // must be explicitly, visibly chosen for the key field rather than
+  // guessed -- this handler drives that picker; confirmCsvImportReview
+  // (and canConfirm in the view model) refuse to proceed without it.
+  onCsvImportKeyHeaderChange(headerText) {
+    this.setState(s => {
+      const keyColumnId = s.pendingCsvImport.keyColumnOverride || undefined;
+      const plan = buildCsvImportPlan(s.pendingCsvImport.csv, this.state.fieldDefs, this.state.issues, { keyColumnId, keyHeader: headerText || '' });
+      return { pendingCsvImport: { ...s.pendingCsvImport, plan, keyHeaderOverride: headerText || null } };
     });
   }
   cancelCsvImportReview() { this.setState({ pendingCsvImport: null }); }
@@ -8639,6 +8679,12 @@ class Component extends DCLogic {
     const pending = this.state.pendingCsvImport;
     if (!pending) return;
     const plan = pending.plan;
+    // Guard-in-the-handler, same convention as deleteProject/
+    // onConfirmDeleteProject -- the confirm button's own disabled
+    // styling (buildCsvImportReviewViewModel's canConfirm) is cosmetic,
+    // this is what actually stops it: a key field exists but no CSV
+    // column has been confirmed to supply it.
+    if (plan.keyFieldId && !plan.keyHeaderText) return;
     // mergedFieldDefs is this call's own up-to-date view of field
     // existence/type/options -- createField/addOptionsToField below
     // setState() asynchronously, so this.state.fieldDefs won't reflect

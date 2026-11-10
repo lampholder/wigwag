@@ -12,6 +12,7 @@ const {
   xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, columnFilterIsActive, dateFilterPresetRanges, parseFilterQuery, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, isPastedTextASingleUrl, wrapSelectionWithMarkdownLink, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, deriveFieldDefs, effectiveFieldDefs, deriveProjectName, PROJECT_NAME_FIELD_ID, deriveProjectNotes, PROJECT_NOTES_FIELD_ID, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, principalKind, SIGN_ALG, JOSE_ALG_ES256, signEntryPayload, verifyEntryPayload, signableEntryPayload, signableProjectEntryPayload, redactedEntryPayload, redactedProjectEntryPayload, signableCommentEntryPayload, signableProjectCommentEntryPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER
 ,
   buildSource, normalizeRef, sourceRefHasFullData, evalRule, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, fieldLocalBindState, liveBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, builtinKindConfigured, builtinKindReachable, resolveRefSystem, parseGithubUrl, parseGithubShortId, githubTokenCreationUrl, GITHUB_TOKEN_LIST_URL, parseGithubTokenExpiryHeader, parseJiraKey, parseSalesforceId, hostFromUrl, buildWigwagUri, parseWigwagUri, buildProjectTree, flattenProjectTree,
+  CSV_ID_COLUMN_HEADER,
   CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, newFieldId, newOptionId, pickConnectorFields, connectorLinkText, compileConnectorMacro,
   importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry,
   squashHistory, redactEntry, redactProjectEntry, displayValueForHistory, buildSourceText, humanFileSize, parseJsonl, entryKey, unionByKey, mergeIssuePair, computeIssueMerge, mergeHasRealChanges, computeFieldDefsMerge, computeDerivedChangeEntries, buildGithubContentsUrl, buildGithubContentsHeaders, buildGithubCommitMessage, pullGithubFile, pushGithubFile, probeGithubRepoAccess, issueCreatedAt, computeHeaderMeshTriangles, computeHeaderCompression, cellPaddingForWidth, computeAffordanceFade,
@@ -7740,12 +7741,24 @@ class Component extends DCLogic {
     const str = String(v == null ? '' : v);
     return /[",\r\n]/.test(str) ? '"' + str.replace(/"/g, '""') + '"' : str;
   }
+  // Leading id column (tracker 728eeac8) -- closes the round-trip for
+  // re-importing this same CSV later to update the project it came
+  // from: CSV_ID_COLUMN_HEADER's own header text is chosen to be
+  // unlikely for a real field to share, and import never trusts it
+  // positionally anyway (only by this exact header match, and only if
+  // its values actually look like real existing issue ids -- see
+  // buildCsvImportPlan, wigwag-core.js). A plain, non-field sentinel
+  // id ('__wigwag_id__') keeps it out of the normal fieldDefs-lookup
+  // path below rather than needing a real fieldDef for it.
   buildCsvText() {
     const s = this.state;
     const fieldDefs = s.fieldDefs;
-    const colIds = ['title', ...realColumnOrder(s.columnOrder)];
-    const header = colIds.map(id => this.csvEscape(fieldDefs[id] ? fieldDefs[id].label : id)).join(',');
-    const rows = s.issues.filter(iss => !iss.deleted).map(iss => colIds.map(id => this.csvEscape(this.csvCellValue(fieldDefs[id], fieldDefs[id].type === 'commentStream' ? this.commentStreamLatestText(iss, id) : iss.values[id]))).join(','));
+    const colIds = ['__wigwag_id__', 'title', ...realColumnOrder(s.columnOrder)];
+    const header = colIds.map(id => this.csvEscape(id === '__wigwag_id__' ? CSV_ID_COLUMN_HEADER : (fieldDefs[id] ? fieldDefs[id].label : id))).join(',');
+    const rows = s.issues.filter(iss => !iss.deleted).map(iss => colIds.map(id => {
+      if (id === '__wigwag_id__') return this.csvEscape(iss.id);
+      return this.csvEscape(this.csvCellValue(fieldDefs[id], fieldDefs[id].type === 'commentStream' ? this.commentStreamLatestText(iss, id) : iss.values[id]));
+    }).join(','));
     return [header, ...rows].join('\r\n');
   }
   buildXlsxBytes() {

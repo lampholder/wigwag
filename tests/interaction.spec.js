@@ -3299,11 +3299,15 @@ test.describe('Share menu restructure', () => {
     const raw = fs.readFileSync(await dl.path(), 'utf8');
     expect(raw.charCodeAt(0)).toBe(0xFEFF); // UTF-8 BOM -- otherwise Excel misdecodes non-ASCII (emoji etc) as mojibake
     const lines = raw.slice(1).split('\r\n');
-    expect(lines[0]).toBe('Issue,Type,Priority,Related,RAG,Delivery teams,Mitigation');
+    // Leading "Wigwag ID" column (tracker 728eeac8) -- closes the
+    // round-trip for re-importing this same CSV later to update the
+    // project it came from.
+    expect(lines[0]).toBe('Wigwag ID,Issue,Type,Priority,Related,RAG,Delivery teams,Mitigation');
     expect(lines.length).toBe(10); // header + 9 seed issues
-    // row 1: a select (Type/Priority/RAG) resolved to its label, a
-    // multiselect (Delivery teams) joined with "; ", not raw storage ids.
-    expect(lines[1]).toBe('Sidebar sizing does not stick between application starts,Enhancement,P2,,On track,Platform; Ops; Mobile,');
+    // row 1: a real, stable issue id leads every row; a select
+    // (Type/Priority/RAG) resolved to its label, a multiselect
+    // (Delivery teams) joined with "; ", not raw storage ids.
+    expect(lines[1]).toBe('i1,Sidebar sizing does not stick between application starts,Enhancement,P2,,On track,Platform; Ops; Mobile,');
   });
 
   // Regression: without a UTF-8 BOM, Excel (which does not sniff encoding

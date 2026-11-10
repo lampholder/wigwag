@@ -349,7 +349,7 @@
           </svg>
           Receive
         </button>
-        <input type="file" accept=".jsonl,.txt" data-testid="merge-file-input" style="display:none;" sc-camel-on-change="{{ onMergeFileChange }}">
+        <input type="file" accept=".jsonl,.txt,.csv" data-testid="merge-file-input" style="display:none;" sc-camel-on-change="{{ onMergeFileChange }}">
       </div>
 
     </div>
@@ -500,7 +500,7 @@
       </div>
       <div data-testid="apply-update-menu-wrap" style="position:relative;">
         <button class="wigwag-toolbar-segment" data-testid="btn-import-merge" sc-camel-on-click="{{ onTogglePasteMerge }}" title="Receive" style="height:100%; display:flex; align-items:center; justify-content:center; cursor:pointer; border:none; background:transparent; color: var(--text-strong); font-family:inherit;" style-hover="background:rgba(0,0,0,0.05);"><svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M7 2v7.2M7 9.2 4.3 6.5M7 9.2l2.7-2.7"></path><path d="M2.6 8.6v3h8.8v-3"></path></svg><span class="wigwag-toolbar-label">Receive</span></button>
-        <input type="file" accept=".jsonl,.txt" data-testid="merge-file-input" style="display:none;" sc-camel-on-change="{{ onMergeFileChange }}">
+        <input type="file" accept=".jsonl,.txt,.csv" data-testid="merge-file-input" style="display:none;" sc-camel-on-change="{{ onMergeFileChange }}">
       </div>
       <sc-if value="{{ showProposeLayout }}" hint-placeholder-val="{{ false }}">
       <div style="width:1px; background:rgba(0,0,0,0.12);"></div>
@@ -3670,6 +3670,73 @@
   </div>
 </div>
 </sc-if>
+
+  <sc-if value="{{ csvImportReview }}" hint-placeholder-val="{{ false }}">
+    <div data-testid="csv-import-overlay" style="position:fixed; inset:0; background: var(--sh11); z-index:200; display:flex; align-items:center; justify-content:center; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;">
+      <div data-testid="csv-import-card" style="background:var(--surface); border:1px solid var(--n15); border-radius:12px; box-shadow:0 8px 28px var(--sh2); width:620px; max-width:96vw; max-height:90vh; display:flex; flex-direction:column; box-sizing:border-box;">
+        <div style="padding:18px 20px 0; flex-shrink:0;">
+          <div style="font-size:15px; font-weight:700; letter-spacing:-0.01em; margin-bottom:6px;">Review CSV import</div>
+          <div style="font-size:11.5px; color:var(--text-secondary); line-height:1.5;">Confirming creates any new fields/options below immediately. The issue-level changes themselves are reviewed separately next, in the usual merge gate.</div>
+        </div>
+        <div style="padding:14px 20px; overflow-y:auto; flex:1; min-height:0;">
+          <div style="font-size:12px; color:var(--text-secondary); margin-bottom:4px;">{{ csvImportReview.matchModeLabel }}</div>
+          <div data-testid="csv-import-summary" style="font-size:12px; color:var(--text-primary); font-weight:600; margin-bottom:14px;">{{ csvImportReview.summaryLine }}</div>
+
+          <div style="margin-bottom:10px;">
+            <div style="font-size:11px; font-weight:600; letter-spacing:0.04em; color:var(--text-muted); margin-bottom:6px;">MATCH ROWS BY</div>
+            <sc-raw-select data-testid="csv-import-key-column" value="{{ csvImportReview.keyColumnId }}" sc-camel-on-change="{{ csvImportReview.onKeyColumnChange }}" style="width:100%; box-sizing:border-box; padding:6px 8px; border:1px solid var(--border); border-radius:6px; font-size:13px; font-family:inherit;">
+              <sc-for list="{{ csvImportReview.keyColumnCandidates }}" as="kc" hint-placeholder-count="2">
+                <option value="{{ kc.id }}">{{ kc.label }}</option>
+              </sc-for>
+            </sc-raw-select>
+          </div>
+
+          <sc-if value="{{ csvImportReview.hasNewFields }}" hint-placeholder-val="{{ false }}">
+            <div style="font-size:11px; font-weight:600; letter-spacing:0.04em; color:var(--text-muted); margin:14px 0 6px;">NEW FIELDS</div>
+            <sc-for list="{{ csvImportReview.newFields }}" as="nf" hint-placeholder-count="2">
+              <div data-testid="csv-import-new-field" style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
+                <span style="flex:1; min-width:0; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ nf.header }}</span>
+                <sc-raw-select data-testid="csv-import-new-field-type" value="{{ nf.type }}" sc-camel-on-change="{{ nf.onTypeChange }}" style="width:150px; flex-shrink:0; box-sizing:border-box; padding:6px 8px; border:1px solid var(--border); border-radius:6px; font-size:12.5px; font-family:inherit;">
+                  <option value="text">Text</option>
+                  <option value="issue">Issue link</option>
+                  <option value="date">Date</option>
+                  <option value="select">Single-select</option>
+                  <option value="multiselect">Multi-select</option>
+                  <option value="commentStream">Comment stream</option>
+                </sc-raw-select>
+              </div>
+            </sc-for>
+          </sc-if>
+
+          <sc-if value="{{ csvImportReview.hasNewOptions }}" hint-placeholder-val="{{ false }}">
+            <div style="font-size:11px; font-weight:600; letter-spacing:0.04em; color:var(--text-muted); margin:14px 0 6px;">NEW OPTIONS</div>
+            <sc-for list="{{ csvImportReview.newOptionGroups }}" as="grp" hint-placeholder-count="1">
+              <div data-testid="csv-import-new-option-group" style="margin-bottom:8px;">
+                <div style="font-size:12px; font-weight:600; margin-bottom:4px;">{{ grp.fieldLabel }}</div>
+                <div style="display:flex; flex-wrap:wrap; gap:6px;">
+                  <sc-for list="{{ grp.options }}" as="opt" hint-placeholder-count="2">
+                    <span data-testid="csv-import-new-option" style="display:flex; align-items:center; gap:5px; font-size:12px; padding:3px 8px; border-radius:999px; background:var(--surface-selected); border:1px solid var(--border-subtle);"><span style="width:8px; height:8px; border-radius:50%; background:{{ opt.dotColor }}; flex-shrink:0;"></span>{{ opt.label }}</span>
+                  </sc-for>
+                </div>
+              </div>
+            </sc-for>
+          </sc-if>
+
+          <sc-if value="{{ csvImportReview.hasWarnings }}" hint-placeholder-val="{{ false }}">
+            <div style="font-size:11px; font-weight:600; letter-spacing:0.04em; color:var(--text-muted); margin:14px 0 6px;">WARNINGS</div>
+            <sc-for list="{{ csvImportReview.warnings }}" as="w" hint-placeholder-count="1">
+              <div data-testid="csv-import-warning" style="font-size:12px; color:var(--c30); margin-bottom:4px;">{{ w }}</div>
+            </sc-for>
+          </sc-if>
+        </div>
+        <div style="padding:12px 20px 18px; display:flex; align-items:center; gap:10px; flex-shrink:0; border-top:1px solid var(--border-subtle);">
+          <span style="flex:1;"></span>
+          <span data-testid="btn-csv-import-cancel" sc-camel-on-click="{{ csvImportReview.onCancel }}" style="cursor:pointer; font-size:12.5px; color: var(--text-muted); padding:7px 12px; border-radius:6px;" style-hover="background:var(--n55);">Cancel</span>
+          <button data-testid="btn-csv-import-confirm" sc-camel-on-click="{{ csvImportReview.onConfirm }}" style="border:none; border-radius:6px; background: var(--accent-fill); color:var(--ink-on-accent); font-size:12.5px; font-weight:600; padding:8px 16px; cursor:pointer;" style-hover="background: var(--c22);">Review merge →</button>
+        </div>
+      </div>
+    </div>
+  </sc-if>
 
   <sc-if value="{{ mergeGate }}" hint-placeholder-val="{{ false }}">
     <div data-testid="merge-overlay" style="position:fixed; inset:0; background: var(--sh11); z-index:200; display:flex; align-items:center; justify-content:center; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;">

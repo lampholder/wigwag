@@ -3035,6 +3035,63 @@ class Component extends DCLogic {
       events
     };
   }
+  // Tracker 728eeac8 -- CSV re-import's OWN review step, rendered and
+  // confirmed/cancelled BEFORE pendingMerge/buildMergeGateViewModel ever
+  // sees anything (see openCsvImportReview/confirmCsvImportReview).
+  // Recomputed fresh on every render straight from pendingCsvImport's
+  // own stashed csv/plan -- cheap, and means a key-column override
+  // (onCsvImportKeyColumnChange) or a type pick on a new field
+  // (onCsvImportFieldTypeChange) just needs a plain setState, no
+  // separate "patch the view model" step to keep in sync.
+  buildCsvImportReviewViewModel(s) {
+    const pending = s.pendingCsvImport;
+    if (!pending) return null;
+    const plan = pending.plan;
+    const keyColDef = plan.keyColumnId ? s.fieldDefs[plan.keyColumnId] : null;
+    const matchModeLabel = plan.idColumnTrusted
+      ? 'Matching rows by the "' + CSV_ID_COLUMN_HEADER + '" column.'
+      : (keyColDef
+        ? ('No usable "' + CSV_ID_COLUMN_HEADER + '" column found — matching rows by "' + (keyColDef.label || plan.keyColumnId) + '".')
+        : 'No usable id or key column found — every row will be treated as new.');
+    const summaryParts = [];
+    if (plan.matchedByIdCount) summaryParts.push(plan.matchedByIdCount + ' matched by id');
+    if (plan.matchedByKeyCount) summaryParts.push(plan.matchedByKeyCount + ' matched by key column');
+    if (plan.newCount) summaryParts.push(plan.newCount + ' new');
+    if (plan.untouchedIssueIds.length) summaryParts.push(plan.untouchedIssueIds.length + ' unchanged, left alone');
+    // Deliberately excludes commentStream/timestamp/multiselect fields
+    // as key-column candidates -- none of those are sensible things to
+    // match a CSV row's own key cell against exactly.
+    const keyColumnCandidates = Object.keys(s.fieldDefs).filter(id => {
+      const t = s.fieldDefs[id].type;
+      return t !== 'commentStream' && t !== 'timestamp' && t !== 'multiselect';
+    });
+    return {
+      newFields: plan.newFields.map(nf => ({
+        header: nf.label,
+        type: (pending.fieldTypeOverrides && pending.fieldTypeOverrides[nf.label]) || nf.suggestedType,
+        onTypeChange: e => this.onCsvImportFieldTypeChange(nf.label, e.target.value)
+      })),
+      hasNewFields: plan.newFields.length > 0,
+      newOptionGroups: Object.keys(plan.newOptionsByField).map(colId => {
+        const def = s.fieldDefs[colId];
+        const startCount = (def.options || []).length;
+        return {
+          colId, fieldLabel: (def && def.label) || colId,
+          options: plan.newOptionsByField[colId].map((opt, i) => ({ label: opt.label, dotColor: col(nextPaletteColor(startCount + i)).dot }))
+        };
+      }),
+      hasNewOptions: Object.keys(plan.newOptionsByField).length > 0,
+      keyColumnCandidates: keyColumnCandidates.map(id => ({ id, label: s.fieldDefs[id].label || id })),
+      keyColumnId: plan.keyColumnId || '',
+      onKeyColumnChange: e => this.onCsvImportKeyColumnChange(e.target.value),
+      matchModeLabel,
+      summaryLine: summaryParts.join(' · '),
+      warnings: plan.warnings,
+      hasWarnings: plan.warnings.length > 0,
+      onCancel: () => this.cancelCsvImportReview(),
+      onConfirm: () => this.confirmCsvImportReview()
+    };
+  }
   // Merge History project-panel section's own render-ready view model
   // (tracker #124, 5c3051e9, Level 3): most-recent-first, expandable per
   // record (mergeReviewId) into its real per-field breakdown, each field
@@ -10511,6 +10568,9 @@ class Component extends DCLogic {
       // same as connectRemote below, since Apply Update is reachable from
       // both desktop and mobile.
       mergeGate: this.buildMergeGateViewModel(s),
+      // Tracker 728eeac8: CSV review runs BEFORE mergeGate above -- see
+      // buildCsvImportReviewViewModel's own comment.
+      csvImportReview: this.buildCsvImportReviewViewModel(s),
       connectRemote: (() => {
         const outcome = this.connectRemoteOutcome();
         const probeRows = (s.connectRemoteProbeResults || []).map(r => {

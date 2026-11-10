@@ -12,7 +12,7 @@ const {
   xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, columnFilterIsActive, dateFilterPresetRanges, parseFilterQuery, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, isPastedTextASingleUrl, wrapSelectionWithMarkdownLink, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, deriveFieldDefs, effectiveFieldDefs, deriveProjectName, PROJECT_NAME_FIELD_ID, deriveProjectNotes, PROJECT_NOTES_FIELD_ID, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, principalKind, SIGN_ALG, JOSE_ALG_ES256, signEntryPayload, verifyEntryPayload, signableEntryPayload, signableProjectEntryPayload, redactedEntryPayload, redactedProjectEntryPayload, signableCommentEntryPayload, signableProjectCommentEntryPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER
 ,
   buildSource, normalizeRef, sourceRefHasFullData, evalRule, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, fieldLocalBindState, liveBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, builtinKindConfigured, builtinKindReachable, resolveRefSystem, parseGithubUrl, parseGithubShortId, githubTokenCreationUrl, GITHUB_TOKEN_LIST_URL, parseGithubTokenExpiryHeader, parseJiraKey, parseSalesforceId, hostFromUrl, buildWigwagUri, parseWigwagUri, buildProjectTree, flattenProjectTree,
-  CSV_ID_COLUMN_HEADER,
+  CSV_ID_COLUMN_HEADER, parseCsvText, looksLikeCsvText, nextPaletteColor, buildCsvImportPlan,
   CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, newFieldId, newOptionId, pickConnectorFields, connectorLinkText, compileConnectorMacro,
   importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry,
   squashHistory, redactEntry, redactProjectEntry, displayValueForHistory, buildSourceText, humanFileSize, parseJsonl, entryKey, unionByKey, mergeIssuePair, computeIssueMerge, mergeHasRealChanges, computeFieldDefsMerge, computeDerivedChangeEntries, buildGithubContentsUrl, buildGithubContentsHeaders, buildGithubCommitMessage, pullGithubFile, pushGithubFile, probeGithubRepoAccess, issueCreatedAt, computeHeaderMeshTriangles, computeHeaderCompression, cellPaddingForWidth, computeAffordanceFade,
@@ -3619,6 +3619,14 @@ class Component extends DCLogic {
     // previewMerge/confirmPendingMerge/cancelPendingMerge. Per-tab, not
     // per-project (a pending decision doesn't survive a project switch).
     pendingMerge: null,
+    // Tracker 728eeac8: the not-yet-confirmed CSV import review step that
+    // runs BEFORE pendingMerge/previewMerge -- resolves everything
+    // CSV-specific (new fields, new select/multiselect options, which
+    // row maps to which issue) first, so previewMerge's own gate only
+    // ever has to show a real per-issue/per-field diff against fieldDefs
+    // that already exist, exactly like a JSONL update. See
+    // openCsvImportReview/confirmCsvImportReview below.
+    pendingCsvImport: null,
     // Which issue's Level 3 timeline is expanded within the gate --
     // per-issue (not per-field, README §3: "Show the timeline" combines
     // every field an issue's merge touched into one view).
@@ -8482,13 +8490,53 @@ class Component extends DCLogic {
     this.appendProjectHistory({ text: '"' + (def.label || colId) + '": recolored option "' + (opts[idx].label || '') + '" to ' + colorName, field: colId, value: { ...def, options: opts } });
     this.setState({ colorPickerOptIndex: null });
   }
+  // Tracker 728eeac8: extracted out of addFieldEditorOption/
+  // submitNewField below (unchanged behavior, same history-entry text/
+  // shape) so the CSV re-import confirm step can reuse the exact same
+  // field/option-creation logic the Settings-driven editor already
+  // uses, rather than a second, divergent copy. Both take an
+  // ALREADY-COMPUTED id, not computing their own -- creating several
+  // new fields/options in one synchronous pass (CSV import) needs a
+  // locally-tracked id set, since this.state.fieldDefs won't reflect
+  // an EARLIER call in the same batch yet (React setState is async).
+  createField(id, label, type) {
+    const definition = { label, type, options: (type === 'select' || type === 'multiselect') ? [] : undefined };
+    this.setState(s => ({
+      fieldDefs: { ...s.fieldDefs, [id]: definition },
+      columnOrder: [...s.columnOrder, id],
+      issues: s.issues.map(iss => type === 'commentStream'
+        ? { ...iss, fields: { ...iss.fields, [id]: { history: [] } } }
+        : { ...iss, values: { ...iss.values, [id]: type === 'multiselect' ? [] : null } })
+    }));
+    this.appendProjectHistory({ text: 'Created field "' + label + '"', field: id, value: definition });
+  }
+  addOptionToField(colId, optId, label, color) {
+    const def = this.state.fieldDefs[colId];
+    const opts = [...def.options, { id: optId, label, color: color || 'gray', emoji: '' }];
+    this.appendProjectHistory({ text: '"' + (def.label || colId) + '": added option "' + label + '"', field: colId, value: { ...def, options: opts } });
+  }
+  // Bulk variant of addOptionToField, one combined history entry per
+  // field rather than N sequential ones -- calling the single-option
+  // path N times in a tight synchronous loop would race its own
+  // this.state.fieldDefs[colId] read (each call would miss options an
+  // EARLIER call in the same loop just added, since nothing has
+  // flushed yet), silently keeping only the last. CSV import (which
+  // can propose several new options for the same field at once) needs
+  // exactly this instead.
+  addOptionsToField(colId, newOptions) {
+    if (!newOptions.length) return;
+    const def = this.state.fieldDefs[colId];
+    const opts = [...def.options, ...newOptions];
+    const n = newOptions.length;
+    this.appendProjectHistory({ text: '"' + (def.label || colId) + '": added ' + n + ' option' + (n === 1 ? '' : 's') + ' via CSV import', field: colId, value: { ...def, options: opts } });
+  }
   addFieldEditorOption(colId) {
     const label = this.state.fieldEditorNewOptLabel.trim();
     if (!label) return;
     const def = this.state.fieldDefs[colId];
-    const opts = [...def.options, { id: newOptionId(label, def.options.map(o => o.id)), label, color: 'gray', emoji: '' }];
+    const optId = newOptionId(label, def.options.map(o => o.id));
+    this.addOptionToField(colId, optId, label);
     this.setState({ fieldEditorNewOptLabel: '' });
-    this.appendProjectHistory({ text: '"' + (def.label || colId) + '": added option "' + label + '"', field: colId, value: { ...def, options: opts } });
   }
 
   submitNewField = () => {
@@ -8496,18 +8544,171 @@ class Component extends DCLogic {
     if (!name) return;
     const newFieldType = this.state.newFieldType;
     const id = newFieldId(newFieldType, name, Object.keys(this.state.fieldDefs));
-    const definition = { label: name, type: newFieldType, options: (newFieldType === 'select' || newFieldType === 'multiselect') ? [] : undefined };
-    this.setState(s => ({
-      addFieldOpen: false, newFieldName: '', newFieldType: 'text',
-      fieldDefs: { ...s.fieldDefs, [id]: definition },
-      columnOrder: [...s.columnOrder, id],
-      issues: s.issues.map(iss => newFieldType === 'commentStream'
-        ? { ...iss, fields: { ...iss.fields, [id]: { history: [] } } }
-        : { ...iss, values: { ...iss.values, [id]: newFieldType === 'multiselect' ? [] : null } })
-    }));
-    this.appendProjectHistory({ text: 'Created field "' + name + '"', field: id, value: definition });
+    this.createField(id, name, newFieldType);
+    this.setState({ addFieldOpen: false, newFieldName: '', newFieldType: 'text' });
   };
 
+  // Tracker 728eeac8 -- CSV re-import review step (plan:
+  // /home/dev/.claude/plans/encapsulated-waddling-gizmo.md). text is the
+  // raw CSV (from a .csv file pick or a sniffed paste); parses + plans
+  // it fresh every time rather than caching, since it's cheap and keeps
+  // a key-column override (onCsvImportKeyColumnChange) trivially
+  // correct -- just re-run the plan with the override, no separate
+  // incremental-update path to keep in sync.
+  openCsvImportReview(text) {
+    const csv = parseCsvText(text);
+    const plan = buildCsvImportPlan(csv, this.state.fieldDefs, this.state.issues, {});
+    this.setState({ pendingCsvImport: { text, csv, plan, fieldTypeOverrides: {}, keyColumnOverride: null } });
+  }
+  onCsvImportFieldTypeChange(header, type) {
+    this.setState(s => ({ pendingCsvImport: { ...s.pendingCsvImport, fieldTypeOverrides: { ...s.pendingCsvImport.fieldTypeOverrides, [header]: type } } }));
+  }
+  onCsvImportKeyColumnChange(colId) {
+    this.setState(s => {
+      const plan = buildCsvImportPlan(s.pendingCsvImport.csv, this.state.fieldDefs, this.state.issues, { keyColumnId: colId });
+      return { pendingCsvImport: { ...s.pendingCsvImport, plan, keyColumnOverride: colId } };
+    });
+  }
+  cancelCsvImportReview() { this.setState({ pendingCsvImport: null }); }
+  // The real work: creates whatever new fields/options the review step
+  // resolved (immediate, like every other field/option creation in this
+  // app -- see the plan's own note on why cancelling the LATER merge-gate
+  // doesn't undo this), then synthesizes a parsed-shaped payload (one
+  // unsigned history entry per touched cell, same shape every other
+  // not-yet-signed write in this app already uses) and hands off into
+  // the EXISTING, unmodified previewMerge for the real per-issue diff --
+  // this function does no issue-level merging of its own.
+  confirmCsvImportReview() {
+    const pending = this.state.pendingCsvImport;
+    if (!pending) return;
+    const plan = pending.plan;
+    // mergedFieldDefs is this call's own up-to-date view of field
+    // existence/type/options -- createField/addOptionsToField below
+    // setState() asynchronously, so this.state.fieldDefs won't reflect
+    // an earlier field/option created in this SAME synchronous pass yet.
+    const mergedFieldDefs = { ...this.state.fieldDefs };
+    const headerToColId = { ...plan.matchedHeaderToColId };
+    const usedFieldIds = Object.keys(this.state.fieldDefs);
+    const newFieldTypeByHeader = {};
+
+    plan.newFields.forEach(nf => {
+      const type = (pending.fieldTypeOverrides && pending.fieldTypeOverrides[nf.label]) || nf.suggestedType;
+      newFieldTypeByHeader[nf.label] = type;
+      const id = newFieldId(type, nf.label, usedFieldIds);
+      usedFieldIds.push(id);
+      headerToColId[nf.label] = id;
+      mergedFieldDefs[id] = { label: nf.label, type, options: (type === 'select' || type === 'multiselect') ? [] : undefined };
+      this.createField(id, nf.label, type);
+    });
+
+    // buildCsvImportPlan's own newOptionsByField only ever proposes
+    // options for a header that matched an ALREADY-EXISTING select/
+    // multiselect field -- it has no way to know a brand-new field's
+    // type at plan time. If the review step's type picker turns a new
+    // field INTO select/multiselect, its column needs the exact same
+    // treatment (collect distinct cell values as new options) or every
+    // value in it would silently resolve to null below. Extending a
+    // local copy of newOptionsByField here, rather than plan's own,
+    // keeps buildCsvImportPlan itself a pure function of its real inputs.
+    const effectiveNewOptionsByField = { ...plan.newOptionsByField };
+    plan.newFields.forEach(nf => {
+      const type = newFieldTypeByHeader[nf.label];
+      if (type !== 'select' && type !== 'multiselect') return;
+      const colId = headerToColId[nf.label];
+      const seen = new Set();
+      const opts = [];
+      plan.rowPlans.forEach(rp => {
+        const cell = rp.cells.find(c => c.header === nf.label);
+        if (!cell || !cell.text) return;
+        const parts = type === 'multiselect' ? cell.text.split(';').map(p => p.trim()).filter(Boolean) : [cell.text];
+        parts.forEach(p => { const k = p.toLowerCase(); if (!seen.has(k)) { seen.add(k); opts.push({ label: p }); } });
+      });
+      if (opts.length) effectiveNewOptionsByField[colId] = opts;
+    });
+
+    // colId -> { lowerLabel -> optId }, seeded from mergedFieldDefs (so
+    // it sees brand-new fields created just above too) and then extended
+    // with the ids minted for proposed new options in the same loop that
+    // mints them -- the only way to resolve a CSV cell's option TEXT to
+    // the right id later in this same pass, since nothing has reached
+    // this.state yet.
+    const optionIdByFieldLabel = {};
+    Object.keys(mergedFieldDefs).forEach(colId => {
+      const def = mergedFieldDefs[colId];
+      if (def.type !== 'select' && def.type !== 'multiselect') return;
+      const map = {};
+      (def.options || []).forEach(o => { map[o.label.toLowerCase()] = o.id; });
+      optionIdByFieldLabel[colId] = map;
+    });
+    Object.keys(effectiveNewOptionsByField).forEach(colId => {
+      const def = mergedFieldDefs[colId];
+      const existingOptionIds = def.options.map(o => o.id);
+      const startCount = def.options.length;
+      const map = optionIdByFieldLabel[colId] || (optionIdByFieldLabel[colId] = {});
+      const newOpts = effectiveNewOptionsByField[colId].map((opt, i) => {
+        const optId = newOptionId(opt.label, existingOptionIds);
+        existingOptionIds.push(optId);
+        map[opt.label.toLowerCase()] = optId;
+        return { id: optId, label: opt.label, color: nextPaletteColor(startCount + i), emoji: '' };
+      });
+      mergedFieldDefs[colId] = { ...def, options: [...def.options, ...newOpts] };
+      this.addOptionsToField(colId, newOpts);
+    });
+
+    const actor = this.displayName();
+    const valuesEqual = (type, a, b) => {
+      if (type === 'multiselect') {
+        const sa = [...(a || [])].sort(), sb = [...(b || [])].sort();
+        return sa.length === sb.length && sa.every((v, i) => v === sb[i]);
+      }
+      return (a || null) === (b || null);
+    };
+    const rawIssues = plan.rowPlans.map(rp => {
+      const existing = rp.isNew ? null : this.findIssue(rp.issueId);
+      const fields = {};
+      rp.cells.forEach(cell => {
+        const colId = headerToColId[cell.header];
+        if (!colId) return; // every non-read-only header resolves to a real colId by this point
+        const type = mergedFieldDefs[colId].type;
+        let value;
+        if (type === 'select') {
+          value = cell.text ? ((optionIdByFieldLabel[colId] || {})[cell.text.toLowerCase()] || null) : null;
+        } else if (type === 'multiselect') {
+          const parts = cell.text ? cell.text.split(';').map(p => p.trim()).filter(Boolean) : [];
+          value = parts.map(p => (optionIdByFieldLabel[colId] || {})[p.toLowerCase()]).filter(Boolean);
+        } else {
+          value = cell.text;
+        }
+        // Skip writing a cell that matches the existing issue's current
+        // value -- without this, re-importing an UNCHANGED CSV would
+        // still mint a fresh history entry for every cell on every row
+        // (CSV rows carry no identity of their own to dedupe against,
+        // unlike a JSONL re-merge's real entry ids), bloating history
+        // for no real change every single time.
+        if (existing && valuesEqual(type, value, existing.values ? existing.values[colId] : undefined)) return;
+        fields[colId] = { history: [{ id: crypto.randomUUID(), actor, value, sortKey: this.nextSortKey(), sig: null, pubKey: null }] };
+      });
+      return { id: rp.issueId, fields, isNew: rp.isNew };
+    }).filter(iss => iss.isNew || Object.keys(iss.fields).length > 0)
+      .map(({ isNew, ...iss }) => iss);
+
+    const hydratedIssues = rawIssues.map(iss => hydrateIssue(iss, mergedFieldDefs));
+    const parsed = { fields: null, issues: hydratedIssues, projectId: this.state.projectId, projectName: null, projectNotes: null, projectComments: null, formatVersion: null };
+
+    this.setState({ pendingCsvImport: null });
+    // CSV text never carries a signed envelope -- classifyIngestProvenance
+    // runs on it anyway rather than special-cased: parseExportEnvelope's
+    // own JSON.parse of the first line simply fails on a CSV header row,
+    // so this naturally classifies as {sigState:'unsigned',
+    // reason:'no-envelope'}, the exact same inboundInfo shape
+    // onMergeFileChange/onSubmitPasteMerge already build for every other
+    // unsigned update -- the merge-gate's "Unsigned update" banner comes
+    // for free, no new provenance state needed.
+    this.classifyIngestProvenance(pending.text).then(result => {
+      const inboundInfo = { exportedBy: '', exportedAt: null, provenance: result.provenance, fingerprint: result.fingerprint, envelope: null };
+      this.previewMerge(parsed, inboundInfo);
+    });
+  }
 
   withEmbeddedWigwagLinks(cell, text, filterQuery, wrapEnabled, fullLabelOnly) {
     if (!cell.isPlain) return cell; // only the no-fieldRef plain-text path applies
@@ -10760,6 +10961,12 @@ class Component extends DCLogic {
         const reader = new FileReader();
         reader.onload = () => {
           const text = String(reader.result || '');
+          // Tracker 728eeac8: a .csv (by extension, or sniffed in case
+          // it got renamed) always means "update THIS project" -- there
+          // is no "new project from CSV" path, so this skips
+          // handleApplyUpdateParsed's new-vs-update branching entirely
+          // and goes straight to its own review step.
+          if (/\.csv$/i.test(file.name) || looksLikeCsvText(text)) { this.openCsvImportReview(text); return; }
           const parsed = this.parseJsonl(text);
           this.classifyIngestProvenance(text).then(result => {
             const inboundInfo = { exportedBy: result.envelope ? result.envelope.exported_by : '', exportedAt: result.envelope ? result.envelope.exported_at : null, provenance: result.provenance, fingerprint: result.fingerprint, envelope: result.envelope };
@@ -10780,12 +10987,17 @@ class Component extends DCLogic {
       onPasteMergeBackdrop: e => { if (e.target === e.currentTarget) this.setState({ pasteMergeOpen: false, pasteMergeDraft: '' }); },
       onSubmitPasteMerge: () => {
         const text = this.state.pasteMergeDraft;
+        this.setState({ pasteMergeOpen: false, pasteMergeDraft: '' });
+        // Tracker 728eeac8: the paste modal has no filename/extension to
+        // go on, unlike the file-input path above -- looksLikeCsvText
+        // sniffs it (a real JSONL line always parses as JSON; a CSV
+        // header row essentially never does).
+        if (looksLikeCsvText(text)) { this.openCsvImportReview(text); return; }
         const parsed = this.parseJsonl(text);
         this.classifyIngestProvenance(text).then(result => {
           const inboundInfo = { exportedBy: result.envelope ? result.envelope.exported_by : '', exportedAt: result.envelope ? result.envelope.exported_at : null, provenance: result.provenance, fingerprint: result.fingerprint, envelope: result.envelope };
           this.handleApplyUpdateParsed(parsed, 'Pasted update', inboundInfo);
         });
-        this.setState({ pasteMergeOpen: false, pasteMergeDraft: '' });
       },
       exportMenuOpen: s.exportMenuOpen,
       widgetExportMenuAnchorStyle: 'position:fixed; top:' + (s.exportMenuAnchorTopPx || 0) + 'px; right:' + (s.exportMenuAnchorRightPx || 0) + 'px;',

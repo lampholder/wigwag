@@ -3415,11 +3415,17 @@ function buildCsvImportPlan(csv, fieldDefs, issues, opts) {
   });
 
   const untouchedIssueIds = issues.map(i => i.id).filter(id => !matchedIssueIds.has(id));
+  // Every header that already matched a real field, up front -- the
+  // caller (confirmCsvImportReview, src/wigwag-app.js) only needs to
+  // resolve the REMAINING headers (newFields, above) once it actually
+  // creates them, rather than re-deriving this same label match itself.
+  const matchedHeaderToColId = {};
+  headerPlans.forEach(hp => { if (!hp.isNew && !hp.readOnly) matchedHeaderToColId[hp.header] = hp.colId; });
 
   return {
     newFields, newOptionsByField, rowPlans, untouchedIssueIds, warnings,
     idColumnTrusted, keyColumnId: keyColIndex !== -1 ? defaultKeyColId : null,
-    matchedByIdCount, matchedByKeyCount, newCount
+    matchedByIdCount, matchedByKeyCount, newCount, matchedHeaderToColId
   };
 }
 // A stable identity for a history entry for union-dedup purposes. Real

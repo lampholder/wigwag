@@ -3613,6 +3613,11 @@ test('buildCsvImportPlan: a local issue with no matching CSV row appears in unto
   const plan = core.buildCsvImportPlan(csv, CSV_FIELD_DEFS, CSV_ISSUES, {});
   assert.deepEqual(plan.untouchedIssueIds, ['i2']);
 });
+test('buildCsvImportPlan: matchedHeaderToColId resolves every already-existing header, excluding read-only and new ones', () => {
+  const csv = core.parseCsvText('Issue,Status,Created,Owner\r\nFix login bug,Todo,2026-01-01,Jane\r\n');
+  const plan = core.buildCsvImportPlan(csv, CSV_FIELD_DEFS, CSV_ISSUES, {});
+  assert.deepEqual(plan.matchedHeaderToColId, { Issue: 'title', Status: 'f_status' });
+});
 test('buildCsvImportPlan: a row matching nothing at all becomes a new issue with a freshly minted id', () => {
   const csv = core.parseCsvText('Issue,Status\r\nBrand new ticket,Todo\r\n');
   const plan = core.buildCsvImportPlan(csv, CSV_FIELD_DEFS, CSV_ISSUES, {});

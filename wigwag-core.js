@@ -2556,17 +2556,40 @@ function copyFieldRefTarget(row) {
   const m = typeof row.then === 'string' ? /^=values\.([A-Za-z0-9_]+)$/.exec(row.then) : null;
   return m ? m[1] : null;
 }
+// Tracker 7dd22899: the rows-mode branch above (copy-field-ref-from a
+// matched row) has no counterpart for a hand-written ADVANCED expression
+// that resolves wholesale to the bound source's own picked-fields
+// container (`source.github`, `source.jira`, `source.salesforce`, or an
+// additional connector instance's own `source.<key>` -- see buildSource)
+// as shorthand for "copy the source's own real link", even though
+// applyComputedToField already treats that exact shape as real data on
+// the VALUE side. Confirmed by reading this function, not assumed: with
+// no rows-mode branch to fall into, an advanced rule written exactly
+// that way rendered as plain text everywhere (including the main grid,
+// via buildTextCell's own call here) instead of a real link. Detected
+// structurally -- computed === any one of source's own populated kind-
+// keyed sub-objects -- rather than a fixed list of 3 systems, so it
+// covers every additional configured connector instance the same way.
 function computeBoundFieldRef(issue, def, ctx) {
-  const rows = Array.isArray(def.ruleRows) ? def.ruleRows : null;
-  if (!rows || !def.linkedSourceId) return null;
+  if (!def.linkedSourceId) return null;
   const source = buildSource(issue, def.linkedSourceId, ctx && ctx.connectedSources);
   if (!source.isLinked) return null;
-  for (const r of rows) {
-    if (!ruleRowCriteria(r).length) continue;
-    if (evalRule(ruleRowCondition(r), source, issue.values) === true) {
-      const copyFrom = copyFieldRefTarget(r);
-      return copyFrom ? ((issue.fieldRefs && issue.fieldRefs[copyFrom]) || null) : null;
+  const rows = Array.isArray(def.ruleRows) ? def.ruleRows : null;
+  if (rows) {
+    for (const r of rows) {
+      if (!ruleRowCriteria(r).length) continue;
+      if (evalRule(ruleRowCondition(r), source, issue.values) === true) {
+        const copyFrom = copyFieldRefTarget(r);
+        return copyFrom ? ((issue.fieldRefs && issue.fieldRefs[copyFrom]) || null) : null;
+      }
     }
+    return null;
+  }
+  if (!def.rule) return null;
+  const computed = evalRule(def.rule, source, issue.values);
+  if (computed != null && typeof computed === 'object') {
+    const isSourceContainer = Object.keys(source).some(k => k !== 'text' && k !== 'isLinked' && source[k] === computed);
+    if (isSourceContainer) return (issue.fieldRefs && issue.fieldRefs[def.linkedSourceId]) || null;
   }
   return null;
 }

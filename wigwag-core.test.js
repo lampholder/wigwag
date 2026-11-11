@@ -1203,6 +1203,34 @@ test('computeBoundFieldRef: tracker issue #66 (bfdbe595) -- resolves the matchin
   assert.equal(core.computeBoundFieldRef(issue, plainDef), null);
 });
 
+test('computeBoundFieldRef: tracker 7dd22899 -- an ADVANCED (hand-written) expression resolving wholesale to the bound source\'s own container is a real copied link too, not just rows mode', () => {
+  const ghRef = { href: 'https://github.com/acme/app/issues/42', labels: ['bug'] };
+  const def = { type: 'issue', linkedSourceId: 'title', ruleRows: null, rule: 'source.github' };
+  const issue = { values: {}, fieldRefs: { title: ghRef } };
+  assert.deepEqual(core.computeBoundFieldRef(issue, def), ghRef);
+
+  // Still caught when the container comes out through a ternary/boolean
+  // expression, not just a bare `source.github`.
+  const ternaryDef = { ...def, rule: 'source.isLinked ? source.github : null' };
+  assert.deepEqual(core.computeBoundFieldRef(issue, ternaryDef), ghRef);
+
+  // Resolves to a plain VALUE off the container, not the container
+  // itself -- not a copied link (the ordinary text-rule case).
+  const textIssue = { values: {}, fieldRefs: { title: { ...ghRef, status: 'open' } } };
+  assert.equal(core.computeBoundFieldRef(textIssue, { ...def, rule: 'source.github?.status' }), null);
+
+  // No rule at all in advanced mode -- null, never crashes.
+  assert.equal(core.computeBoundFieldRef(issue, { ...def, rule: null }), null);
+
+  // Generalizes beyond the 3 fixed kinds: an ADDITIONAL, custom connector
+  // instance's own dynamic source.<key> resolves the exact same way.
+  const linearRef = { href: 'https://linear.app/acme/issue/ACME-1', title: 'Fix bug', state: 'Open', labels: [], assignee: '', extra: {} };
+  const connectedSources = [{ id: 'c1', key: 'linear', name: 'Linear', rootUrl: 'https://linear.app', enabled: true }];
+  const linearIssue = { values: {}, fieldRefs: { title: linearRef } };
+  const linearDef = { type: 'issue', linkedSourceId: 'title', ruleRows: null, rule: 'source.linear' };
+  assert.deepEqual(core.computeBoundFieldRef(linearIssue, linearDef, { connectedSources }), linearRef);
+});
+
 test('computeDerivedChangeEntries: tracker issue #66 (bfdbe595) -- a "copy field" bound row carries the copied fieldRef through', () => {
   const relatedRef = { system: 'jira', key: 'SUP-123' };
   const fieldDefs = {

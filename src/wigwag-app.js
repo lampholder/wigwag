@@ -5572,6 +5572,40 @@ class Component extends DCLogic {
     ];
   }
   ruleDefRows(def) { return Array.isArray(def.ruleRows) ? def.ruleRows : null; }
+  // Tracker 7dd22899: mode must be driven purely by def.ruleRows's own
+  // shape (undefined on a brand-new/never-touched field, or a real array,
+  // both -> 'rows'; explicit null, set only by switchRuleToAdvanced ->
+  // 'advanced') -- NOT by whether the compiled rule STRING happens to be
+  // truthy right now. ruleDefRows alone can't tell "explicitly advanced"
+  // apart from "brand new" (both return null), which is exactly why the
+  // call sites below used to fall back to checking !def.rule -- but that
+  // fallback also fires the instant someone clears the advanced textarea
+  // to retype an expression (def.rule briefly '', ruleRows still
+  // correctly null), silently bouncing the panel back to rows mode mid-
+  // edit. This is the one place mode is ever decided; ruleBuilderVals'
+  // isRows/isAdvanced and ruleSummary both read it instead of re-deriving
+  // their own version of the same check.
+  //
+  // The undefined case still needs ITS OWN truthy-rule fallback (confirmed
+  // by a real regression caught re-running this suite): ruleRows is
+  // undefined both for a brand-new, never-touched field (no rule either --
+  // defaults to rows) AND for a LEGACY field whose rule was embedded
+  // directly in projectHistory from before the rows/ruleRows split
+  // existed (a real, truthy expression, no ruleRows key at all -- see
+  // local-field-bindings.spec.js's own legacy-fixture coverage). Only an
+  // EXPLICIT null (switchRuleToAdvanced) is exempt from this fallback,
+  // since that's the one case with a durable, unambiguous flag -- which
+  // is exactly what fixes the original bug for every field reached via
+  // "Edit directly". A legacy field retains the same narrower edge this
+  // fallback always had (clearing ITS textarea fully can still bounce it
+  // back to rows mode) -- pre-existing, not a regression, and resolved
+  // for good the moment it's ever actually edited (setFieldRule's own
+  // migration comment).
+  ruleMode(def) {
+    if (def.ruleRows === null) return 'advanced';
+    if (Array.isArray(def.ruleRows)) return 'rows';
+    return def.rule ? 'advanced' : 'rows';
+  }
   defaultThenFor(def) {
     if (def.type === 'multiselect') return [];
     if (def.type === 'select') return (def.options || [])[0] ? def.options[0].id : null;
@@ -5695,8 +5729,8 @@ class Component extends DCLogic {
   }
   ruleSummary(def) {
     if (!def.linkedSourceId) return 'Not bound';
-    const rows = this.ruleDefRows(def);
-    if (!rows) return 'Custom expression';
+    if (this.ruleMode(def) === 'advanced') return 'Custom expression';
+    const rows = this.ruleDefRows(def) || [];
     if (!rows.length) return 'No conditions yet';
     return rows.length === 1 ? '1 condition' : rows.length + ' conditions';
   }
@@ -5843,16 +5877,21 @@ class Component extends DCLogic {
       sourceHint: def.linkedSourceId
         ? 'Conditions read the issue linked in ' + (srcDef ? srcDef.label : def.linkedSourceId) + '. Rows with nothing linked there are left alone.'
         : 'Pick the column whose linked issue this field should follow.',
-      // A newly bound field has no rows AND no expression -- it starts in the
-      // row editor, not the textarea. Advanced mode is only for a field that
-      // genuinely holds a hand-written expression.
-      isRows: !!def.linkedSourceId && (!!rows || !def.rule),
-      isAdvanced: !!def.linkedSourceId && !rows && !!def.rule,
+      // Driven purely by ruleMode(def) -- see its own comment for why the
+      // old "!rows || !def.rule" fallback silently bounced an advanced
+      // field back to rows mode the instant its expression textarea was
+      // cleared to retype.
+      isRows: !!def.linkedSourceId && this.ruleMode(def) === 'rows',
+      isAdvanced: !!def.linkedSourceId && this.ruleMode(def) === 'advanced',
       rows: rowVals,
       subjectGroups: this.subjectGroups(),
       fallback: thenParts(def.ruleFallback === undefined ? null : def.ruleFallback, v => this.setRuleFallback(colId, v), null, null, true),
       onAddRow: () => this.addRuleRow(colId),
-      expression: def.rule || 'null',
+      // Nullish, not ||: def.rule === '' (mid-retype, textarea genuinely
+      // emptied) must stay empty, not keep getting replaced by the
+      // literal text "null" on every render -- only a true absence of
+      // any rule at all (brand new field) shows that placeholder.
+      expression: def.rule != null ? def.rule : 'null',
       onEditAsExpression: () => this.switchRuleToAdvanced(colId),
       onRebuildAsRows: () => this.rebuildRuleAsRows(colId),
       ruleValue: def.rule || '',
@@ -8533,13 +8572,21 @@ class Component extends DCLogic {
   setFieldRule(colId, value) {
     const def = this.effectiveDef(colId);
     this.recomputeAndLogDerived(() => {
-      this.setLocalFieldBinding(colId, { linkedSourceId: def.linkedSourceId || null, rule: value, ruleRows: def.ruleRows || null, ruleFallback: def.ruleFallback === undefined ? null : def.ruleFallback });
+      // Pass ruleRows through UNCHANGED -- never coerce to null. This is
+      // only ever called from the advanced textarea, so ruleRows is
+      // already correctly null (switchRuleToAdvanced set it); a stray
+      // "|| null" here used to also turn an UNSET ruleRows (undefined,
+      // a brand-new field) into an explicit null the moment anything
+      // else called this -- harmless in that one path today, but not a
+      // guarantee worth relying on, and ruleMode() depends on this
+      // distinction staying real everywhere it's written.
+      this.setLocalFieldBinding(colId, { linkedSourceId: def.linkedSourceId || null, rule: value, ruleRows: def.ruleRows, ruleFallback: def.ruleFallback === undefined ? null : def.ruleFallback });
     });
   }
   setFieldLinkedSource(colId, value) {
     const def = this.effectiveDef(colId);
     this.recomputeAndLogDerived(() => {
-      this.setLocalFieldBinding(colId, { linkedSourceId: value || null, rule: def.rule || null, ruleRows: def.ruleRows || null, ruleFallback: def.ruleFallback === undefined ? null : def.ruleFallback });
+      this.setLocalFieldBinding(colId, { linkedSourceId: value || null, rule: def.rule || null, ruleRows: def.ruleRows, ruleFallback: def.ruleFallback === undefined ? null : def.ruleFallback });
     });
   }
   setOptionLabel(colId, idx, value) {

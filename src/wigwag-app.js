@@ -6107,10 +6107,47 @@ class Component extends DCLogic {
       error: this.ruleSyntaxError(def),
       targetHint: def.type === 'multiselect' ? 'Return an array of option ids or labels.'
         : def.type === 'select' ? 'Return an option id or label.'
-        : def.type === 'issue' ? 'Return a string (e.g. values.related). Copying another field\'s real link only works in the row editor, not here.'
+        : def.type === 'issue' ? 'Return a string (e.g. values.related), or return source.github / source.jira / source.salesforce itself to copy the bound source\'s own real link.'
         : 'Return a string.',
+      // Tracker 7dd22899: the expression box has no autocomplete, so
+      // every readable path/option is offered as a click-to-insert chip
+      // instead -- same subjectGroups() the row editor's own subject
+      // dropdown reads, minus "Other fields in this row" (plain values
+      // already reachable as values.<id>, not source data).
+      insertChips: this.subjectGroups().filter(g => g.label !== 'Other fields in this row').flatMap(g => g.items)
+        .map(it => ({ label: it.path, title: it.label, onInsert: () => this.insertIntoRule(colId, it.path) })),
+      // A select/multiselect target's own valid answers (an option's id
+      // OR label, per applyComputedToField's match) are otherwise
+      // invisible here -- an expression returning anything else just
+      // silently fails to match, with nothing pointing at the typo.
+      targetOptions: (def.type === 'select' || def.type === 'multiselect')
+        ? (def.options || []).map(o => { const c = col(o.color); return { id: o.id, label: o.label, bg: c.bg, fg: c.fg, onInsert: () => this.insertIntoRule(colId, JSON.stringify(o.label)) }; })
+        : [],
+      hasTargetOptions: (def.type === 'select' || def.type === 'multiselect') && (def.options || []).length > 0,
       test: this.ruleTestVals(colId, def)
     };
+  }
+  // Replaces the advanced textarea's current selection (or inserts at the
+  // caret when nothing's selected) rather than always appending to the
+  // end -- a plain data-testid DOM query at click time (this app's
+  // established pattern for reaching a specific rendered element; the
+  // template engine has no ref-callback primitive, and none is needed),
+  // since clicking a chip steals focus from the textarea before this
+  // runs but selectionStart/End survive that regardless of which element
+  // currently has focus.
+  insertIntoRule(colId, text) {
+    const def = this.effectiveDef(colId);
+    const el = document.querySelector('[data-testid="rule-advanced-textarea"]');
+    const current = def.rule || '';
+    const hasSel = el && typeof el.selectionStart === 'number';
+    const start = hasSel ? el.selectionStart : current.length;
+    const end = hasSel ? el.selectionEnd : current.length;
+    this.setFieldRule(colId, current.slice(0, start) + text + current.slice(end));
+    const pos = start + text.length;
+    requestAnimationFrame(() => {
+      const el2 = document.querySelector('[data-testid="rule-advanced-textarea"]');
+      if (el2) { el2.focus(); el2.setSelectionRange(pos, pos); }
+    });
   }
   openRuleBuilder(colId) {
     this.setState({ ruleBuilderColId: colId, ruleBuilderVisible: false, fieldEditorColId: null, openColMenuId: null, ruleTestLiveOverride: null, ruleTestLiveError: '' });

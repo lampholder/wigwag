@@ -1854,6 +1854,20 @@
             <sc-if value="{{ ruleBuilder.error }}" hint-placeholder-val="{{ false }}">
               <div data-testid="rule-error" style="font-size:11px; font-family:ui-monospace,monospace; color: var(--danger-ink); line-height:1.45; margin-bottom:8px;">{{ ruleBuilder.error }}</div>
             </sc-if>
+            <sc-if value="{{ ruleBuilder.hasTargetOptions }}" hint-placeholder-val="{{ false }}">
+              <div style="font-size:10px; font-weight:700; letter-spacing:0.06em; color: var(--n20); margin-bottom:6px;">THIS FIELD'S OPTIONS — RETURN ONE OF THESE</div>
+              <div style="display:flex; flex-wrap:wrap; gap:5px; margin-bottom:12px;">
+                <sc-for list="{{ ruleBuilder.targetOptions }}" as="opt" hint-placeholder-count="3">
+                  <span data-testid="rule-target-option-chip" sc-camel-on-click="{{ opt.onInsert }}" style="cursor:pointer; padding:3px 10px; border-radius:999px; font-size:11.5px; background: {{ opt.bg }}; color: {{ opt.fg }};">{{ opt.label }}</span>
+                </sc-for>
+              </div>
+            </sc-if>
+            <div style="font-size:10px; font-weight:700; letter-spacing:0.06em; color: var(--n20); margin-bottom:6px;">BUILT-IN FIELDS — CLICK TO INSERT</div>
+            <div style="display:flex; flex-wrap:wrap; gap:5px; margin-bottom:12px;">
+              <sc-for list="{{ ruleBuilder.insertChips }}" as="chip" hint-placeholder-count="6">
+                <span data-testid="rule-insert-chip" sc-camel-on-click="{{ chip.onInsert }}" title="{{ chip.title }}" style="cursor:pointer; padding:3px 8px; border-radius:5px; font-size:11px; font-family:ui-monospace,monospace; background: var(--surface-hover); border:1px solid var(--n27); color: var(--accent-ink);">{{ chip.label }}</span>
+              </sc-for>
+            </div>
             <div style="font-size:11px; color: var(--n20); line-height:1.5; margin-bottom:10px;">Reads <code style="font-family:ui-monospace,monospace;">source</code> (the bound row's linked issue) and <code style="font-family:ui-monospace,monospace;">values</code> (this row's other fields). <code style="font-family:ui-monospace,monospace;">S(x)</code> lowercases and string-coerces for a safe case-insensitive comparison. {{ ruleBuilder.targetHint }}</div>
             <div data-testid="rule-rebuild-rows" sc-camel-on-click="{{ ruleBuilder.onRebuildAsRows }}" style="cursor:pointer; font-size:11.5px; font-weight:600; color: var(--accent-ink);">Rebuild as conditions — replaces this expression</div>
           </sc-if>

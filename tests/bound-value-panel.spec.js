@@ -816,6 +816,67 @@ test.describe('Bound value panel: advanced (hand-written expression) mode', () =
     // silently and falling back to undefined.
     await expect(page.locator('[data-testid=rule-test-result]')).toContainText('Chore');
   });
+
+  test('a runtime error (e.g. a typo like .contains() instead of .includes()) surfaces as "Threw: ..." instead of silently rendering blank', async ({ page }) => {
+    await h.openFieldEditor(page, 'type');
+    await page.locator('[data-testid=field-editor-open-rules]').click();
+    await page.waitForTimeout(400);
+    await h.selectRuleTestIssue(page, 'i1'); // i1's title IS github-linked
+    await page.locator('[data-testid=rule-advanced-textarea]').fill('source.text.contains("x") ? "bug" : "chore"');
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=rule-test-result-text]')).toContainText('Threw:');
+    await expect(page.locator('[data-testid=rule-test-result-text]')).toContainText('contains is not a function');
+  });
+});
+
+test.describe('Bound value panel: expression-mode insertion chips (tracker 7dd22899)', () => {
+  test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
+
+  test('built-in field chips insert at the textarea\'s caret, not always appended to the end', async ({ page }) => {
+    await h.openFieldEditor(page, 'type'); // ships pre-bound, advanced mode
+    await page.locator('[data-testid=field-editor-open-rules]').click();
+    await page.waitForTimeout(400);
+
+    const chipLabels = await page.locator('[data-testid=rule-insert-chip]').allTextContents();
+    expect(chipLabels).toContain('source.text');
+    expect(chipLabels).toContain('source.github?.status');
+    expect(chipLabels.some(l => l.startsWith('values.'))).toBe(false); // "Other fields in this row" excluded
+
+    const textarea = page.locator('[data-testid=rule-advanced-textarea]');
+    const before = await textarea.inputValue();
+    await textarea.evaluate(el => { el.focus(); el.setSelectionRange(0, 0); });
+    await page.locator('[data-testid=rule-insert-chip]', { hasText: 'source.isLinked' }).first().click();
+    await page.waitForTimeout(200);
+    const after = await textarea.inputValue();
+    expect(after).toBe('source.isLinked' + before);
+  });
+
+  test('this field\'s own option chips (select/multiselect targets only) insert a quoted label literal at the caret', async ({ page }) => {
+    await h.openFieldEditor(page, 'type'); // select target: Bug/Enhancement/Chore
+    await page.locator('[data-testid=field-editor-open-rules]').click();
+    await page.waitForTimeout(400);
+
+    const optionChips = await page.locator('[data-testid=rule-target-option-chip]').allTextContents();
+    expect(optionChips).toEqual(['Bug', 'Enhancement', 'Chore']);
+
+    const textarea = page.locator('[data-testid=rule-advanced-textarea]');
+    await textarea.evaluate(el => { el.focus(); el.setSelectionRange(0, 0); });
+    await page.locator('[data-testid=rule-target-option-chip]', { hasText: 'Chore' }).first().click();
+    await page.waitForTimeout(200);
+    expect(await textarea.inputValue()).toMatch(/^"Chore"/);
+  });
+
+  test('option chips are absent for a plain text target -- nothing to "return one of"', async ({ page }) => {
+    await h.openFieldEditor(page, 'mitigation'); // plain text field
+    await page.locator('[data-testid=field-editor-source-select]').selectOption({ label: 'Issue' });
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=field-editor-open-rules]').click();
+    await page.waitForTimeout(400);
+    await page.locator('[data-testid=rule-edit-expression]').click();
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=rule-target-option-chip]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=rule-insert-chip]').first()).toBeVisible();
+  });
 });
 
 test.describe('Bound value panel: results table', () => {

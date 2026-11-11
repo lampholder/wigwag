@@ -5260,7 +5260,23 @@ class Component extends DCLogic {
     const rootEntry = (!isBound && !unchanged) ? { field: colId, text: fieldLabel + ' refreshed from ' + systemLabel, value, fieldRef } : null;
     const patchedIssue = { ...issue, values: { ...issue.values, [colId]: value }, fieldRefs: { ...issue.fieldRefs, [colId]: fieldRef } };
     const liveKey = isBuiltin ? kind : connector.key;
-    const afterIssue = settleLinkedRules(applyLiveLinkedRules(patchedIssue, fieldDefsForRules, colId, liveKey, data, this.liveRuleCtx(issue.id)), fieldDefsForRules, this.liveRuleCtx(issue.id));
+    const confirmedBoundColIds = [];
+    const afterIssue = settleLinkedRules(applyLiveLinkedRules(patchedIssue, fieldDefsForRules, colId, liveKey, data, this.liveRuleCtx(issue.id), confirmedBoundColIds), fieldDefsForRules, this.liveRuleCtx(issue.id));
+    // Live-reported bug: a bound field this refresh reconfirms but whose
+    // value doesn't actually change gets no new history entry at all (see
+    // applyLiveLinkedRules' own comment) -- nothing for the later merge-
+    // confirm step to notice as "changed" and record. Safe to update this
+    // device's own local derived-entry bookkeeping for it RIGHT NOW,
+    // before the user has even confirmed the merge gate: this field's
+    // value and entry aren't changing either way, so its bind-state
+    // glyph isn't contingent on what the user decides for the rest of
+    // the staged job. A field that DID change still only gets recorded
+    // once the merge actually lands (applyComputedMerge), since its new
+    // entry doesn't exist for real until then.
+    const afterIds = latestEntryIdsByField(afterIssue);
+    confirmedBoundColIds.forEach(f => {
+      if (afterIssue.values[f] === issue.values[f]) this.recordLocalDerivedEntryId(issue.id, f, afterIds[f]);
+    });
     return { failed: false, afterIssue, rootEntry };
   }
   // Stages every linked field on ONE issue (snapshot, never live state).
@@ -5417,15 +5433,32 @@ class Component extends DCLogic {
       // genuinely fresh `data` a moment ago (confirmed regression,
       // caught by row-selection.spec.js's own "recomputes from fresh
       // live data even when ... unchanged" coverage).
+      const confirmedBoundColIds = [];
       this.setState(s => ({
         issues: s.issues.map(iss => {
           if (iss.id !== issueId) return iss;
           const patched = { ...iss, fieldLoading: { ...(iss.fieldLoading || {}), [colId]: false }, fieldRefs: { ...iss.fieldRefs, [colId]: fieldRef } };
           const defs = effectiveFieldDefs(s.fieldDefs, s.localFieldBindings);
-          return settleLinkedRules(applyLiveLinkedRules(patched, defs, colId, liveKey, data, this.liveRuleCtx(issueId)), defs, this.liveRuleCtx(issueId));
+          return settleLinkedRules(applyLiveLinkedRules(patched, defs, colId, liveKey, data, this.liveRuleCtx(issueId), confirmedBoundColIds), defs, this.liveRuleCtx(issueId));
         })
       }));
       this.logDerivedChanges(issueId, beforeValues, colId);
+      // Live-reported bug: a bound field this refresh reconfirms but whose
+      // value doesn't actually change gets no new history entry at all
+      // (see applyLiveLinkedRules' own comment) -- logDerivedChanges just
+      // above only ever records THIS device's own local derived-entry
+      // bookkeeping for a field whose value genuinely changed. Update it
+      // directly for a reconfirmed-but-unchanged field too, against its
+      // own existing entry, so fieldLocalBindState/liveBindState (the
+      // bound vs. overridden glyph) sees the reconfirmation even though
+      // nothing new was written.
+      const afterIssueForBookkeeping = this.findIssue(issueId);
+      if (afterIssueForBookkeeping) {
+        const afterIds = latestEntryIdsByField(afterIssueForBookkeeping);
+        confirmedBoundColIds.forEach(f => {
+          if (afterIssueForBookkeeping.values[f] === beforeValues[f]) this.recordLocalDerivedEntryId(issueId, f, afterIds[f]);
+        });
+      }
       if (!isBuiltin) console.timeEnd('[diag] connector-link-total ' + matchedId);
     }).catch(err => {
       if (!isBuiltin) console.timeEnd('[diag] connector-link-total ' + matchedId);

@@ -457,6 +457,60 @@ test.describe('Bulk actions: Refresh -- staged job (2+ rows)', () => {
     }
   });
 
+  // Follow-up to the fix above: that one only covered a bound field whose
+  // VALUE actually changes as part of the refresh. A field already
+  // sitting at the correct computed value (e.g. left over from before
+  // this fix shipped, or just reconfirmed twice in a row) never gets a
+  // new history entry on refresh -- nothing changed, nothing to write --
+  // so there was nothing for the first fix to hook: the glyph bookkeeping
+  // stayed stale/missing forever, with no further refresh ever able to
+  // repair it. applyLiveLinkedRules' new confirmedOut list (used by both
+  // the single-row and bulk refresh paths) closes this specifically:
+  // every bound field the rule evaluates to a real answer gets its local
+  // bookkeeping reconfirmed, whether or not its stored value needed to
+  // change.
+  test('a bound field already sitting at the correct value (no new entry, since nothing changed) self-heals its glyph on refresh -- single-row and bulk alike', async ({ page }) => {
+    await h.gotoTracker(page);
+    await h.stubTauriConnectorRuntime(page, {
+      responsesByUrlSubstring: {
+        'acme/demo/issues/1': JSON.stringify({ title: 'Fresh 1', labels: [{ name: 'bug' }], state: 'open', body: '' }),
+        'acme/demo/issues/2': JSON.stringify({ title: 'Fresh 2', labels: [{ name: 'bug' }], state: 'open', body: '' })
+      }
+    });
+    const pid = await seedTwoLinkedRows(page);
+    // Seed 'type' to "bug" directly -- exactly what the rule will also
+    // compute from labels:[bug] -- with NO local-derived-entry record at
+    // all, simulating a field left in the pre-fix broken state (or one
+    // that's simply never been locally recorded before).
+    const doc = await h.idbGetProjectDoc(page, pid);
+    for (const i of [0, 1]) h.pushFieldEntry(doc.issues[i], 'type', 'bug');
+    await h.idbSetProjectDoc(page, pid, doc);
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    async function glyphTitles(num) {
+      return h.fieldCell(page, num, 'type').locator('[title]').evaluateAll(els => els.map(e => e.getAttribute('title')));
+    }
+    expect(await glyphTitles(1)).toEqual([]); // unrecorded -- plain, no glyph at all yet
+    expect(await glyphTitles(2)).toEqual([]);
+
+    // Single-row refresh: value doesn't change (already "bug").
+    await h.refreshRow(page, 1);
+    await page.waitForTimeout(500);
+    expect((await glyphTitles(1)).some(t => (t || '').startsWith('Linked to'))).toBe(true);
+
+    // Bulk refresh (2 rows): row 2's value doesn't change either.
+    await page.locator('[data-testid=row]').nth(0).locator('[data-testid=row-select-checkbox]').click();
+    await page.locator('[data-testid=row]').nth(1).locator('[data-testid=row-select-checkbox]').click({ modifiers: ['ControlOrMeta'] });
+    await page.locator('[data-testid=bulk-refresh-btn]').click();
+    await page.waitForTimeout(800);
+    if (await page.locator('[data-testid=merge-card]').isVisible().catch(() => false)) {
+      await page.locator('[data-testid=btn-merge-primary]').click();
+      await page.waitForTimeout(400);
+    }
+    expect((await glyphTitles(2)).some(t => (t || '').startsWith('Linked to'))).toBe(true);
+  });
+
   test('a row that never resolves is excluded after retries are exhausted -- the rest still apply, nothing hangs forever', async ({ page }) => {
     await h.gotoTracker(page);
     // GitHub's own real fetch goes through the Tauri IPC shim now, not a

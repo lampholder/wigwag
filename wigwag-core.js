@@ -2482,7 +2482,22 @@ function applyLinkedRules(iss, fieldDefs, ctx) {
 // text, not the common case of a plain value rule) to leave as a
 // documented limitation rather than threading liveData through that path
 // too.
-function applyLiveLinkedRules(iss, fieldDefs, sourceColId, system, liveData, ctx) {
+// confirmedOut, when given, collects the colId of every bound field this
+// pass evaluates to a REAL (non-skipped) answer -- including one whose
+// value doesn't actually end up changing. Live-reported bug: a refresh
+// that reconfirms a bound field's existing value (nothing to write,
+// since it already matched) left the field's local derived-entry
+// bookkeeping untouched -- fieldLocalBindState/liveBindState read that
+// record to choose the bound vs. overridden glyph, and a field that
+// reached its correct value via one refresh (recorded correctly) but
+// then got its glyph bookkeeping wiped or never set by an EARLIER bug
+// (or simply never bound+recorded at all until now) has no way to
+// self-heal via a later refresh that happens to compute the identical
+// value, since nothing ever "changes" for computeDerivedChangeEntries to
+// notice. The caller uses this list to re-confirm the bookkeeping
+// against the field's EXISTING latest entry directly, independent of
+// whether this pass's own value actually differs from before.
+function applyLiveLinkedRules(iss, fieldDefs, sourceColId, system, liveData, ctx, confirmedOut) {
   const source = {
     text: iss.values[sourceColId] || '', isLinked: true,
     github: system === 'github' ? pickGithubFields(liveData) : null,
@@ -2524,6 +2539,7 @@ function applyLiveLinkedRules(iss, fieldDefs, sourceColId, system, liveData, ctx
       const bindState = ctx && ctx.localDerivedEntryIds ? fieldLocalBindState(iss, colId, ctx.localDerivedEntryIds) : 'plain';
       if (bindState !== 'bound') continue;
     }
+    if (confirmedOut) confirmedOut.push(colId);
     values = applyComputedToField(values, colId, def, computed);
   }
   return values === iss.values ? iss : { ...iss, values };

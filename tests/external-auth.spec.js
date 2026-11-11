@@ -715,8 +715,9 @@ test.describe('Salesforce linking', () => {
     await page.waitForTimeout(150);
     await page.locator('[data-testid=rule-advanced-textarea]').fill('source.salesforce ? "has-sf" : "no-sf"');
     await page.waitForTimeout(300);
-    const row3 = page.locator('[data-testid=rule-preview-row]').nth(2);
-    await expect(row3).toContainText('no-sf');
+    await h.selectRuleTestIssue(page, 'i3');
+    await page.waitForTimeout(400);
+    await expect(page.locator('[data-testid=rule-test-result]')).toContainText('no-sf');
   });
 
   test('a saved Salesforce built-in config survives a page reload, shown in its own real editor', async ({ page }) => {
@@ -793,20 +794,15 @@ test.describe('Jira linking: expanded field set', () => {
     await expect(h.fieldCell(page, 3, 'type')).toHaveText(/Bug/);
   });
 
-  // The rule builder no longer has a raw-JSON debug preview (the design
-  // handoff replaced it with the results table, which shows what every
-  // row actually computes, not a static example) -- an advanced-mode
-  // expression reading the specific fields is how these now get exercised.
-  //
-  // Tracker #112 (b564316d): the preview evaluates straight off the
-  // PERSISTED fieldRef (buildSource), which is now display-only -- it has
-  // no live payload to show, so status/priority/etc. all read as empty
-  // defaults here, same as any other never-refreshed bound field. This is
-  // the correct, if less immediately useful, behavior: showing the old
-  // rich preview would mean either faking data that isn't really stored,
-  // or the preview quietly having access to something a bound field
-  // itself no longer does.
-  test('the rule editor\'s advanced expression reads empty defaults for the Jira field set until a refresh actually populates it', async ({ page }) => {
+  // Tracker 7dd22899: this is now the OPPOSITE assertion from before --
+  // the single-issue preview auto-fetches the moment the panel opens (and
+  // again on every test-issue switch), reusing the real per-field refresh
+  // dispatch, so an advanced expression sees REAL field values immediately
+  // rather than the persisted (deliberately trimmed) fieldRef's empty
+  // defaults. That used to be a documented, permanent limitation of the
+  // old scanning table (tracker #112) -- the whole point of this rework
+  // is that it no longer is.
+  test('the preview auto-fetches the moment the panel opens, so an advanced expression sees real Jira field values immediately, not empty defaults', async ({ page }) => {
     await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'TRK-999');
     await page.keyboard.press('Tab');
@@ -823,18 +819,20 @@ test.describe('Jira linking: expanded field set', () => {
       '(source.github ? "gh" : "no-gh") + "|" + [source.jira.status, source.jira.priority, source.jira.assignee, source.jira.reporter, source.jira.dueDate, source.jira.project].join(",")'
     );
     await page.waitForTimeout(300);
-
-    const row3 = page.locator('[data-testid=rule-preview-row]').nth(2); // issue num 3 is the seed's 3rd row
-    await expect(row3).toContainText('no-gh|,,,,,');
+    await h.selectRuleTestIssue(page, 'i3'); // issue num 3 is the seed's 3rd row
+    await page.waitForTimeout(500); // let the auto-fetch resolve
+    await expect(page.locator('[data-testid=rule-test-result]')).toContainText('no-gh|In Progress,High,Priya Sharma,Jordan Lee,2026-03-01,TRK');
   });
 
   test('source.jira / source.github are null (not an empty-shaped object) unless the link is actually that system', async ({ page }) => {
-    // GitHub-linked: source.jira must be falsey, so a rule can branch with a
-    // plain truthy check instead of needing to know which system a field is
-    // linked to. status/issueType read as empty defaults, same rationale as
-    // the Jira preview test above (tracker #112) -- only the isLinked/
-    // which-system-is-it structure is meaningfully testable without a
-    // refresh, not the field values themselves.
+    // GitHub-linked: source.jira must be falsey, so a rule can branch with
+    // a plain truthy check instead of needing to know which system a
+    // field is linked to. The expression here only reads the boolean
+    // existence of each container, not specific field values -- those now
+    // auto-populate from a real fetch the moment the panel opens (see the
+    // test above), so asserting a particular value here would just be
+    // testing this fixture's own content, not the structural null-vs-
+    // populated guarantee this test is actually about.
     await h.clickFieldToEdit(page, 3, 'linked');
     await h.pasteText(page, 'https://github.com/octocat/Hello-World/issues/3');
     await page.keyboard.press('Tab');
@@ -847,12 +845,11 @@ test.describe('Jira linking: expanded field set', () => {
     await page.waitForTimeout(400);
     await page.locator('[data-testid=rule-edit-expression]').click();
     await page.waitForTimeout(150);
-    await page.locator('[data-testid=rule-advanced-textarea]').fill(
-      '(source.github ? "gh:" + source.github.status + "," + source.github.issueType : "no-gh") + "|" + (source.jira ? "jira" : "no-jira")'
-    );
+    await page.locator('[data-testid=rule-advanced-textarea]').fill('(source.github ? "gh" : "no-gh") + "|" + (source.jira ? "jira" : "no-jira")');
     await page.waitForTimeout(300);
-    let row3 = page.locator('[data-testid=rule-preview-row]').nth(2);
-    await expect(row3).toContainText('gh:,|no-jira');
+    await h.selectRuleTestIssue(page, 'i3');
+    await page.waitForTimeout(500);
+    await expect(page.locator('[data-testid=rule-test-result]')).toContainText('gh|no-jira');
 
     await page.locator('[data-testid=rule-builder] >> text=✕').first().click();
     await page.waitForTimeout(400);
@@ -866,8 +863,9 @@ test.describe('Jira linking: expanded field set', () => {
     await h.openFieldEditor(page, 'mitigation');
     await page.locator('[data-testid=field-editor-open-rules]').click();
     await page.waitForTimeout(400);
-    row3 = page.locator('[data-testid=rule-preview-row]').nth(2);
-    await expect(row3).toContainText('no-gh|jira');
+    await h.selectRuleTestIssue(page, 'i3');
+    await page.waitForTimeout(500);
+    await expect(page.locator('[data-testid=rule-test-result]')).toContainText('no-gh|jira');
   });
 
   // Tracker #112 (b564316d): the persisted ref is display-only regardless

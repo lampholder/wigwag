@@ -1871,6 +1871,7 @@ class Component extends DCLogic {
       draggingRuleRowIndex: null, dragOverRuleRowIndex: null, dragOverRuleRowSide: null,
       fieldEditorColId: null, fieldEditorNewOptLabel: '', colorPickerOptIndex: null,
       ruleBuilderColId: null, ruleBuilderVisible: false,
+      ruleTestIssueId: null, ruleTestLiveOverride: null, ruleTestLiveLoading: false, ruleTestLiveError: '',
       activeCell: null, selectedCell: null, editDraft: '', optionFilterQuery: '',
       slideOverIssueId: null, slideOverVisible: false, newCommentDraft: '', commentStreamDrafts: {}, editingCommentFieldId: null, editingCommentId: null, editCommentDraft: '',
       switcherOpen: false, unknownProjectCold: null, unknownProjectNotice: null,
@@ -3889,6 +3890,10 @@ class Component extends DCLogic {
     colorPickerOptIndex: null,
     ruleBuilderColId: null,
     ruleBuilderVisible: false,
+    ruleTestIssueId: null,
+    ruleTestLiveOverride: null,
+    ruleTestLiveLoading: false,
+    ruleTestLiveError: '',
     activeCell: null,
     selectedCell: null,
     editDraft: '',
@@ -5750,53 +5755,204 @@ class Component extends DCLogic {
     if (!rows.length) return 'No conditions yet';
     return rows.length === 1 ? '1 condition' : rows.length + ' conditions';
   }
-  // The panel's whole feedback surface: for every issue, which condition
-  // won and what the field therefore holds. Conditions are evaluated
-  // individually (same compiler, one row at a time) so the table can name
-  // the winning row rather than just showing an output.
-  rulePreview(colId) {
-    const def = this.effectiveDef(colId);
-    const rows = this.ruleDefRows(def) || [];
-    const conds = rows.map(r => ruleRowCondition(r));
-    return this.state.issues.map(iss => {
-      const title = truncate(iss.values.title || '(untitled)', 44);
-      const source = buildSource(iss, def.linkedSourceId, this.connectedSourcesForDispatch());
-      if (!source.isLinked) {
-        return { id: iss.id, title, titleColor: 'var(--n29)', sourceText: '—',
-          matchedLabel: 'not linked', matchedColor: 'var(--n46)',
-          hasPills: false, hasText: true, pills: [], resultText: 'left alone', resultColor: 'var(--n46)' };
-      }
-      let matched = -1;
-      for (let i = 0; i < conds.length; i++) {
-        if (evalRule(conds[i], source, iss.values) === true) { matched = i; break; }
-      }
-      const computed = evalRule(def.rule || 'null', source, iss.values);
-      const next = applyComputedToField(iss.values, colId, def, computed)[colId];
-      const opts = def.options || [];
-      let hasPills = false, pills = [], resultText = '', resultColor = 'var(--n45)';
-      if (def.type === 'select' || def.type === 'multiselect') {
-        const ids = def.type === 'multiselect' ? (next || []) : (next == null ? [] : [next]);
-        pills = ids.map(id => {
-          const o = opts.find(x => x.id === id);
-          const c = col(o ? o.color : 'gray');
-          return { label: o ? o.label : id, bg: c.bg, fg: c.fg };
-        });
-        hasPills = pills.length > 0;
-        if (!hasPills) {
-          const attempted = computed == null ? '' : String(computed);
-          resultText = attempted ? 'no option matches “' + truncate(attempted, 24) + '”' : 'blank';
-          resultColor = attempted ? 'var(--c51)' : 'var(--n46)';
+  // Tracker 7dd22899: the rule panel's whole feedback surface, rebuilt
+  // around ONE issue instead of the whole project -- a bound field only
+  // ever materializes what it needs post-refresh, so a table scanning
+  // every issue's stored (deliberately trimmed) snapshot was really
+  // showing stale/partial data, making a correct rule look broken.
+  // Testing one issue at a time lets a real refresh pull its live linked
+  // fields in full and show exactly what the expression sees.
+  groupSourceKey(g) {
+    for (const it of g.items) { const m = /^!{0,2}source\.(\w+)/.exec(it.path); if (m) return m[1]; }
+    return null;
+  }
+  ruleTestVals(colId, def) {
+    const issues = this.state.issues;
+    if (!issues.length) return { hasIssues: false, notReadyText: 'No issues in this project yet to test with.' };
+    if (!def.linkedSourceId) return { hasIssues: false, notReadyText: 'Bind a source above to test with an issue.' };
+    const connectedSources = this.connectedSourcesForDispatch();
+    let selectedId = this.state.ruleTestIssueId;
+    if (!selectedId || !issues.some(i => i.id === selectedId)) {
+      const firstLinked = issues.find(i => buildSource(i, def.linkedSourceId, connectedSources).isLinked);
+      selectedId = (firstLinked || issues[0]).id;
+    }
+    const issue = issues.find(i => i.id === selectedId) || issues[0];
+    const issueOptions = issues.map(i => ({ id: i.id, label: truncate(i.values.title || '(untitled)', 50) }));
+    let source = buildSource(issue, def.linkedSourceId, connectedSources);
+    // A live re-fetch (refreshRuleTestSource) overwrites whichever keyed
+    // sub-object(s) the fetch actually resolved to with the just-fetched
+    // picked-fields payload -- same shape buildSource itself produces, so
+    // every path below reads identically either way. Scoped to this exact
+    // issue so switching the test issue (which clears it) never shows a
+    // stale fetch against the wrong row.
+    const live = this.state.ruleTestLiveOverride;
+    if (live && live.issueId === issue.id && source.isLinked) {
+      const merged = { ...source };
+      live.keys.forEach(k => { merged[k] = live.picked; });
+      source = merged;
+    }
+    const sourceFields = [];
+    if (source.isLinked) {
+      for (const g of this.subjectGroups()) {
+        if (g.label === 'The linked issue' || g.label === 'Other fields in this row') continue;
+        const key = this.groupSourceKey(g);
+        if (!key || !source[key]) continue;
+        for (const it of g.items) {
+          if (it.path.indexOf('!!') === 0) continue; // existence checks aren't "fields" to list
+          const val = evalRule(it.path, source, issue.values);
+          const isEmpty = val == null || val === '' || (Array.isArray(val) && !val.length);
+          sourceFields.push({ path: it.path, value: isEmpty ? '(empty)' : (Array.isArray(val) ? val.join(', ') : String(val)), isEmpty });
         }
-      } else {
-        resultText = next ? truncate(String(next), 60) : 'blank';
-        if (!next) resultColor = 'var(--n46)';
       }
-      return { id: iss.id, title, titleColor: 'var(--text-strong)',
-        sourceText: truncate(source.text || '—', 30),
-        matchedLabel: matched >= 0 ? (matched === 0 ? 'when 1' : 'when ' + (matched + 1)) : 'otherwise',
-        matchedColor: matched >= 0 ? 'var(--c3)' : 'var(--text-tertiary)',
-        hasPills, hasText: !hasPills, pills, resultText, resultColor };
-    });
+    }
+    const mode = this.ruleMode(def);
+    const rows = this.ruleDefRows(def) || [];
+    let matchedLabel = '', matchedColor = 'var(--text-tertiary)';
+    let hasPills = false, pills = [], hasText = true, resultText = 'unchanged', resultColor = 'var(--n46)';
+    let hasRef = false, ref = null;
+    const base = {
+      hasIssues: true, issueOptions, selectedId,
+      onSelectedChange: e => { this.setState({ ruleTestIssueId: e.target.value, ruleTestLiveOverride: null, ruleTestLiveError: '' }); this.autoFetchRuleTestSource(colId, e.target.value); },
+      canRefreshLive: source.isLinked, liveLoading: !!this.state.ruleTestLiveLoading, liveError: this.state.ruleTestLiveError || '',
+      liveLabel: this.state.ruleTestLiveLoading ? 'Refreshing…' : 'Refresh ↻',
+      onRefreshLive: () => this.refreshRuleTestSource(def, issue),
+      hasSource: source.isLinked, sourceFields
+    };
+    if (!source.isLinked) return Object.assign(base, { matchedLabel, matchedColor, hasPills, pills, hasText, hasRef, ref, resultText, resultColor });
+    if (mode === 'rows' && rows.length) {
+      let matched = -1;
+      const conds = rows.map(r => ruleRowCondition(r));
+      for (let i = 0; i < conds.length; i++) { if (evalRule(conds[i], source, issue.values) === true) { matched = i; break; } }
+      matchedLabel = matched >= 0 ? 'Matched: ' + (matched === 0 ? 'WHEN 1' : 'ELSE WHEN ' + (matched + 1)) : 'Matched: OTHERWISE';
+      matchedColor = matched >= 0 ? 'var(--c3)' : 'var(--text-tertiary)';
+    }
+    // evalRule's own try/catch swallows a RUNTIME error (e.g. calling a
+    // method that doesn't exist, like .contains() instead of .includes())
+    // into a plain `undefined` -- fine for every other caller, which only
+    // needs "did the rule produce a real answer", but it means this exact
+    // mistake rendered as an unexplained "blank" with nothing pointing at
+    // the typo. Re-running it here, uncaught, surfaces the real JS error.
+    let ruleError = '';
+    try { new Function('source', 'values', 'S', 'return (' + (def.rule || 'null') + ');')(source, issue.values, S); }
+    catch (e) { ruleError = e.message; }
+    const computed = evalRule(def.rule || 'null', source, issue.values);
+    const next = applyComputedToField(issue.values, colId, def, computed)[colId];
+    const opts = def.options || [];
+    const resultRef = computeBoundFieldRef(issue, def, this.liveRuleCtx(issue.id));
+    if (ruleError) {
+      return Object.assign(base, { matchedLabel, matchedColor, hasPills: false, pills: [], hasText: true, hasRef: false, ref: null, resultText: 'Threw: ' + ruleError, resultColor: 'var(--c51)' });
+    }
+    if (def.type === 'issue' && resultRef) {
+      return Object.assign(base, { matchedLabel, matchedColor, hasPills: false, pills: [], hasText: true,
+        resultText: next || '(untitled)', resultColor: 'var(--text-primary)', hasRef: true, ref: this.boundRefParts(resultRef) });
+    }
+    if (def.type === 'select' || def.type === 'multiselect') {
+      const ids = def.type === 'multiselect' ? (next || []) : (next == null ? [] : [next]);
+      pills = ids.map(id => {
+        const o = opts.find(x => x.id === id);
+        const c = col(o ? o.color : 'gray');
+        return { label: o ? o.label : id, bg: c.bg, fg: c.fg };
+      });
+      hasPills = pills.length > 0; hasText = !hasPills;
+      if (!hasPills) {
+        const attempted = computed == null ? '' : String(computed);
+        resultText = attempted ? 'no option matches “' + truncate(attempted, 40) + '”' : 'blank';
+        resultColor = attempted ? 'var(--c51)' : 'var(--n46)';
+      }
+    } else if (def.type === 'issue' && computed != null && typeof computed === 'object') {
+      resultText = 'Resolves to an object this field\'s source doesn\'t carry a real link for — left blank.';
+      resultColor = 'var(--c51)';
+    } else {
+      resultText = next ? String(next) : 'blank';
+      resultColor = next ? 'var(--text-secondary)' : 'var(--n46)';
+    }
+    return Object.assign(base, { matchedLabel, matchedColor, hasPills, pills, hasText, hasRef, ref, resultText, resultColor });
+  }
+  // Tracker 7dd22899: a read-only, display-only counterpart to
+  // buildTextCell's own ref-branding logic (kind detection, refLabel
+  // construction) -- used by the RESULT card above when a bound
+  // issue-type field resolves to a real copied link, so it can render the
+  // exact same "title above / small icon + link below" pattern every
+  // other linked-issue cell uses, without any of buildTextCell's click/
+  // edit/active-cell machinery (this is a live preview of a hypothetical
+  // row, not a real editable cell).
+  boundRefParts(ref) {
+    if (!ref) return null;
+    if (ref.system === 'wigwag') {
+      const resolved = this.resolveWigwagRef(ref);
+      return { isWigwagRef: true, isGithubRef: false, isJiraRef: false, isSalesforceRef: false, isConnectorRef: false,
+        connectorGlyph: '', connectorColor: '', refLabel: resolved.label, refHref: null, hasHref: false, noHref: true };
+    }
+    const n = normalizeRef(ref);
+    const fetchedVia = this.liveFetchedViaForRef(n);
+    const matchedId = this.resolveMatchedIdForDisplay(ref, n);
+    const connDef = fetchedVia ? this.connectedSourcesForDispatch().find(c => c.id === fetchedVia) : null;
+    const resolvedKind = n && n.href ? (resolveRefSystem(n.href, { connectedSources: this.connectedSourcesForDispatch() }) || {}).kind : null;
+    const isGithubRef = resolvedKind === 'github';
+    const isJiraRef = resolvedKind === 'jira';
+    const isSalesforceRef = resolvedKind === 'salesforce';
+    const isConnectorRef = !!connDef && !connDef.kind;
+    const href = n ? n.href : null;
+    const refLabel = isGithubRef ? (matchedId ? matchedId.owner + '/' + matchedId.repo + '#' + matchedId.num : (href || ''))
+      : isConnectorRef ? connectorLinkText(connDef.linkTextTemplate, '', matchedId)
+      : (matchedId != null ? String(matchedId) : (href || ''));
+    return { isWigwagRef: false, isGithubRef, isJiraRef, isSalesforceRef, isConnectorRef,
+      connectorGlyph: isConnectorRef ? connDef.glyph : '', connectorColor: isConnectorRef ? connDef.color : '',
+      refLabel, refHref: href || null, hasHref: !!href, noHref: !href };
+  }
+  // Pulls a FRESH copy straight from the system this test issue is
+  // actually linked to, via the SAME resolveRefreshDispatch/fetchLinkData
+  // dispatch the real per-field "refresh" buttons use (so every connector
+  // kind, additional configured instance, and custom macro connector all
+  // work identically here, not a cruder per-kind reimplementation).
+  // Scoped to the preview only: never written to the issue/history, just
+  // stashed in ruleTestLiveOverride for ruleTestVals to read. `keys` is
+  // every source key this fetch should overwrite -- the fixed kind slot
+  // (source.github/jira/salesforce, read by the common form most rules
+  // use) AND the connector's own specific key when it differs (an
+  // additional configured instance, or a custom connector), so a rule
+  // written against either form sees the live data.
+  refreshRuleTestSource(def, issue) {
+    const ref = issue.fieldRefs && issue.fieldRefs[def.linkedSourceId];
+    if (!ref || ref.system === 'wigwag') return;
+    const n = normalizeRef(ref);
+    if (!n || !n.href) return;
+    const dispatch = this.resolveRefreshDispatch(n);
+    if (!dispatch.connector) { this.setState({ ruleTestLiveError: 'Could not refresh: connector no longer exists' }); return; }
+    const connector = dispatch.connector, matchedId = dispatch.matchedId;
+    this.setState({ ruleTestLiveLoading: true, ruleTestLiveError: '' });
+    this.fetchLinkData(connector.id, matchedId, connector).then(({ data }) => {
+      const kind = connector.kind;
+      const picked = kind === 'github' ? pickGithubFields(data)
+        : kind === 'jira' ? pickJiraFields(data)
+        : kind === 'salesforce' ? pickSalesforceFields(data)
+        : (() => { const raw = pickConnectorFields(data); return { ...raw.extra, ...raw }; })();
+      const keys = new Set();
+      if (kind) keys.add(kind);
+      if (connector.key) keys.add(connector.key);
+      this.setState({ ruleTestLiveOverride: { issueId: issue.id, keys: Array.from(keys), picked }, ruleTestLiveLoading: false });
+    }).catch(err => this.setState({ ruleTestLiveLoading: false, ruleTestLiveError: err.message }));
+  }
+  // Loading the preview's source fields used to wait on a manual
+  // "Refresh" click, which usually opened empty (buildSource only ever
+  // has whatever's already stored on the issue). Every bound source is
+  // itself an issue-type link, so there's always a real system to go
+  // fetch -- firing this the moment the panel opens, and again every time
+  // the test issue changes, means the preview is populated with the live
+  // record by default; the manual button stays for a deliberate re-pull.
+  autoFetchRuleTestSource(colId, issueId) {
+    const def = this.effectiveDef(colId);
+    if (!def || !def.linkedSourceId) return;
+    const issues = this.state.issues;
+    if (!issues.length) return;
+    const connectedSources = this.connectedSourcesForDispatch();
+    let issue = issueId ? issues.find(i => i.id === issueId) : null;
+    if (!issue) {
+      const firstLinked = issues.find(i => buildSource(i, def.linkedSourceId, connectedSources).isLinked);
+      issue = firstLinked || issues[0];
+    }
+    if (!buildSource(issue, def.linkedSourceId, connectedSources).isLinked) return;
+    this.refreshRuleTestSource(def, issue);
   }
   ruleBuilderVals() {
     const s = this.state;
@@ -5918,8 +6074,6 @@ class Component extends DCLogic {
          e => { const fid = e.target.value || null; this.updateRuleRow(colId, i, { then: fid ? ('=values.' + fid) : null, thenCopyFieldRefFrom: fid }); },
          false));
     });
-    const preview = def.linkedSourceId ? this.rulePreview(colId) : [];
-    const linkedCount = preview.filter(p => p.matchedLabel !== 'not linked').length;
     const srcDef = s.fieldDefs[def.linkedSourceId];
     return {
       fieldLabel: def.label,
@@ -5955,15 +6109,13 @@ class Component extends DCLogic {
         : def.type === 'select' ? 'Return an option id or label.'
         : def.type === 'issue' ? 'Return a string (e.g. values.related). Copying another field\'s real link only works in the row editor, not here.'
         : 'Return a string.',
-      preview,
-      previewCaption: def.linkedSourceId
-        ? 'What every row holds right now — ' + linkedCount + ' of ' + preview.length + ' rows have something linked.'
-        : 'Bind a source to see what each row would get.'
+      test: this.ruleTestVals(colId, def)
     };
   }
   openRuleBuilder(colId) {
-    this.setState({ ruleBuilderColId: colId, ruleBuilderVisible: false, fieldEditorColId: null, openColMenuId: null });
+    this.setState({ ruleBuilderColId: colId, ruleBuilderVisible: false, fieldEditorColId: null, openColMenuId: null, ruleTestLiveOverride: null, ruleTestLiveError: '' });
     setTimeout(() => this.setState({ ruleBuilderVisible: true }), 20);
+    this.autoFetchRuleTestSource(colId);
   }
   closeRuleBuilder = () => {
     this.setState({ ruleBuilderVisible: false });

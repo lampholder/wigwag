@@ -296,35 +296,38 @@ test.describe('Text fields', () => {
     await expect(page.getByText('Return a string.', { exact: true })).toBeVisible();
   });
 
-  test('once bound, the results table reflects the real linked source data for every row, not just prose', async ({ page }) => {
+  test('once bound, the preview reflects the real linked source data once refreshed -- not just a blank default', async ({ page }) => {
     await h.openFieldEditor(page, 'mitigation');
     await page.locator('[data-testid=field-editor-source-select]').selectOption({ label: 'Issue' });
     await page.waitForTimeout(150);
     await page.locator('[data-testid=field-editor-open-rules]').click();
     await page.waitForTimeout(400);
-    // before any expression/rows exist, every row reads as linked-but-blank
-    await expect(page.locator('[data-testid=rule-preview-row]').first()).toContainText('blank');
+    await h.selectRuleTestIssue(page, 'i1'); // i1's title IS github-linked
+    // before any expression/rows exist, a linked-but-untested row reads as linked-but-blank
+    await expect(page.locator('[data-testid=rule-test-result]')).toContainText('blank');
 
     await page.locator('[data-testid=rule-edit-expression]').click();
     await page.waitForTimeout(150);
     await page.locator('[data-testid=rule-advanced-textarea]').fill('source.isLinked ? "linked:" + source.github.labels.join(",") : "unlinked"');
     await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=rule-test-result]')).toContainText('linked:');
 
-    // seed row 1's title IS github-linked, so the results table should
-    // reflect a real linked example, not just the empty default shape.
-    const row1 = page.locator('[data-testid=rule-preview-row]').first();
-    await expect(row1).toContainText('linked:');
-    // (KNOWN GAP, confirmed during the format v2 test-suite conversion):
-    // rulePreview (the live results table) evaluates via buildSource
-    // directly, with no live-fetch mechanism of its own -- it can never
-    // reflect a rich external field (source.github.labels) for ANY row,
-    // regardless of refresh history, since format v2 never caches rich
-    // payload data anywhere buildSource can read it from passively (see
-    // docs/FORMAT_V2.md). Row 1's labels always read as empty there, so
-    // this specific assertion is left failing on purpose as a regression
-    // marker; filed as a tracker issue for the preview feature itself
-    // (same gap documented in tests/bound-value-panel.spec.js).
-    // await expect(row1).toContainText('enhancement');
+    // Tracker 7dd22899: this used to be a permanent, documented gap --
+    // the old results table evaluated every row via buildSource directly,
+    // with no live-fetch mechanism of its own, so a rich field (labels)
+    // could never show as populated for ANY row, regardless of refresh
+    // history. The single-issue preview's own live refresh (the same
+    // dispatch a real per-field refresh uses) closes it for real -- row
+    // 1's own GitHub link points at a deliberately unfetchable fixture
+    // repo (GITHUB_FIXTURES' own comment), so a mocked response is needed
+    // to materialize it, same "once refreshed" pattern as every other
+    // rich-field coverage in this suite.
+    await h.overrideConnectorFetchResponses(page, { responsesByUrlSubstring: {
+      'acme/app/issues/3298': JSON.stringify({ title: 'Sidebar sizing does not stick between application starts', state: 'open', labels: [{ name: 'enhancement' }] })
+    } });
+    await page.locator('[data-testid=rule-test-refresh-live]').click();
+    await page.waitForTimeout(500);
+    await expect(page.locator('[data-testid=rule-test-result]')).toContainText('linked:enhancement');
   });
 });
 

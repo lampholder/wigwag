@@ -161,14 +161,10 @@ test.describe('Bound value panel: row-based conditions', () => {
   test('reordering condition rows with ↑/↓ changes which one wins first', async ({ page }) => {
     await openRowsFor(page, 'priority', 'Issue');
     // Row 1: title contains "Multiselect" (row 7's title only) -> P0. Row
-    // 2: unconditionally true (isNotEmpty on title text) -> P2. (Format
-    // v2: rulePreview evaluates via buildSource directly, with no live-
-    // fetch mechanism -- a source.github.labels criterion, used here
-    // pre-migration, can never show as matching in the preview for ANY
-    // row, since format v2 never caches rich payload data anywhere it
-    // can read from passively. source.text is always available without
-    // a fetch, so it demonstrates the same reordering mechanics without
-    // depending on that gap.)
+    // 2: unconditionally true (isNotEmpty on title text) -> P2. source.text
+    // (the bound source's own title) is always available without a fetch,
+    // so it demonstrates the reordering mechanics with no live-fetch
+    // dependency.
     await page.locator('[data-testid=rule-add-row]').click();
     await page.waitForTimeout(150);
     await page.locator('[data-testid=rule-row]').nth(0).locator('[data-testid=rule-row-subject]').selectOption('source.text');
@@ -187,15 +183,15 @@ test.describe('Bound value panel: row-based conditions', () => {
     await page.waitForTimeout(300);
 
     // Row 7 ("Multiselect..." title) currently matches row 1 (P0) since it's checked first.
-    const row7Before = page.locator('[data-testid=rule-preview-row]').nth(6);
-    await expect(row7Before).toContainText('when 1');
+    await h.selectRuleTestIssue(page, 'i7');
+    await expect(page.locator('[data-testid=rule-test-matched]')).toContainText('Matched: WHEN 1');
+    await expect(page.locator('[data-testid=rule-test-result]')).toContainText('P0');
 
     // Move row 2 (the catch-all) to the top -- now it wins for everything, including row 7.
     await page.locator('[data-testid=rule-row]').nth(1).locator('[data-testid=rule-row-remove]').locator('xpath=../..').locator('span', { hasText: '↑' }).click();
     await page.waitForTimeout(300);
-    const row7After = page.locator('[data-testid=rule-preview-row]').nth(6);
-    await expect(row7After).toContainText('when 1');
-    await expect(row7After).toContainText('P2');
+    await expect(page.locator('[data-testid=rule-test-matched]')).toContainText('Matched: WHEN 1');
+    await expect(page.locator('[data-testid=rule-test-result]')).toContainText('P2');
   });
 
   test('condition rows are drag-reorderable via a dedicated handle, not just ↑/↓', async ({ page }) => {
@@ -554,17 +550,18 @@ test.describe('Bound value panel: ANDing multiple criteria within one row', () =
     await page.locator('[data-testid=rule-row-then]').first().selectOption({ label: 'P0' });
     await page.waitForTimeout(300);
 
-    // Row 7 has the "bug" label but its title doesn't contain "Sidebar" --
-    // one criterion true, one false, the AND as a whole must fail.
-    const buggyRow = page.locator('[data-testid=rule-preview-row]').nth(6);
-    await expect(buggyRow).toContainText('otherwise');
-    await expect(buggyRow).toContainText('blank');
+    // Row 7's title doesn't contain "Sidebar" (and its github label is
+    // unfetched either way) -- one criterion false is enough to fail the
+    // AND regardless of the other.
+    await h.selectRuleTestIssue(page, 'i7');
+    await expect(page.locator('[data-testid=rule-test-matched]')).toContainText('Matched: OTHERWISE');
+    await expect(page.locator('[data-testid=rule-test-result]')).toContainText('blank');
 
     // Row 1's title DOES contain "Sidebar" but has no "bug" label -- same
     // AND, same failure, for the opposite reason.
-    const sidebarRow = page.locator('[data-testid=rule-preview-row]').nth(0);
-    await expect(sidebarRow).toContainText('otherwise');
-    await expect(sidebarRow).toContainText('blank');
+    await h.selectRuleTestIssue(page, 'i1');
+    await expect(page.locator('[data-testid=rule-test-matched]')).toContainText('Matched: OTHERWISE');
+    await expect(page.locator('[data-testid=rule-test-result]')).toContainText('blank');
   });
 
   test('a satisfiable AND matches and applies the real value to the cell', async ({ page }) => {
@@ -582,18 +579,26 @@ test.describe('Bound value panel: ANDing multiple criteria within one row', () =
     await page.locator('[data-testid=rule-row-then]').first().selectOption({ label: 'P1' });
     await page.waitForTimeout(300);
 
-    // (KNOWN GAP, confirmed during the format v2 test-suite conversion):
-    // rulePreview (the live results table) evaluates via buildSource
-    // directly, with no live-fetch mechanism of its own -- it can never
-    // reflect a rich external field (source.github.labels) for ANY row,
-    // regardless of refresh history, since format v2 never caches rich
-    // payload data anywhere buildSource can read it from passively (see
-    // docs/FORMAT_V2.md). The preview always reads row 7's labels as
-    // empty, so this criterion never matches there -- "otherwise"/blank,
-    // not "when 1"/P1. Left failing on purpose as a regression marker;
-    // filed as tracker issue for the preview feature itself.
-    // await expect(buggyRow).toContainText('when 1');
-    // await expect(buggyRow).toContainText('P1');
+    // Tracker 7dd22899: this used to be a documented, permanent gap --
+    // the old results table evaluated every row via buildSource directly,
+    // with no live-fetch mechanism of its own, so a rich external field
+    // (source.github.labels) could never show as matching for ANY row,
+    // no matter how many times it had actually been refreshed elsewhere.
+    // The single-issue preview's own live refresh (reusing the exact
+    // dispatch a real per-field refresh uses) closes that gap for real --
+    // before refreshing, row 7's labels are genuinely unfetched, so the
+    // preview correctly shows the failure; after, it shows the real match.
+    await h.selectRuleTestIssue(page, 'i7');
+    await expect(page.locator('[data-testid=rule-test-matched]')).toContainText('Matched: OTHERWISE');
+    await expect(page.locator('[data-testid=rule-test-result]')).toContainText('blank');
+
+    await h.overrideConnectorFetchResponses(page, { responsesByUrlSubstring: {
+      'owner/app/issues/3390': JSON.stringify({ title: 'Multiselect field doesn\'t render colored pills on CSV export', state: 'open', labels: [{ name: 'bug' }] })
+    } });
+    await page.locator('[data-testid=rule-test-refresh-live]').click();
+    await page.waitForTimeout(500);
+    await expect(page.locator('[data-testid=rule-test-matched]')).toContainText('Matched: WHEN 1');
+    await expect(page.locator('[data-testid=rule-test-result]')).toContainText('P1');
 
     await page.locator('[data-testid=rule-builder] >> text=✕').first().click();
     await page.waitForTimeout(400);
@@ -768,22 +773,15 @@ test.describe('Bound value panel: advanced (hand-written expression) mode', () =
     await expect(page.locator('[data-testid=rule-advanced-textarea]')).toBeVisible();
   });
 
-  test('editing the expression directly updates the results table, and a syntax error surfaces before evaluation', async ({ page }) => {
+  test('editing the expression directly updates the preview, and a syntax error surfaces before evaluation', async ({ page }) => {
     await h.openFieldEditor(page, 'type');
     await page.locator('[data-testid=field-editor-open-rules]').click();
     await page.waitForTimeout(400);
+    await h.selectRuleTestIssue(page, 'i1'); // i1's title IS github-linked
 
-    // A literal, unconditional value rather than the original's
-    // source.github.labels-based expression -- format v2's rulePreview
-    // evaluates via buildSource directly with no live-fetch mechanism,
-    // so it can never show a rich field (labels) as populated for ANY
-    // row (nothing is ever cached there -- see docs/FORMAT_V2.md). That
-    // gap is orthogonal to what this test actually checks (editing the
-    // textarea reactively updates the preview, and a syntax error
-    // surfaces), so it uses a value the preview CAN show instead.
     await page.locator('[data-testid=rule-advanced-textarea]').fill('"chore"');
     await page.waitForTimeout(300);
-    await expect(page.locator('[data-testid=rule-preview-row]').first()).toContainText('Chore');
+    await expect(page.locator('[data-testid=rule-test-result]')).toContainText('Chore');
     expect(await page.locator('[data-testid=rule-error]').count()).toBe(0);
 
     await page.locator('[data-testid=rule-advanced-textarea]').fill('source.github.labels.includes(');
@@ -808,6 +806,7 @@ test.describe('Bound value panel: advanced (hand-written expression) mode', () =
     await page.locator('[data-testid=field-editor-open-rules]').click();
     await page.waitForTimeout(400);
     await expect(page.locator('[data-testid=rule-builder]')).toContainText('S(x)');
+    await h.selectRuleTestIssue(page, 'i1'); // i1's title IS github-linked
 
     await page.locator('[data-testid=rule-advanced-textarea]').fill('S(source.github.status) === "closed" ? "bug" : "chore"');
     await page.waitForTimeout(300);
@@ -815,32 +814,30 @@ test.describe('Bound value panel: advanced (hand-written expression) mode', () =
     // row 1's seed status isn't "closed" -- confirms S() actually ran
     // (compared, lowercased) rather than the expression erroring out
     // silently and falling back to undefined.
-    await expect(page.locator('[data-testid=rule-preview-row]').first()).toContainText('Chore');
+    await expect(page.locator('[data-testid=rule-test-result]')).toContainText('Chore');
   });
 });
 
 test.describe('Bound value panel: results table', () => {
   test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
 
-  test('lists every project row, always -- not a sample', async ({ page }) => {
+  test('the test-issue picker lists every project issue, always -- not a sample', async ({ page }) => {
     await h.openFieldEditor(page, 'type');
     await page.locator('[data-testid=field-editor-open-rules]').click();
     await page.waitForTimeout(400);
-    expect(await page.locator('[data-testid=rule-preview-row]').count()).toBe(9); // the full demo seed, all 9 issues
+    expect(await page.locator('[data-testid=rule-test-issue-select] option').count()).toBe(9); // the full demo seed, all 9 issues
   });
 
-  test('an unlinked row reads "not linked" / "left alone", not a failure message', async ({ page }) => {
+  test('an issue unlinked at the bound source reads a clear "nothing linked, left alone" message, not a failure', async ({ page }) => {
     // Row 1's Related field isn't linked to anything, so binding a
-    // different field to "Related" as source leaves row 1 unlinked.
+    // different field to "Related" as source leaves it unlinked.
     await h.openFieldEditor(page, 'priority');
     await page.locator('[data-testid=field-editor-source-select]').selectOption({ label: 'Related' });
     await page.waitForTimeout(150);
     await page.locator('[data-testid=field-editor-open-rules]').click();
     await page.waitForTimeout(400);
-
-    const row1 = page.locator('[data-testid=rule-preview-row]').first();
-    await expect(row1).toContainText('not linked');
-    await expect(row1).toContainText('left alone');
+    await h.selectRuleTestIssue(page, 'i1');
+    await expect(page.locator('[data-testid=rule-test-not-linked]')).toContainText('left alone');
   });
 
   test('a select-type field with no matching option shows the red "no option matches" failure message', async ({ page }) => {
@@ -853,21 +850,12 @@ test.describe('Bound value panel: results table', () => {
     await page.waitForTimeout(150);
     await page.locator('[data-testid=rule-advanced-textarea]').fill('"nonexistent-option-id"');
     await page.waitForTimeout(300);
+    await h.selectRuleTestIssue(page, 'i1'); // i1's title IS github-linked
 
-    const row1 = page.locator('[data-testid=rule-preview-row]').first(); // row 1's title IS github-linked
-    await expect(row1).toContainText('no option matches');
-    const color = await row1.locator('span', { hasText: 'no option matches' }).first().evaluate(el => getComputedStyle(el).color);
+    const result = page.locator('[data-testid=rule-test-result]');
+    await expect(result).toContainText('no option matches');
+    const color = await result.locator('[data-testid=rule-test-result-text]').evaluate(el => getComputedStyle(el).color);
     expect(color).toBe('oklch(0.55 0.16 25)');
-  });
-
-  test('the caption reports how many rows currently have something linked', async ({ page }) => {
-    await h.openFieldEditor(page, 'priority');
-    await page.locator('[data-testid=field-editor-source-select]').selectOption({ label: 'Related' });
-    await page.waitForTimeout(150);
-    await page.locator('[data-testid=field-editor-open-rules]').click();
-    await page.waitForTimeout(400);
-    // seed data: "Related" is linked on issue rows 4 and 5 only.
-    await expect(page.locator('[data-testid=rule-preview-caption]')).toContainText('of 9 rows have something linked');
   });
 });
 

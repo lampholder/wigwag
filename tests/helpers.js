@@ -1320,6 +1320,17 @@ async function setBoundSourceAndRule(page, sourceLabel, ruleText) {
   await page.waitForTimeout(400);
 }
 
+// Tracker 7dd22899: the rule-builder preview's test-issue picker lists
+// every issue by id, option value === issue.id -- selecting by id
+// directly (the plain demo fixture's own stable i1..i9, which line up
+// with "row N" for every spec seeding it with no filter/sort applied) is
+// simpler and less brittle than matching a (sometimes truncated) title
+// label.
+async function selectRuleTestIssue(page, issueId) {
+  await page.locator('[data-testid=rule-test-issue-select]').selectOption(issueId);
+  await page.waitForTimeout(250);
+}
+
 // The header's own inline sort-arrow icon only appears once a column is
 // ALREADY the active sort (col.isSorted gates it) — it's a shortcut for
 // flipping direction, not how a first sort gets triggered. The "⋯" column
@@ -1442,6 +1453,7 @@ module.exports = {
   openTitleMenu,
   openFieldEditor,
   setBoundSourceAndRule,
+  selectRuleTestIssue,
   sortByColumn,
   getHistoryEntries,
   getHistoryEntriesFor,

@@ -2839,6 +2839,32 @@ class Component extends DCLogic {
         if (explicitFields.has(f)) continue;
         if (afterIds[f] !== beforeIds[f]) derivedExtra.push({ field: f, preMergeLocalEntryId: beforeIds[f] || null, resultEntryId: afterIds[f] });
       }
+      // Live-reported bug: a bound field's own new value can land here
+      // EITHER as derivedExtra (routine resettle fallout, e.g. a plain
+      // "Apply update" merge) OR as an EXPLICIT mergeIssueSummaries entry
+      // (a bulk/staged refresh job's own row-level cascade already
+      // reports a refreshed bound field alongside its source field, not
+      // deferred to the derivedExtra fallback above) -- in BOTH cases,
+      // THIS device's own local bind-state bookkeeping
+      // (LOCAL_DERIVED_ENTRY_IDS_KEY, read by fieldLocalBindState/
+      // liveBindState to pick the bound vs. overridden glyph) needs the
+      // same update logDerivedChanges (the single-row refresh path)
+      // always makes for its own equivalent set of changed fields -- this
+      // bulk/merge-gate path never made it at all, so a field already
+      // holding a real, correctly-computed value kept showing the
+      // override glyph (or a stale prior record as mismatched) after a
+      // bulk refresh recomputed it. Confirmed live: a select field bound
+      // via a hand-written rule, with a pre-existing manual value,
+      // bulk-refreshed with 2+ rows selected -- showed the override
+      // glyph on a value that was genuinely the rule's own computed
+      // answer. Scoped to schema-bound fields only (def.linkedSourceId),
+      // so a genuinely unbound field's own real incoming edit (e.g. the
+      // refreshed source field itself) is never mistaken for derived.
+      const fieldDefs = this.effectiveFieldDefs();
+      for (const f in afterIds) {
+        if (!fieldDefs[f] || !fieldDefs[f].linkedSourceId) continue;
+        if (afterIds[f] !== beforeIds[f]) this.recordLocalDerivedEntryId(iss.id, f, afterIds[f]);
+      }
       if (!derivedExtra.length) return;
       if (existing) existing.fields = [...existing.fields, ...derivedExtra];
       else { summariesByIssueId[iss.id] = { id: iss.id, fields: derivedExtra }; summaries = [...(summaries || []), summariesByIssueId[iss.id]]; }

@@ -413,6 +413,50 @@ test.describe('Bulk actions: Refresh -- staged job (2+ rows)', () => {
     await expect(page.locator('[data-testid=row]').nth(1).locator('[data-testid=title-cell]')).toContainText('Fresh 2');
   });
 
+  // Live-reported bug: a bound field (here 'type', pre-bound in the demo
+  // fixture to source.github.labels.includes("bug") ? "bug" : "enhancement")
+  // recomputed as a cascade of a BULK (2+ row) refresh kept showing the
+  // override glyph even though its new value was genuinely the rule's
+  // own computed answer -- applyComputedMerge (the merge-gate confirm
+  // path every staged refresh job goes through) never updated this
+  // device's own local bind-state bookkeeping the way the single-row
+  // refresh path (logDerivedChanges) always does.
+  test('a bound field recomputed as a cascade of a bulk (2+ row) refresh shows the bound glyph, not the override glyph', async ({ page }) => {
+    await h.gotoTracker(page);
+    await h.stubTauriConnectorRuntime(page, {
+      responsesByUrlSubstring: {
+        'acme/demo/issues/1': JSON.stringify({ title: 'Fresh 1', labels: [{ name: 'bug' }], state: 'open', body: '' }),
+        'acme/demo/issues/2': JSON.stringify({ title: 'Fresh 2', labels: [{ name: 'bug' }], state: 'open', body: '' })
+      }
+    });
+    const pid = await seedTwoLinkedRows(page);
+    // Manually seed 'type' to a value the rule itself can never produce
+    // ("chore" -- the rule only ever returns "bug"/"enhancement") on BOTH
+    // rows first, so the refresh is GUARANTEED to actually change it for
+    // both, regardless of whichever value the untouched demo seed
+    // happened to already have.
+    const doc = await h.idbGetProjectDoc(page, pid);
+    for (const i of [0, 1]) h.pushFieldEntry(doc.issues[i], 'type', 'chore');
+    await h.idbSetProjectDoc(page, pid, doc);
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    await page.locator('[data-testid=row]').nth(0).locator('[data-testid=row-select-checkbox]').click();
+    await page.locator('[data-testid=row]').nth(1).locator('[data-testid=row-select-checkbox]').click({ modifiers: ['ControlOrMeta'] });
+    await page.locator('[data-testid=bulk-refresh-btn]').click();
+    await page.waitForTimeout(800);
+    await page.locator('[data-testid=btn-merge-primary]').click();
+    await page.waitForTimeout(400);
+
+    for (const num of [1, 2]) {
+      const cell = h.fieldCell(page, num, 'type');
+      await expect(cell).toContainText('Bug');
+      const titles = await cell.locator('[title]').evaluateAll(els => els.map(e => e.getAttribute('title')));
+      expect(titles.some(t => (t || '').startsWith('Linked to'))).toBe(true);
+      expect(titles.some(t => (t || '').startsWith('Overrides'))).toBe(false);
+    }
+  });
+
   test('a row that never resolves is excluded after retries are exhausted -- the rest still apply, nothing hangs forever', async ({ page }) => {
     await h.gotoTracker(page);
     // GitHub's own real fetch goes through the Tauri IPC shim now, not a

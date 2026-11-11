@@ -430,6 +430,80 @@ test.describe('Bound value panel: row-based conditions', () => {
   });
 });
 
+test.describe('Bound value panel: "Value / From source" THEN toggle (tracker 7dd22899)', () => {
+  test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
+
+  test('a select target\'s row THEN can copy a value straight from the bound source instead of a literal option, and back again', async ({ page }) => {
+    await openRowsFor(page, 'priority', 'Issue');
+    await page.locator('[data-testid=rule-add-row]').click();
+    await page.waitForTimeout(150);
+
+    // Starts in Value mode -- the literal option picker, no copy-field select.
+    await expect(page.locator('[data-testid=rule-row-then]').first()).toBeVisible();
+    await expect(page.locator('[data-testid=rule-row-then-copy-field]')).toHaveCount(0);
+
+    await page.locator('[data-testid=rule-then-mode-source]').first().click();
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=rule-row-then]')).toHaveCount(0);
+    const copySelect = page.locator('[data-testid=rule-row-then-copy-field]').first();
+    await expect(copySelect).toBeVisible();
+    const optionLabels = await copySelect.locator('option').allTextContents();
+    // Only TEXT-kind paths for a select target -- a list-kind path like
+    // GitHub: Labels has no business here (confirmed absent); "Other
+    // fields in this row" is excluded too (plain values, not source data).
+    expect(optionLabels.some(l => l === 'Copy GitHub: Status')).toBe(true);
+    expect(optionLabels.some(l => l.includes('Labels'))).toBe(false);
+    expect(optionLabels.some(l => l.includes('Other fields'))).toBe(false);
+
+    await copySelect.selectOption({ label: 'Copy GitHub: Status' });
+    await page.waitForTimeout(250);
+    await expect(page.locator('[data-testid=rule-expression]')).toContainText('source.github?.status');
+
+    // Toggling back to Value drops the copy-field select and restores the
+    // literal picker, defaulted to the field's first option (not left on
+    // whatever the source path happened to be).
+    await page.locator('[data-testid=rule-then-mode-value]').first().click();
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=rule-row-then-copy-field]')).toHaveCount(0);
+    await expect(page.locator('[data-testid=rule-row-then]').first()).toBeVisible();
+    await expect(page.locator('[data-testid=rule-expression]')).not.toContainText('source.github?.status');
+  });
+
+  test('a multiselect target\'s OTHERWISE can copy the bound source\'s own list value end-to-end, through a real refresh', async ({ page }) => {
+    await h.openFieldEditor(page, 'teams');
+    await page.locator('[data-testid=field-editor-source-select]').selectOption({ label: 'Issue' });
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=field-editor-open-rules]').click();
+    await page.waitForTimeout(400);
+
+    await expect(page.locator('[data-testid=rule-fallback-then-mode-source]')).toBeVisible();
+    await page.locator('[data-testid=rule-fallback-then-mode-source]').click();
+    await page.waitForTimeout(200);
+    const fallbackCopySelect = page.locator('[data-testid=rule-fallback-then-copy-field]');
+    await expect(fallbackCopySelect).toBeVisible();
+    await fallbackCopySelect.selectOption({ label: 'Copy GitHub: Labels' });
+    await page.waitForTimeout(250);
+    await expect(page.locator('[data-testid=rule-expression]')).toContainText('source.github?.labels');
+
+    await page.locator('[data-testid=rule-builder] >> text=✕').first().click();
+    await page.waitForTimeout(400);
+    await page.mouse.click(50, 50);
+    await page.waitForTimeout(200);
+
+    // Row 7's GitHub link points at a deliberately unfetchable fixture
+    // repo (GITHUB_FIXTURES' own comment) -- a real refresh with a mocked
+    // response carrying a "Platform" label (case-insensitive match
+    // against the teams field's own real option) is what actually proves
+    // the copied VALUE, not just the compiled text, resolves end-to-end.
+    await h.overrideConnectorFetchResponses(page, { responsesByUrlSubstring: {
+      'owner/app/issues/3390': JSON.stringify({ title: 'Multiselect field doesn\'t render colored pills on CSV export', state: 'open', labels: [{ name: 'Platform' }] })
+    } });
+    await h.refreshRow(page, 7);
+    await page.waitForTimeout(400);
+    await expect(h.fieldCell(page, 7, 'teams')).toContainText('Platform');
+  });
+});
+
 test.describe('Bound value panel: ANDing multiple criteria within one row', () => {
   test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
 

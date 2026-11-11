@@ -5558,6 +5558,22 @@ class Component extends DCLogic {
     for (const g of groups) for (const it of g.items) if (it.path === path) return it;
     return null;
   }
+  // Tracker 7dd22899: the "From source" THEN toggle's own candidate list
+  // -- a select/multiselect target can copy a VALUE straight from the
+  // bound source instead of picking a literal option. Only kind-matching
+  // paths make sense as a copy source (a 'text'-kind path for select, a
+  // 'list'-kind path for multiselect -- matching what the target itself
+  // holds); "Other fields in this row" is excluded, same reasoning
+  // insertChips (expression mode) uses -- those are already reachable as
+  // ordinary values, not source data.
+  sourceSubjectOptions(kind) {
+    const out = [];
+    for (const g of this.subjectGroups()) {
+      if (g.label === 'Other fields in this row') continue;
+      for (const it of g.items) if (it.kind === kind) out.push({ id: it.path, label: it.label });
+    }
+    return out;
+  }
   opsFor(kind) {
     if (kind === 'list') return [
       { id: 'includes', label: 'includes' }, { id: 'notIncludes', label: 'does not include' },
@@ -5792,7 +5808,7 @@ class Component extends DCLogic {
       const isSelect = def.type === 'select', isMulti = def.type === 'multiselect', isIssueType = def.type === 'issue';
       const opts = def.options || [];
       if (isIssueType && isFallback) {
-        return { thenIsSelect: false, thenIsMulti: false, thenIsText: false, thenIsFieldCopy: false, thenIsFixedBlank: true };
+        return { thenShowModeToggle: false, thenIsSelect: false, thenIsMulti: false, thenIsText: false, thenIsFieldCopy: false, thenIsFixedBlank: true };
       }
       if (isIssueType) {
         const candidates = [];
@@ -5801,26 +5817,64 @@ class Component extends DCLogic {
           if (s.fieldDefs[id].type === 'issue') candidates.push({ id, label: s.fieldDefs[id].label });
         }
         return {
-          thenIsSelect: false, thenIsMulti: false, thenIsText: false, thenIsFixedBlank: false, thenIsFieldCopy: true,
+          thenShowModeToggle: false, thenIsSelect: false, thenIsMulti: false, thenIsText: false, thenIsFixedBlank: false, thenIsFieldCopy: true,
           thenCopyFieldValue: copyFieldRefFrom || '',
           thenCopyFieldOptions: candidates,
           onThenCopyFieldChange: onCopyFieldChange
         };
       }
+      // Tracker 7dd22899: a select/multiselect target can ALSO copy
+      // straight from the linked source instead of picking a literal
+      // option -- a leading "=" on `then` (the same escape hatch plain
+      // text fields already get) marks that mode, so it round-trips with
+      // no new schema field at all. Reuses the thenIsFieldCopy template
+      // branch the issue-type "copy field" dropdown already has; only the
+      // candidate list (source value paths, not other issue-type fields)
+      // and what onThenCopyFieldChange writes (=<path>, not =values.<id>)
+      // differ.
+      if (isSelect || isMulti) {
+        const isCopyMode = typeof value === 'string' && value.charAt(0) === '=';
+        const activeBg = 'var(--accent-fill)', activeFg = '#fff', idleBg = 'transparent', idleFg = 'var(--text-secondary)';
+        const modeToggle = {
+          thenShowModeToggle: true,
+          thenModeValueBg: isCopyMode ? idleBg : activeBg, thenModeValueFg: isCopyMode ? idleFg : activeFg,
+          thenModeSourceBg: isCopyMode ? activeBg : idleBg, thenModeSourceFg: isCopyMode ? activeFg : idleFg,
+          thenModeOnValue: () => setter(isMulti ? [] : (opts[0] ? opts[0].id : null)),
+          thenModeOnSource: () => {
+            const candidates = this.sourceSubjectOptions(isMulti ? 'list' : 'text');
+            setter(candidates.length ? '=' + candidates[0].id : (isMulti ? [] : null));
+          }
+        };
+        if (isCopyMode) {
+          const candidates = this.sourceSubjectOptions(isMulti ? 'list' : 'text');
+          return Object.assign(modeToggle, {
+            thenIsSelect: false, thenIsMulti: false, thenIsText: false, thenIsFixedBlank: false, thenIsFieldCopy: true,
+            thenCopyFieldValue: value.slice(1),
+            thenCopyFieldOptions: candidates,
+            onThenCopyFieldChange: e => setter(e.target.value ? '=' + e.target.value : (isMulti ? [] : null))
+          });
+        }
+        return Object.assign(modeToggle, {
+          thenIsSelect: isSelect, thenIsMulti: isMulti, thenIsText: false, thenIsFieldCopy: false, thenIsFixedBlank: false,
+          thenValue: isMulti ? '' : (value == null ? '' : String(value)),
+          onThenChange: e => setter(isSelect ? (e.target.value || null) : e.target.value),
+          thenOptions: isMulti
+            ? opts.map(o => {
+                const sel = (value || []).indexOf(o.id) >= 0;
+                const c = col(o.color);
+                return { id: o.id, label: o.label,
+                  bg: sel ? c.bg : 'var(--surface)', fg: sel ? c.fg : 'var(--text-secondary)',
+                  border: sel ? c.bg : 'var(--border)',
+                  onToggle: () => setter(sel ? (value || []).filter(x => x !== o.id) : (value || []).concat([o.id])) };
+              })
+            : opts.map(o => ({ id: o.id, label: o.label }))
+        });
+      }
       return {
-        thenIsSelect: isSelect, thenIsMulti: isMulti, thenIsText: !isSelect && !isMulti, thenIsFieldCopy: false, thenIsFixedBlank: false,
-        thenValue: isMulti ? '' : (value == null ? '' : String(value)),
-        onThenChange: e => setter(isSelect ? (e.target.value || null) : e.target.value),
-        thenOptions: isMulti
-          ? opts.map(o => {
-              const sel = (value || []).indexOf(o.id) >= 0;
-              const c = col(o.color);
-              return { id: o.id, label: o.label,
-                bg: sel ? c.bg : 'var(--surface)', fg: sel ? c.fg : 'var(--text-secondary)',
-                border: sel ? c.bg : 'var(--border)',
-                onToggle: () => setter(sel ? (value || []).filter(x => x !== o.id) : (value || []).concat([o.id])) };
-            })
-          : opts.map(o => ({ id: o.id, label: o.label }))
+        thenShowModeToggle: false,
+        thenIsSelect: false, thenIsMulti: false, thenIsText: true, thenIsFieldCopy: false, thenIsFixedBlank: false,
+        thenValue: value == null ? '' : String(value),
+        onThenChange: e => setter(e.target.value)
       };
     };
     const rowVals = (rows || []).map((r, i) => {

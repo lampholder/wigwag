@@ -1763,6 +1763,12 @@
                 <div data-testid="rule-add-criterion" sc-camel-on-click="{{ row.onAddCriterion }}" style="cursor:pointer; font-size:11px; font-weight:600; color: var(--accent-ink); margin-bottom:8px;">+ AND condition</div>
                 <div style="display:flex; align-items:center; gap:8px;">
                   <span style="font-size:11px; font-weight:700; letter-spacing:0.07em; color: var(--text-secondary); flex-shrink:0;">THEN</span>
+                  <sc-if value="{{ row.thenShowModeToggle }}" hint-placeholder-val="{{ false }}">
+                    <div style="display:flex; border:1px solid var(--n27); border-radius:5px; overflow:hidden; flex-shrink:0;">
+                      <span data-testid="rule-then-mode-value" sc-camel-on-click="{{ row.thenModeOnValue }}" style="cursor:pointer; padding:4px 7px; font-size:10.5px; font-weight:600; background: {{ row.thenModeValueBg }}; color: {{ row.thenModeValueFg }};">Value</span>
+                      <span data-testid="rule-then-mode-source" sc-camel-on-click="{{ row.thenModeOnSource }}" style="cursor:pointer; padding:4px 7px; font-size:10.5px; font-weight:600; background: {{ row.thenModeSourceBg }}; color: {{ row.thenModeSourceFg }}; border-left:1px solid var(--n27);">From source</span>
+                    </div>
+                  </sc-if>
                   <sc-if value="{{ row.thenIsSelect }}" hint-placeholder-val="{{ true }}">
                     <sc-raw-select data-testid="rule-row-then" value="{{ row.thenValue }}" sc-camel-on-change="{{ row.onThenChange }}" style="flex:1; min-width:0; box-sizing:border-box; padding:6px 8px; border:1px solid var(--border); border-radius:6px; font-size:12.5px; font-family:inherit; background:var(--surface);">
                       <option value="">— leave blank —</option>
@@ -1797,6 +1803,12 @@
               <div style="font-size:10px; font-weight:700; letter-spacing:0.07em; color: var(--text-secondary); margin-bottom:8px;">OTHERWISE</div>
               <div style="display:flex; align-items:center; gap:8px;">
                 <span style="font-size:11px; font-weight:700; letter-spacing:0.07em; color: var(--text-secondary); flex-shrink:0;">THEN</span>
+                <sc-if value="{{ ruleBuilder.fallback.thenShowModeToggle }}" hint-placeholder-val="{{ false }}">
+                  <div style="display:flex; border:1px solid var(--n27); border-radius:5px; overflow:hidden; flex-shrink:0;">
+                    <span data-testid="rule-fallback-then-mode-value" sc-camel-on-click="{{ ruleBuilder.fallback.thenModeOnValue }}" style="cursor:pointer; padding:4px 7px; font-size:10.5px; font-weight:600; background: {{ ruleBuilder.fallback.thenModeValueBg }}; color: {{ ruleBuilder.fallback.thenModeValueFg }};">Value</span>
+                    <span data-testid="rule-fallback-then-mode-source" sc-camel-on-click="{{ ruleBuilder.fallback.thenModeOnSource }}" style="cursor:pointer; padding:4px 7px; font-size:10.5px; font-weight:600; background: {{ ruleBuilder.fallback.thenModeSourceBg }}; color: {{ ruleBuilder.fallback.thenModeSourceFg }}; border-left:1px solid var(--n27);">From source</span>
+                  </div>
+                </sc-if>
                 <sc-if value="{{ ruleBuilder.fallback.thenIsSelect }}" hint-placeholder-val="{{ true }}">
                   <sc-raw-select data-testid="rule-fallback-then" value="{{ ruleBuilder.fallback.thenValue }}" sc-camel-on-change="{{ ruleBuilder.fallback.onThenChange }}" style="flex:1; min-width:0; box-sizing:border-box; padding:6px 8px; border:1px solid var(--border); border-radius:6px; font-size:12.5px; font-family:inherit; background:var(--surface);">
                     <option value="">— leave blank —</option>
@@ -1810,6 +1822,14 @@
                 </sc-if>
                 <sc-if value="{{ ruleBuilder.fallback.thenIsFixedBlank }}" hint-placeholder-val="{{ false }}">
                   <span data-testid="rule-fallback-then" style="flex:1; font-size:12.5px; color: var(--text-tertiary); font-style:italic;">— leave blank (editable by hand) —</span>
+                </sc-if>
+                <sc-if value="{{ ruleBuilder.fallback.thenIsFieldCopy }}" hint-placeholder-val="{{ false }}">
+                  <sc-raw-select data-testid="rule-fallback-then-copy-field" value="{{ ruleBuilder.fallback.thenCopyFieldValue }}" sc-camel-on-change="{{ ruleBuilder.fallback.onThenCopyFieldChange }}" style="flex:1; min-width:0; box-sizing:border-box; padding:6px 8px; border:1px solid var(--border); border-radius:6px; font-size:12.5px; font-family:inherit; background:var(--surface);">
+                    <option value="">— leave blank —</option>
+                    <sc-for list="{{ ruleBuilder.fallback.thenCopyFieldOptions }}" as="o" hint-placeholder-count="2">
+                      <option value="{{ o.id }}">Copy {{ o.label }}</option>
+                    </sc-for>
+                  </sc-raw-select>
                 </sc-if>
                 <sc-if value="{{ ruleBuilder.fallback.thenIsMulti }}" hint-placeholder-val="{{ false }}">
                   <div style="display:flex; flex-wrap:wrap; gap:5px;">

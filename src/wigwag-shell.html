@@ -1126,7 +1126,12 @@ function pickJiraFields(obj) {
     statusCategory: obj.statusCategory || '', issueType: obj.issueType || '', priority: obj.priority || '',
     assignee: obj.assignee || '', reporter: obj.reporter || '', created: obj.created || '', updated: obj.updated || '',
     dueDate: obj.dueDate || '', resolution: obj.resolution || '', resolutionDate: obj.resolutionDate || '',
-    components: obj.components || [], fixVersions: obj.fixVersions || [], project: obj.project || ''
+    components: obj.components || [], fixVersions: obj.fixVersions || [], project: obj.project || '',
+    // Live-reported (Tom): unlike github/salesforce, Jira can genuinely
+    // carry org-specific CUSTOM fields beyond this curated set -- see
+    // fetchJiraData's own customfield_* filtering -- mirrors
+    // pickConnectorFields' own `extra` shape exactly.
+    extra: obj.extra || {}
   };
 }
 // Unlike Jira's fixed issue schema, a Salesforce record's meaningful
@@ -2054,11 +2059,20 @@ function buildSource(issue, linkedSourceId, connectedSources) {
   // belongs to (and thus which subject key(s) to populate) -- it does
   // not hand back a richer object to read fields from.
   const resolved = ref && ref.system !== 'wigwag' ? resolveRefSystem(ref.href, { connectedSources }) : null;
+  // Live-reported (Tom): unlike github/salesforce, a Jira custom field's
+  // name is genuinely per-org (see pickJiraFields' own `extra`) -- gets
+  // the SAME "flatten extra's own keys onto the object itself" treatment
+  // a custom connector already has below, so source.jira.StoryPoints
+  // works directly, not only source.jira.extra.StoryPoints (a name
+  // collision with a curated field, e.g. status, keeps the curated one --
+  // same precedence a custom connector's own dedicated fields already
+  // have over its extra).
+  const jiraPicked = resolved && resolved.kind === 'jira' ? pickJiraFields(ref) : null;
   const source = {
     text: issue.values[linkedSourceId] || '',
     isLinked: !!ref,
     github: resolved && resolved.kind === 'github' ? pickGithubFields(ref) : null,
-    jira: resolved && resolved.kind === 'jira' ? pickJiraFields(ref) : null,
+    jira: jiraPicked ? { ...jiraPicked.extra, ...jiraPicked } : null,
     salesforce: resolved && resolved.kind === 'salesforce' ? pickSalesforceFields(ref) : null
   };
   // Connected Sources (Phase 1): a custom connector's own identity is
@@ -2098,7 +2112,13 @@ function buildSource(issue, linkedSourceId, connectedSources) {
       : src.kind === 'jira' ? pickJiraFields(ref)
       : src.kind === 'salesforce' ? pickSalesforceFields(ref)
       : pickConnectorFields(ref);
-    source[src.key] = src.kind ? picked : { ...picked.extra, ...picked };
+    // Always flattened now, not just for a macro (no-kind) connector --
+    // an ADDITIONAL Jira instance's own extra (org-specific custom
+    // fields) needs the exact same source.<key>.StoryPoints treatment
+    // the dedicated/grandfathered source.jira slot above already gets.
+    // A no-op for github/salesforce (picked.extra is simply undefined
+    // there -- spreading undefined is a harmless no-op, not an error).
+    source[src.key] = { ...picked.extra, ...picked };
   }
   return source;
 }
@@ -2567,10 +2587,17 @@ function applyLinkedRules(iss, fieldDefs, ctx) {
 // against the field's EXISTING latest entry directly, independent of
 // whether this pass's own value actually differs from before.
 function applyLiveLinkedRules(iss, fieldDefs, sourceColId, system, liveData, ctx, confirmedOut) {
+  // Jira gets the same "flatten extra's own keys onto the object itself"
+  // treatment buildSource's own jira slot already has -- this is the
+  // REAL refresh path (stageFieldRefresh / the single-row refresh), not
+  // just the rule-builder preview, so a rule reading a custom field
+  // (source.jira.StoryPoints) needs to resolve here too, not only when
+  // previewed unrefreshed.
+  const jiraPicked = system === 'jira' ? pickJiraFields(liveData) : null;
   const source = {
     text: iss.values[sourceColId] || '', isLinked: true,
     github: system === 'github' ? pickGithubFields(liveData) : null,
-    jira: system === 'jira' ? pickJiraFields(liveData) : null,
+    jira: jiraPicked ? { ...jiraPicked.extra, ...jiraPicked } : null,
     salesforce: system === 'salesforce' ? pickSalesforceFields(liveData) : null
   };
   // Connected Sources (Phase 1): the caller passes the connector's own key
@@ -2585,7 +2612,14 @@ function applyLiveLinkedRules(iss, fieldDefs, sourceColId, system, liveData, ctx
   // expect directly -- not a macro's {title,url,state,extra} shape, so
   // this dynamic connector branch must stay OUT of their way.
   if (system && !['github', 'jira', 'salesforce', 'wigwag'].includes(system)) {
-    source[system] = pickConnectorFields(liveData);
+    // Flattened same as buildSource's own dynamic-connector slot and this
+    // function's jira slot above -- found while fixing those: a real
+    // refresh (this function), unlike the rule-builder preview, never
+    // flattened a macro connector's own extra here, so source.linear.
+    // MyField only ever worked unrefreshed, silently reverting to
+    // .extra.MyField-only the moment a refresh actually ran.
+    const raw = pickConnectorFields(liveData);
+    source[system] = { ...raw.extra, ...raw };
   }
   let values = iss.values;
   for (const colId in fieldDefs) {

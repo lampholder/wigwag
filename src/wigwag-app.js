@@ -297,6 +297,35 @@ function adfToText(node) {
   }
   return out;
 }
+// Live-reported (Tom): a Jira custom field's raw value shape depends
+// entirely on its field TYPE, which isn't cheaply knowable from the
+// value alone (that needs a separate /field call) -- this works
+// structurally off the value's own shape instead of a type-id lookup
+// table. Covers (cascading) select/radio ({value}, optionally nested
+// {child}), user pickers ({displayName}), version/group/project pickers
+// and Agile-API sprints ({name}), rich text (the same ADF tree shape
+// `description` already needs adfToText for), and a plain scalar.
+// Arrays stay arrays of unwrapped scalars (not joined into one string)
+// -- matches how labels/components/fixVersions already behave, keeps
+// .filter()/.includes() usable on a multi-value custom field in a rule.
+// Known, disclosed gap: the CLASSIC (non-Agile-API) Sprint field returns
+// a legacy toString() blob ("com.atlassian.greenhopper...Sprint@1[name=
+// Sprint 3,...]") as a plain STRING, not an object -- passes through
+// unwrapped (the typeof !== 'object' branch), showing the raw blob
+// rather than just the name. Left as-is unless it actually comes up --
+// not worth a special-case regex for a narrow, dated API quirk
+// preemptively.
+function jiraUnwrapFieldValue(v) {
+  if (v == null) return '';
+  if (Array.isArray(v)) return v.map(jiraUnwrapFieldValue);
+  if (typeof v !== 'object') return v; // string/number/boolean as-is
+  if (v.type && Array.isArray(v.content)) return adfToText(v).trim(); // rich text (ADF)
+  if ('value' in v) return v.child ? v.value + ' / ' + jiraUnwrapFieldValue(v.child) : v.value; // (cascading) select
+  if ('displayName' in v) return v.displayName; // user picker
+  if ('name' in v) return v.name;               // version/group/project picker, Agile sprint
+  if ('key' in v) return v.key;                 // project picker fallback
+  return JSON.stringify(v); // unrecognized shape -- honest, not "[object Object]"
+}
 function escapeXml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
@@ -4869,16 +4898,35 @@ class Component extends DCLogic {
     const username = ((cfg && cfg.username) || '').trim();
     const authHeader = username ? 'Basic ' + btoa(username + ':' + credential) : 'Bearer ' + credential;
     const apiVersion = username ? '3' : '2';
-    const FIELDS = ['summary', 'description', 'labels', 'status', 'issuetype', 'priority',
-      'assignee', 'reporter', 'created', 'updated', 'duedate', 'resolution',
-      'resolutiondate', 'components', 'fixVersions', 'project'].join(',');
+    // Live-reported (Tom): the curated field list below never fetched a
+    // genuine Jira CUSTOM field at all, extra or otherwise -- *all asks
+    // for every field, and expand=names adds the internal-id -> real-
+    // label map every custom field needs (it comes back keyed by an
+    // opaque id like customfield_10001, not its label), in the same
+    // response, no extra request.
     const fetchImpl = this.connectorFetchShim();
-    const res = await fetchImpl(rootUrl + '/rest/api/' + apiVersion + '/issue/' + encodeURIComponent(key) + '?fields=' + FIELDS, {
+    const res = await fetchImpl(rootUrl + '/rest/api/' + apiVersion + '/issue/' + encodeURIComponent(key) + '?fields=*all&expand=names', {
       headers: { Authorization: authHeader, Accept: 'application/json' }
     });
     if (!res.ok) throw Object.assign(new Error('Jira returned ' + res.status), { status: res.status });
     const data = await res.json();
     const f = data.fields || {};
+    const names = data.names || {};
+    // Jira's own hard convention: every user-defined (custom) field is
+    // named customfield_NNNNN; every system/built-in field (including
+    // the curated ones above, and a long noisy tail *all also returns --
+    // comment, attachment, worklog, watches, issuelinks, timetracking,
+    // ...) uses a plain lowercase name. Filtering on that prefix is a
+    // precise way to get exactly the org's own custom fields into extra
+    // and nothing else -- excluding only the curated names above would
+    // let all of that noise through too.
+    const extra = {};
+    for (const fieldId in f) {
+      if (!fieldId.startsWith('customfield_')) continue;
+      const unwrapped = jiraUnwrapFieldValue(f[fieldId]);
+      if (unwrapped === '' || (Array.isArray(unwrapped) && !unwrapped.length)) continue; // unset -- don't clutter extra with noise
+      extra[names[fieldId] || fieldId] = unwrapped;
+    }
     return {
       title: f.summary || key,
       description: adfToText(f.description).trim(),
@@ -4898,7 +4946,8 @@ class Component extends DCLogic {
       resolutionDate: f.resolutiondate || '',
       components: (f.components || []).map(c => c.name),
       fixVersions: (f.fixVersions || []).map(v => v.name),
-      project: (f.project && f.project.key) || ''
+      project: (f.project && f.project.key) || '',
+      extra
     };
   }
   // The older SOAP login() call -- no Connected App needed at all, just
@@ -5982,8 +6031,13 @@ class Component extends DCLogic {
     this.setState({ ruleTestLiveLoading: true, ruleTestLiveError: '' });
     this.fetchLinkData(connector.id, matchedId, connector).then(({ data }) => {
       const kind = connector.kind;
+      // Jira gets the same "flatten extra's own keys onto the object
+      // itself" treatment the custom-connector branch below already has
+      // -- a custom field needs to be live here too, not just via
+      // buildSource's own persisted-ref path, since this IS the preview's
+      // live-fetch override that supersedes it (see ruleTestVals above).
       const picked = kind === 'github' ? pickGithubFields(data)
-        : kind === 'jira' ? pickJiraFields(data)
+        : kind === 'jira' ? (() => { const raw = pickJiraFields(data); return { ...raw.extra, ...raw }; })()
         : kind === 'salesforce' ? pickSalesforceFields(data)
         : (() => { const raw = pickConnectorFields(data); return { ...raw.extra, ...raw }; })();
       const keys = new Set();

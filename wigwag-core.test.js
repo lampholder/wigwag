@@ -3340,6 +3340,32 @@ test('sourceRefHasFullData: a trimmed connector ref (no labels key) is NOT full 
   assert.equal(core.sourceRefHasFullData({ system: 'connector', connectorId: 'c1', title: 'x', labels: [] }), true);
 });
 
+test('pickJiraFields: passes through an extra bag, same shape pickConnectorFields already has', () => {
+  assert.deepEqual(core.pickJiraFields({ key: 'SUP-1', extra: { 'Story Points': 5 } }).extra, { 'Story Points': 5 });
+  assert.deepEqual(core.pickJiraFields({ key: 'SUP-1' }).extra, {}); // no extra at all -- defaults to empty, not undefined
+});
+
+test('buildSource: a Jira ref\'s own extra (custom field) keys are flattened directly onto source.jira.*, not just nested under .extra', () => {
+  const issue = {
+    values: { related: 'SUP-1' },
+    fieldRefs: { related: { href: 'https://acme.atlassian.net/browse/SUP-1', status: 'Open', extra: { 'Story Points': 5, 'Epic Link': 'SUP-0' } } }
+  };
+  const source = core.buildSource(issue, 'related');
+  assert.equal(source.jira.status, 'Open'); // a curated field still reads normally
+  assert.equal(source.jira['Story Points'], 5); // flattened directly, no .extra. needed
+  assert.equal(source.jira['Epic Link'], 'SUP-0');
+  assert.deepEqual(source.jira.extra, { 'Story Points': 5, 'Epic Link': 'SUP-0' }); // .extra itself still works too
+
+  // A name collision between a curated field and an extra key keeps the
+  // curated one -- same precedence a custom connector's own dedicated
+  // fields already have over its extra.
+  const collidingIssue = {
+    values: { related: 'SUP-1' },
+    fieldRefs: { related: { href: 'https://acme.atlassian.net/browse/SUP-1', status: 'Open', extra: { status: 'should never win' } } }
+  };
+  assert.equal(core.buildSource(collidingIssue, 'related').jira.status, 'Open');
+});
+
 test('buildSource: a connector-system ref populates source.<connectorKey> dynamically, reads undefined for any other key', () => {
   const issue = {
     values: { linear: 'Fix the thing' },
@@ -3359,6 +3385,26 @@ test('applyLiveLinkedRules: the connector key becomes a dynamic branch alongside
   const liveData = { title: 'Fresh from Linear', url: '', state: 'Todo', labels: [], assignee: '', extra: {} };
   const result = core.applyLiveLinkedRules(issue, fieldDefs, 'linear', 'linear', liveData);
   assert.equal(result.values.summary, 'Fresh from Linear');
+});
+
+// Found while fixing the equivalent Jira gap in this same function: a
+// custom connector's own extra keys must flatten onto source.<key>
+// directly here too, not just in the rule-builder preview's separate
+// refreshRuleTestSource path -- a REAL refresh is what this function is.
+test('applyLiveLinkedRules: a custom connector\'s own extra (custom field) keys are flattened directly onto source.<key>.*, not just nested under .extra', () => {
+  const fieldDefs = { linear: { label: 'Linear', type: 'issue' }, summary: { label: 'Summary', type: 'text', linkedSourceId: 'linear', rule: 'source.linear.StoryPoints' } };
+  const issue = { values: { linear: 'old text', summary: '' }, fieldRefs: {} };
+  const liveData = { title: 'Fresh from Linear', url: '', state: 'Todo', labels: [], assignee: '', extra: { StoryPoints: 5 } };
+  const result = core.applyLiveLinkedRules(issue, fieldDefs, 'linear', 'linear', liveData);
+  assert.equal(result.values.summary, '5');
+});
+
+test('applyLiveLinkedRules: a Jira custom field (extra) is flattened directly onto source.jira.* on a real refresh, not just in the rule-builder preview', () => {
+  const fieldDefs = { related: { label: 'Related', type: 'issue' }, summary: { label: 'Summary', type: 'text', linkedSourceId: 'related', rule: 'source.jira.Tier' } };
+  const issue = { values: { related: 'TRK-1', summary: '' }, fieldRefs: {} };
+  const liveData = { title: 'A Jira ticket', status: '', extra: { Tier: 'Gold' } };
+  const result = core.applyLiveLinkedRules(issue, fieldDefs, 'related', 'jira', liveData);
+  assert.equal(result.values.summary, 'Gold');
 });
 
 test('compileConnectorMacro: compiles an async arrow-function macro source and the returned function is awaitable', async () => {

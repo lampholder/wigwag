@@ -88,7 +88,7 @@ test.describe('GitHub repo-sync token (unrelated to built-in issue linking)', ()
 // Jira's REST shape, as fetchJiraData expects it (CONNECTOR_TEMPLATES'
 // retired macro equivalent is now this real, hardcoded function) --
 // {fields:{...}}, same shape jira-proxy.js itself always fetched.
-function jiraRawFixture(key, overrides) {
+function jiraRawFixture(key, overrides, names) {
   return JSON.stringify({
     key,
     fields: Object.assign({
@@ -97,7 +97,10 @@ function jiraRawFixture(key, overrides) {
       assignee: null, issuetype: null, priority: null, reporter: null,
       created: '', updated: '', duedate: '', resolution: null, resolutiondate: '',
       components: [], fixVersions: [], project: null
-    }, overrides)
+    }, overrides),
+    // expand=names -- the internal customfield_NNNNN id -> real label map
+    // fetchJiraData reads to key its own `extra` bag.
+    ...(names ? { names } : {})
   });
 }
 const JIRA_ROOT = 'https://mock.atlassian.net';
@@ -897,5 +900,89 @@ test.describe('Jira linking: expanded field set', () => {
     await h.refreshRow(page, 3);
     await page.waitForTimeout(300);
     await expect(h.fieldCell(page, 3, 'type')).toHaveText(/Bug/); // no crash, empty default matched
+  });
+
+  // Jira custom fields into .extra: a real org-defined field (keyed
+  // customfield_NNNNN, resolved to its real label via expand=names)
+  // reads directly off source.jira.<Label>, same as any curated field.
+  test('a bound-source rule can read a Jira custom field by its real label via source.jira.<Label>, once refreshed', async ({ page }) => {
+    await h.overrideConnectorFetchResponses(page, {
+      responsesByUrlSubstring: {
+        'TRK-2001': jiraRawFixture('TRK-2001', { customfield_10042: { value: 'Gold' } }, { customfield_10042: 'Tier' })
+      },
+      credential: 'pat-token'
+    });
+    await h.clickFieldToEdit(page, 3, 'linked');
+    await h.pasteText(page, 'TRK-2001');
+    await page.keyboard.press('Tab');
+    await h.waitForFieldResolved(page, 3, 'linked');
+
+    await h.openFieldEditor(page, 'mitigation');
+    await page.locator('[data-testid=field-editor-source-select]').selectOption({ label: 'Related' });
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=field-editor-open-rules]').click();
+    await page.waitForTimeout(400);
+    await page.locator('[data-testid=rule-edit-expression]').click();
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=rule-advanced-textarea]').fill('source.jira.Tier');
+    await page.waitForTimeout(300);
+    await h.selectRuleTestIssue(page, 'i3');
+    await page.waitForTimeout(500);
+    await expect(page.locator('[data-testid=rule-test-result]')).toContainText('Gold');
+  });
+
+  test('an empty/unset custom field is absent from source.jira entirely, not present-but-blank', async ({ page }) => {
+    await h.overrideConnectorFetchResponses(page, {
+      responsesByUrlSubstring: {
+        'TRK-2002': jiraRawFixture('TRK-2002', { customfield_10099: null }, { customfield_10099: 'Ghost Field' })
+      },
+      credential: 'pat-token'
+    });
+    await h.clickFieldToEdit(page, 3, 'linked');
+    await h.pasteText(page, 'TRK-2002');
+    await page.keyboard.press('Tab');
+    await h.waitForFieldResolved(page, 3, 'linked');
+
+    await h.openFieldEditor(page, 'mitigation');
+    await page.locator('[data-testid=field-editor-source-select]').selectOption({ label: 'Related' });
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=field-editor-open-rules]').click();
+    await page.waitForTimeout(400);
+    await page.locator('[data-testid=rule-edit-expression]').click();
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=rule-advanced-textarea]').fill("Object.keys(source.jira).includes('Ghost Field') ? 'present' : 'absent'");
+    await page.waitForTimeout(300);
+    await h.selectRuleTestIssue(page, 'i3');
+    await page.waitForTimeout(500);
+    await expect(page.locator('[data-testid=rule-test-result]')).toContainText('absent');
+  });
+
+  // *all also returns a long noisy tail of built-in fields (comment,
+  // attachment, worklog, ...) -- only the customfield_ prefix (Jira's
+  // own hard convention for user-defined fields) should ever reach extra.
+  test('a noisy built-in field returned by *all (e.g. comment) never leaks into source.jira', async ({ page }) => {
+    await h.overrideConnectorFetchResponses(page, {
+      responsesByUrlSubstring: {
+        'TRK-2003': jiraRawFixture('TRK-2003', { comment: { comments: [{ body: 'hi' }], total: 1 } })
+      },
+      credential: 'pat-token'
+    });
+    await h.clickFieldToEdit(page, 3, 'linked');
+    await h.pasteText(page, 'TRK-2003');
+    await page.keyboard.press('Tab');
+    await h.waitForFieldResolved(page, 3, 'linked');
+
+    await h.openFieldEditor(page, 'mitigation');
+    await page.locator('[data-testid=field-editor-source-select]').selectOption({ label: 'Related' });
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=field-editor-open-rules]').click();
+    await page.waitForTimeout(400);
+    await page.locator('[data-testid=rule-edit-expression]').click();
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=rule-advanced-textarea]').fill("Object.keys(source.jira).includes('comment') ? 'leaked' : 'clean'");
+    await page.waitForTimeout(300);
+    await h.selectRuleTestIssue(page, 'i3');
+    await page.waitForTimeout(500);
+    await expect(page.locator('[data-testid=rule-test-result]')).toContainText('clean');
   });
 });

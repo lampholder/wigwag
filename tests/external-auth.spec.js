@@ -985,4 +985,41 @@ test.describe('Jira linking: expanded field set', () => {
     await page.waitForTimeout(500);
     await expect(page.locator('[data-testid=rule-test-result]')).toContainText('clean');
   });
+
+  // Tracker fad55d95: the preview's LIVE SOURCE FIELDS grid couldn't list
+  // a custom field at all (subjectGroups() only ever has the curated,
+  // hardcoded 8-item Jira list) -- it now appends one row per key
+  // actually present in source.jira's live-fetched extra, with the exact
+  // path a rule would paste (bracket form for a label that isn't a bare
+  // identifier, e.g. one with a space).
+  test('the preview\'s LIVE SOURCE FIELDS grid lists a Jira custom field by its real label and real, pasteable path', async ({ page }) => {
+    await h.overrideConnectorFetchResponses(page, {
+      responsesByUrlSubstring: {
+        'TRK-2004': jiraRawFixture('TRK-2004', {
+          customfield_10050: { value: 'Gold' }, customfield_10051: { value: 42 }
+        }, { customfield_10050: 'Tier', customfield_10051: 'Story Points' })
+      },
+      credential: 'pat-token'
+    });
+    await h.clickFieldToEdit(page, 3, 'linked');
+    await h.pasteText(page, 'TRK-2004');
+    await page.keyboard.press('Tab');
+    await h.waitForFieldResolved(page, 3, 'linked');
+
+    await h.openFieldEditor(page, 'mitigation');
+    await page.locator('[data-testid=field-editor-source-select]').selectOption({ label: 'Related' });
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=field-editor-open-rules]').click();
+    await page.waitForTimeout(400);
+    await h.selectRuleTestIssue(page, 'i3');
+    await page.waitForTimeout(500);
+
+    const rows = page.locator('[data-testid=rule-test-source-field-row]');
+    const tierRow = rows.filter({ hasText: 'Tier' });
+    await expect(tierRow.locator('[data-testid=rule-test-source-field-path]')).toHaveText('source.jira?.Tier');
+    await expect(tierRow).toContainText('Gold');
+    const spRow = rows.filter({ hasText: 'Story Points' });
+    await expect(spRow.locator('[data-testid=rule-test-source-field-path]')).toHaveText('source.jira?.["Story Points"]');
+    await expect(spRow).toContainText('42');
+  });
 });

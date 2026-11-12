@@ -1901,10 +1901,10 @@
               </sc-if>
               <sc-if value="{{ ruleBuilder.test.hasSource }}" hint-placeholder-val="{{ true }}">
                 <div style="font-size:10px; font-weight:700; letter-spacing:0.07em; color: var(--n20); margin-bottom:8px;">LIVE SOURCE FIELDS</div>
-                <div style="display:grid; grid-template-columns:auto 1fr; column-gap:14px; row-gap:7px; margin-bottom:18px;">
+                <div data-testid="rule-test-source-fields" style="display:grid; grid-template-columns:auto 1fr; column-gap:14px; row-gap:7px; margin-bottom:18px;">
                   <sc-for list="{{ ruleBuilder.test.sourceFields }}" as="f" hint-placeholder-count="3">
-                    <div style="display:contents">
-                      <span style="color: var(--text-muted); font-family:ui-monospace,monospace; font-size:11px; white-space:nowrap;">{{ f.path }}</span>
+                    <div data-testid="rule-test-source-field-row" style="display:contents">
+                      <span data-testid="rule-test-source-field-path" style="color: var(--text-muted); font-family:ui-monospace,monospace; font-size:11px; white-space:nowrap;">{{ f.path }}</span>
                       <sc-if value="{{ f.isEmpty }}" hint-placeholder-val="{{ false }}">
                         <span style="font-size:12px; color: var(--text-tertiary); font-style:italic;">{{ f.value }}</span>
                       </sc-if>

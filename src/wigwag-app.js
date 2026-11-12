@@ -326,6 +326,15 @@ function jiraUnwrapFieldValue(v) {
   if ('key' in v) return v.key;                 // project picker fallback
   return JSON.stringify(v); // unrecognized shape -- honest, not "[object Object]"
 }
+// Tracker fad55d95: an extra/custom field's label is arbitrary (per-org
+// for Jira, per-connector-author for a macro) -- not always a valid bare
+// JS identifier (e.g. "Story Points", a label with a leading digit).
+// Written as a real, directly-pasteable expression either way (bracket
+// form with the label JSON-escaped when it isn't a valid identifier), optional-chained like every other source.<key> path here.
+function sourceExtraFieldPath(key, label) {
+  const bareIdent = /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(label);
+  return 'source.' + key + (bareIdent ? '?.' + label : '?.[' + JSON.stringify(label) + ']');
+}
 function escapeXml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
@@ -5910,6 +5919,19 @@ class Component extends DCLogic {
           const val = evalRule(it.path, source, issue.values);
           const isEmpty = val == null || val === '' || (Array.isArray(val) && !val.length);
           sourceFields.push({ path: it.path, value: isEmpty ? '(empty)' : (Array.isArray(val) ? val.join(', ') : String(val)), isEmpty });
+        }
+        // Tracker fad55d95: a Jira custom field / custom connector's own
+        // extra bag is per-org/per-connector-author, so subjectGroups()
+        // can never hardcode its keys the way the static items above are
+        // -- list whatever's actually present on THIS issue's live source
+        // instead, so a custom field is discoverable (and its exact,
+        // directly-pasteable path visible) without already knowing it's
+        // there.
+        const extra = source[key].extra;
+        for (const label in extra) {
+          const val = extra[label];
+          const isEmpty = val == null || val === '' || (Array.isArray(val) && !val.length);
+          sourceFields.push({ path: sourceExtraFieldPath(key, label), value: isEmpty ? '(empty)' : (Array.isArray(val) ? val.join(', ') : String(val)), isEmpty });
         }
       }
     }

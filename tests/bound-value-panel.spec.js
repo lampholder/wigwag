@@ -889,6 +889,28 @@ test.describe('Bound value panel: results table', () => {
     expect(await page.locator('[data-testid=rule-test-issue-select] option').count()).toBe(9); // the full demo seed, all 9 issues
   });
 
+  // Live-reported (Tom): a deleted issue is a tombstone (a signed
+  // __deleted__ history entry, see ISSUE_DELETED_FIELD_ID), not actually
+  // removed from state.issues -- ruleTestVals/autoFetchRuleTestSource
+  // were the one place in the app that didn't filter it out like every
+  // other issue listing does, so a deleted issue kept showing up as a
+  // selectable (and even auto-selected) test subject here.
+  test('a deleted issue never appears in the test-issue picker', async ({ page }) => {
+    const doc = await h.readActiveMilestoneDoc(page);
+    const i1 = doc.issues.find(i => i.id === 'i1');
+    h.pushFieldEntry(i1, '__deleted__', true);
+    await h.writeActiveMilestoneDoc(page, doc);
+    await page.reload();
+    await h.waitForBootSplashGone(page);
+
+    await h.openFieldEditor(page, 'type');
+    await page.locator('[data-testid=field-editor-open-rules]').click();
+    await page.waitForTimeout(400);
+    expect(await page.locator('[data-testid=rule-test-issue-select] option').count()).toBe(8); // 9 seeded, 1 deleted
+    const optionValues = await page.locator('[data-testid=rule-test-issue-select] option').evaluateAll(opts => opts.map(o => o.value));
+    expect(optionValues).not.toContain('i1');
+  });
+
   test('an issue unlinked at the bound source reads a clear "nothing linked, left alone" message, not a failure', async ({ page }) => {
     // Row 1's Related field isn't linked to anything, so binding a
     // different field to "Related" as source leaves it unlinked.

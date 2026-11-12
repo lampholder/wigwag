@@ -5884,7 +5884,13 @@ class Component extends DCLogic {
     return null;
   }
   ruleTestVals(colId, def) {
-    const issues = this.state.issues;
+    // Live-reported (Tom): a deleted issue is a tombstone, not gone from
+    // state.issues (see issueIsDeleted/.deleted, hydrated onto every
+    // issue) -- every other issue listing in this file filters it out
+    // (e.g. the grid's own rows, :8262); this picker was the one place
+    // that didn't, so a deleted issue kept showing up as a selectable
+    // test subject.
+    const issues = this.state.issues.filter(iss => !iss.deleted);
     if (!issues.length) return { hasIssues: false, notReadyText: 'No issues in this project yet to test with.' };
     if (!def.linkedSourceId) return { hasIssues: false, notReadyText: 'Bind a source above to test with an issue.' };
     const connectedSources = this.connectedSourcesForDispatch();
@@ -6078,7 +6084,7 @@ class Component extends DCLogic {
   autoFetchRuleTestSource(colId, issueId) {
     const def = this.effectiveDef(colId);
     if (!def || !def.linkedSourceId) return;
-    const issues = this.state.issues;
+    const issues = this.state.issues.filter(iss => !iss.deleted); // see ruleTestVals' own comment
     if (!issues.length) return;
     const connectedSources = this.connectedSourcesForDispatch();
     let issue = issueId ? issues.find(i => i.id === issueId) : null;

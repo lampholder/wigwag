@@ -245,7 +245,7 @@ const docStore = {
 // connector is byte-identical to a hand-built one, no separate
 // discriminant to track or migrate later.
 const CONNECTOR_TEMPLATES = {
-  blank: { name: '', glyph: '', color: col('red').dot, patterns: [{ regex: '', label: '' }], macro: '', linkTextTemplate: '' }
+  blank: { name: '', glyph: '', color: col('red').dot, patterns: [{ regex: '', label: '' }], macro: '', linkTextTemplate: '', rootUrl: '' }
 };
 // The 3 built-in systems (GitHub/Jira/Salesforce): NOT a connector-
 // template/macro at all -- Tom's own correction, mid-session: these are
@@ -4522,7 +4522,7 @@ class Component extends DCLogic {
       addSourceTypePickerOpen: false, connectorFormVisible: false,
       connectorFormOpen: { id: null, draft: { name: tpl.name, glyph: tpl.glyph, color: tpl.color,
         patterns: tpl.patterns.map(p => ({ ...p })), macro: tpl.macro, credentialDraft: '',
-        hasCredential: false, linkTextTemplate: tpl.linkTextTemplate || '' }, testId: '', testResult: null, testRunning: false }
+        hasCredential: false, linkTextTemplate: tpl.linkTextTemplate || '', rootUrl: tpl.rootUrl || '' }, testId: '', testResult: null, testRunning: false }
     });
     // Mount off-screen first (connectorFormVisible still false), THEN
     // flip visible one tick later so the slide-in transform actually
@@ -4533,7 +4533,7 @@ class Component extends DCLogic {
   openEditConnectorForm(id) {
     const c = (this.state.connectedSources || []).find(x => x.id === id);
     if (!c) return;
-    this.setState({ connectorFormVisible: false, connectorFormOpen: { id, draft: { name: c.name, glyph: c.glyph, color: c.color, patterns: (c.patterns || []).map(p => ({ regex: p.regex, label: p.label })), macro: c.macro, credentialDraft: '', hasCredential: !!c.credentialConfigured, linkTextTemplate: c.linkTextTemplate || '' }, testId: '', testResult: null, testRunning: false } });
+    this.setState({ connectorFormVisible: false, connectorFormOpen: { id, draft: { name: c.name, glyph: c.glyph, color: c.color, patterns: (c.patterns || []).map(p => ({ regex: p.regex, label: p.label })), macro: c.macro, credentialDraft: '', hasCredential: !!c.credentialConfigured, linkTextTemplate: c.linkTextTemplate || '', rootUrl: c.rootUrl || '' }, testId: '', testResult: null, testRunning: false } });
     setTimeout(() => this.setState({ connectorFormVisible: true }), 20);
   }
   updateConnectorDraft(patch) {
@@ -4769,7 +4769,8 @@ class Component extends DCLogic {
       id, key, name, glyph: (draft.glyph || name[0] || '?').slice(0, 2), color: draft.color,
       patterns: draft.patterns.filter(p => p.regex.trim()).map(p => ({ regex: p.regex.trim(), label: p.label.trim() })),
       macro, credentialConfigured: credentialTyped ? true : draft.hasCredential,
-      linkTextTemplate: (draft.linkTextTemplate || '').trim()
+      linkTextTemplate: (draft.linkTextTemplate || '').trim(),
+      rootUrl: (draft.rootUrl || '').trim()
     };
     const next = existingRecord ? existing.map(c => c.id === f.id ? record : c) : existing.concat([record]);
     if (credentialTyped) await this.setConnectorCredential(id, credentialTyped);
@@ -11367,6 +11368,7 @@ class Component extends DCLogic {
           patterns, onAddPattern: () => this.addConnectorPattern(),
           macroValue: draft ? draft.macro : '', onMacroChange: e => this.updateConnectorDraft({ macro: e.target.value }),
           linkTextTemplateValue: draft ? draft.linkTextTemplate : '', onLinkTextTemplateChange: e => this.updateConnectorDraft({ linkTextTemplate: e.target.value }),
+          rootUrlValue: draft ? draft.rootUrl : '', onRootUrlChange: e => this.updateConnectorDraft({ rootUrl: e.target.value }),
           testIdValue: form ? form.testId : '', onTestIdChange: e => this.onConnectorTestIdChange(e.target.value),
           onRunTest: () => this.runConnectorTest(),
           runButtonLabel: form && form.testRunning ? 'Running…' : 'Run',

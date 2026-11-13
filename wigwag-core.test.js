@@ -3759,3 +3759,19 @@ test('buildCsvImportPlan: a header that does match the key field\'s label by def
   assert.equal(plan.keyHeaderAutoMatched, true);
   assert.equal(plan.keyHeaderText, 'Issue');
 });
+test('resolveRefSystem: a custom connector whose own href happens to collide with a canonical GitHub issue URL still loses to the built-in GitHub kind', () => {
+  const connectedSources = [{ id: 'conn_1', name: 'ElementSec', rootUrl: 'https://github.com', patterns: [] }];
+  const resolved = core.resolveRefSystem('https://github.com/matrix-org/internal-config/issues/1709', { connectedSources });
+  assert.equal(resolved.kind, 'github'); // structural github shape always wins, regardless of any custom connector's rootUrl
+});
+test('resolveRefSystem: a custom connector claims a non-canonical href by matching rootUrl host, once the href no longer parses as a bare GitHub issue URL', () => {
+  const connectedSources = [{ id: 'conn_1', name: 'ElementSec', rootUrl: 'https://github.com', patterns: [] }];
+  const resolved = core.resolveRefSystem('https://github.com/matrix-org/internal-config/issues/1709#ELEMENTSEC-1234-1709', { connectedSources });
+  assert.equal(resolved.kind, null);
+  assert.equal(resolved.connector.id, 'conn_1');
+});
+test('resolveRefSystem: a custom connector with no rootUrl configured never claims any href by host, same as before this field existed', () => {
+  const connectedSources = [{ id: 'conn_1', name: 'ElementSec', rootUrl: '', patterns: [] }];
+  const resolved = core.resolveRefSystem('https://github.com/matrix-org/internal-config/issues/1709#ELEMENTSEC-1234-1709', { connectedSources });
+  assert.equal(resolved, null);
+});

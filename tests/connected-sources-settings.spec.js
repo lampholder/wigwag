@@ -347,6 +347,45 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
     await expect(page.locator('[data-testid=connector-link-text-input]')).toHaveValue('{{id}}: {{title}}');
   });
 
+  // Live-reported (Tom): a custom connector whose macro resolves to a URL
+  // that happens to look like a canonical GitHub/Jira/Salesforce link (e.g.
+  // a plain github.com issue URL) gets silently reclassified as that
+  // built-in by resolveRefSystem -- which is purely a structural read of
+  // the href's own shape, and always wins regardless of which connector
+  // actually produced it. rootUrl is the opt-in escape hatch: when the
+  // custom connector's own href no longer parses as the built-in's
+  // canonical shape (callers are expected to break that collision
+  // themselves, e.g. by appending a #fragment), resolveRefSystem's
+  // generic custom-connector branch picks it up by host instead -- see
+  // the matching wigwag-core.test.js coverage for the resolution logic
+  // itself; this is just the Settings-side field existing and round-
+  // tripping through edit, same shape as the Link text test just above.
+  test('the Root URL field defaults to blank and round-trips through edit', async ({ page }) => {
+    await stubTauri(page);
+    await page.addInitScript((c) => {
+      localStorage.setItem('git_native_tracker_connected_sources_v1', JSON.stringify({ connectors: [c] }));
+    }, {
+      id: 'conn_test_rooturl', key: 'rooturltest', name: 'RootUrlTest', glyph: 'R', color: 'oklch(0.55 0.13 20)',
+      patterns: [{ regex: '^RU-\\d+$', label: 'Short ID' }],
+      macro: "async (id) => ({ title: id, url: '', state: '', labels: [], assignee: '', extra: {} })",
+      credentialConfigured: true
+      // rootUrl deliberately absent -- every connector saved before this feature existed
+    });
+    await h.gotoTracker(page);
+    await h.openSettingsSection(page, 'connectedDataSources');
+
+    const row = page.locator('[data-testid=connected-source-row]', { hasText: 'RootUrlTest' });
+    await row.locator('[data-testid=btn-edit-connected-source]').click();
+    await expect(page.locator('[data-testid=connector-root-url-input]')).toHaveValue('');
+
+    await page.locator('[data-testid=connector-root-url-input]').fill('https://github.com');
+    await page.locator('[data-testid=btn-save-connector]').click();
+    await expect(page.locator('[data-testid=connector-form-modal]')).toBeHidden();
+
+    await row.locator('[data-testid=btn-edit-connected-source]').click();
+    await expect(page.locator('[data-testid=connector-root-url-input]')).toHaveValue('https://github.com');
+  });
+
   test('deleting a custom connector removes it from the list and closes the form', async ({ page }) => {
     await stubTauri(page);
     await h.seedAllBuiltinConnectors(page);

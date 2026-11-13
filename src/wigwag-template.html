@@ -3045,6 +3045,13 @@
                                 </div>
                               </div>
                               <div style="border:1px solid var(--border); border-radius:9px; overflow:hidden; background: var(--surface);">
+                                <div style="padding:6px 12px; background: var(--surface-page); border-bottom:1px solid var(--border-subtle); font-size:10px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; color: var(--text-tertiary);">Root URL (optional)</div>
+                                <div style="padding:13px 15px 10px;">
+                                  <div style="font-size:11px; line-height:1.5; color: var(--text-tertiary); margin-bottom:8px;">Only needed when this connector's own macro resolves to a URL that already looks like a built-in link (e.g. a plain github.com issue URL) — set it to that URL's host so this connector keeps its own branding and keeps handling refreshes, instead of the link silently being reclassified as that built-in.</div>
+                                  <input data-testid="connector-root-url-input" value="{{ connectedSourcesSettings.rootUrlValue }}" sc-camel-on-change="{{ connectedSourcesSettings.onRootUrlChange }}" placeholder="https://github.com" style="width:100%; box-sizing:border-box; padding:6px 8px; border:1px solid var(--border); border-radius:6px; font-size:11.5px; font-family:ui-monospace,monospace; background:transparent;">
+                                </div>
+                              </div>
+                              <div style="border:1px solid var(--border); border-radius:9px; overflow:hidden; background: var(--surface);">
                                 <div style="padding:6px 12px; background: var(--surface-page); border-bottom:1px solid var(--border-subtle); font-size:10px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; color: var(--text-tertiary);">Test</div>
                                 <div style="padding:12px 15px 15px;">
                                   <div style="display:flex; gap:7px; align-items:center;">

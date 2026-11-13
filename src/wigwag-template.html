@@ -2000,7 +2000,7 @@
         <div style="display:flex; align-items:center; gap:8px; flex-shrink:0;">
           <span data-testid="slideover-subscribe-btn" sc-camel-on-click="{{ slideOver.onToggleSubscribe }}" title="Get a push notification for new comments and status changes on this issue (needs push notifications enabled -- see Settings)" style="cursor:pointer; font-size:13px; color: {{ slideOver.subscribeColor }}; padding:5px 9px; border:1px solid var(--border); border-radius:6px;" style-hover="background: var(--surface-hover);">{{ slideOver.subscribeLabel }}</span>
           <span data-testid="slideover-copy-link-btn" sc-camel-on-click="{{ slideOver.onCopyLink }}" title="Copy a link to this issue" style="cursor:pointer; font-size:13px; color: var(--text-secondary); padding:5px 9px; border:1px solid var(--border); border-radius:6px;" style-hover="background: var(--surface-hover);">{{ slideOver.copyLinkLabel }}</span>
-          <span data-testid="slideover-copy-json-btn" sc-camel-on-click="{{ slideOver.onCopyJson }}" title="Copy this issue's full JSON to the clipboard" style="cursor:pointer; font-size:13px; color: var(--text-secondary); padding:5px 9px; border:1px solid var(--border); border-radius:6px;" style-hover="background: var(--surface-hover);">{{ slideOver.copyJsonLabel }}</span>
+          <span data-testid="slideover-view-json-btn" sc-camel-on-click="{{ slideOver.onViewJson }}" title="View this issue's full JSON" style="cursor:pointer; font-size:13px; color: var(--text-secondary); padding:5px 9px; border:1px solid var(--border); border-radius:6px;" style-hover="background: var(--surface-hover);">View JSON</span>
           <span data-testid="slideover-delete-btn" sc-camel-on-click="{{ slideOver.onDelete }}" title="Delete issue" style="cursor:pointer; font-size:13px; color: var(--c17); padding:5px 9px; border:1px solid var(--border); border-radius:6px;" style-hover="background: var(--c10); border-color: var(--c19);">Delete</span>
           <span sc-camel-on-click="{{ closeSlideOver }}" style="cursor:pointer; font-size:18px; color: var(--text-secondary); padding:4px;">✕</span>
         </div>
@@ -2713,6 +2713,21 @@
   </sc-if>
   </sc-if>
 
+  <sc-if value="{{ slideOver.jsonView.open }}" hint-placeholder-val="{{ false }}">
+    <div data-testid="issue-json-view-overlay" sc-camel-on-mouse-down="{{ slideOver.jsonView.onBackdrop }}" style="position:fixed; inset:0; background: var(--sh11); z-index:200; display:flex; align-items:center; justify-content:center; padding:24px; box-sizing:border-box;">
+      <div data-testid="issue-json-view" style="background:var(--surface); border:1px solid var(--n15); border-radius:12px; box-shadow:0 14px 38px var(--sh1); width:760px; max-width:94vw; max-height:85vh; display:flex; flex-direction:column; overflow:hidden; box-sizing:border-box;">
+        <div style="flex-shrink:0; padding:11px 16px; display:flex; align-items:center; justify-content:space-between; gap:12px; border-bottom:1px solid var(--n8); background: var(--surface-header);">
+          <div style="font-size:12.5px; font-weight:600; color: var(--n44); font-family:ui-monospace,monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ slideOver.jsonView.heading }}</div>
+          <div style="display:flex; align-items:center; gap:8px; flex-shrink:0;">
+            <button data-testid="issue-json-view-copy-btn" sc-camel-on-click="{{ slideOver.jsonView.onCopy }}" style="padding:6px 14px; border:1px solid var(--border); background:var(--surface); color: var(--text-primary); border-radius:6px; font-size:12.5px; font-family:inherit; cursor:pointer;" style-hover="background: var(--surface-hover);">{{ slideOver.jsonView.copyLabel }}</button>
+            <span data-testid="issue-json-view-close-btn" sc-camel-on-click="{{ slideOver.jsonView.onClose }}" style="cursor:pointer; font-size:16px; color: var(--text-muted); padding:2px 6px; border-radius:5px;" style-hover="background: var(--border-subtle);">✕</span>
+          </div>
+        </div>
+        <div data-testid="issue-json-view-caption" style="flex-shrink:0; padding:9px 16px; font-size:12px; color: var(--text-muted); background: var(--surface-hover); border-bottom:1px solid var(--n28);"><span data-testid="issue-json-view-size">{{ slideOver.jsonView.sizeLabel }}</span> — This issue's own entry from the project's full JSONL export, pretty-printed for reading — not for re-applying as an update (that's what Export → Save project file is for).</div>
+        <pre data-testid="issue-json-view-pre" style="margin:0; padding:18px 20px; overflow:auto; font-family:'SF Mono', Consolas, monospace; font-size:12.5px; line-height:1.65; color: var(--n45); white-space:pre; flex:1; min-height:0;">{{ slideOver.jsonView.pretty }}</pre>
+      </div>
+    </div>
+  </sc-if>
 
 
   <sc-if value="{{ emailGate.open }}" hint-placeholder-val="{{ false }}">

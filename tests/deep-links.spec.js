@@ -109,15 +109,19 @@ test.describe('Deep links', () => {
     });
   });
 
-  test.describe('Copy JSON', () => {
+  test.describe('View JSON', () => {
     test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
 
-    test('the slide-over\'s Copy JSON button copies the same { type: "issue", ... } shape a JSONL export line uses, and flips its own label', async ({ page }) => {
+    test('the slide-over\'s View JSON button opens a pretty-printed view of the same { type: "issue", ... } shape a JSONL export line uses, with its own Copy button', async ({ page }) => {
       await h.openSlideover(page, 1);
-      const btn = page.locator('[data-testid=slideover-copy-json-btn]');
-      await expect(btn).toHaveText('Copy JSON');
-      await btn.click();
-      await expect(btn).toHaveText('Copied!');
+      await page.locator('[data-testid=slideover-view-json-btn]').click();
+      const pre = page.locator('[data-testid=issue-json-view-pre]');
+      await expect(pre).toBeVisible();
+      await expect(pre).toContainText('"id": "i1"');
+      const copyBtn = page.locator('[data-testid=issue-json-view-copy-btn]');
+      await expect(copyBtn).toHaveText('Copy JSON');
+      await copyBtn.click();
+      await expect(copyBtn).toHaveText('Copied!');
       const clip = await page.evaluate(() => navigator.clipboard.readText());
       const parsed = JSON.parse(clip);
       expect(parsed.type).toBe('issue');
@@ -129,18 +133,37 @@ test.describe('Deep links', () => {
       expect(clip).toContain('\n  "id": "i1"');
     });
 
-    test('switching to a different issue and copying again reflects that issue, not a stale one', async ({ page }) => {
+    test('closing and reopening against a different issue shows that issue\'s own JSON, not a stale one', async ({ page }) => {
       await h.openSlideover(page, 1);
-      await page.locator('[data-testid=slideover-copy-json-btn]').click();
-      await expect(page.locator('[data-testid=slideover-copy-json-btn]')).toHaveText('Copied!');
+      await page.locator('[data-testid=slideover-view-json-btn]').click();
+      await expect(page.locator('[data-testid=issue-json-view-pre]')).toContainText('"id": "i1"');
+      await page.locator('[data-testid=issue-json-view-close-btn]').click();
+      await expect(page.locator('[data-testid=issue-json-view]')).toHaveCount(0);
       await h.closeSlideover(page);
       await expect(page.locator('[data-testid=slideover]')).toHaveCount(0, { timeout: 10000 });
       await h.openSlideover(page, 2);
-      const btn = page.locator('[data-testid=slideover-copy-json-btn]');
-      await expect(btn).toHaveText('Copy JSON', { timeout: 10000 });
-      await btn.click();
-      const clip = await page.evaluate(() => navigator.clipboard.readText());
-      expect(JSON.parse(clip).id).toBe('i2');
+      await page.locator('[data-testid=slideover-view-json-btn]').click();
+      await expect(page.locator('[data-testid=issue-json-view-pre]')).toContainText('"id": "i2"', { timeout: 10000 });
+    });
+
+    test('clicking the backdrop closes the JSON view without closing the slide-over underneath it', async ({ page }) => {
+      await h.openSlideover(page, 1);
+      await page.locator('[data-testid=slideover-view-json-btn]').click();
+      await expect(page.locator('[data-testid=issue-json-view]')).toBeVisible();
+      await page.locator('[data-testid=issue-json-view-overlay]').click({ position: { x: 5, y: 5 } });
+      await expect(page.locator('[data-testid=issue-json-view]')).toHaveCount(0);
+      await expect(page.locator('[data-testid=slideover]')).toBeVisible();
+    });
+
+    test('Escape closes the JSON view first, then the slide-over on the next Escape', async ({ page }) => {
+      await h.openSlideover(page, 1);
+      await page.locator('[data-testid=slideover-view-json-btn]').click();
+      await expect(page.locator('[data-testid=issue-json-view]')).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(page.locator('[data-testid=issue-json-view]')).toHaveCount(0);
+      await expect(page.locator('[data-testid=slideover]')).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(page.locator('[data-testid=slideover]')).toHaveCount(0, { timeout: 10000 });
     });
   });
 

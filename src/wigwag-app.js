@@ -1901,7 +1901,7 @@ class Component extends DCLogic {
       // UI state (menus, active/selected cell, add-item draft, slide-over)
       // plus what it implies (drag state, field-editor/color-picker modals,
       // an in-progress rename).
-      settingsOpen: false, exportMenuOpen: false, proposeLayoutConfirmOpen: false, sendCopied: false, sourceViewOpen: false, addFieldOpen: false, switcherRowContextMenu: null,
+      settingsOpen: false, exportMenuOpen: false, proposeLayoutConfirmOpen: false, sendCopied: false, sourceViewOpen: false, issueJsonViewOpen: false, addFieldOpen: false, switcherRowContextMenu: null,
       addItemOpen: false, addItemDraft: '', filterQuery: '', widgetFilterOpen: false, jumpDismissed: false, jumpActiveIndex: 0, filterSuggestDismissed: true, filterSuggestActiveIndex: 0, sort: this.sortFor(id), sortSnapshot: computeSortSnapshot(this.sortFor(id), hydratedIssues, hydratedFieldDefs), columnFilters: this.columnFiltersFor(id),
       columnFilterExcludedIds: computeColumnFilterExcludedIds(this.columnFiltersFor(id), hydratedIssues, hydratedFieldDefs),
       draggingColId: null, dragOverColId: null, dragOverSide: null, openColMenuId: null,
@@ -2291,6 +2291,7 @@ class Component extends DCLogic {
         if (this.state.switcherOpen) { this.setState({ switcherOpen: false }); return; }
         if (this.state.exportMenuOpen) { clearTimeout(this._sendCopiedTimer); this.setState({ exportMenuOpen: false, sendCopied: false }); return; }
         if (this.state.sourceViewOpen) { this.closeSourceView(); return; }
+        if (this.state.issueJsonViewOpen) { this.closeIssueJsonView(); return; }
         if (this.state.activeCell) { this.cancelEdit(); return; }
         if (this.state.slideOverIssueId) { this.closeSlideOver(); return; }
         if (this.state.selectedIssueIds.length) { this.setState({ selectedIssueIds: [] }); return; }
@@ -3973,7 +3974,8 @@ class Component extends DCLogic {
     editProjectCommentDraft: '',
     activityTab: 'comments',
     slideOverCopyLinkLabel: 'Copy link',
-    slideOverCopyJsonLabel: 'Copy JSON',
+    issueJsonViewOpen: false,
+    issueJsonCopyLabel: 'Copy JSON',
     projectNotes: '',
     projectComments: [],
     projectPanelSection: 'notes',
@@ -7212,7 +7214,7 @@ class Component extends DCLogic {
 
   openSlideOver(issueId) {
     if (this.state.slideOverIssueId === issueId && this.state.slideOverVisible) return;
-    this.setState({ slideOverIssueId: issueId, slideOverVisible: false, activeCell: null, editingCommentFieldId: null, editingCommentId: null, editCommentDraft: '', slideOverCopyLinkLabel: 'Copy link', slideOverCopyJsonLabel: 'Copy JSON', activityTab: 'comments' });
+    this.setState({ slideOverIssueId: issueId, slideOverVisible: false, activeCell: null, editingCommentFieldId: null, editingCommentId: null, editCommentDraft: '', slideOverCopyLinkLabel: 'Copy link', issueJsonViewOpen: false, issueJsonCopyLabel: 'Copy JSON', activityTab: 'comments' });
     setTimeout(() => this.setState({ slideOverVisible: true }), 20);
     this.markCommentsRead(issueId);
     if (!this._navigatingFromHistory && this.state.projectId) {
@@ -7519,7 +7521,7 @@ class Component extends DCLogic {
     if (this.state.activeCell && this.state.activeCell.issueId === this.state.slideOverIssueId) {
       this.commitEdit(this.state.activeCell.issueId, this.state.activeCell.colId);
     }
-    this.setState({ slideOverVisible: false, newCommentDraft: '', commentStreamDrafts: {}, editingCommentFieldId: null, editingCommentId: null, editCommentDraft: '', jumpDismissed: false });
+    this.setState({ slideOverVisible: false, newCommentDraft: '', commentStreamDrafts: {}, editingCommentFieldId: null, editingCommentId: null, editCommentDraft: '', jumpDismissed: false, issueJsonViewOpen: false });
     setTimeout(() => this.setState(s => (s.slideOverVisible ? {} : { slideOverIssueId: null })), 280);
     if (!this._navigatingFromHistory) {
       if (this._issueOpenedViaPush) {
@@ -8850,13 +8852,31 @@ class Component extends DCLogic {
   // line -- full, unsquashed history, pretty-printed for readability since
   // this is for pasting into a chat/ticket/debugger, not for re-applying
   // as an update (that's what Export -> Save project file is for).
-  copySlideOverJson = () => {
+  issueJsonText() {
     const issue = this.findIssue(this.state.slideOverIssueId);
-    if (!issue) return;
-    const json = JSON.stringify({ type: 'issue', id: issue.id, fields: issue.fields }, null, 2);
-    this.writeToClipboard(json).catch(() => {});
-    this.setState({ slideOverCopyJsonLabel: 'Copied!' });
-    setTimeout(() => this.setState({ slideOverCopyJsonLabel: 'Copy JSON' }), 1500);
+    if (!issue) return '';
+    return JSON.stringify({ type: 'issue', id: issue.id, fields: issue.fields }, null, 2);
+  }
+  openIssueJsonView = () => this.setState({ issueJsonViewOpen: true, issueJsonCopyLabel: 'Copy JSON' });
+  closeIssueJsonView = () => this.setState({ issueJsonViewOpen: false });
+  // Same pretty-printing + syntax highlighting as the project-wide "View
+  // source" (highlightJson, see prettySourceNodes above) applied to just
+  // this one issue's own JSON rather than the whole file -- no per-line
+  // div/onSourceCopy record-compaction, since a single pretty-printed
+  // object has no multi-record boundary to preserve on copy; the
+  // dedicated Copy JSON button below is the primary way to get this out,
+  // not drag-select.
+  issueJsonPretty() {
+    const text = this.issueJsonText();
+    if (text === this._lastIssueJsonText) return this._lastIssueJsonPrettyNodes;
+    this._lastIssueJsonText = text;
+    this._lastIssueJsonPrettyNodes = text.length > 200000 ? text : this.highlightJson(text);
+    return this._lastIssueJsonPrettyNodes;
+  }
+  copyIssueJson = () => {
+    this.writeToClipboard(this.issueJsonText()).catch(() => {});
+    this.setState({ issueJsonCopyLabel: 'Copied!' });
+    setTimeout(() => this.setState({ issueJsonCopyLabel: 'Copy JSON' }), 1500);
   };
   copyProjectLink = () => {
     if (!this.state.projectId) return;
@@ -10189,8 +10209,17 @@ class Component extends DCLogic {
           onCopyRef: () => this.copyShortRef(),
           copyLinkLabel: s.slideOverCopyLinkLabel,
           onCopyLink: () => this.copySlideOverLink(),
-          copyJsonLabel: s.slideOverCopyJsonLabel,
-          onCopyJson: () => this.copySlideOverJson(),
+          onViewJson: () => this.openIssueJsonView(),
+          jsonView: {
+            open: s.issueJsonViewOpen,
+            heading: '#' + issue.id.slice(0, 8) + (issue.values.title ? (' — ' + issue.values.title) : ''),
+            sizeLabel: s.issueJsonViewOpen ? humanFileSize(new Blob([this.issueJsonText()]).size) : '',
+            pretty: s.issueJsonViewOpen ? this.issueJsonPretty() : null,
+            copyLabel: s.issueJsonCopyLabel,
+            onCopy: () => this.copyIssueJson(),
+            onClose: () => this.closeIssueJsonView(),
+            onBackdrop: e => { if (e.target === e.currentTarget) this.closeIssueJsonView(); }
+          },
           isSubscribed: !!s.issueSubscriptions[issue.id],
           subscribeLabel: s.issueSubscriptions[issue.id] ? 'Subscribed' : 'Subscribe',
           subscribeColor: s.issueSubscriptions[issue.id] ? 'var(--accent-ink)' : 'var(--text-secondary)',

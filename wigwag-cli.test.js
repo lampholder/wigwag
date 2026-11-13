@@ -39,7 +39,7 @@ test('regression: pulling a remote with an unrelated field set into a fresh empt
   // A real remote project with its OWN small custom field set, sharing
   // no field ids with core.defaultFieldDefs()'s starter shape at all.
   const remoteFieldDefs = { title: { label: 'Issue', type: 'issue' }, status: { label: 'Status', type: 'select', options: [] } };
-  const remoteIssue = { id: 'r1', num: 1, fieldRefs: {}, values: { title: 'Remote issue', status: null }, comments: [], history: [{ id: 'h1', field: 'title', value: 'Remote issue', sortKey: 1, origin: 'authored' }] };
+  const remoteIssue = { id: 'r1', num: 1, fieldRefs: {}, values: { title: 'Remote issue', status: null }, comments: [], fields: { title: { history: [{ id: 'h1', value: 'Remote issue', sortKey: 1 }] } } };
   const remoteText = core.buildSourceText('full', {
     projectId: 'remote-project', projectName: 'Remote', fieldDefs: remoteFieldDefs,
     projectHistory: [{ id: 'ph1', field: 'title', value: remoteFieldDefs.title, sortKey: 1, origin: 'authored' }, { id: 'ph2', field: 'status', value: remoteFieldDefs.status, sortKey: 2, origin: 'authored' }],
@@ -61,11 +61,15 @@ test('mergeRemoteIntoDoc: does not stamp a synthetic "Merged in from import" not
   const parsed = core.parseJsonl(core.buildSourceText('full', {
     projectId: 'p1', projectName: 'P', fieldDefs: { title: { label: 'Issue', type: 'issue' } },
     projectHistory: [], projectNotes: '', projectComments: [],
-    issues: [{ id: 'i1', num: 1, fieldRefs: {}, values: { title: 'A' }, comments: [], history: [{ id: 'h1', field: 'title', value: 'A', text: 'Title set to "A"', sortKey: 1, origin: 'authored' }] }]
+    issues: [{ id: 'i1', num: 1, fieldRefs: {}, values: { title: 'A' }, comments: [], fields: { title: { history: [{ id: 'h1', value: 'A', sortKey: 1 }] } } }]
   }), {});
   mergeRemoteIntoDoc(doc, parsed);
-  assert.equal(doc.issues[0].history.length, 1);
-  assert.equal(doc.issues[0].history[0].text, 'Title set to "A"');
+  // Format v2 dropped per-entry narrative .text (see docs/FORMAT_V2.md) --
+  // "no synthetic note got stamped on" is now checked by entry count/id/
+  // value staying exactly what was authored, not a .text string.
+  assert.equal(doc.issues[0].fields.title.history.length, 1);
+  assert.equal(doc.issues[0].fields.title.history[0].id, 'h1');
+  assert.equal(doc.issues[0].fields.title.history[0].value, 'A');
 });
 
 async function fakeIdentityPath() {
@@ -139,6 +143,90 @@ async function withCapturedLog(fn) {
   return lines;
 }
 
+// Fakes the whole GitHub repos/contents/git-data surface wigwag-cli.js's
+// pull/push path talks to, keyed by method + URL shape + Accept header --
+// NOT by call order/count. pull's raw-content GET and pushGithubFile's own
+// JSON conflict-check GET hit the IDENTICAL url (buildGithubContentsUrl),
+// distinguished only by which Accept header each request sends (raw vs.
+// application/vnd.github+json) -- see pullGithubFile/pushGithubFile in
+// wigwag-core.js. A test exercising cmdPull/cmdPush/main end to end chains
+// probeGithubRepoAccess + pullGithubFile + pushGithubFile's own multi-step
+// blob -> tree -> commit -> ref sequence -- pinning an exact call count/
+// order here (as this file used to) makes the test brittle against any
+// future change to those internals that doesn't change CLI-visible
+// behavior; wigwag-core.test.js's own pushGithubFile tests already cover
+// that exact sequence in isolation; these only need the end-to-end
+// CLI-visible outcome.
+// `state` is a tiny mutable fake remote: state.text/state.sha is the
+// file's current committed content/blob-sha (what a push's conflict check
+// compares against and what a pull returns); state.pushAllowed gates
+// ensureWriteAccess; state.exists === false simulates a brand-new empty
+// repo/branch (the Contents-API bootstrap path pushGithubFile falls back
+// to). state.calls records every request, for assertions that care what
+// was actually sent.
+function fakeGithubRepo(state) {
+  state.calls = state.calls || [];
+  let blobCounter = 0, treeCounter = 0, commitCounter = 0;
+  return async (url, opts) => {
+    const method = (opts && opts.method) || 'GET';
+    const headers = (opts && opts.headers) || {};
+    const body = opts && opts.body ? JSON.parse(opts.body) : null;
+    const u = String(url);
+    state.calls.push({ method, url: u, body });
+    const exists = state.exists !== false;
+    const jsonRes = (status, data) => ({ ok: status >= 200 && status < 300, status, headers: { get: () => null }, json: async () => data, text: async () => JSON.stringify(data) });
+    const rawRes = (status, text, etag) => ({ ok: status >= 200 && status < 300, status, headers: { get: (n) => (n === 'ETag' ? (etag || null) : null) }, text: async () => text, json: async () => { throw new Error('not json'); } });
+
+    if (method === 'GET' && /\/repos\/[^/]+\/[^/]+$/.test(u)) {
+      return jsonRes(200, { default_branch: state.defaultBranch || 'main', permissions: { push: state.pushAllowed !== false } });
+    }
+    if (method === 'GET' && u.includes('/commits/')) {
+      if (!exists) return jsonRes(404, {});
+      return jsonRes(200, { sha: state.commitSha || 'commit0', commit: { tree: { sha: state.treeSha || 'tree0' } } });
+    }
+    if (method === 'GET' && u.includes('/contents/')) {
+      if (headers.Accept === 'application/vnd.github.v3.raw') {
+        if (!exists) return rawRes(404, '');
+        return rawRes(200, state.text, '"' + state.sha + '"');
+      }
+      if (!exists) return jsonRes(404, {});
+      return jsonRes(200, { sha: state.sha });
+    }
+    if (method === 'PUT' && u.includes('/contents/')) {
+      // Contents-API bootstrap path -- only reachable when !exists.
+      state.text = Buffer.from(body.content, 'base64').toString('utf8');
+      state.sha = 'bootstrapped-sha';
+      state.exists = true;
+      return jsonRes(200, { content: { sha: state.sha } });
+    }
+    if (method === 'POST' && u.endsWith('/git/blobs')) {
+      blobCounter++;
+      state._pendingBlobText = body.content;
+      state._pendingBlobSha = 'blob' + blobCounter;
+      return jsonRes(201, { sha: state._pendingBlobSha });
+    }
+    if (method === 'POST' && u.endsWith('/git/trees')) {
+      treeCounter++;
+      return jsonRes(201, { sha: 'tree' + treeCounter });
+    }
+    if (method === 'POST' && u.endsWith('/git/commits')) {
+      commitCounter++;
+      return jsonRes(201, { sha: 'commit' + commitCounter });
+    }
+    if ((method === 'PATCH' && u.includes('/git/refs/heads/')) || (method === 'POST' && u.endsWith('/git/refs'))) {
+      // A successful ref update means this push actually landed -- update
+      // the fake remote's committed content/sha so a later call in the
+      // same test (e.g. a conflict-retry's own re-pull) sees the new
+      // state, same as a real repo would.
+      if (state._pendingBlobText != null) state.text = state._pendingBlobText;
+      if (state._pendingBlobSha) state.sha = state._pendingBlobSha;
+      state.exists = true;
+      return jsonRes(200, {});
+    }
+    throw new Error('fakeGithubRepo: unhandled request ' + method + ' ' + u);
+  };
+}
+
 test('main: "list" pulls remote changes first, so a stale local checkout shows the current remote title, not its own', async () => {
   const dir = tmpDir();
   const fieldDefs = { title: { label: 'Issue', type: 'issue' } };
@@ -147,20 +235,17 @@ test('main: "list" pulls remote changes first, so a stale local checkout shows t
     projectId: 'p1', projectName: 'P', fieldDefs, projectHistory: [],
     hiddenFieldIds: [], githubRepo: 'o/r', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '',
     projectNotes: '', projectComments: [],
-    issues: [{ id: 'i1', num: 1, fieldRefs: {}, values: { title: 'Stale local title' }, comments: [], history: [{ id: 'h1', field: 'title', value: 'Stale local title', text: 'Title set to "Stale local title"', sortKey: 1, origin: 'authored' }] }]
+    issues: [{ id: 'i1', num: 1, fieldRefs: {}, values: { title: 'Stale local title' }, comments: [], fields: { title: { history: [{ id: 'h1', value: 'Stale local title', sortKey: 1 }] } } }]
   });
 
   const remoteText = core.buildSourceText('full', {
     projectId: 'p1', projectName: 'P', fieldDefs, projectHistory: [],
     projectNotes: '', projectComments: [],
-    issues: [{ id: 'i1', num: 1, fieldRefs: {}, values: { title: 'Fresh remote title' }, comments: [], history: [{ id: 'h2', field: 'title', value: 'Fresh remote title', text: 'Title set to "Fresh remote title"', sortKey: 2, origin: 'authored' }] }]
+    issues: [{ id: 'i1', num: 1, fieldRefs: {}, values: { title: 'Fresh remote title' }, comments: [], fields: { title: { history: [{ id: 'h2', value: 'Fresh remote title', sortKey: 2 }] } } }]
   });
 
   await withMockedFetch(async () => {
-    global.fetch = async () => ({
-      ok: true, status: 200, headers: { get: () => null },
-      json: async () => ({ content: core.base64FromText(remoteText), sha: 'sha1' })
-    });
+    global.fetch = fakeGithubRepo({ text: remoteText, sha: 'sha1' });
     const identityPath = await fakeIdentityPath();
     const lines = await withMockedArgv(['--dir', dir, '--identity', identityPath, 'list'], () => withCapturedLog(() => main()));
     assert.ok(lines.some(l => l.includes('Fresh remote title')), 'expected the pulled title in output: ' + lines.join('\n'));
@@ -183,7 +268,7 @@ test('main: "list" still succeeds on a failed pre-pull, warning instead of abort
     projectId: 'p1', projectName: 'P', fieldDefs, projectHistory: [],
     hiddenFieldIds: [], githubRepo: 'o/r', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '',
     projectNotes: '', projectComments: [],
-    issues: [{ id: 'i1', num: 1, fieldRefs: {}, values: { title: 'Local title' }, comments: [], history: [{ id: 'h1', field: 'title', value: 'Local title', text: 'Title set to "Local title"', sortKey: 1, origin: 'authored' }] }]
+    issues: [{ id: 'i1', num: 1, fieldRefs: {}, values: { title: 'Local title' }, comments: [], fields: { title: { history: [{ id: 'h1', value: 'Local title', sortKey: 1 }] } } }]
   });
 
   await withMockedFetch(async () => {
@@ -212,35 +297,31 @@ test('main: "list" still succeeds on a failed pre-pull, warning instead of abort
 test('main: "set-field" auto-publishes to the remote when one is configured, not just the local checkout', async () => {
   const dir = tmpDir();
   const fieldDefs = { title: { label: 'Issue', type: 'issue' }, status: { label: 'Status', type: 'select', options: [{ id: 'opt_next', label: 'Next' }, { id: 'opt_prog', label: 'In Progress' }] } };
-  const store = new FileProjectStore(dir);
-  store.save({
+  const doc = {
     projectId: 'p1', projectName: 'P', fieldDefs, projectHistory: [],
     hiddenFieldIds: [], githubRepo: 'o/r', githubRepoPath: 'tracker.jsonl', githubRepoBranch: '',
     projectNotes: '', projectComments: [],
-    issues: [{ id: 'i1', num: 1, fieldRefs: {}, values: { title: 'Some issue', status: 'opt_next' }, comments: [], history: [{ id: 'h1', field: 'status', value: 'opt_next', text: 'Status set to Next', sortKey: 1, origin: 'authored' }] }]
-  });
+    issues: [{ id: 'i1', num: 1, fieldRefs: {}, values: { title: 'Some issue', status: 'opt_next' }, comments: [], fields: {
+      title: { history: [{ id: 'h0', value: 'Some issue', sortKey: 1 }] },
+      status: { history: [{ id: 'h1', value: 'opt_next', sortKey: 2 }] }
+    } }]
+  };
+  const store = new FileProjectStore(dir);
+  store.save(doc);
+  const remoteText = core.buildSourceText('full', doc);
 
   await withMockedFetch(async () => {
-    let putBody = null;
-    global.fetch = async (url, opts) => {
-      const method = (opts && opts.method) || 'GET';
-      if (String(url).includes('/repos/o/r') && !String(url).includes('/contents/')) {
-        return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({ permissions: { push: true } }) };
-      }
-      if (method === 'PUT') {
-        putBody = JSON.parse(opts.body);
-        return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({ content: { sha: 'new-sha' } }) };
-      }
-      // GET contents -- same content already on "remote" as local, so this is a clean push with no conflict.
-      const doc = store.load();
-      const text = core.buildSourceText('full', doc);
-      return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({ content: core.base64FromText(text), sha: 'sha0' }) };
-    };
+    const state = { text: remoteText, sha: 'sha0', pushAllowed: true, defaultBranch: 'main' };
+    global.fetch = fakeGithubRepo(state);
     const identityPath = await fakeIdentityPath();
     await withMockedArgv(['--dir', dir, '--identity', identityPath, 'set-field', 'i1', 'Status', 'In Progress'], () => withCapturedLog(() => main()));
-    assert.ok(putBody, 'expected a PUT to actually happen -- set-field must push, not just save locally');
-    const pushedText = Buffer.from(putBody.content, 'base64').toString('utf8');
-    assert.ok(pushedText.includes('In Progress'), 'the pushed content should reflect the new field value');
+    // Pushing now goes through the Git Data API (blob -> tree -> commit ->
+    // ref), not a single Contents-API PUT -- the new blob's own body is
+    // where the pushed content shows up.
+    const blobCall = state.calls.find(c => c.url.endsWith('/git/blobs'));
+    assert.ok(blobCall, 'expected a new blob to actually be created -- set-field must push, not just save locally');
+    assert.ok(blobCall.body.content.includes('In Progress'), 'the pushed content should reflect the new field value');
+    assert.ok(state.calls.some(c => c.method === 'PATCH' && c.url.includes('/git/refs/heads/')), 'expected the branch ref to actually be fast-forwarded');
   });
 
   const reloaded = store.load();
@@ -261,18 +342,21 @@ test('cmdSetField: a rule-bound field can be set manually now -- isFieldLocked\'
       related: { label: 'Related', type: 'text' },
       type: { label: 'Type', type: 'select', options: [{ id: 'bug', label: 'Bug' }], rule: 'source.github.labels.includes("bug") ? "bug" : null', linkedSourceId: 'related' }
     },
-    issues: [{ id: 'i1', num: 1, fieldRefs: { related: { system: 'github', labels: ['bug'] } }, values: { title: 'x', related: 'o/r#1', type: 'bug' }, comments: [], history: [] }]
+    issues: [{ id: 'i1', num: 1, fieldRefs: { related: { system: 'github', labels: ['bug'] } }, values: { title: 'x', related: 'o/r#1', type: 'bug' }, comments: [], fields: {} }]
   };
   await cmdSetField(ctx, doc, 'i1', 'Type', 'Bug');
   const issue = doc.issues[0];
   assert.equal(issue.values.type, 'bug');
-  // The entry defaults to origin:'authored' -- the exact same default a
-  // real manual edit gets (commitHistoryEntry's own `origin || 'authored'`
-  // fallback) -- byte-for-byte the same shape, no provenance leaked into
-  // the real signed history (see LOCAL_DERIVED_ENTRY_IDS_KEY in
-  // wigwag-core.js for where that tracking now lives instead).
-  const latest = issue.history[issue.history.length - 1];
-  assert.equal(latest.origin, 'authored');
+  // Format v2 issue-level entries carry no origin/provenance tag at all
+  // (see docs/FORMAT_V2.md) -- a manually-set and a rule-derived write are
+  // byte-for-byte the same shape; provenance for the UI's own override
+  // glyph is purely local-only state now (see LOCAL_DERIVED_ENTRY_IDS_KEY
+  // in wigwag-core.js), never part of the signed history itself. What
+  // this test actually guards is simpler: a real history entry landed on
+  // the field at all, not that it carries some now-nonexistent tag.
+  const history = issue.fields.type.history;
+  assert.equal(history.length, 1);
+  assert.equal(history[0].value, 'bug');
 });
 
 test('main: "pull"/"push"/"sync" are unaffected -- no redundant double pull for commands that already sync themselves', async () => {
@@ -291,13 +375,10 @@ test('main: "pull"/"push"/"sync" are unaffected -- no redundant double pull for 
   });
 
   await withMockedFetch(async () => {
-    let getCount = 0;
-    global.fetch = async () => {
-      getCount++;
-      return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({ content: core.base64FromText(remoteText), sha: 'sha1' }) };
-    };
+    const state = { text: remoteText, sha: 'sha1' };
+    global.fetch = fakeGithubRepo(state);
     const identityPath = await fakeIdentityPath();
     await withMockedArgv(['--dir', dir, '--identity', identityPath, 'pull'], () => withCapturedLog(() => main()));
-    assert.equal(getCount, 1, '"pull" itself should only pull once, not once for the pre-pull and again for the command');
+    assert.equal(state.calls.length, 1, '"pull" itself should only pull once, not once for the pre-pull and again for the command');
   });
 });

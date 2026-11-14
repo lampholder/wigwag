@@ -386,6 +386,42 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
     await expect(page.locator('[data-testid=connector-root-url-input]')).toHaveValue('https://github.com');
   });
 
+  // Found live-debugging a real "custom connector isn't working" report:
+  // saveConnectorForm built its saved record from scratch, field by field,
+  // rather than starting from the existing one -- `enabled` (set only via
+  // the separate deactivate toggle below, never surfaced on this form) had
+  // no slot in that object at all, so ANY edit-and-save of a deactivated
+  // connector silently dropped the field, which reads as "enabled" by
+  // default -- reactivating it without the user ever touching the toggle.
+  test('editing and saving a deactivated custom connector leaves it deactivated', async ({ page }) => {
+    await stubTauri(page);
+    await page.addInitScript((c) => {
+      localStorage.setItem('git_native_tracker_connected_sources_v1', JSON.stringify({ connectors: [c] }));
+    }, {
+      id: 'conn_test_deactivate_edit', key: 'deactedit', name: 'DeactivateEditTest', glyph: 'D', color: 'oklch(0.55 0.13 20)',
+      patterns: [{ regex: '^DE-\\d+$', label: 'Short ID' }],
+      macro: "async (id) => ({ title: id, url: '', state: '', labels: [], assignee: '', extra: {} })",
+      credentialConfigured: true, rootUrl: 'https://example.com'
+    });
+    await h.gotoTracker(page);
+    await h.openSettingsSection(page, 'connectedDataSources');
+
+    const row = page.locator('[data-testid=connected-source-row]', { hasText: 'DeactivateEditTest' });
+    await row.locator('[data-testid=btn-toggle-connector-enabled]').click();
+    await expect(row).toContainText('Deactivated');
+
+    await row.locator('[data-testid=btn-edit-connected-source]').click();
+    await page.locator('[data-testid=connector-link-text-input]').fill('{{id}}');
+    await page.locator('[data-testid=btn-save-connector]').click();
+    await expect(page.locator('[data-testid=connector-form-modal]')).toBeHidden();
+
+    await expect(row).toContainText('Deactivated');
+    const sources = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_connected_sources_v1')));
+    const saved = sources.connectors.find(c => c.id === 'conn_test_deactivate_edit');
+    expect(saved.enabled).toBe(false);
+    expect(saved.rootUrl).toBe('https://example.com'); // untouched field also still round-trips
+  });
+
   test('deleting a custom connector removes it from the list and closes the form', async ({ page }) => {
     await stubTauri(page);
     await h.seedAllBuiltinConnectors(page);

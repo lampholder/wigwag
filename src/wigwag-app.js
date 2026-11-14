@@ -4767,7 +4767,11 @@ class Component extends DCLogic {
     const key = existingRecord ? existingRecord.key : slugifyConnectorKey(name, existing.map(c => c.key));
     const id = f.id || ('conn_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8));
     const credentialTyped = draft.credentialDraft.trim();
+    // Spread existingRecord first -- this form has no field for `enabled`
+    // (set only via the separate deactivate toggle), so without this an
+    // edit-and-save of a deactivated connector silently reactivated it.
     const record = {
+      ...(existingRecord || {}),
       id, key, name, glyph: (draft.glyph || name[0] || '?').slice(0, 2), color: draft.color,
       patterns: draft.patterns.filter(p => p.regex.trim()).map(p => ({ regex: p.regex.trim(), label: p.label.trim() })),
       macro, credentialConfigured: credentialTyped ? true : draft.hasCredential,

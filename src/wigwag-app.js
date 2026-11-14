@@ -9480,19 +9480,26 @@ class Component extends DCLogic {
     const isBoundLive = bindState === 'bound', isOverridden = bindState === 'overridden';
     const isSelected = s.selectedCell && s.selectedCell.issueId === issue.id && s.selectedCell.colId === colId;
     const popoverOpen = !readOnly && s.activeCell && s.activeCell.issueId === issue.id && s.activeCell.colId === colId;
-    const cell = { isSelect: true, isBoundLive, isOverridden, showArrow: true, showBoundGlyph: isBoundLive || isOverridden, affordanceOpacity, affordanceWidth, affordanceGap, hasOption: !!opt, noOption: !opt,
+    const isBoundCol = isBoundLive || isOverridden;
+    const cell = { isSelect: true, isBoundLive, isOverridden, showArrow: !isBoundCol, showCornerBadge: isBoundCol,
+      badgeFill: isOverridden ? 'var(--accent-fill)' : 'transparent', badgeColor: isOverridden ? 'var(--accent-fill)' : 'var(--text-tertiary)',
+      affordanceOpacity, affordanceWidth, affordanceGap, hasOption: !!opt, noOption: !opt,
       optionLabel: opt ? opt.label : '', optionEmoji: opt ? opt.emoji : '', optionBg: opt ? col(opt.color).bg : '', optionFg: opt ? col(opt.color).fg : '',
       onClick: readOnly ? undefined : e => this.cellClickGate(issue.id, colId, () => this.togglePopover(issue.id, colId, e)),
       onArrowClick: readOnly ? undefined : e => { e.stopPropagation(); this.togglePopover(issue.id, colId, e); },
       popoverOpen,
-      boundGlyphTitle: isOverridden ? this.overrideTitle(def) : (isBoundLive ? this.lockTitle(def) : ''),
+      boundGlyphTitle: isOverridden ? 'Manually set — overrides the rule. Pick "Resync to rule" to clear it.' : (isBoundLive ? this.lockTitle(def) + ' — click to override.' : ''),
       cellHighlight: (popoverOpen || isSelected) ? 'outline:2px solid var(--accent-fill); outline-offset:-2px;' : '' };
     if (popoverOpen) {
       cell.popoverStyle = 'position:fixed; left:' + s.activeCell.anchorLeft + 'px; ' +
         (s.activeCell.openUpward ? ('bottom:' + s.activeCell.anchorBottomPx + 'px;') : ('top:' + s.activeCell.anchorTopPx + 'px;'));
-      cell.clearEntry = { id: null, label: '— No value —', emoji: '', ringColor: 'var(--n41)', ringFill: 'transparent',
-        selected: !curId, rowBg: !curId ? 'var(--surface-selected)' : 'transparent',
-        onSelect: () => this.selectOption(issue.id, colId, null) };
+      cell.clearEntry = isBoundCol
+        ? { id: null, label: '↻ Resync to rule', emoji: '', ringColor: 'var(--n41)', ringFill: 'transparent',
+            selected: !isOverridden, rowBg: !isOverridden ? 'var(--surface-selected)' : 'transparent',
+            onSelect: () => this.selectOption(issue.id, colId, null) }
+        : { id: null, label: '— No value —', emoji: '', ringColor: 'var(--n41)', ringFill: 'transparent',
+            selected: !curId, rowBg: !curId ? 'var(--surface-selected)' : 'transparent',
+            onSelect: () => this.selectOption(issue.id, colId, null) };
       cell.options = (def.options || []).map(o => ({
         id: o.id, label: o.label, emoji: o.emoji, ringColor: col(o.color).dot, ringFill: o.id === curId ? col(o.color).dot : 'transparent',
         selected: o.id === curId, rowBg: o.id === curId ? 'var(--surface-selected)' : 'transparent',
@@ -9516,12 +9523,15 @@ class Component extends DCLogic {
     const sortedIds = [...ids].sort((a, b) => idRank(a) - idRank(b));
     const isSelected = s.selectedCell && s.selectedCell.issueId === issue.id && s.selectedCell.colId === colId;
     const popoverOpen = !readOnly && s.activeCell && s.activeCell.issueId === issue.id && s.activeCell.colId === colId;
-    const cell = { isMulti: true, isBoundLive, isOverridden, showArrow: true, showBoundGlyph: isBoundLive || isOverridden, affordanceOpacity, affordanceWidth, affordanceGap, hasChips: ids.length > 0, noChips: ids.length === 0,
+    const isBoundCol = isBoundLive || isOverridden;
+    const cell = { isMulti: true, isBoundLive, isOverridden, showArrow: !isBoundCol, showCornerBadge: isBoundCol,
+      badgeFill: isOverridden ? 'var(--accent-fill)' : 'transparent', badgeColor: isOverridden ? 'var(--accent-fill)' : 'var(--text-tertiary)',
+      affordanceOpacity, affordanceWidth, affordanceGap, hasChips: ids.length > 0, noChips: ids.length === 0,
       chips: sortedIds.map(id => { const o = (def.options || []).find(x => x.id === id); return { id, label: o ? o.label : id, bg: o ? col(o.color).bg : col('gray').bg, fg: o ? col(o.color).fg : col('gray').fg }; }),
       onClick: readOnly ? undefined : e => this.cellClickGate(issue.id, colId, () => this.togglePopover(issue.id, colId, e)),
       onArrowClick: readOnly ? undefined : e => { e.stopPropagation(); this.togglePopover(issue.id, colId, e); },
       popoverOpen,
-      boundGlyphTitle: isOverridden ? this.overrideTitle(def) : (isBoundLive ? this.lockTitle(def) : ''),
+      boundGlyphTitle: isOverridden ? 'Manually set — overrides the rule. Clear all to resync.' : (isBoundLive ? this.lockTitle(def) + ' — click to override.' : ''),
       cellHighlight: (popoverOpen || isSelected) ? 'outline:2px solid var(--accent-fill); outline-offset:-2px;' : '' };
     if (popoverOpen) {
       cell.popoverStyle = 'position:fixed; left:' + s.activeCell.anchorLeft + 'px; ' +

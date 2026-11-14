@@ -974,7 +974,7 @@ test.describe('Bound value panel: null-computed rows are overridable', () => {
     // null-computed, never-derived field alone, it doesn't clear it),
     // and the user must be able to change it by hand.
     await expect(h.fieldCell(page, 1, 'priority')).toHaveText('P2');
-    await expect(h.fieldCell(page, 1, 'priority').locator('svg')).toHaveCount(0);
+    await expect(h.fieldCell(page, 1, 'priority').locator('[data-testid=bound-badge]')).toHaveCount(0);
     await h.clickFieldToEdit(page, 1, 'priority');
     await expect(page.locator('[data-testid=select-option]').filter({ hasText: 'P1' })).toBeVisible();
     await page.locator('[data-testid=select-option]').filter({ hasText: 'P1' }).click();
@@ -994,7 +994,7 @@ test.describe('Bound value panel: null-computed rows are overridable', () => {
     } });
     await h.refreshRow(page, 7);
     await page.waitForTimeout(400);
-    await expect(h.fieldCell(page, 7, 'priority').locator('svg')).toHaveCount(1);
+    await expect(h.fieldCell(page, 7, 'priority').locator('[data-testid=bound-badge]')).toHaveCount(1);
     await h.clickFieldToEdit(page, 7, 'priority');
     await expect(page.locator('[data-testid=select-option]').first()).toBeVisible();
   });
@@ -1082,7 +1082,7 @@ test.describe('Bound value panel: null-computed rows are overridable', () => {
     // row 7 has the "bug" label -- rule-derived to P0, showing the bound
     // glyph (editable even while bound, same as any other field).
     await expect(h.fieldCell(page, 7, 'priority')).toHaveText('P0');
-    await expect(h.fieldCell(page, 7, 'priority').locator('svg')).toHaveCount(1);
+    await expect(h.fieldCell(page, 7, 'priority').locator('[data-testid=bound-badge]')).toHaveCount(1);
     await h.clickFieldToEdit(page, 7, 'priority');
     await expect(page.locator('[data-testid=select-option]').first()).toBeVisible();
     await page.mouse.click(50, 50);
@@ -1102,7 +1102,7 @@ test.describe('Bound value panel: null-computed rows are overridable', () => {
     // Still bound -- this device's own local record now points at the
     // clearing entry, so the link glyph stays (tracking a live source
     // that currently has nothing to say, not "unbound").
-    await expect(h.fieldCell(page, 7, 'priority').locator('svg')).toHaveCount(1);
+    await expect(h.fieldCell(page, 7, 'priority').locator('[data-testid=bound-badge]')).toHaveCount(1);
     await h.clickFieldToEdit(page, 7, 'priority');
     await expect(page.locator('[data-testid=select-option]').filter({ hasText: 'P1' })).toBeVisible();
   });
@@ -1159,11 +1159,12 @@ test.describe('Bound value panel: null-computed rows are overridable', () => {
     await page.waitForTimeout(300);
     await expect(h.fieldCell(page, 7, 'priority')).toHaveText('P1');
 
-    // The override glyph shows immediately -- not silently re-derived back
-    // to "—" by the routine resettle this same commit triggers.
-    const glyph = h.fieldCell(page, 7, 'priority').locator('svg');
-    await expect(glyph).toHaveCount(1);
-    await expect(glyph.locator('xpath=..')).toHaveAttribute('title', /Overrides the linked value/);
+    // The override badge shows immediately, filled -- not silently
+    // re-derived back to "—" by the routine resettle this same commit
+    // triggers.
+    const badge = h.fieldCell(page, 7, 'priority').locator('[data-testid=bound-badge]');
+    await expect(badge).toHaveCount(1);
+    await expect(badge).toHaveAttribute('title', /overrides the rule/);
 
     // And it keeps surviving an unrelated edit elsewhere too.
     await h.clickFieldToEdit(page, 2, 'mitigation');

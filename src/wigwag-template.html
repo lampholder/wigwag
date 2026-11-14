@@ -1083,16 +1083,6 @@
                       <span style="width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent; border-top:7px solid var(--text-tertiary); flex-shrink:0;"></span>
                     </span>
                   </sc-if>
-                  <sc-if value="{{ seg.cell.showBoundGlyph }}" hint-placeholder-val="{{ false }}">
-                    <span title="{{ seg.cell.boundGlyphTitle }}" style="opacity:{{ seg.cell.affordanceOpacity }}; width:{{ seg.cell.affordanceWidth }}px; margin-left:{{ seg.cell.affordanceGap }}px; overflow:hidden; flex-shrink:0; color: var(--text-tertiary); display:flex;">
-                      <sc-if value="{{ seg.cell.isOverridden }}" hint-placeholder-val="{{ false }}">
-                      <svg width="12" height="12" sc-camel-view-box="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
-                    </sc-if>
-                    <sc-if value="{{ !seg.cell.isOverridden }}" hint-placeholder-val="{{ true }}">
-                      <svg width="12" height="12" sc-camel-view-box="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
-                    </sc-if>
-                    </span>
-                  </sc-if>
                 </span>
                 <sc-if value="{{ seg.cell.popoverOpen }}">
                   <div style="{{ seg.cell.popoverStyle }} background:var(--surface); border:1px solid var(--border); border-radius:10px; box-shadow:0 14px 34px var(--sh6); width:240px; z-index:75; overflow:hidden;">
@@ -1139,16 +1129,6 @@
                       <span style="width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent; border-top:7px solid var(--text-tertiary); flex-shrink:0;"></span>
                     </span>
                   </sc-if>
-                  <sc-if value="{{ seg.cell.showBoundGlyph }}" hint-placeholder-val="{{ false }}">
-                    <span title="{{ seg.cell.boundGlyphTitle }}" style="opacity:{{ seg.cell.affordanceOpacity }}; width:{{ seg.cell.affordanceWidth }}px; margin-left:{{ seg.cell.affordanceGap }}px; overflow:hidden; flex-shrink:0; color: var(--text-tertiary); display:flex;">
-                      <sc-if value="{{ seg.cell.isOverridden }}" hint-placeholder-val="{{ false }}">
-                      <svg width="12" height="12" sc-camel-view-box="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
-                    </sc-if>
-                    <sc-if value="{{ !seg.cell.isOverridden }}" hint-placeholder-val="{{ true }}">
-                      <svg width="12" height="12" sc-camel-view-box="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
-                    </sc-if>
-                    </span>
-                  </sc-if>
                 </span>
                 <sc-if value="{{ seg.cell.popoverOpen }}">
                   <div style="{{ seg.cell.popoverStyle }} background:var(--surface); border:1px solid var(--border); border-radius:10px; box-shadow:0 14px 34px var(--sh6); width:240px; z-index:75; overflow:hidden;">
@@ -1172,6 +1152,9 @@
                 </sc-if>
               </sc-if>
 
+              <sc-if value="{{ seg.cell.showCornerBadge }}" hint-placeholder-val="{{ false }}">
+                <span data-testid="bound-badge" title="{{ seg.cell.boundGlyphTitle }}" style="position:absolute; top:4px; right:4px; width:5px; height:5px; border-radius:50%; background: {{ seg.cell.badgeFill }}; border: 1px solid {{ seg.cell.badgeColor }}; cursor:default; user-select:none;"></span>
+              </sc-if>
             </div>
           </sc-if>
           <sc-if value="{{ seg.isAddField }}" hint-placeholder-val="{{ false }}">

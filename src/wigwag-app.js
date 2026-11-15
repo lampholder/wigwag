@@ -259,6 +259,38 @@ const CONNECTOR_TEMPLATES = {
 // all for that system. rootUrlDefault seeds a sensible starting value
 // (GitHub/Salesforce both have one real default worth pre-filling;
 // Jira's varies per org, no default to offer).
+// Counts a regex pattern's own capturing groups without needing a real
+// string to test it against -- appending `|` makes the whole pattern
+// always match the empty string (via the empty alternative), so
+// exec('') always succeeds and its result array always has one slot
+// per capturing group (undefined where that group didn't participate),
+// regardless of what the pattern itself actually requires. Returns -1
+// for an invalid regex, never throws -- callers use that to tell
+// "doesn't compile" apart from "compiles but has zero groups".
+function regexCaptureGroupCount(pattern) {
+  try { return new RegExp(pattern + '|').exec('').length - 1; } catch (e) { return -1; }
+}
+// A github-kind connector's optional Alias pattern/repo (Settings'
+// Alias section) recognizes an internal ticket id -- ElementSec, an
+// MSC number, anything of the shape "<org convention>-N" -- as an
+// alias for an issue in ONE specific repo, resolved with this
+// connector's own credential (see connectorMatches' aliasPattern
+// branch). Both empty is the ordinary, most common case (no error);
+// set together, aliasPattern must compile with at least one capturing
+// group (the issue number) and aliasRepo must be a plain owner/repo
+// pair -- returns '' when valid, an error string otherwise. Shared by
+// the Settings render (inline error, Save gating) and saveBuiltinForm's
+// own defense-in-depth re-check, same two-places-agree discipline
+// saveConnectorForm's pattern validation already follows.
+function githubAliasFormError(aliasPattern, aliasRepo) {
+  if (!aliasPattern && !aliasRepo) return '';
+  if (!aliasPattern || !aliasRepo) return 'Both alias pattern and alias repo are needed together.';
+  const groups = regexCaptureGroupCount(aliasPattern);
+  if (groups < 0) return 'Invalid regular expression.';
+  if (groups < 1) return 'Needs a capturing group around the issue number, e.g. (\\d+).';
+  if (!/^[^\s/]+\/[^\s/]+$/.test(aliasRepo)) return 'Alias repo must be in owner/repo form.';
+  return '';
+}
 const BUILTIN_INTEGRATIONS = {
   github: {
     name: 'GitHub', key: 'github',
@@ -4114,6 +4146,28 @@ class Component extends DCLogic {
             }
             continue;
           }
+          // An internal alias convention (ElementSec, an MSC number...)
+          // for an issue that's secretly just a GitHub issue in ONE
+          // specific repo -- this connector's own aliasPattern/aliasRepo
+          // (Settings' Alias section, github-kind only) recognizes the
+          // alias text directly and resolves straight to a plain,
+          // portable github.com/owner/repo/issues/N href, no url-shape
+          // trickery needed to keep this connector's own credential/
+          // branding (see applyLinkToField's akaText handling for how
+          // the alias text itself survives as a title prefix instead).
+          if (c.aliasPattern && c.aliasRepo) {
+            let aliasMatch = null;
+            try { aliasMatch = new RegExp('^(?:' + c.aliasPattern + ')$').exec(t); } catch (e) {}
+            if (aliasMatch && aliasMatch[1]) {
+              const slash = c.aliasRepo.indexOf('/');
+              if (slash > 0) {
+                const owner = c.aliasRepo.slice(0, slash), repo = c.aliasRepo.slice(slash + 1);
+                const num = aliasMatch[1];
+                kindMatches.push({ connector: c, fetchedVia: c.id, matchedId: { owner, repo, num, akaText: t }, href: 'https://github.com/' + owner + '/' + repo + '/issues/' + num });
+                continue;
+              }
+            }
+          }
         }
         const matchedId = c.kind === 'github' ? this.parseGithubUrl(t)
           : c.kind === 'jira' ? this.parseJiraKey(t)
@@ -4648,7 +4702,9 @@ class Component extends DCLogic {
       builtinFormOpen: { id, kind, draft: {
         rootUrl: c ? (c.rootUrl || '') : (spec.rootUrlDefault || ''),
         username: c ? (c.username || '') : '',
-        credentialDraft: '', hasCredential: c ? !!c.credentialConfigured : false
+        credentialDraft: '', hasCredential: c ? !!c.credentialConfigured : false,
+        aliasPattern: c ? (c.aliasPattern || '') : '',
+        aliasRepo: c ? (c.aliasRepo || '') : ''
       } }
     });
   }
@@ -4670,15 +4726,19 @@ class Component extends DCLogic {
     const rootUrl = f.draft.rootUrl.trim();
     const username = (f.draft.username || '').trim();
     const credentialTyped = f.draft.credentialDraft.trim();
+    const aliasPattern = f.kind === 'github' ? (f.draft.aliasPattern || '').trim() : '';
+    const aliasRepo = f.kind === 'github' ? (f.draft.aliasRepo || '').trim() : '';
+    if (githubAliasFormError(aliasPattern, aliasRepo)) return;
+    const aliasFields = f.kind === 'github' ? { aliasPattern, aliasRepo } : {};
     const existing = this.state.connectedSources || [];
     const id = f.id || ('conn_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8));
     let next;
     if (f.id) {
-      next = existing.map(c => c.id === id ? { ...c, rootUrl, username, credentialConfigured: credentialTyped ? true : c.credentialConfigured } : c);
+      next = existing.map(c => c.id === id ? { ...c, rootUrl, username, credentialConfigured: credentialTyped ? true : c.credentialConfigured, ...aliasFields } : c);
     } else {
       const spec = BUILTIN_INTEGRATIONS[f.kind];
       const key = slugifyConnectorKey(spec.name, existing.map(c => c.key));
-      next = existing.concat([{ id, key, kind: f.kind, name: spec.name, builtin: true, rootUrl, username, credentialConfigured: !!credentialTyped, enabled: true }]);
+      next = existing.concat([{ id, key, kind: f.kind, name: spec.name, builtin: true, rootUrl, username, credentialConfigured: !!credentialTyped, enabled: true, ...aliasFields }]);
     }
     if (credentialTyped) await this.setConnectorCredential(id, credentialTyped);
     if (credentialTyped && f.kind === 'github') next = await this.confirmGithubCredentialRepos(id, next);
@@ -5145,6 +5205,27 @@ class Component extends DCLogic {
     }
     return href; // no pattern currently matches -- fall back to the raw href
   }
+  // Recovers a github-kind connector's own alias prefix (the whole
+  // string its aliasPattern matched at paste time, e.g.
+  // "ELEMENTSEC-2026-1752") from a previously-composed "<alias>:
+  // <title>" field value -- the href itself deliberately carries no
+  // trace of it (see connectorMatches' aliasPattern branch), so this is
+  // the only way it survives a refresh. Re-validated against the
+  // connector's CURRENT aliasPattern every time, not trusted as a bare
+  // string split -- same "the connector, not a stale capture, is the
+  // source of truth" principle matchedIdFromHref's own pattern re-run
+  // above already follows (a title that merely happens to contain
+  // ": " for an unrelated reason, or an aliasPattern edited/removed
+  // since, must not be mistaken for one).
+  githubAkaPrefixFromTitle(connector, title) {
+    if (!connector || !connector.aliasPattern || !title) return null;
+    const idx = title.indexOf(': ');
+    if (idx < 0) return null;
+    const prefix = title.slice(0, idx);
+    let re;
+    try { re = new RegExp('^(?:' + connector.aliasPattern + ')$'); } catch (e) { return null; }
+    return re.test(prefix) ? prefix : null;
+  }
   // Is this connector object currently usable for a background fetch
   // (refresh), as opposed to merely existing? Deactivated (enabled ===
   // false) always fails this, same as "weren't there at all" everywhere
@@ -5322,7 +5403,14 @@ class Component extends DCLogic {
     // "Resolved since the first draft"). So the only thing worth
     // persisting here is href itself.
     const fieldRef = { href };
-    const value = kind === 'salesforce' ? data.name : data.title;
+    // A refresh's matchedId is always re-derived purely from href
+    // (matchedIdFromHref/resolveRefreshDispatch), which never carries
+    // akaText -- so a connector's own alias prefix (see connectorMatches'
+    // aliasPattern branch) can only survive a refresh by being recovered
+    // from the field's OWN current value, not from matchedId. This is
+    // the staged/bulk refresh twin of applyLinkToField's identical logic.
+    const akaPrefix = kind === 'github' ? this.githubAkaPrefixFromTitle(connector, issue.values[colId]) : null;
+    const value = kind === 'salesforce' ? data.name : (akaPrefix ? akaPrefix + ': ' + data.title : data.title);
     const beforeValue = issue.values[colId];
     const beforeFieldRef = issue.fieldRefs && issue.fieldRefs[colId];
     // Compares against the NORMALIZED before-ref, not the raw one -- a
@@ -5483,7 +5571,14 @@ class Component extends DCLogic {
       // bound field while real data is in hand -- it never reaches
       // appendSignedHistory/disk.
       const fieldRef = { href };
-      const value = kind === 'salesforce' ? data.name : data.title;
+      // matchedId.akaText only exists on the very first fresh alias
+      // paste (connectorMatches' own match result, passed straight
+      // through) -- every later refresh recomputes matchedId purely
+      // from href (matchedIdFromHref), which never carries it, so the
+      // alias prefix has to be recovered from the field's own current
+      // (pre-refresh) value instead. See githubAkaPrefixFromTitle.
+      const akaPrefix = kind === 'github' ? (matchedId.akaText || this.githubAkaPrefixFromTitle(connector, beforeTitle)) : null;
+      const value = kind === 'salesforce' ? data.name : (akaPrefix ? akaPrefix + ': ' + data.title : data.title);
       const beforeFieldRef = issNow && issNow.fieldRefs && issNow.fieldRefs[colId];
       if (!isRefresh) this.appendSignedHistory(issueId, { text: fieldLabel + ' fetched from ' + systemLabel, field: colId, value, fieldRef });
       // Deliberately RAW beforeFieldRef here (unlike stageFieldRefresh's
@@ -11331,7 +11426,10 @@ class Component extends DCLogic {
         const testResult = form ? form.testResult : null;
         const canRunTest = !!form && !!(form.testId && form.testId.trim()) && !!macroTrimmed && !form.testRunning;
         const builtinRootUrlTrimmed = builtinDraft ? builtinDraft.rootUrl.trim() : '';
-        const canSaveBuiltin = !!builtinForm && !!builtinRootUrlTrimmed;
+        const githubAliasPatternTrimmed = (builtinForm && builtinForm.kind === 'github' && builtinDraft) ? (builtinDraft.aliasPattern || '').trim() : '';
+        const githubAliasRepoTrimmed = (builtinForm && builtinForm.kind === 'github' && builtinDraft) ? (builtinDraft.aliasRepo || '').trim() : '';
+        const githubAliasError = githubAliasFormError(githubAliasPatternTrimmed, githubAliasRepoTrimmed);
+        const canSaveBuiltin = !!builtinForm && !!builtinRootUrlTrimmed && !githubAliasError;
         return {
           rows,
           formVisible: !!form || !!builtinForm,
@@ -11387,6 +11485,16 @@ class Component extends DCLogic {
           builtinKeychainNote: (builtinForm && builtinForm.kind === 'github' && !isTauri)
             ? 'A token needs the desktop app to save (OS keychain access) -- anonymous access already works without one.'
             : 'Stored in your OS keychain, never in the project file.',
+          // Github-kind-only: recognizes an internal ticket id
+          // (ElementSec, an MSC number...) as an alias for an issue in
+          // ONE specific repo, resolved with THIS instance's own
+          // credential -- see connectorMatches' aliasPattern branch and
+          // githubAkaPrefixFromTitle. Both empty is the ordinary case.
+          showGithubAlias: builtinForm && builtinForm.kind === 'github',
+          githubAliasPatternValue: builtinDraft ? (builtinDraft.aliasPattern || '') : '', onGithubAliasPatternChange: e => this.updateBuiltinDraft({ aliasPattern: e.target.value }),
+          githubAliasRepoValue: builtinDraft ? (builtinDraft.aliasRepo || '') : '', onGithubAliasRepoChange: e => this.updateBuiltinDraft({ aliasRepo: e.target.value }),
+          githubAliasHasError: !!githubAliasError,
+          githubAliasErrorText: githubAliasError,
           onSaveBuiltin: () => this.saveBuiltinForm(),
           onCancelBuiltin: () => this.cancelBuiltinForm(),
           // deleteConnectorSource is already fully generic (isBuiltin is

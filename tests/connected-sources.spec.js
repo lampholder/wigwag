@@ -553,6 +553,95 @@ test.describe('GitHub repo-aware disambiguation across multiple instances', () =
   });
 });
 
+// An internal ticket id (ElementSec, an MSC number...) that's secretly
+// just a GitHub issue in one specific repo -- Settings' Alias section
+// (github-kind only, see githubAliasFormError/connectorMatches'
+// aliasPattern branch) recognizes the alias text directly and resolves
+// to a plain, portable github.com/owner/repo/issues/N href (no url-
+// shape trickery to retain this connector's own identity), keeping the
+// alias text itself as a durable title prefix instead.
+function seedGithubWithAlias(page, { aliasPattern, aliasRepo, issueFixtures = {} } = {}) {
+  return page.addInitScript(({ aliasPattern, aliasRepo, issueFixtures }) => {
+    localStorage.setItem('git_native_tracker_connected_sources_v1', JSON.stringify({
+      connectors: [{ id: '__builtin_github', key: 'github', kind: 'github', name: 'GitHub', builtin: true, rootUrl: 'https://api.github.com', credentialConfigured: true, aliasPattern, aliasRepo, enabled: true }]
+    }));
+    window.__TAURI__ = window.__TAURI__ || {};
+    window.__TAURI__.core = {
+      invoke: (cmd, args) => {
+        if (cmd === 'connected_source_get_credential') return Promise.resolve('a-real-secret');
+        if (cmd === 'connected_source_fetch') {
+          const m = args.url.match(/\/repos\/([^/]+\/[^/]+\/issues\/\d+)$/);
+          const fixture = m && issueFixtures[m[1]];
+          return Promise.resolve(fixture ? { status: 200, headers: {}, body: JSON.stringify(fixture) } : { status: 404, headers: {}, body: JSON.stringify({ message: 'Not Found' }) });
+        }
+        return Promise.resolve(null);
+      }
+    };
+  }, { aliasPattern, aliasRepo, issueFixtures });
+}
+
+test.describe('GitHub Alias: an internal ticket id convention resolved against one specific repo', () => {
+  test('pasting an alias id resolves to the aliased repo\'s real issue, with the alias text kept as a title prefix and a plain portable href', async ({ page }) => {
+    await seedGithubWithAlias(page, {
+      aliasPattern: 'ELEMENTSEC-\\d+-(\\d+)', aliasRepo: 'matrix-org/internal-config',
+      issueFixtures: { 'matrix-org/internal-config/issues/1752': { title: 'Harden turnstile auth', state: 'open', labels: [] } }
+    });
+    await h.gotoTracker(page);
+    await h.clickTitleToEdit(page, 3);
+    await h.pasteText(page, 'ELEMENTSEC-2026-1752');
+    await page.keyboard.press('Tab');
+    await h.waitForTitleResolved(page, 3);
+
+    await expect(page.locator('[data-testid=connector-picker-popover]')).toHaveCount(0);
+    await expect(h.titleCell(page, 3)).toContainText('ELEMENTSEC-2026-1752: Harden turnstile auth');
+    const anchor = h.titleCell(page, 3).locator('a');
+    await expect(anchor).toHaveAttribute('href', 'https://github.com/matrix-org/internal-config/issues/1752'); // no #fragment or other url-shape trick needed
+  });
+
+  test('refreshing an alias-linked field keeps the alias prefix even though the href itself carries no trace of it', async ({ page }) => {
+    await seedGithubWithAlias(page, {
+      aliasPattern: 'ELEMENTSEC-\\d+-(\\d+)', aliasRepo: 'matrix-org/internal-config',
+      issueFixtures: { 'matrix-org/internal-config/issues/1752': { title: 'Harden turnstile auth (v2)', state: 'open', labels: [] } }
+    });
+    const idx = {};
+    await h.gotoTracker(page);
+    idx.activeMilestoneId = await h.activeMilestoneId(page);
+    {
+      const doc = await h.idbGetProjectDoc(page, idx.activeMilestoneId);
+      h.pushFieldEntry(doc.issues[0], 'title', 'ELEMENTSEC-2026-1752: Harden turnstile auth', { id: 'test-alias-link', href: h.githubHref('matrix-org', 'internal-config', 1752) });
+      await h.idbSetProjectDoc(page, idx.activeMilestoneId, doc);
+    }
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    await h.refreshRow(page, 1);
+    await h.waitForTitleResolved(page, 1);
+    await expect(h.titleCell(page, 1)).toContainText('ELEMENTSEC-2026-1752: Harden turnstile auth (v2)');
+  });
+
+  test('a title that merely happens to contain ": " is never mistaken for a recovered alias prefix', async ({ page }) => {
+    await seedGithubWithAlias(page, {
+      aliasPattern: 'ELEMENTSEC-\\d+-(\\d+)', aliasRepo: 'matrix-org/internal-config',
+      issueFixtures: { 'matrix-org/internal-config/issues/1752': { title: 'Fresh title', state: 'open', labels: [] } }
+    });
+    const idx = {};
+    await h.gotoTracker(page);
+    idx.activeMilestoneId = await h.activeMilestoneId(page);
+    {
+      const doc = await h.idbGetProjectDoc(page, idx.activeMilestoneId);
+      h.pushFieldEntry(doc.issues[0], 'title', 'Note: not an alias', { id: 'test-plain-link', href: h.githubHref('matrix-org', 'internal-config', 1752) });
+      await h.idbSetProjectDoc(page, idx.activeMilestoneId, doc);
+    }
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    await h.refreshRow(page, 1);
+    await h.waitForTitleResolved(page, 1);
+    await expect(h.titleCell(page, 1)).toContainText('Fresh title');
+    await expect(h.titleCell(page, 1)).not.toContainText('Note:');
+  });
+});
+
 // GitHub token provisioning Commit 4 (tracker 1e557816): a rejected
 // token on a REFRESH of an already-linked field must behave exactly
 // like any other refresh failure -- the existing resolved title is

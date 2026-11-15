@@ -709,6 +709,92 @@ async function stubTauriWithGithubRepos(page, { repoFullNames = null, fetchStatu
   }, { repoFullNames, fetchStatus, expirationHeader });
 }
 
+test.describe('GitHub Alias (internal ticket id for a repo, resolved with this connector\'s own credential)', () => {
+  test('the Alias section only shows on the GitHub builtin editor, not Jira/Salesforce', async ({ page }) => {
+    await stubTauri(page); // Jira's own edit affordance needs this outside Tauri (disabled otherwise)
+    await h.seedAllBuiltinConnectors(page);
+    await h.gotoTracker(page);
+    await h.openSettingsSection(page, 'connectedDataSources');
+
+    await page.locator('[data-testid=connected-source-row]', { hasText: 'GitHub' }).locator('[data-testid=btn-edit-connected-source]').click();
+    await expect(page.locator('[data-testid=builtin-github-alias-pattern-input]')).toBeVisible();
+    await expect(page.locator('[data-testid=builtin-github-alias-repo-input]')).toBeVisible();
+    await page.locator('[data-testid=btn-cancel-connector-form]').click();
+
+    await page.locator('[data-testid=connected-source-row]', { hasText: 'Jira' }).locator('[data-testid=btn-edit-connected-source]').click();
+    await expect(page.locator('[data-testid=builtin-github-alias-pattern-input]')).toHaveCount(0);
+  });
+
+  test('setting an alias pattern + repo round-trips through edit', async ({ page }) => {
+    await h.seedAllBuiltinConnectors(page);
+    await h.gotoTracker(page);
+    await h.openSettingsSection(page, 'connectedDataSources');
+
+    await page.locator('[data-testid=connected-source-row]', { hasText: 'GitHub' }).locator('[data-testid=btn-edit-connected-source]').click();
+    await page.locator('[data-testid=builtin-github-alias-pattern-input]').fill('ELEMENTSEC-\\d+-(\\d+)');
+    await page.locator('[data-testid=builtin-github-alias-repo-input]').fill('matrix-org/internal-config');
+    await page.locator('[data-testid=btn-save-builtin-source]').click();
+    await expect(page.locator('[data-testid=connector-form-modal]')).toBeHidden();
+
+    const sources = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_connected_sources_v1')));
+    const gh = sources.connectors.find(c => c.id === '__builtin_github');
+    expect(gh.aliasPattern).toBe('ELEMENTSEC-\\d+-(\\d+)');
+    expect(gh.aliasRepo).toBe('matrix-org/internal-config');
+
+    await page.locator('[data-testid=connected-source-row]', { hasText: 'GitHub' }).locator('[data-testid=btn-edit-connected-source]').click();
+    await expect(page.locator('[data-testid=builtin-github-alias-pattern-input]')).toHaveValue('ELEMENTSEC-\\d+-(\\d+)');
+    await expect(page.locator('[data-testid=builtin-github-alias-repo-input]')).toHaveValue('matrix-org/internal-config');
+  });
+
+  test('an alias pattern with no capturing group shows an inline error and blocks Save, without blocking the rest of the form', async ({ page }) => {
+    await h.seedAllBuiltinConnectors(page);
+    await h.gotoTracker(page);
+    await h.openSettingsSection(page, 'connectedDataSources');
+    await page.locator('[data-testid=connected-source-row]', { hasText: 'GitHub' }).locator('[data-testid=btn-edit-connected-source]').click();
+
+    await page.locator('[data-testid=builtin-github-alias-pattern-input]').fill('ELEMENTSEC-\\d+-\\d+'); // no capturing group
+    await page.locator('[data-testid=builtin-github-alias-repo-input]').fill('matrix-org/internal-config');
+    await expect(page.locator('[data-testid=builtin-github-alias-error]')).toBeVisible();
+    await expect(page.locator('[data-testid=builtin-github-alias-error]')).toContainText('capturing group');
+
+    await page.locator('[data-testid=btn-save-builtin-source]').click();
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=connector-form-modal]')).toBeVisible(); // still open -- blocked
+
+    // An unrelated, valid part of the same form (root URL) stays fully
+    // editable -- the bad alias pattern never locks the whole form.
+    await page.locator('[data-testid=builtin-root-url-input]').fill('https://api.github.com');
+    await expect(page.locator('[data-testid=builtin-root-url-input]')).toHaveValue('https://api.github.com');
+
+    await page.locator('[data-testid=builtin-github-alias-pattern-input]').fill('ELEMENTSEC-\\d+-(\\d+)');
+    await page.locator('[data-testid=btn-save-builtin-source]').click();
+    await expect(page.locator('[data-testid=connector-form-modal]')).toBeHidden();
+  });
+
+  test('only one of alias pattern/repo filled in shows an inline error and blocks Save', async ({ page }) => {
+    await h.seedAllBuiltinConnectors(page);
+    await h.gotoTracker(page);
+    await h.openSettingsSection(page, 'connectedDataSources');
+    await page.locator('[data-testid=connected-source-row]', { hasText: 'GitHub' }).locator('[data-testid=btn-edit-connected-source]').click();
+
+    await page.locator('[data-testid=builtin-github-alias-pattern-input]').fill('ELEMENTSEC-\\d+-(\\d+)');
+    await expect(page.locator('[data-testid=builtin-github-alias-error]')).toContainText('needed together');
+    await page.locator('[data-testid=btn-save-builtin-source]').click();
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=connector-form-modal]')).toBeVisible(); // still open -- blocked
+  });
+
+  test('leaving both alias fields blank (the ordinary case) is valid and saves normally', async ({ page }) => {
+    await h.seedAllBuiltinConnectors(page);
+    await h.gotoTracker(page);
+    await h.openSettingsSection(page, 'connectedDataSources');
+    await page.locator('[data-testid=connected-source-row]', { hasText: 'GitHub' }).locator('[data-testid=btn-edit-connected-source]').click();
+    await expect(page.locator('[data-testid=builtin-github-alias-error]')).toHaveCount(0);
+    await page.locator('[data-testid=btn-save-builtin-source]').click();
+    await expect(page.locator('[data-testid=connector-form-modal]')).toBeHidden();
+  });
+});
+
 test.describe('GitHub token provisioning: confirmation fetch on credential save', () => {
   test('saving a new GitHub credential confirms what it can see and shows the repo list on the row', async ({ page }) => {
     await stubTauriWithGithubRepos(page, { repoFullNames: ['acme/app', 'acme/infra'] });

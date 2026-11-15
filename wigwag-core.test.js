@@ -3775,3 +3775,27 @@ test('resolveRefSystem: a custom connector with no rootUrl configured never clai
   const resolved = core.resolveRefSystem('https://github.com/matrix-org/internal-config/issues/1709#ELEMENTSEC-1234-1709', { connectedSources });
   assert.equal(resolved, null);
 });
+test('resolveRefSystem: two GitHub instances sharing the same host (github.com\'s rootUrl is always api.github.com, never the browse host) resolve by which one confirmed access to the href\'s own repo', () => {
+  const connectedSources = [
+    { id: 'conn_main', kind: 'github', rootUrl: 'https://api.github.com', confirmedRepos: ['acme/app'] },
+    { id: 'conn_internal', kind: 'github', rootUrl: 'https://api.github.com', confirmedRepos: ['matrix-org/internal-config'] }
+  ];
+  const resolved = core.resolveRefSystem('https://github.com/matrix-org/internal-config/issues/1752', { connectedSources });
+  assert.equal(resolved.kind, 'github');
+  assert.equal(resolved.connector.id, 'conn_internal'); // not conn_main, despite being listed first
+});
+test('resolveRefSystem: GitHub repo-match is case-insensitive (GitHub repo paths are case-insensitive; confirmedRepos carries the API\'s own canonical case)', () => {
+  const connectedSources = [
+    { id: 'conn_1', kind: 'github', rootUrl: 'https://api.github.com', confirmedRepos: ['Matrix-Org/Internal-Config'] }
+  ];
+  const resolved = core.resolveRefSystem('https://github.com/matrix-org/internal-config/issues/1752', { connectedSources });
+  assert.equal(resolved.connector.id, 'conn_1');
+});
+test('resolveRefSystem: when no GitHub candidate has confirmed the repo, falls back to the first instance exactly as before (never silently loses the ref entirely)', () => {
+  const connectedSources = [
+    { id: 'conn_main', kind: 'github', rootUrl: 'https://api.github.com', confirmedRepos: ['acme/app'] },
+    { id: 'conn_other', kind: 'github', rootUrl: 'https://api.github.com', confirmedRepos: null }
+  ];
+  const resolved = core.resolveRefSystem('https://github.com/matrix-org/internal-config/issues/1752', { connectedSources });
+  assert.equal(resolved.connector.id, 'conn_main');
+});

@@ -2304,17 +2304,37 @@ const GITHUB_TOKEN_LIST_URL = 'https://github.com/settings/personal-access-token
 // coverage, which a bare same-kind find() always resolved to whichever
 // instance happened to be first, regardless of which one a given href
 // actually belonged to.
+//
+// GitHub needs a second disambiguator on top of that: unlike Jira/
+// Salesforce, a GitHub connector's `rootUrl` is its API base (e.g.
+// https://api.github.com), not the browse host a stored href actually
+// uses (github.com) -- those never match, so the host-match branch
+// above is silently dead for GitHub specifically, even for two plain
+// github.com instances telling apart two differently-scoped PATs by
+// which repos they were each confirmed against (see
+// confirmGithubCredentialRepos/`confirmedRepos`, src/wigwag-app.js) --
+// so a github href is first matched against each candidate's own
+// confirmedRepos (the repo it actually points at), falling back to the
+// same host-match (still useful for GitHub Enterprise Server, which
+// does have a distinct per-instance API host) and then first-candidate
+// exactly as before when neither disambiguates (e.g. a credential never
+// confirmed yet).
 function resolveRefSystem(href, ctx) {
   if (!href) return null;
   const connectedSources = (ctx && ctx.connectedSources) || [];
   const host = hostFromUrl(href);
-  const pickByKind = (kind) => {
+  const pickByKind = (kind, repoKey) => {
     const candidates = connectedSources.filter(c => c.kind === kind);
     if (!candidates.length) return null;
+    if (repoKey) {
+      const repoMatch = candidates.find(c => Array.isArray(c.confirmedRepos) && c.confirmedRepos.some(r => (r || '').toLowerCase() === repoKey));
+      if (repoMatch) return repoMatch;
+    }
     const hostMatch = host && candidates.find(c => c.rootUrl && hostFromUrl(c.rootUrl) === host);
     return hostMatch || candidates[0];
   };
-  if (parseGithubUrl(href)) return { kind: 'github', connector: pickByKind('github') };
+  const gh = parseGithubUrl(href);
+  if (gh) return { kind: 'github', connector: pickByKind('github', (gh.owner + '/' + gh.repo).toLowerCase()) };
   if (parseJiraKey(href)) return { kind: 'jira', connector: pickByKind('jira') };
   if (parseSalesforceId(href)) return { kind: 'salesforce', connector: pickByKind('salesforce') };
   if (host) {

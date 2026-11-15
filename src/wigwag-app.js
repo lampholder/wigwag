@@ -4143,6 +4143,24 @@ class Component extends DCLogic {
     // with a real Jira key) must never turn a deterministic built-in
     // match into a false "matches more than one source" ambiguity.
     const raw = kindMatches.length ? kindMatches : macroMatches;
+    // GitHub-specific soft disambiguation: 2+ GitHub instances matching
+    // the SAME owner/repo (e.g. a full browse URL or owner/repo#N
+    // shorthand, parsed identically for every candidate) narrows
+    // silently to whichever one's own confirmedRepos actually includes
+    // that repo -- mirrors resolveRefSystem's identical repo-aware
+    // disambiguation, wigwag-core.js. Needed because the host-based
+    // narrowing just below is always a no-op for GitHub specifically:
+    // its rootUrl is the API base (api.github.com), never the browse
+    // host (github.com) matchedId/href use here, so two cloud GitHub
+    // instances could never otherwise be told apart even when only one
+    // of them can actually see the repo being pasted. Left ambiguous
+    // (raw, unfiltered) when 2+ candidates confirm the same repo --
+    // that's a genuine "which credential" choice only the user can make.
+    if (raw.length >= 2 && raw[0].matchedId && raw[0].matchedId.owner && raw[0].matchedId.repo) {
+      const repoKey = (raw[0].matchedId.owner + '/' + raw[0].matchedId.repo).toLowerCase();
+      const repoNarrowed = raw.filter(m => Array.isArray(m.connector.confirmedRepos) && m.connector.confirmedRepos.some(r => (r || '').toLowerCase() === repoKey));
+      if (repoNarrowed.length === 1) return repoNarrowed;
+    }
     // Soft disambiguation: when 2+ matches share a kind AND the pasted
     // text is itself a URL, a host match against each candidate's own
     // rootUrl narrows silently to the one actually-matching instance --

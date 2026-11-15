@@ -471,6 +471,88 @@ test.describe('GitHub token provisioning: bare "#N" disambiguation against a con
   });
 });
 
+// Two real GitHub connector instances (e.g. a main PAT plus a second one
+// narrowly scoped to a private repo the main one can't see) -- unlike
+// Jira/Salesforce, a GitHub connector's rootUrl is its API base
+// (api.github.com for both, always), never the browse host a stored
+// href/paste actually uses (github.com), so host-matching can never
+// tell two GitHub instances apart; resolveRefSystem/connectorMatches
+// disambiguate by confirmedRepos instead (wigwag-core.js). gh_main is
+// listed FIRST and deliberately can't see the private repo -- the old
+// "first candidate wins" fallback would silently use its credential
+// (secret-main) and 403 against the private repo; this only passes if
+// the repo-match genuinely picks gh_private (secret-private).
+function seedTwoGithubInstances(page, { confirmedReposMain, confirmedReposPrivate, issueFixtures = {} } = {}) {
+  return page.addInitScript(({ confirmedReposMain, confirmedReposPrivate, issueFixtures }) => {
+    localStorage.setItem('git_native_tracker_connected_sources_v1', JSON.stringify({
+      connectors: [
+        { id: 'gh_main', key: 'github', kind: 'github', name: 'GitHub', builtin: true, rootUrl: 'https://api.github.com', credentialConfigured: true, confirmedRepos: confirmedReposMain, enabled: true },
+        { id: 'gh_private', key: 'github', kind: 'github', name: 'GitHub (internal-config)', builtin: false, rootUrl: 'https://api.github.com', credentialConfigured: true, confirmedRepos: confirmedReposPrivate, enabled: true }
+      ]
+    }));
+    window.__credCallLog = [];
+    window.__TAURI__ = window.__TAURI__ || {};
+    window.__TAURI__.core = {
+      invoke: (cmd, args) => {
+        if (cmd === 'connected_source_get_credential') {
+          window.__credCallLog.push(args.connectorId);
+          return Promise.resolve(args.connectorId === 'gh_main' ? 'secret-main' : 'secret-private');
+        }
+        if (cmd === 'connected_source_fetch') {
+          const auth = (args.headers && args.headers.Authorization) || '';
+          if (auth !== 'Bearer secret-private') return Promise.resolve({ status: 403, headers: {}, body: JSON.stringify({ message: 'Resource not accessible by personal access token' }) });
+          const m = args.url.match(/\/repos\/([^/]+\/[^/]+\/issues\/\d+)$/);
+          const fixture = m && issueFixtures[m[1]];
+          return Promise.resolve(fixture ? { status: 200, headers: {}, body: JSON.stringify(fixture) } : { status: 404, headers: {}, body: JSON.stringify({ message: 'Not Found' }) });
+        }
+        return Promise.resolve(null);
+      }
+    };
+  }, { confirmedReposMain, confirmedReposPrivate, issueFixtures });
+}
+
+test.describe('GitHub repo-aware disambiguation across multiple instances', () => {
+  test('refreshing a field already linked to a repo only the second instance confirmed uses that instance\'s own credential, not the first-listed one\'s', async ({ page }) => {
+    await seedTwoGithubInstances(page, {
+      confirmedReposMain: ['acme/app'],
+      confirmedReposPrivate: ['matrix-org/internal-config'],
+      issueFixtures: { 'matrix-org/internal-config/issues/1752': { title: 'Harden turnstile auth', state: 'open', labels: [] } }
+    });
+    await h.gotoTracker(page);
+    const idx = { activeMilestoneId: await h.activeMilestoneId(page) };
+    {
+      const doc = await h.idbGetProjectDoc(page, idx.activeMilestoneId);
+      h.pushFieldEntry(doc.issues[0], 'title', 'Old title', { id: 'test-link', href: h.githubHref('matrix-org', 'internal-config', 1752) });
+      await h.idbSetProjectDoc(page, idx.activeMilestoneId, doc);
+    }
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    await h.refreshRow(page, 1);
+    await h.waitForTitleResolved(page, 1);
+    await expect(h.titleCell(page, 1)).toContainText('Harden turnstile auth'); // would still read "Old title" if gh_main's credential (no repo access) had been used instead
+    const credCalls = await page.evaluate(() => window.__credCallLog || []);
+    expect(credCalls).toContain('gh_private');
+    expect(credCalls).not.toContain('gh_main');
+  });
+
+  test('pasting owner/repo#N for a repo only the second instance confirmed resolves silently, no ambiguous-match picker', async ({ page }) => {
+    await seedTwoGithubInstances(page, {
+      confirmedReposMain: ['acme/app'],
+      confirmedReposPrivate: ['matrix-org/internal-config'],
+      issueFixtures: { 'matrix-org/internal-config/issues/1752': { title: 'Harden turnstile auth', state: 'open', labels: [] } }
+    });
+    await h.gotoTracker(page);
+    await h.clickTitleToEdit(page, 3);
+    await h.pasteText(page, 'matrix-org/internal-config#1752');
+    await page.keyboard.press('Tab');
+    await h.waitForTitleResolved(page, 3);
+
+    await expect(page.locator('[data-testid=connector-picker-popover]')).toHaveCount(0);
+    await expect(h.titleCell(page, 3)).toContainText('Harden turnstile auth');
+  });
+});
+
 // GitHub token provisioning Commit 4 (tracker 1e557816): a rejected
 // token on a REFRESH of an already-linked field must behave exactly
 // like any other refresh failure -- the existing resolved title is

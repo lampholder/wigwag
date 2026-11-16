@@ -4569,11 +4569,20 @@ class Component extends DCLogic {
   getConnectorCredential = (connectorId) => {
     if (!this.isTauriConnectorRuntime()) return Promise.resolve('');
     console.time('[diag] connector-credential-ipc ' + connectorId);
-    return window.__TAURI__.core.invoke('connected_source_get_credential', { connectorId }).then(v => v || '').catch(() => '').finally(() => console.timeEnd('[diag] connector-credential-ipc ' + connectorId));
+    return window.__TAURI__.core.invoke('connected_source_get_credential', { connectorId }).then(v => v || '')
+      .catch(e => { console.error('[wigwag] reading the keychain credential for connector ' + connectorId + ' failed: ' + e.message); return ''; })
+      .finally(() => console.timeEnd('[diag] connector-credential-ipc ' + connectorId));
   };
   setConnectorCredential = (connectorId, value) => {
     if (!this.isTauriConnectorRuntime()) return Promise.resolve();
-    return window.__TAURI__.core.invoke('connected_source_set_credential', { connectorId, value }).catch(() => {});
+    // Every caller treats this as fire-and-forget (never awaited for
+    // success/failure, matching its own void return) -- a keychain
+    // write failing here (locked, denied, anything) was previously
+    // indistinguishable from succeeding: the Save button closes either
+    // way, and every confirm attempt from then on would see no
+    // credential at all, consistently, with zero trace of why.
+    return window.__TAURI__.core.invoke('connected_source_set_credential', { connectorId, value })
+      .catch(e => console.error('[wigwag] saving the keychain credential for connector ' + connectorId + ' failed: ' + e.message));
   };
   deleteConnectorCredential = (connectorId) => {
     if (!this.isTauriConnectorRuntime()) return Promise.resolve();
@@ -4783,7 +4792,21 @@ class Component extends DCLogic {
           // read here for free, same call, rather than a guess or a
           // second request (tracker 1e557816, follow-up to Commit 2/4).
           tokenExpiresAt = parseGithubTokenExpiryHeader(res.headers.get('github-authentication-token-expiration'));
-          if (!res.ok) return connectors.map(c => c.id === connectorId ? { ...c, confirmedRepos: null, confirmedReposAt: Date.now(), tokenExpiresAt: null } : c);
+          if (!res.ok) {
+            // "Couldn't verify this token's access" (confirmedReposText,
+            // below in this file) comes from exactly this branch, with
+            // no detail of its own at all -- this is the only place
+            // that ever explains WHY: a real HTTP response came back,
+            // just not ok (bad/expired token -> 401, most commonly; a
+            // fine-grained PAT scoped to zero repos can also 404 here).
+            // Deliberately logged, not swallowed -- unlike the credential
+            // itself staying unset below, a non-ok response here is real,
+            // actionable signal worth a developer actually seeing.
+            let message = '';
+            try { const body = await res.text(); message = (JSON.parse(body).message) || body; } catch (e) {}
+            console.error('[wigwag] GitHub repo-list confirmation failed for connector ' + connectorId + ': ' + res.status + (message ? ' -- ' + message : '') + (credential ? '' : ' (no credential on file for this connector)'));
+            return connectors.map(c => c.id === connectorId ? { ...c, confirmedRepos: null, confirmedReposAt: Date.now(), tokenExpiresAt: null } : c);
+          }
         } else if (!res.ok) {
           break; // a later page failing (rare) keeps what's already collected rather than discarding it all
         }
@@ -4793,6 +4816,13 @@ class Component extends DCLogic {
       }
       return connectors.map(c => c.id === connectorId ? { ...c, confirmedRepos: repos, confirmedReposAt: Date.now(), tokenExpiresAt } : c);
     } catch (e) {
+      // Confirmation failing is deliberately never allowed to block a
+      // save the user already committed to (confirmedRepos just stays
+      // whatever it was) -- but swallowing the exception itself with
+      // zero trace made a genuine bug (a credential read/keychain IPC
+      // throwing, a malformed response, anything not caught above)
+      // indistinguishable from GitHub simply being unreachable.
+      console.error('[wigwag] GitHub repo-list confirmation threw for connector ' + connectorId + ': ' + e.message);
       return connectors;
     }
   }
@@ -5001,7 +5031,20 @@ class Component extends DCLogic {
     if (credential) headers.Authorization = 'Bearer ' + credential;
     const fetchImpl = this.isTauriConnectorRuntime() ? this.connectorFetchShim() : window.fetch.bind(window);
     const res = await fetchImpl(rootUrl + '/repos/' + owner + '/' + repo + '/issues/' + num, { headers });
-    if (!res.ok) throw Object.assign(new Error('GitHub API returned ' + res.status), { status: res.status });
+    if (!res.ok) {
+      // GitHub's own error body (e.g. "Resource not accessible by
+      // personal access token" -- the exact, documented symptom of a
+      // fine-grained PAT missing "Issues: Read" even though the repo
+      // itself is correctly selected) is otherwise silently discarded,
+      // leaving "GitHub API returned 403" as the only signal anyone
+      // ever sees -- not enough to tell a permission gap apart from a
+      // bad/expired token or a genuinely wrong repo. connectorId/owner/
+      // repo/num are attached too, for applyLinkToField's own console
+      // logging below (which connector/credential was actually tried).
+      let message = '';
+      try { const body = await res.text(); message = (JSON.parse(body).message) || body; } catch (e) {}
+      throw Object.assign(new Error('GitHub API returned ' + res.status + (message ? ': ' + message : '')), { status: res.status, connectorId, owner, repo, num });
+    }
     const data = await res.json();
     const isPullRequest = !!data.pull_request;
     const result = {
@@ -5697,7 +5740,15 @@ class Component extends DCLogic {
       // a failure is simply treated as a fresh link attempt -- sameRef
       // correctly reads it as "not a refresh" either way, since nothing
       // was ever persisted for the failed attempt.
-      console.error('[wigwag] link fetch failed: ' + systemLabel + ' (' + err.message + ')');
+      // connector.id/kind (not just its display name, systemLabel --
+      // easy to confuse when 2+ instances share the same name, e.g.
+      // two connectors both just called "GitHub") plus matchedId (the
+      // actual owner/repo/num a github-kind connector was dispatched
+      // against) is what's actually needed to tell "which connector,
+      // against what" apart in the console -- err.message now also
+      // carries GitHub's own real error body (see fetchGithubData),
+      // not just a bare status code.
+      console.error('[wigwag] link fetch failed: ' + systemLabel + ' (id=' + connector.id + (kind ? ', kind=' + kind : '') + ') for ' + JSON.stringify(matchedId) + ' -- ' + err.message);
       // A FIRST attempt's typed text (matchedId) must stay visible as a
       // plain, unlinked placeholder rather than leaving the field looking
       // totally unset -- distinct from the error-logging concern above

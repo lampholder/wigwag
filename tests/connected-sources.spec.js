@@ -748,6 +748,43 @@ test.describe('GitHub Alias: an internal ticket id convention resolved against o
 
     await expect(h.titleCell(page, 3)).toContainText('TICKET-2026-1752');
   });
+
+  // Live-reported (Tom): with 2+ GitHub connectors configured, a 403 in
+  // devtools wasn't enough to tell WHICH connector/credential was
+  // actually tried, or why (vs. a bad token, a wrong repo, etc).
+  // fetchGithubData now reads GitHub's own real error body instead of
+  // discarding it, and applyLinkToField's console.error names the
+  // connector id/kind + the exact owner/repo/num dispatched.
+  test('a fetch failure logs the real GitHub error body plus which connector/matchedId was actually tried', async ({ page }) => {
+    const consoleErrors = [];
+    page.on('console', msg => { if (msg.type() === 'error') consoleErrors.push(msg.text()); });
+    await page.addInitScript(() => {
+      localStorage.setItem('git_native_tracker_connected_sources_v1', JSON.stringify({
+        connectors: [{ id: 'conn_second_gh', key: 'github2', kind: 'github', name: 'GitHub (internal)', builtin: false, rootUrl: 'https://api.github.com', credentialConfigured: true, enabled: true, aliasPattern: 'TICKET-\\d+-(\\d+)', aliasRepo: 'acme/internal-tools' }]
+      }));
+      window.__TAURI__ = window.__TAURI__ || {};
+      window.__TAURI__.core = window.__TAURI__.core || {
+        invoke: (cmd, args) => {
+          if (cmd === 'connected_source_get_credential') return Promise.resolve('a-bad-token');
+          if (cmd === 'connected_source_fetch') return Promise.resolve({ status: 404, headers: {}, body: JSON.stringify({ message: 'Not Found' }) });
+          return Promise.resolve(null);
+        }
+      };
+    });
+    await h.gotoTracker(page);
+    await h.clickTitleToEdit(page, 3);
+    await h.pasteText(page, 'TICKET-2026-1752');
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(500);
+
+    const logged = consoleErrors.find(e => e.includes('link fetch failed'));
+    expect(logged).toBeTruthy();
+    expect(logged).toContain('conn_second_gh'); // which connector
+    expect(logged).toContain('kind=github');
+    expect(logged).toContain('acme'); // the matchedId actually dispatched against
+    expect(logged).toContain('internal-tools');
+    expect(logged).toContain('Not Found'); // GitHub's own real error body, not just a bare status code
+  });
 });
 
 // GitHub token provisioning Commit 4 (tracker 1e557816): a rejected

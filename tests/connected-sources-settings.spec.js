@@ -857,6 +857,8 @@ test.describe('GitHub token provisioning: confirmation fetch on credential save'
   });
 
   test('a credential confirmation call that fails (e.g. a bad token) shows a clear note instead of a stale/silent repo list', async ({ page }) => {
+    const consoleErrors = [];
+    page.on('console', msg => { if (msg.type() === 'error') consoleErrors.push(msg.text()); });
     await stubTauriWithGithubRepos(page, { fetchStatus: 401 });
     await h.seedAllBuiltinConnectors(page);
     await h.gotoTracker(page);
@@ -869,6 +871,14 @@ test.describe('GitHub token provisioning: confirmation fetch on credential save'
 
     const row = page.locator('[data-testid=connected-source-row]', { hasText: 'GitHub' });
     await expect(row.locator('[data-testid=connected-source-confirmed-repos]')).toHaveText('Couldn\'t verify this token\'s access');
+
+    // "Couldn't verify" on its own gives no indication of WHY -- this
+    // is the only place that explains it: the real HTTP status and
+    // GitHub's own error body, logged rather than swallowed.
+    const logged = consoleErrors.find(e => e.includes('repo-list confirmation failed'));
+    expect(logged).toBeTruthy();
+    expect(logged).toContain('401');
+    expect(logged).toContain('Bad credentials');
   });
 
   // Follow-up to Commit 2 (tracker 1e557816): GitHub's own real

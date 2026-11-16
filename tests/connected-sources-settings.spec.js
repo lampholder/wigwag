@@ -815,6 +815,47 @@ test.describe('GitHub token provisioning: confirmation fetch on credential save'
     expect(fetchCall.args.url).toContain('https://api.github.com/user/repos');
   });
 
+  // Tracker follow-up: /user/repos?per_page=100 alone silently dropped
+  // everything past a token's first 100 repos, with no error or
+  // indication at all -- confirmGithubCredentialRepos now walks every
+  // page via the real Link response header (parseGithubNextLink,
+  // wigwag-core.js) until there's no rel="next" left.
+  test('a credential that can see more than one page of repos has every page walked via the Link header, not just the first 100', async ({ page }) => {
+    await page.addInitScript(() => {
+      window.__invokeCalls = [];
+      window.__TAURI__ = window.__TAURI__ || {};
+      window.__TAURI__.core = {
+        invoke: (cmd, args) => {
+          window.__invokeCalls.push({ cmd, args });
+          if (cmd === 'connected_source_set_credential') return Promise.resolve();
+          if (cmd === 'connected_source_get_credential') return Promise.resolve('a-real-secret');
+          if (cmd === 'connected_source_fetch') {
+            const onPage2 = args.url.includes('page=2');
+            const body = onPage2 ? JSON.stringify([{ full_name: 'acme/second-page-repo' }]) : JSON.stringify([{ full_name: 'acme/app' }]);
+            const headers = onPage2 ? {} : { link: '<https://api.github.com/user/repos?per_page=100&page=2>; rel="next", <https://api.github.com/user/repos?per_page=100&page=2>; rel="last"' };
+            return Promise.resolve({ status: 200, headers, body });
+          }
+          return Promise.resolve(null);
+        }
+      };
+    });
+    await h.seedAllBuiltinConnectors(page);
+    await h.gotoTracker(page);
+    await h.openSettingsSection(page, 'connectedDataSources');
+
+    await page.locator('[data-testid=connected-source-row]', { hasText: 'GitHub' }).locator('[data-testid=btn-edit-connected-source]').click();
+    await page.locator('[data-testid=builtin-credential-input]').fill('a-new-token');
+    await page.locator('[data-testid=btn-save-builtin-source]').click();
+    await expect(page.locator('[data-testid=connector-form-modal]')).toBeHidden();
+
+    const row = page.locator('[data-testid=connected-source-row]', { hasText: 'GitHub' });
+    await expect(row.locator('[data-testid=connected-source-confirmed-repos]')).toHaveText('Can see: acme/app, acme/second-page-repo · No expiry');
+
+    const calls = await page.evaluate(() => window.__invokeCalls);
+    const fetchCalls = calls.filter(c => c.cmd === 'connected_source_fetch');
+    expect(fetchCalls.length).toBe(2); // one per page, not just the first
+  });
+
   test('a credential confirmation call that fails (e.g. a bad token) shows a clear note instead of a stale/silent repo list', async ({ page }) => {
     await stubTauriWithGithubRepos(page, { fetchStatus: 401 });
     await h.seedAllBuiltinConnectors(page);

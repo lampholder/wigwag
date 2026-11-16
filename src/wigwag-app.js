@@ -11,7 +11,7 @@
 const {
   xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, columnFilterIsActive, dateFilterPresetRanges, parseFilterQuery, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, isPastedTextASingleUrl, wrapSelectionWithMarkdownLink, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, deriveFieldDefs, effectiveFieldDefs, deriveProjectName, PROJECT_NAME_FIELD_ID, deriveProjectNotes, PROJECT_NOTES_FIELD_ID, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, principalKind, SIGN_ALG, JOSE_ALG_ES256, signEntryPayload, verifyEntryPayload, signableEntryPayload, signableProjectEntryPayload, redactedEntryPayload, redactedProjectEntryPayload, signableCommentEntryPayload, signableProjectCommentEntryPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER
 ,
-  buildSource, normalizeRef, sourceRefHasFullData, evalRule, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, fieldLocalBindState, liveBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, builtinKindConfigured, builtinKindReachable, resolveRefSystem, parseGithubUrl, parseGithubShortId, githubTokenCreationUrl, GITHUB_TOKEN_LIST_URL, parseGithubTokenExpiryHeader, parseJiraKey, parseSalesforceId, hostFromUrl, buildWigwagUri, parseWigwagUri, buildProjectTree, flattenProjectTree,
+  buildSource, normalizeRef, sourceRefHasFullData, evalRule, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, fieldLocalBindState, liveBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, builtinKindConfigured, builtinKindReachable, resolveRefSystem, parseGithubUrl, parseGithubShortId, githubTokenCreationUrl, GITHUB_TOKEN_LIST_URL, parseGithubTokenExpiryHeader, parseGithubNextLink, parseJiraKey, parseSalesforceId, hostFromUrl, buildWigwagUri, parseWigwagUri, buildProjectTree, flattenProjectTree,
   CSV_ID_COLUMN_HEADER, parseCsvText, looksLikeCsvText, nextPaletteColor, buildCsvImportPlan,
   CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, newFieldId, newOptionId, pickConnectorFields, connectorLinkText, compileConnectorMacro,
   importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry,
@@ -267,6 +267,8 @@ const CONNECTOR_TEMPLATES = {
 // regardless of what the pattern itself actually requires. Returns -1
 // for an invalid regex, never throws -- callers use that to tell
 // "doesn't compile" apart from "compiles but has zero groups".
+const GITHUB_REPO_PAGE_CAP = 50; // 5000 repos -- comfortably past any real org, bounds a pathological/looping Link header
+const RECONFIRM_THROTTLE_MS = 5 * 60 * 1000; // ensureGithubRepoConfirmed's lazy-on-miss re-check, at most once per connector per 5 minutes
 function regexCaptureGroupCount(pattern) {
   try { return new RegExp(pattern + '|').exec('').length - 1; } catch (e) { return -1; }
 }
@@ -4762,19 +4764,65 @@ class Component extends DCLogic {
       const credential = await this.getConnectorCredential(connectorId);
       const headers = { Accept: 'application/vnd.github+json' };
       if (credential) headers.Authorization = 'Bearer ' + credential;
-      const res = await this.connectorFetchShim()('https://api.github.com/user/repos?per_page=100&affiliation=owner,collaborator,organization_member', { headers });
-      // Real GitHub sends GitHub-Authentication-Token-Expiration on any
-      // authenticated response when the PAT has an expiry -- read here
-      // for free, same call, rather than a guess or a second request
-      // (tracker 1e557816, follow-up to Commit 2/4).
-      const tokenExpiresAt = parseGithubTokenExpiryHeader(res.headers.get('github-authentication-token-expiration'));
-      if (!res.ok) return connectors.map(c => c.id === connectorId ? { ...c, confirmedRepos: null, confirmedReposAt: Date.now(), tokenExpiresAt: null } : c);
-      const data = await res.json();
-      const repos = (Array.isArray(data) ? data : []).map(r => r.full_name).filter(Boolean);
+      let url = 'https://api.github.com/user/repos?per_page=100&affiliation=owner,collaborator,organization_member';
+      let repos = [];
+      let tokenExpiresAt = null;
+      // Walks every page via the Link header's rel="next" (RFC 5988,
+      // parseGithubNextLink) -- per_page=100 alone silently dropped
+      // everything past a token's first 100 repos before this, with no
+      // error or indication at all. GITHUB_REPO_PAGE_CAP bounds the
+      // worst case (a credential with an implausible number of repos,
+      // or a malformed Link header looping) to one extra confirm, not a
+      // runaway fetch loop -- 50 pages is 5000 repos, comfortably past
+      // any real org.
+      for (let page = 0; page < GITHUB_REPO_PAGE_CAP && url; page++) {
+        const res = await this.connectorFetchShim()(url, { headers });
+        if (page === 0) {
+          // Real GitHub sends GitHub-Authentication-Token-Expiration on
+          // any authenticated response when the PAT has an expiry --
+          // read here for free, same call, rather than a guess or a
+          // second request (tracker 1e557816, follow-up to Commit 2/4).
+          tokenExpiresAt = parseGithubTokenExpiryHeader(res.headers.get('github-authentication-token-expiration'));
+          if (!res.ok) return connectors.map(c => c.id === connectorId ? { ...c, confirmedRepos: null, confirmedReposAt: Date.now(), tokenExpiresAt: null } : c);
+        } else if (!res.ok) {
+          break; // a later page failing (rare) keeps what's already collected rather than discarding it all
+        }
+        const data = await res.json();
+        repos = repos.concat((Array.isArray(data) ? data : []).map(r => r.full_name).filter(Boolean));
+        url = parseGithubNextLink(res.headers.get('link'));
+      }
       return connectors.map(c => c.id === connectorId ? { ...c, confirmedRepos: repos, confirmedReposAt: Date.now(), tokenExpiresAt } : c);
     } catch (e) {
       return connectors;
     }
+  }
+  // Repo-aware GitHub dispatch (resolveRefSystem, wigwag-core.js) only
+  // narrows correctly among 2+ instances when the repo being resolved
+  // is actually in SOME candidate's confirmedRepos -- which otherwise
+  // only gets (re-)confirmed when a credential is typed and saved, so a
+  // repo added to the org/PAT afterward goes stale until the user
+  // thinks to re-save the same token. Re-confirming on every fetch
+  // would fix that but pay an extra /user/repos call on every single
+  // link fetch for something that changes rarely -- this only pays it
+  // on an actual MISS (the repo genuinely isn't in this connector's
+  // list yet), throttled to once per RECONFIRM_THROTTLE_MS so a
+  // persistently-inaccessible repo (wrong name, revoked token) can't
+  // make every fetch attempt pay double forever. Only re-confirms the
+  // ALREADY-DISPATCHED connector, not every other GitHub instance --
+  // if the repo actually belongs under a DIFFERENT, as-yet-unconfirmed
+  // connector's token, that's the same disclosed multi-instance
+  // ambiguity gap resolveRefSystem's own comment already covers, not
+  // something this lazy refresh is meant to solve too.
+  async ensureGithubRepoConfirmed(connector, matchedId) {
+    if (!connector || !matchedId || !matchedId.owner) return connector;
+    const repoKey = (matchedId.owner + '/' + matchedId.repo).toLowerCase();
+    const already = Array.isArray(connector.confirmedRepos) && connector.confirmedRepos.some(r => (r || '').toLowerCase() === repoKey);
+    if (already) return connector;
+    if (connector.confirmedReposAt && (Date.now() - connector.confirmedReposAt) < RECONFIRM_THROTTLE_MS) return connector;
+    const refreshed = await this.confirmGithubCredentialRepos(connector.id, this.state.connectedSources || []);
+    this.saveConnectedSources(refreshed);
+    const resolved = resolveRefSystem('https://github.com/' + matchedId.owner + '/' + matchedId.repo + '/issues/' + matchedId.num, { connectedSources: refreshed });
+    return (resolved && resolved.connector) || refreshed.find(c => c.id === connector.id) || connector;
   }
   // Same confirmation idea as confirmGithubCredentialRepos just above,
   // for the identity-level default token (githubToken) -- there's no
@@ -5319,6 +5367,7 @@ class Component extends DCLogic {
     let data, href;
     const kind = connector && connector.kind;
     if (kind === 'github') {
+      connector = await this.ensureGithubRepoConfirmed(connector, matchedId);
       data = await this.withRetry(() => this.fetchGithubData(matchedId.owner, matchedId.repo, matchedId.num, true, connector.id), { onRetry });
       href = 'https://github.com/' + matchedId.owner + '/' + matchedId.repo + '/issues/' + matchedId.num;
     } else if (kind === 'jira') {

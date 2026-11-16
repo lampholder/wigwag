@@ -553,6 +553,92 @@ test.describe('GitHub repo-aware disambiguation across multiple instances', () =
   });
 });
 
+// ensureGithubRepoConfirmed: confirmedRepos only gets (re-)confirmed
+// when a credential is typed and saved, so a repo added to the org/PAT
+// afterward goes stale until the user thinks to re-save the same
+// token. This re-confirms lazily -- only on an actual dispatch MISS
+// (the repo genuinely isn't in the connector's list yet), not on every
+// fetch -- and persists the result so the very next fetch is a no-op.
+function seedGithubConnectorMissingARepo(page, { confirmedRepos, confirmedReposAt, newlyConfirmedRepos, issueFixtures = {} } = {}) {
+  return page.addInitScript(({ confirmedRepos, confirmedReposAt, newlyConfirmedRepos, issueFixtures }) => {
+    localStorage.setItem('git_native_tracker_connected_sources_v1', JSON.stringify({
+      connectors: [{ id: '__builtin_github', key: 'github', kind: 'github', name: 'GitHub', builtin: true, rootUrl: 'https://api.github.com', credentialConfigured: true, confirmedRepos, confirmedReposAt: confirmedReposAt || null, enabled: true }]
+    }));
+    window.__fetchCallLog = [];
+    window.__TAURI__ = window.__TAURI__ || {};
+    window.__TAURI__.core = {
+      invoke: (cmd, args) => {
+        if (cmd === 'connected_source_get_credential') return Promise.resolve('a-real-secret');
+        if (cmd === 'connected_source_fetch') {
+          window.__fetchCallLog.push(args.url);
+          if (args.url.includes('/user/repos')) {
+            return Promise.resolve({ status: 200, headers: {}, body: JSON.stringify((newlyConfirmedRepos || []).map(full_name => ({ full_name }))) });
+          }
+          const m = args.url.match(/\/repos\/([^/]+\/[^/]+\/issues\/\d+)$/);
+          const fixture = m && issueFixtures[m[1]];
+          return Promise.resolve(fixture ? { status: 200, headers: {}, body: JSON.stringify(fixture) } : { status: 404, headers: {}, body: JSON.stringify({ message: 'Not Found' }) });
+        }
+        return Promise.resolve(null);
+      }
+    };
+  }, { confirmedRepos, confirmedReposAt, newlyConfirmedRepos, issueFixtures });
+}
+
+test.describe('GitHub confirmedRepos: lazy re-confirm on a dispatch miss', () => {
+  test('a repo missing from confirmedRepos triggers exactly one re-confirm call, resolves correctly, and persists so the next fetch is a no-op', async ({ page }) => {
+    await seedGithubConnectorMissingARepo(page, {
+      confirmedRepos: ['acme/app'], // does NOT include acme/internal-tools yet
+      newlyConfirmedRepos: ['acme/app', 'acme/internal-tools'], // what the real /user/repos call now reveals
+      issueFixtures: { 'acme/internal-tools/issues/1752': { title: 'Harden turnstile auth', state: 'open', labels: [] } }
+    });
+    const idx = {};
+    await h.gotoTracker(page);
+    idx.activeMilestoneId = await h.activeMilestoneId(page);
+    {
+      const doc = await h.idbGetProjectDoc(page, idx.activeMilestoneId);
+      h.pushFieldEntry(doc.issues[0], 'title', 'Old title', { id: 'test-link', href: h.githubHref('acme', 'internal-tools', 1752) });
+      await h.idbSetProjectDoc(page, idx.activeMilestoneId, doc);
+    }
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    await h.refreshRow(page, 1);
+    await h.waitForTitleResolved(page, 1);
+    await expect(h.titleCell(page, 1)).toContainText('Harden turnstile auth');
+
+    const calls = await page.evaluate(() => window.__fetchCallLog || []);
+    expect(calls.filter(u => u.includes('/user/repos')).length).toBe(1); // exactly one re-confirm, not one per retry/attempt
+
+    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_connected_sources_v1')));
+    expect(stored.connectors[0].confirmedRepos).toContain('acme/internal-tools'); // persisted -- the next fetch won't need to re-confirm at all
+  });
+
+  test('a repo still missing after a RECENT confirm is not re-confirmed again (throttled), and the fetch fails plainly instead of looping', async ({ page }) => {
+    await seedGithubConnectorMissingARepo(page, {
+      confirmedRepos: ['acme/app'], // still doesn't include acme/internal-tools
+      confirmedReposAt: Date.now(), // just confirmed moments ago -- a persistently-inaccessible repo must not re-pay this every attempt
+      newlyConfirmedRepos: ['acme/app', 'acme/internal-tools'] // would reveal it if re-confirmed, but shouldn't be called at all
+    });
+    const idx = {};
+    await h.gotoTracker(page);
+    idx.activeMilestoneId = await h.activeMilestoneId(page);
+    {
+      const doc = await h.idbGetProjectDoc(page, idx.activeMilestoneId);
+      h.pushFieldEntry(doc.issues[0], 'title', 'Old title', { id: 'test-link', href: h.githubHref('acme', 'internal-tools', 1752) });
+      await h.idbSetProjectDoc(page, idx.activeMilestoneId, doc);
+    }
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    await h.refreshRow(page, 1);
+    await page.waitForTimeout(500);
+
+    const calls = await page.evaluate(() => window.__fetchCallLog || []);
+    expect(calls.filter(u => u.includes('/user/repos')).length).toBe(0); // throttled -- no re-confirm call at all
+    await expect(h.titleCell(page, 1)).toContainText('Old title'); // refresh failed plainly (404, unconfirmed repo) -- title unchanged, not stuck/looping
+  });
+});
+
 // An internal ticket id (a made-up org-specific numbering convention)
 // that's secretly
 // just a GitHub issue in one specific repo -- Settings' Alias section

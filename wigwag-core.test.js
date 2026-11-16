@@ -3806,3 +3806,15 @@ test('resolveRefSystem: when no GitHub candidate has confirmed the repo, falls b
   const resolved = core.resolveRefSystem('https://github.com/acme/internal-tools/issues/1752', { connectedSources });
   assert.equal(resolved.connector.id, 'conn_main');
 });
+test('parseGithubNextLink: extracts the rel="next" URL from a real multi-entry Link header', () => {
+  const header = '<https://api.github.com/user/repos?page=2>; rel="next", <https://api.github.com/user/repos?page=5>; rel="last"';
+  assert.equal(core.parseGithubNextLink(header), 'https://api.github.com/user/repos?page=2');
+});
+test('parseGithubNextLink: null on the last page (no rel="next" entry at all)', () => {
+  const header = '<https://api.github.com/user/repos?page=1>; rel="prev", <https://api.github.com/user/repos?page=1>; rel="first"';
+  assert.equal(core.parseGithubNextLink(header), null);
+});
+test('parseGithubNextLink: null for a missing or empty header', () => {
+  assert.equal(core.parseGithubNextLink(null), null);
+  assert.equal(core.parseGithubNextLink(''), null);
+});

@@ -5218,7 +5218,7 @@ class Component extends DCLogic {
   // ": " for an unrelated reason, or an aliasPattern edited/removed
   // since, must not be mistaken for one).
   githubAkaPrefixFromTitle(connector, title) {
-    if (!connector || !connector.aliasPattern || !title) return null;
+    if (!connector || !connector.aliasPattern || !title || typeof title !== 'string') return null;
     const idx = title.indexOf(': ');
     if (idx < 0) return null;
     const prefix = title.slice(0, idx);
@@ -5577,7 +5577,7 @@ class Component extends DCLogic {
       // from href (matchedIdFromHref), which never carries it, so the
       // alias prefix has to be recovered from the field's own current
       // (pre-refresh) value instead. See githubAkaPrefixFromTitle.
-      const akaPrefix = kind === 'github' ? (matchedId.akaText || this.githubAkaPrefixFromTitle(connector, beforeTitle)) : null;
+      const akaPrefix = kind === 'github' ? ((matchedId && matchedId.akaText) || this.githubAkaPrefixFromTitle(connector, beforeTitle)) : null;
       const value = kind === 'salesforce' ? data.name : (akaPrefix ? akaPrefix + ': ' + data.title : data.title);
       const beforeFieldRef = issNow && issNow.fieldRefs && issNow.fieldRefs[colId];
       if (!isRefresh) this.appendSignedHistory(issueId, { text: fieldLabel + ' fetched from ' + systemLabel, field: colId, value, fieldRef });

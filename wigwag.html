@@ -1528,7 +1528,14 @@ function deriveIssueValues(issue, fieldDefs) {
       // ref itself a separate, sibling concern (deriveIssueFieldRefs) --
       // unwrap back to just the title string here so every existing
       // caller of values[colId] keeps seeing exactly what it always did.
-      values[colId] = (v && typeof v === 'object' && !Array.isArray(v) && 'title' in v) ? v.title : v;
+      // A link-shaped object with no `title` key at all (a pre-format-v2
+      // legacy entry that only ever carried {href}, or any other
+      // malformed/old value shape) must still unwrap to a plain string --
+      // leaking the raw object through to values[colId] crashes any
+      // string-only consumer downstream (e.g. refInfo's text.trim(),
+      // confirmed live: "text.trim is not a function" pasting into an
+      // issue-type field whose PREVIOUS entry was exactly this shape).
+      values[colId] = (v && typeof v === 'object' && !Array.isArray(v)) ? (('title' in v) ? v.title : '') : v;
       continue;
     }
     values[colId] = def.type === 'multiselect' ? [] : (def.type === 'text' || def.type === 'issue' ? '' : null);

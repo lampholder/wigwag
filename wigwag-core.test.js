@@ -24,6 +24,13 @@ test('deriveIssueValues: latest history entry per field wins', () => {
   assert.equal(values.title, 'Hello');
 });
 
+test('deriveIssueValues: a link-shaped value with no `title` key (a pre-format-v2 legacy entry) unwraps to an empty string, never leaking the raw object through', () => {
+  const fieldDefs = { remedy: { type: 'issue', label: 'Remedy' } };
+  const issue = { fields: { remedy: { history: [{ id: 'h1', sortKey: 1, value: { href: 'https://github.com/acme/internal-tools/issues/1752' } }] } } };
+  const values = core.deriveIssueValues(issue, fieldDefs);
+  assert.equal(values.remedy, ''); // not the raw {href} object -- would crash any string-only consumer (e.g. refInfo's text.trim())
+  assert.equal(typeof values.remedy, 'string');
+});
 test('deriveIssueValues: a field with no history falls back to a type-appropriate default', () => {
   const fieldDefs = { title: { type: 'issue' }, teams: { type: 'multiselect' }, rag: { type: 'select' } };
   const values = core.deriveIssueValues({ history: [] }, fieldDefs);

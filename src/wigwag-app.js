@@ -5655,9 +5655,23 @@ class Component extends DCLogic {
       // (retired per format v2), this is a value-only fallback entry, no
       // fieldRef, no narrative text. A REFRESH failure writes nothing at
       // all, so an already-resolved title/fieldRef is never clobbered.
+      // matchedId is a plain string for jira/salesforce/a custom
+      // connector's own capture group, but github's is always the
+      // {owner, repo, num[, akaText]} object fetchGithubData needs --
+      // writing that object straight through as `value` isn't just the
+      // wrong display, it's exactly the kind of non-string value
+      // deriveIssueValues/refInfo already had to be hardened against
+      // elsewhere (confirmed live: a failed first attempt silently went
+      // blank instead of showing a fallback at all). akaText (an alias
+      // paste) is the most faithful fallback -- the user's own typed
+      // text; otherwise the same owner/repo#num shape refLabel already
+      // shows for a resolved github ref elsewhere.
+      const matchedIdDisplay = (matchedId && typeof matchedId === 'object')
+        ? (matchedId.akaText || (matchedId.owner ? matchedId.owner + '/' + matchedId.repo + '#' + matchedId.num : JSON.stringify(matchedId)))
+        : matchedId;
       const issNow = this.findIssue(issueId);
       const isRefresh = issNow && this.sameRef(issNow.fieldRefs && issNow.fieldRefs[colId], fetchedVia, matchedId);
-      if (!isRefresh) this.appendSignedHistory(issueId, { field: colId, value: matchedId });
+      if (!isRefresh) this.appendSignedHistory(issueId, { field: colId, value: matchedIdDisplay });
       this.setState(s => ({
         issues: s.issues.map(iss => iss.id === issueId ? { ...iss, fieldLoading: { ...(iss.fieldLoading || {}), [colId]: false } } : iss)
       }));

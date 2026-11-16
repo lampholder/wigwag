@@ -641,6 +641,27 @@ test.describe('GitHub Alias: an internal ticket id convention resolved against o
     await expect(h.titleCell(page, 1)).toContainText('Fresh title');
     await expect(h.titleCell(page, 1)).not.toContainText('Note:');
   });
+
+  // Live-reported (Tom): a first-attempt fetch failure (e.g. the real
+  // token missing GitHub's own "Issues: Read" permission on the
+  // aliased repo) left the field BLANK, not the typed alias text --
+  // applyLinkToField's catch-block fallback (`value: matchedId`) was
+  // written assuming matchedId is always a plain string (true for
+  // jira/salesforce/a custom connector's own capture group), but
+  // github's matchedId is always {owner, repo, num[, akaText]} -- an
+  // object, which deriveIssueValues correctly refuses to leak through
+  // as a display value (see its own "legacy {href}-only" hardening),
+  // silently becoming '' instead of a useful placeholder.
+  test('a first-attempt fetch failure falls back to the typed alias text, not blank', async ({ page }) => {
+    await seedGithubWithAlias(page, { aliasPattern: 'TICKET-\\d+-(\\d+)', aliasRepo: 'acme/internal-tools' }); // no issueFixtures -- every fetch 404s
+    await h.gotoTracker(page);
+    await h.clickTitleToEdit(page, 3);
+    await h.pasteText(page, 'TICKET-2026-1752');
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(500);
+
+    await expect(h.titleCell(page, 3)).toContainText('TICKET-2026-1752');
+  });
 });
 
 // GitHub token provisioning Commit 4 (tracker 1e557816): a rejected

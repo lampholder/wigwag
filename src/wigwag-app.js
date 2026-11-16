@@ -271,8 +271,8 @@ function regexCaptureGroupCount(pattern) {
   try { return new RegExp(pattern + '|').exec('').length - 1; } catch (e) { return -1; }
 }
 // A github-kind connector's optional Alias pattern/repo (Settings'
-// Alias section) recognizes an internal ticket id -- ElementSec, an
-// MSC number, anything of the shape "<org convention>-N" -- as an
+// Alias section) recognizes an internal ticket id -- any org-specific
+// numbering convention, e.g. "TICKET-2026-1752" -- as an
 // alias for an issue in ONE specific repo, resolved with this
 // connector's own credential (see connectorMatches' aliasPattern
 // branch). Both empty is the ordinary, most common case (no error);
@@ -4146,9 +4146,9 @@ class Component extends DCLogic {
             }
             continue;
           }
-          // An internal alias convention (ElementSec, an MSC number...)
-          // for an issue that's secretly just a GitHub issue in ONE
-          // specific repo -- this connector's own aliasPattern/aliasRepo
+          // An internal alias convention (a made-up org-specific ticket
+          // numbering scheme) for an issue that's secretly just a GitHub
+          // issue in ONE specific repo -- this connector's own aliasPattern/aliasRepo
           // (Settings' Alias section, github-kind only) recognizes the
           // alias text directly and resolves straight to a plain,
           // portable github.com/owner/repo/issues/N href, no url-shape
@@ -5207,7 +5207,7 @@ class Component extends DCLogic {
   }
   // Recovers a github-kind connector's own alias prefix (the whole
   // string its aliasPattern matched at paste time, e.g.
-  // "ELEMENTSEC-2026-1752") from a previously-composed "<alias>:
+  // "TICKET-2026-1752") from a previously-composed "<alias>:
   // <title>" field value -- the href itself deliberately carries no
   // trace of it (see connectorMatches' aliasPattern branch), so this is
   // the only way it survives a refresh. Re-validated against the
@@ -11486,7 +11486,7 @@ class Component extends DCLogic {
             ? 'A token needs the desktop app to save (OS keychain access) -- anonymous access already works without one.'
             : 'Stored in your OS keychain, never in the project file.',
           // Github-kind-only: recognizes an internal ticket id
-          // (ElementSec, an MSC number...) as an alias for an issue in
+          // (a made-up org-specific numbering scheme) as an alias for an issue in
           // ONE specific repo, resolved with THIS instance's own
           // credential -- see connectorMatches' aliasPattern branch and
           // githubAkaPrefixFromTitle. Both empty is the ordinary case.

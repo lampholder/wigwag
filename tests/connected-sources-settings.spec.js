@@ -731,19 +731,19 @@ test.describe('GitHub Alias (internal ticket id for a repo, resolved with this c
     await h.openSettingsSection(page, 'connectedDataSources');
 
     await page.locator('[data-testid=connected-source-row]', { hasText: 'GitHub' }).locator('[data-testid=btn-edit-connected-source]').click();
-    await page.locator('[data-testid=builtin-github-alias-pattern-input]').fill('ELEMENTSEC-\\d+-(\\d+)');
-    await page.locator('[data-testid=builtin-github-alias-repo-input]').fill('matrix-org/internal-config');
+    await page.locator('[data-testid=builtin-github-alias-pattern-input]').fill('TICKET-\\d+-(\\d+)');
+    await page.locator('[data-testid=builtin-github-alias-repo-input]').fill('acme/internal-tools');
     await page.locator('[data-testid=btn-save-builtin-source]').click();
     await expect(page.locator('[data-testid=connector-form-modal]')).toBeHidden();
 
     const sources = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_connected_sources_v1')));
     const gh = sources.connectors.find(c => c.id === '__builtin_github');
-    expect(gh.aliasPattern).toBe('ELEMENTSEC-\\d+-(\\d+)');
-    expect(gh.aliasRepo).toBe('matrix-org/internal-config');
+    expect(gh.aliasPattern).toBe('TICKET-\\d+-(\\d+)');
+    expect(gh.aliasRepo).toBe('acme/internal-tools');
 
     await page.locator('[data-testid=connected-source-row]', { hasText: 'GitHub' }).locator('[data-testid=btn-edit-connected-source]').click();
-    await expect(page.locator('[data-testid=builtin-github-alias-pattern-input]')).toHaveValue('ELEMENTSEC-\\d+-(\\d+)');
-    await expect(page.locator('[data-testid=builtin-github-alias-repo-input]')).toHaveValue('matrix-org/internal-config');
+    await expect(page.locator('[data-testid=builtin-github-alias-pattern-input]')).toHaveValue('TICKET-\\d+-(\\d+)');
+    await expect(page.locator('[data-testid=builtin-github-alias-repo-input]')).toHaveValue('acme/internal-tools');
   });
 
   test('an alias pattern with no capturing group shows an inline error and blocks Save, without blocking the rest of the form', async ({ page }) => {
@@ -752,8 +752,8 @@ test.describe('GitHub Alias (internal ticket id for a repo, resolved with this c
     await h.openSettingsSection(page, 'connectedDataSources');
     await page.locator('[data-testid=connected-source-row]', { hasText: 'GitHub' }).locator('[data-testid=btn-edit-connected-source]').click();
 
-    await page.locator('[data-testid=builtin-github-alias-pattern-input]').fill('ELEMENTSEC-\\d+-\\d+'); // no capturing group
-    await page.locator('[data-testid=builtin-github-alias-repo-input]').fill('matrix-org/internal-config');
+    await page.locator('[data-testid=builtin-github-alias-pattern-input]').fill('TICKET-\\d+-\\d+'); // no capturing group
+    await page.locator('[data-testid=builtin-github-alias-repo-input]').fill('acme/internal-tools');
     await expect(page.locator('[data-testid=builtin-github-alias-error]')).toBeVisible();
     await expect(page.locator('[data-testid=builtin-github-alias-error]')).toContainText('capturing group');
 
@@ -766,7 +766,7 @@ test.describe('GitHub Alias (internal ticket id for a repo, resolved with this c
     await page.locator('[data-testid=builtin-root-url-input]').fill('https://api.github.com');
     await expect(page.locator('[data-testid=builtin-root-url-input]')).toHaveValue('https://api.github.com');
 
-    await page.locator('[data-testid=builtin-github-alias-pattern-input]').fill('ELEMENTSEC-\\d+-(\\d+)');
+    await page.locator('[data-testid=builtin-github-alias-pattern-input]').fill('TICKET-\\d+-(\\d+)');
     await page.locator('[data-testid=btn-save-builtin-source]').click();
     await expect(page.locator('[data-testid=connector-form-modal]')).toBeHidden();
   });
@@ -777,7 +777,7 @@ test.describe('GitHub Alias (internal ticket id for a repo, resolved with this c
     await h.openSettingsSection(page, 'connectedDataSources');
     await page.locator('[data-testid=connected-source-row]', { hasText: 'GitHub' }).locator('[data-testid=btn-edit-connected-source]').click();
 
-    await page.locator('[data-testid=builtin-github-alias-pattern-input]').fill('ELEMENTSEC-\\d+-(\\d+)');
+    await page.locator('[data-testid=builtin-github-alias-pattern-input]').fill('TICKET-\\d+-(\\d+)');
     await expect(page.locator('[data-testid=builtin-github-alias-error]')).toContainText('needed together');
     await page.locator('[data-testid=btn-save-builtin-source]').click();
     await page.waitForTimeout(200);

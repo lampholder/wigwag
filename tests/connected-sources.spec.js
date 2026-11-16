@@ -487,7 +487,7 @@ function seedTwoGithubInstances(page, { confirmedReposMain, confirmedReposPrivat
     localStorage.setItem('git_native_tracker_connected_sources_v1', JSON.stringify({
       connectors: [
         { id: 'gh_main', key: 'github', kind: 'github', name: 'GitHub', builtin: true, rootUrl: 'https://api.github.com', credentialConfigured: true, confirmedRepos: confirmedReposMain, enabled: true },
-        { id: 'gh_private', key: 'github', kind: 'github', name: 'GitHub (internal-config)', builtin: false, rootUrl: 'https://api.github.com', credentialConfigured: true, confirmedRepos: confirmedReposPrivate, enabled: true }
+        { id: 'gh_private', key: 'github', kind: 'github', name: 'GitHub (internal tools)', builtin: false, rootUrl: 'https://api.github.com', credentialConfigured: true, confirmedRepos: confirmedReposPrivate, enabled: true }
       ]
     }));
     window.__credCallLog = [];
@@ -515,14 +515,14 @@ test.describe('GitHub repo-aware disambiguation across multiple instances', () =
   test('refreshing a field already linked to a repo only the second instance confirmed uses that instance\'s own credential, not the first-listed one\'s', async ({ page }) => {
     await seedTwoGithubInstances(page, {
       confirmedReposMain: ['acme/app'],
-      confirmedReposPrivate: ['matrix-org/internal-config'],
-      issueFixtures: { 'matrix-org/internal-config/issues/1752': { title: 'Harden turnstile auth', state: 'open', labels: [] } }
+      confirmedReposPrivate: ['acme/internal-tools'],
+      issueFixtures: { 'acme/internal-tools/issues/1752': { title: 'Harden turnstile auth', state: 'open', labels: [] } }
     });
     await h.gotoTracker(page);
     const idx = { activeMilestoneId: await h.activeMilestoneId(page) };
     {
       const doc = await h.idbGetProjectDoc(page, idx.activeMilestoneId);
-      h.pushFieldEntry(doc.issues[0], 'title', 'Old title', { id: 'test-link', href: h.githubHref('matrix-org', 'internal-config', 1752) });
+      h.pushFieldEntry(doc.issues[0], 'title', 'Old title', { id: 'test-link', href: h.githubHref('acme', 'internal-tools', 1752) });
       await h.idbSetProjectDoc(page, idx.activeMilestoneId, doc);
     }
     await page.reload({ waitUntil: 'networkidle' });
@@ -539,12 +539,12 @@ test.describe('GitHub repo-aware disambiguation across multiple instances', () =
   test('pasting owner/repo#N for a repo only the second instance confirmed resolves silently, no ambiguous-match picker', async ({ page }) => {
     await seedTwoGithubInstances(page, {
       confirmedReposMain: ['acme/app'],
-      confirmedReposPrivate: ['matrix-org/internal-config'],
-      issueFixtures: { 'matrix-org/internal-config/issues/1752': { title: 'Harden turnstile auth', state: 'open', labels: [] } }
+      confirmedReposPrivate: ['acme/internal-tools'],
+      issueFixtures: { 'acme/internal-tools/issues/1752': { title: 'Harden turnstile auth', state: 'open', labels: [] } }
     });
     await h.gotoTracker(page);
     await h.clickTitleToEdit(page, 3);
-    await h.pasteText(page, 'matrix-org/internal-config#1752');
+    await h.pasteText(page, 'acme/internal-tools#1752');
     await page.keyboard.press('Tab');
     await h.waitForTitleResolved(page, 3);
 
@@ -553,7 +553,8 @@ test.describe('GitHub repo-aware disambiguation across multiple instances', () =
   });
 });
 
-// An internal ticket id (ElementSec, an MSC number...) that's secretly
+// An internal ticket id (a made-up org-specific numbering convention)
+// that's secretly
 // just a GitHub issue in one specific repo -- Settings' Alias section
 // (github-kind only, see githubAliasFormError/connectorMatches'
 // aliasPattern branch) recognizes the alias text directly and resolves
@@ -583,32 +584,32 @@ function seedGithubWithAlias(page, { aliasPattern, aliasRepo, issueFixtures = {}
 test.describe('GitHub Alias: an internal ticket id convention resolved against one specific repo', () => {
   test('pasting an alias id resolves to the aliased repo\'s real issue, with the alias text kept as a title prefix and a plain portable href', async ({ page }) => {
     await seedGithubWithAlias(page, {
-      aliasPattern: 'ELEMENTSEC-\\d+-(\\d+)', aliasRepo: 'matrix-org/internal-config',
-      issueFixtures: { 'matrix-org/internal-config/issues/1752': { title: 'Harden turnstile auth', state: 'open', labels: [] } }
+      aliasPattern: 'TICKET-\\d+-(\\d+)', aliasRepo: 'acme/internal-tools',
+      issueFixtures: { 'acme/internal-tools/issues/1752': { title: 'Harden turnstile auth', state: 'open', labels: [] } }
     });
     await h.gotoTracker(page);
     await h.clickTitleToEdit(page, 3);
-    await h.pasteText(page, 'ELEMENTSEC-2026-1752');
+    await h.pasteText(page, 'TICKET-2026-1752');
     await page.keyboard.press('Tab');
     await h.waitForTitleResolved(page, 3);
 
     await expect(page.locator('[data-testid=connector-picker-popover]')).toHaveCount(0);
-    await expect(h.titleCell(page, 3)).toContainText('ELEMENTSEC-2026-1752: Harden turnstile auth');
+    await expect(h.titleCell(page, 3)).toContainText('TICKET-2026-1752: Harden turnstile auth');
     const anchor = h.titleCell(page, 3).locator('a');
-    await expect(anchor).toHaveAttribute('href', 'https://github.com/matrix-org/internal-config/issues/1752'); // no #fragment or other url-shape trick needed
+    await expect(anchor).toHaveAttribute('href', 'https://github.com/acme/internal-tools/issues/1752'); // no #fragment or other url-shape trick needed
   });
 
   test('refreshing an alias-linked field keeps the alias prefix even though the href itself carries no trace of it', async ({ page }) => {
     await seedGithubWithAlias(page, {
-      aliasPattern: 'ELEMENTSEC-\\d+-(\\d+)', aliasRepo: 'matrix-org/internal-config',
-      issueFixtures: { 'matrix-org/internal-config/issues/1752': { title: 'Harden turnstile auth (v2)', state: 'open', labels: [] } }
+      aliasPattern: 'TICKET-\\d+-(\\d+)', aliasRepo: 'acme/internal-tools',
+      issueFixtures: { 'acme/internal-tools/issues/1752': { title: 'Harden turnstile auth (v2)', state: 'open', labels: [] } }
     });
     const idx = {};
     await h.gotoTracker(page);
     idx.activeMilestoneId = await h.activeMilestoneId(page);
     {
       const doc = await h.idbGetProjectDoc(page, idx.activeMilestoneId);
-      h.pushFieldEntry(doc.issues[0], 'title', 'ELEMENTSEC-2026-1752: Harden turnstile auth', { id: 'test-alias-link', href: h.githubHref('matrix-org', 'internal-config', 1752) });
+      h.pushFieldEntry(doc.issues[0], 'title', 'TICKET-2026-1752: Harden turnstile auth', { id: 'test-alias-link', href: h.githubHref('acme', 'internal-tools', 1752) });
       await h.idbSetProjectDoc(page, idx.activeMilestoneId, doc);
     }
     await page.reload({ waitUntil: 'networkidle' });
@@ -616,20 +617,20 @@ test.describe('GitHub Alias: an internal ticket id convention resolved against o
 
     await h.refreshRow(page, 1);
     await h.waitForTitleResolved(page, 1);
-    await expect(h.titleCell(page, 1)).toContainText('ELEMENTSEC-2026-1752: Harden turnstile auth (v2)');
+    await expect(h.titleCell(page, 1)).toContainText('TICKET-2026-1752: Harden turnstile auth (v2)');
   });
 
   test('a title that merely happens to contain ": " is never mistaken for a recovered alias prefix', async ({ page }) => {
     await seedGithubWithAlias(page, {
-      aliasPattern: 'ELEMENTSEC-\\d+-(\\d+)', aliasRepo: 'matrix-org/internal-config',
-      issueFixtures: { 'matrix-org/internal-config/issues/1752': { title: 'Fresh title', state: 'open', labels: [] } }
+      aliasPattern: 'TICKET-\\d+-(\\d+)', aliasRepo: 'acme/internal-tools',
+      issueFixtures: { 'acme/internal-tools/issues/1752': { title: 'Fresh title', state: 'open', labels: [] } }
     });
     const idx = {};
     await h.gotoTracker(page);
     idx.activeMilestoneId = await h.activeMilestoneId(page);
     {
       const doc = await h.idbGetProjectDoc(page, idx.activeMilestoneId);
-      h.pushFieldEntry(doc.issues[0], 'title', 'Note: not an alias', { id: 'test-plain-link', href: h.githubHref('matrix-org', 'internal-config', 1752) });
+      h.pushFieldEntry(doc.issues[0], 'title', 'Note: not an alias', { id: 'test-plain-link', href: h.githubHref('acme', 'internal-tools', 1752) });
       await h.idbSetProjectDoc(page, idx.activeMilestoneId, doc);
     }
     await page.reload({ waitUntil: 'networkidle' });

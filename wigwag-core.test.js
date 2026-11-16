@@ -3760,35 +3760,35 @@ test('buildCsvImportPlan: a header that does match the key field\'s label by def
   assert.equal(plan.keyHeaderText, 'Issue');
 });
 test('resolveRefSystem: a custom connector whose own href happens to collide with a canonical GitHub issue URL still loses to the built-in GitHub kind', () => {
-  const connectedSources = [{ id: 'conn_1', name: 'ElementSec', rootUrl: 'https://github.com', patterns: [] }];
-  const resolved = core.resolveRefSystem('https://github.com/matrix-org/internal-config/issues/1709', { connectedSources });
+  const connectedSources = [{ id: 'conn_1', name: 'InternalTicket', rootUrl: 'https://github.com', patterns: [] }];
+  const resolved = core.resolveRefSystem('https://github.com/acme/internal-tools/issues/1709', { connectedSources });
   assert.equal(resolved.kind, 'github'); // structural github shape always wins, regardless of any custom connector's rootUrl
 });
 test('resolveRefSystem: a custom connector claims a non-canonical href by matching rootUrl host, once the href no longer parses as a bare GitHub issue URL', () => {
-  const connectedSources = [{ id: 'conn_1', name: 'ElementSec', rootUrl: 'https://github.com', patterns: [] }];
-  const resolved = core.resolveRefSystem('https://github.com/matrix-org/internal-config/issues/1709#ELEMENTSEC-1234-1709', { connectedSources });
+  const connectedSources = [{ id: 'conn_1', name: 'InternalTicket', rootUrl: 'https://github.com', patterns: [] }];
+  const resolved = core.resolveRefSystem('https://github.com/acme/internal-tools/issues/1709#TICKET-1234-1709', { connectedSources });
   assert.equal(resolved.kind, null);
   assert.equal(resolved.connector.id, 'conn_1');
 });
 test('resolveRefSystem: a custom connector with no rootUrl configured never claims any href by host, same as before this field existed', () => {
-  const connectedSources = [{ id: 'conn_1', name: 'ElementSec', rootUrl: '', patterns: [] }];
-  const resolved = core.resolveRefSystem('https://github.com/matrix-org/internal-config/issues/1709#ELEMENTSEC-1234-1709', { connectedSources });
+  const connectedSources = [{ id: 'conn_1', name: 'InternalTicket', rootUrl: '', patterns: [] }];
+  const resolved = core.resolveRefSystem('https://github.com/acme/internal-tools/issues/1709#TICKET-1234-1709', { connectedSources });
   assert.equal(resolved, null);
 });
 test('resolveRefSystem: two GitHub instances sharing the same host (github.com\'s rootUrl is always api.github.com, never the browse host) resolve by which one confirmed access to the href\'s own repo', () => {
   const connectedSources = [
     { id: 'conn_main', kind: 'github', rootUrl: 'https://api.github.com', confirmedRepos: ['acme/app'] },
-    { id: 'conn_internal', kind: 'github', rootUrl: 'https://api.github.com', confirmedRepos: ['matrix-org/internal-config'] }
+    { id: 'conn_internal', kind: 'github', rootUrl: 'https://api.github.com', confirmedRepos: ['acme/internal-tools'] }
   ];
-  const resolved = core.resolveRefSystem('https://github.com/matrix-org/internal-config/issues/1752', { connectedSources });
+  const resolved = core.resolveRefSystem('https://github.com/acme/internal-tools/issues/1752', { connectedSources });
   assert.equal(resolved.kind, 'github');
   assert.equal(resolved.connector.id, 'conn_internal'); // not conn_main, despite being listed first
 });
 test('resolveRefSystem: GitHub repo-match is case-insensitive (GitHub repo paths are case-insensitive; confirmedRepos carries the API\'s own canonical case)', () => {
   const connectedSources = [
-    { id: 'conn_1', kind: 'github', rootUrl: 'https://api.github.com', confirmedRepos: ['Matrix-Org/Internal-Config'] }
+    { id: 'conn_1', kind: 'github', rootUrl: 'https://api.github.com', confirmedRepos: ['Acme/Internal-Tools'] }
   ];
-  const resolved = core.resolveRefSystem('https://github.com/matrix-org/internal-config/issues/1752', { connectedSources });
+  const resolved = core.resolveRefSystem('https://github.com/acme/internal-tools/issues/1752', { connectedSources });
   assert.equal(resolved.connector.id, 'conn_1');
 });
 test('resolveRefSystem: when no GitHub candidate has confirmed the repo, falls back to the first instance exactly as before (never silently loses the ref entirely)', () => {
@@ -3796,6 +3796,6 @@ test('resolveRefSystem: when no GitHub candidate has confirmed the repo, falls b
     { id: 'conn_main', kind: 'github', rootUrl: 'https://api.github.com', confirmedRepos: ['acme/app'] },
     { id: 'conn_other', kind: 'github', rootUrl: 'https://api.github.com', confirmedRepos: null }
   ];
-  const resolved = core.resolveRefSystem('https://github.com/matrix-org/internal-config/issues/1752', { connectedSources });
+  const resolved = core.resolveRefSystem('https://github.com/acme/internal-tools/issues/1752', { connectedSources });
   assert.equal(resolved.connector.id, 'conn_main');
 });

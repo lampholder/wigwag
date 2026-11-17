@@ -3096,9 +3096,10 @@
                                 <sc-if value="{{ connectedSourcesSettings.builtinLogoKind === 'jira' }}" hint-placeholder-val="{{ false }}"><svg width="19" height="19" viewBox="0 0 16 16"><path fill="#2684FF" d="M11.5 0.5H7.8c0 1.9 1.5 3.4 3.4 3.4h1.4v1.3c0 1.9 1.5 3.4 3.4 3.4V1.3c0-0.4-0.4-0.8-0.9-0.8z"></path><path fill="#2684FF" d="M7.8 4.3H4.1c0 1.9 1.5 3.4 3.4 3.4H9v1.3c0 1.9 1.5 3.4 3.4 3.4V5.1c0-0.4-0.4-0.8-0.9-0.8z"></path><path fill="#2684FF" d="M4.1 8.1H0.4c0 1.9 1.5 3.4 3.4 3.4h1.4v1.3c0 1.9 1.5 3.4 3.4 3.4V8.9c0-0.4-0.4-0.8-0.9-0.8z"></path></svg></sc-if>
                                 <sc-if value="{{ connectedSourcesSettings.builtinLogoKind === 'salesforce' }}" hint-placeholder-val="{{ false }}"><svg width="19" height="19" viewBox="0 0 16 16"><path fill="#00A1E0" d="M6.5 3.5c.7-.7 1.7-1.2 2.8-1.2 1.5 0 2.7.8 3.4 2 .3-.1.6-.2 1-.2 1.5 0 2.8 1.2 2.8 2.8 0 .2 0 .3 0 .5 1 .4 1.5 1.4 1.5 2.5 0 1.5-1.2 2.7-2.7 2.7H3.7C2.2 12.6 1 11.4 1 9.9c0-1.2.8-2.2 1.9-2.6 0-.1 0-.2 0-.3 0-1.6 1.3-2.9 2.9-2.9.3 0 .5 0 .7.1z"></path></svg></sc-if>
                               </span>
-                              <div style="flex:1;">
-                                <div style="font-size:14px; font-weight:700;">{{ connectedSourcesSettings.builtinFormTitle }}</div>
-                                <div style="font-size:10.5px; color: var(--text-tertiary); margin-top:2px;">Built-in -- same recognized link shapes as before, now fetched in-process.</div>
+                              <div style="flex:1; min-width:0;">
+                                <div style="font-size:10px; font-weight:650; letter-spacing:0.04em; text-transform:uppercase; color: var(--text-tertiary); margin-bottom:4px;">Name</div>
+                                <input data-testid="builtin-name-input" value="{{ connectedSourcesSettings.builtinNameValue }}" sc-camel-on-change="{{ connectedSourcesSettings.onBuiltinNameChange }}" placeholder="{{ connectedSourcesSettings.builtinFormTitle }}" style="width:100%; box-sizing:border-box; padding:6px 8px; border:1px solid var(--border); border-radius:6px; font-size:13px; font-weight:650; font-family:inherit; background:transparent; margin-bottom:6px;">
+                                <div style="font-size:10.5px; color: var(--text-tertiary);">{{ connectedSourcesSettings.builtinFormTitle }} connector -- same recognized link shapes as before, now fetched in-process.</div>
                               </div>
                             </div>
                           </div>

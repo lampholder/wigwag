@@ -122,6 +122,71 @@ test.describe('Connected Sources (Phase 1): Settings UI', () => {
     expect(box.width).toBeLessThan(600); // small, not the custom connector editor's bigger sliding modal
   });
 
+  // A built-in connector's kind ("GitHub") and its own display name used
+  // to be the same fixed string -- fine with one instance, useless once
+  // you have two (both just say "GitHub" everywhere, with no way to tell
+  // which is which when wigwag has to ask you to disambiguate a dispatch).
+  // The name is now its own editable field, independent of the kind badge
+  // AND independent of the connector's key (source.<key> rules must keep
+  // resolving across a rename).
+  test('a built-in connector\'s name is editable, defaults sensibly, and renaming never touches its stable key', async ({ page }) => {
+    await h.seedAllBuiltinConnectors(page);
+    await h.gotoTracker(page);
+    await h.openSettingsSection(page, 'connectedDataSources');
+    await page.locator('[data-testid=connected-source-row]', { hasText: 'GitHub' }).locator('[data-testid=btn-edit-connected-source]').click();
+    const modal = page.locator('[data-testid=connector-form-modal]');
+    await expect(page.locator('[data-testid=builtin-name-input]')).toHaveValue('GitHub');
+
+    await page.locator('[data-testid=builtin-name-input]').fill('matrix-org');
+    await page.locator('[data-testid=builtin-root-url-input]').fill('https://api.github.com');
+    await page.locator('[data-testid=btn-save-builtin-source]').click();
+    await expect(modal).toBeHidden();
+
+    await expect(page.locator('[data-testid=connected-source-row]', { hasText: 'matrix-org' })).toHaveCount(1);
+    const sources = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_connected_sources_v1')));
+    const gh = sources.connectors.find(c => c.id === '__builtin_github');
+    expect(gh.name).toBe('matrix-org');
+    expect(gh.key).toBe('github'); // the reserved key never follows a rename
+  });
+
+  test('a built-in connector\'s name can\'t be saved blank', async ({ page }) => {
+    await h.seedAllBuiltinConnectors(page);
+    await h.gotoTracker(page);
+    await h.openSettingsSection(page, 'connectedDataSources');
+    await page.locator('[data-testid=connected-source-row]', { hasText: 'GitHub' }).locator('[data-testid=btn-edit-connected-source]').click();
+    await page.locator('[data-testid=builtin-name-input]').fill('   ');
+    await page.locator('[data-testid=builtin-root-url-input]').fill('https://api.github.com');
+    await page.locator('[data-testid=btn-save-builtin-source]').click();
+    await expect(page.locator('[data-testid=connector-form-modal]')).toBeVisible(); // refused to close/save
+    const sources = await page.evaluate(() => JSON.parse(localStorage.getItem('git_native_tracker_connected_sources_v1')));
+    expect(sources.connectors.find(c => c.id === '__builtin_github').name).toBe('GitHub'); // unchanged
+  });
+
+  test('two GitHub connector instances can be given distinct names, so they\'re no longer both just labeled "GitHub" in the list', async ({ page }) => {
+    await stubTauri(page);
+    await h.seedAllBuiltinConnectors(page);
+    await h.gotoTracker(page);
+    await h.openSettingsSection(page, 'connectedDataSources');
+
+    await page.locator('[data-testid=connected-source-row]', { hasText: 'GitHub' }).locator('[data-testid=btn-edit-connected-source]').click();
+    await page.locator('[data-testid=builtin-name-input]').fill('element-io');
+    await page.locator('[data-testid=builtin-root-url-input]').fill('https://api.github.com');
+    await page.locator('[data-testid=btn-save-builtin-source]').click();
+    await expect(page.locator('[data-testid=connector-form-modal]')).toBeHidden();
+
+    await page.locator('[data-testid=btn-add-connected-source]').click();
+    await page.locator('[data-testid=source-type-option][data-kind=github]').click();
+    await page.waitForTimeout(100);
+    await expect(page.locator('[data-testid=builtin-name-input]')).toHaveValue('GitHub'); // sensible default for a brand-new instance
+    await page.locator('[data-testid=builtin-name-input]').fill('matrix-org');
+    await page.locator('[data-testid=builtin-root-url-input]').fill('https://api.github.com');
+    await page.locator('[data-testid=btn-save-builtin-source]').click();
+    await expect(page.locator('[data-testid=connector-form-modal]')).toBeHidden();
+
+    await expect(page.locator('[data-testid=connected-source-row]', { hasText: 'element-io' })).toHaveCount(1);
+    await expect(page.locator('[data-testid=connected-source-row]', { hasText: 'matrix-org' })).toHaveCount(1);
+  });
+
   test('a custom connector only shows up, and "+ Add source" only appears, inside the real Tauri app', async ({ page }) => {
     await stubTauri(page);
     await h.seedAllBuiltinConnectors(page);

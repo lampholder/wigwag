@@ -4711,6 +4711,7 @@ class Component extends DCLogic {
     this.setState({
       addSourceTypePickerOpen: false,
       builtinFormOpen: { id, kind, draft: {
+        name: c ? (c.name || spec.name) : spec.name,
         rootUrl: c ? (c.rootUrl || '') : (spec.rootUrlDefault || ''),
         username: c ? (c.username || '') : '',
         credentialDraft: '', hasCredential: c ? !!c.credentialConfigured : false,
@@ -4734,6 +4735,8 @@ class Component extends DCLogic {
   async saveBuiltinForm() {
     const f = this.state.builtinFormOpen;
     if (!f) return;
+    const name = (f.draft.name || '').trim();
+    if (!name) return;
     const rootUrl = f.draft.rootUrl.trim();
     const username = (f.draft.username || '').trim();
     const credentialTyped = f.draft.credentialDraft.trim();
@@ -4745,11 +4748,15 @@ class Component extends DCLogic {
     const id = f.id || ('conn_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8));
     let next;
     if (f.id) {
-      next = existing.map(c => c.id === id ? { ...c, rootUrl, username, credentialConfigured: credentialTyped ? true : c.credentialConfigured, ...aliasFields } : c);
+      // key stays whatever it was assigned at creation (slugified from
+      // the name typed THEN) -- a later rename only updates the display
+      // name, never the key, same stability guarantee saveConnectorForm
+      // already gives custom connectors (a rule referencing source.<key>
+      // would otherwise silently break on every rename).
+      next = existing.map(c => c.id === id ? { ...c, name, rootUrl, username, credentialConfigured: credentialTyped ? true : c.credentialConfigured, ...aliasFields } : c);
     } else {
-      const spec = BUILTIN_INTEGRATIONS[f.kind];
-      const key = slugifyConnectorKey(spec.name, existing.map(c => c.key));
-      next = existing.concat([{ id, key, kind: f.kind, name: spec.name, builtin: true, rootUrl, username, credentialConfigured: !!credentialTyped, enabled: true, ...aliasFields }]);
+      const key = slugifyConnectorKey(name, existing.map(c => c.key));
+      next = existing.concat([{ id, key, kind: f.kind, name, builtin: true, rootUrl, username, credentialConfigured: !!credentialTyped, enabled: true, ...aliasFields }]);
     }
     if (credentialTyped) await this.setConnectorCredential(id, credentialTyped);
     if (credentialTyped && f.kind === 'github') next = await this.confirmGithubCredentialRepos(id, next);
@@ -11574,7 +11581,8 @@ class Component extends DCLogic {
         const githubAliasPatternTrimmed = (builtinForm && builtinForm.kind === 'github' && builtinDraft) ? (builtinDraft.aliasPattern || '').trim() : '';
         const githubAliasRepoTrimmed = (builtinForm && builtinForm.kind === 'github' && builtinDraft) ? (builtinDraft.aliasRepo || '').trim() : '';
         const githubAliasError = githubAliasFormError(githubAliasPatternTrimmed, githubAliasRepoTrimmed);
-        const canSaveBuiltin = !!builtinForm && !!builtinRootUrlTrimmed && !githubAliasError;
+        const builtinNameTrimmed = builtinDraft ? (builtinDraft.name || '').trim() : '';
+        const canSaveBuiltin = !!builtinForm && !!builtinNameTrimmed && !!builtinRootUrlTrimmed && !githubAliasError;
         return {
           rows,
           formVisible: !!form || !!builtinForm,
@@ -11596,6 +11604,15 @@ class Component extends DCLogic {
           connectorEditorSlideOffset: s.connectorFormVisible ? '0' : '100vw',
           builtinFormTitle: builtinSpec ? builtinSpec.name : '',
           builtinLogoKind: builtinForm ? builtinForm.kind : '',
+          // Separate from builtinFormTitle (always the fixed kind label,
+          // "GitHub"/"Jira"/"Salesforce") -- this is the instance's OWN
+          // editable name, the thing that actually tells two GitHub
+          // connectors apart anywhere they're listed (Settings rows,
+          // dispatch-ambiguity prompts, rule-builder groups). Defaults
+          // to the kind label for a brand-new instance (openBuiltinSourceForm's
+          // own draft default) so saving without touching it still gets
+          // a sensible name, same as today's behavior for a single instance.
+          builtinNameValue: builtinDraft ? builtinDraft.name : '', onBuiltinNameChange: e => this.updateBuiltinDraft({ name: e.target.value }),
           builtinRootUrlLabel: builtinSpec ? builtinSpec.rootUrlLabel : '',
           builtinRootUrlValue: builtinDraft ? builtinDraft.rootUrl : '', onBuiltinRootUrlChange: e => this.updateBuiltinDraft({ rootUrl: e.target.value }),
           builtinRootUrlPlaceholder: builtinSpec ? builtinSpec.rootUrlPlaceholder : '',

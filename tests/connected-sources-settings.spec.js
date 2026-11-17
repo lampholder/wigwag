@@ -813,6 +813,11 @@ test.describe('GitHub token provisioning: confirmation fetch on credential save'
     const calls = await page.evaluate(() => window.__invokeCalls);
     const fetchCall = calls.find(c => c.cmd === 'connected_source_fetch');
     expect(fetchCall.args.url).toContain('https://api.github.com/user/repos');
+    // Live-reported (Tom): the identical token/endpoint 200s via plain
+    // curl (which sends its own default User-Agent) but 403s here --
+    // GitHub's edge rejects any request with none at all, and this
+    // call never set one.
+    expect(fetchCall.args.headers['User-Agent']).toBeTruthy();
   });
 
   // Tracker follow-up: /user/repos?per_page=100 alone silently dropped

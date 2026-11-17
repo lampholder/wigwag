@@ -4771,7 +4771,13 @@ class Component extends DCLogic {
     if (!this.isTauriConnectorRuntime()) return connectors;
     try {
       const credential = await this.getConnectorCredential(connectorId);
-      const headers = { Accept: 'application/vnd.github+json' };
+      // GitHub's edge rejects any request with no User-Agent header at
+      // all (same gotcha ELEMENTSEC.md's own macro example already had
+      // to work around) -- confirmed live (Tom): the identical token
+      // against the identical /user/repos endpoint 200s via plain curl
+      // (which sends its own default User-Agent) but 403s through this
+      // call specifically, which never set one.
+      const headers = { Accept: 'application/vnd.github+json', 'User-Agent': 'wigwag-app' };
       if (credential) headers.Authorization = 'Bearer ' + credential;
       let url = 'https://api.github.com/user/repos?per_page=100&affiliation=owner,collaborator,organization_member';
       let repos = [];
@@ -4802,9 +4808,19 @@ class Component extends DCLogic {
             // Deliberately logged, not swallowed -- unlike the credential
             // itself staying unset below, a non-ok response here is real,
             // actionable signal worth a developer actually seeing.
-            let message = '';
-            try { const body = await res.text(); message = (JSON.parse(body).message) || body; } catch (e) {}
-            console.error('[wigwag] GitHub repo-list confirmation failed for connector ' + connectorId + ': ' + res.status + (message ? ' -- ' + message : '') + (credential ? '' : ' (no credential on file for this connector)'));
+            // Read the raw body FIRST, outside any try/catch of its own
+            // -- a bug in the first version of this logging (fixed live,
+            // Tom reported seeing just the bare status with no body at
+            // all): parsing it as JSON inside the same try as the read
+            // meant a parse failure (body genuinely empty, or not JSON)
+            // threw past the `|| body` fallback entirely, before it
+            // could ever run, leaving message silently blank exactly
+            // like the thing this logging exists to fix.
+            let body = '';
+            try { body = await res.text(); } catch (e) {}
+            let message = body;
+            try { message = JSON.parse(body).message || body; } catch (e) {}
+            console.error('[wigwag] GitHub repo-list confirmation failed for connector ' + connectorId + ': ' + res.status + (message ? ' -- ' + message : ' (empty response body)') + (credential ? '' : ' (no credential on file for this connector)'));
             return connectors.map(c => c.id === connectorId ? { ...c, confirmedRepos: null, confirmedReposAt: Date.now(), tokenExpiresAt: null } : c);
           }
         } else if (!res.ok) {
@@ -4882,7 +4898,7 @@ class Component extends DCLogic {
     }
     if (!this.isTauriConnectorRuntime()) return;
     try {
-      const res = await this.connectorFetchShim()('https://api.github.com/user/repos?per_page=100', { headers: { Accept: 'application/vnd.github+json', Authorization: 'Bearer ' + trimmed } });
+      const res = await this.connectorFetchShim()('https://api.github.com/user/repos?per_page=100', { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'wigwag-app', Authorization: 'Bearer ' + trimmed } });
       const tokenExpiresAt = parseGithubTokenExpiryHeader(res.headers.get('github-authentication-token-expiration'));
       if (!res.ok) {
         this.updateActiveIdentityField('githubTokenConfirmedRepoCount', null, 'githubTokenConfirmedRepoCount');
@@ -5027,7 +5043,15 @@ class Component extends DCLogic {
     // GitHub alone allows anonymous, unauthenticated access (rate-limited,
     // not blocked) -- a credential is optional, same as it always was.
     const credential = await this.getConnectorCredential(connectorId);
-    const headers = { Accept: 'application/vnd.github+json' };
+    // GitHub's edge rejects any request with no User-Agent at all --
+    // confirmed live (Tom): the identical token/endpoint 200s via plain
+    // curl (which sends its own default User-Agent) but 403s through
+    // wigwag's own fetch calls, none of which set one. Harmless no-op
+    // on the plain browser-fetch path below (User-Agent is a Fetch-spec
+    // "forbidden header name" there, silently dropped in favor of the
+    // browser's real one) -- only actually matters, and is needed, via
+    // connectorFetchShim's Tauri IPC path, which has no such restriction.
+    const headers = { Accept: 'application/vnd.github+json', 'User-Agent': 'wigwag-app' };
     if (credential) headers.Authorization = 'Bearer ' + credential;
     const fetchImpl = this.isTauriConnectorRuntime() ? this.connectorFetchShim() : window.fetch.bind(window);
     const res = await fetchImpl(rootUrl + '/repos/' + owner + '/' + repo + '/issues/' + num, { headers });

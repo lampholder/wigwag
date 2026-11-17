@@ -395,11 +395,13 @@ function seedGithubBuiltinWithRepos(page, { confirmedRepos, issueFixtures = {}, 
     localStorage.setItem('git_native_tracker_connected_sources_v1', JSON.stringify({
       connectors: [{ id: '__builtin_github', key: 'github', kind: 'github', name: 'GitHub', builtin: true, rootUrl: 'https://api.github.com', credentialConfigured: true, confirmedRepos, enabled: true }]
     }));
+    window.__fetchHeaderLog = [];
     window.__TAURI__ = window.__TAURI__ || {};
     window.__TAURI__.core = {
       invoke: (cmd, args) => {
         if (cmd === 'connected_source_get_credential') return Promise.resolve('a-real-secret');
         if (cmd === 'connected_source_fetch') {
+          window.__fetchHeaderLog.push(args.headers);
           if (force401) return Promise.resolve({ status: 401, headers: {}, body: JSON.stringify({ message: 'Bad credentials' }) });
           const m = args.url.match(/\/repos\/([^/]+\/[^/]+\/issues\/\d+)$/);
           const fixture = m && issueFixtures[m[1]];
@@ -443,6 +445,14 @@ test.describe('GitHub token provisioning: bare "#N" disambiguation against a con
     await expect(page.locator('[data-testid=connector-picker-popover]')).toHaveCount(0);
     const anchor = h.titleCell(page, 3).locator('a');
     await expect(anchor).toHaveAttribute('href', 'https://github.com/acme/app/issues/42');
+
+    // Live-reported (Tom): the identical token/endpoint 200s via plain
+    // curl (which sends its own default User-Agent) but 403s through
+    // wigwag's own fetch, which never set one -- GitHub's edge rejects
+    // any request with no User-Agent at all.
+    const headerLog = await page.evaluate(() => window.__fetchHeaderLog || []);
+    expect(headerLog.length).toBeGreaterThan(0);
+    for (const headers of headerLog) expect(headers['User-Agent']).toBeTruthy();
   });
 
   test('two confirmed repos: a bare #N opens the picker with repo-qualified rows; picking one resolves against that repo specifically', async ({ page }) => {

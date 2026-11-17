@@ -928,7 +928,7 @@
             <sc-if value="{{ row.title.isLoading }}">
               <span style="font-size:13px; color: var(--n39); font-style:italic; animation: shimmer 1.4s ease-in-out infinite;">Loading…</span>
               <sc-if value="{{ row.title.reservesRefLine }}" hint-placeholder-val="{{ false }}">
-                <span style="font-size:11px; visibility:hidden;">&nbsp;</span>
+                <span style="font-size:11px; visibility:hidden; display:inline-block;"><span style="width:10px; height:10px; display:inline-block; vertical-align:-2px; margin-right:4px;"></span>&nbsp;</span>
               </sc-if>
             </sc-if>
             <sc-if value="{{ row.title.isEditing }}">
@@ -986,7 +986,7 @@
                   <sc-if value="{{ seg.cell.isLoading }}" hint-placeholder-val="{{ false }}">
                     <span style="font-size:13px; color: var(--n39); font-style:italic; animation: shimmer 1.4s ease-in-out infinite;">Loading…</span>
                     <sc-if value="{{ seg.cell.reservesRefLine }}" hint-placeholder-val="{{ false }}">
-                      <span style="font-size:11px; visibility:hidden;">&nbsp;</span>
+                      <span style="font-size:11px; visibility:hidden; display:inline-block;"><span style="width:10px; height:10px; display:inline-block; vertical-align:-2px; margin-right:4px;"></span>&nbsp;</span>
                     </sc-if>
                   </sc-if>
                   <sc-if value="{{ seg.cell.isRef }}" hint-placeholder-val="{{ false }}">
@@ -1080,7 +1080,7 @@
                   </span>
                   <sc-if value="{{ seg.cell.showArrow }}" hint-placeholder-val="{{ true }}">
                     <span sc-camel-on-click="{{ seg.cell.onArrowClick }}" style="opacity:{{ seg.cell.affordanceOpacity }}; width:{{ seg.cell.affordanceWidth }}px; margin-left:{{ seg.cell.affordanceGap }}px; overflow:hidden; flex-shrink:0; display:flex; justify-content:center;">
-                      <span style="width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent; border-top:7px solid var(--text-tertiary); flex-shrink:0;"></span>
+                      <span data-testid="select-cell-arrow" style="width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent; border-top:7px solid var(--text-tertiary); flex-shrink:0;"></span>
                     </span>
                   </sc-if>
                 </span>
@@ -1126,7 +1126,7 @@
                   </span>
                   <sc-if value="{{ seg.cell.showArrow }}" hint-placeholder-val="{{ true }}">
                     <span sc-camel-on-click="{{ seg.cell.onArrowClick }}" style="opacity:{{ seg.cell.affordanceOpacity }}; width:{{ seg.cell.affordanceWidth }}px; margin-left:{{ seg.cell.affordanceGap }}px; overflow:hidden; flex-shrink:0; display:flex; justify-content:center;">
-                      <span style="width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent; border-top:7px solid var(--text-tertiary); flex-shrink:0;"></span>
+                      <span data-testid="select-cell-arrow" style="width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent; border-top:7px solid var(--text-tertiary); flex-shrink:0;"></span>
                     </span>
                   </sc-if>
                 </span>
@@ -2161,7 +2161,7 @@
                     <sc-if value="{{ f.cell.noOption }}"><span style="font-size:13px; padding:4px 11px; border:1px dashed var(--border-strong); border-radius:12px; color:var(--n40);">—</span></sc-if>
                   </span>
                   <sc-if value="{{ f.cell.showArrow }}" hint-placeholder-val="{{ true }}">
-                    <span sc-camel-on-click="{{ f.cell.onArrowClick }}" style="width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent; border-top:7px solid var(--text-tertiary); flex-shrink:0;"></span>
+                    <span data-testid="select-cell-arrow" sc-camel-on-click="{{ f.cell.onArrowClick }}" style="width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent; border-top:7px solid var(--text-tertiary); flex-shrink:0;"></span>
                   </sc-if>
                   <sc-if value="{{ f.cell.showBoundGlyph }}" hint-placeholder-val="{{ false }}">
                     <span title="{{ f.cell.boundGlyphTitle }}" style="flex-shrink:0; color: var(--text-tertiary); display:flex;">
@@ -2206,7 +2206,7 @@
                     </sc-if>
                     <sc-if value="{{ f.cell.noChips }}"><span style="font-size:13px; color:var(--text-placeholder);">—</span></sc-if>
                   </span>
-                  <span sc-camel-on-click="{{ f.cell.onArrowClick }}" style="width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent; border-top:7px solid var(--text-tertiary); flex-shrink:0;"></span>
+                  <span data-testid="select-cell-arrow" sc-camel-on-click="{{ f.cell.onArrowClick }}" style="width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent; border-top:7px solid var(--text-tertiary); flex-shrink:0;"></span>
                   <sc-if value="{{ f.cell.showBoundGlyph }}" hint-placeholder-val="{{ false }}">
                     <span title="{{ f.cell.boundGlyphTitle }}" style="flex-shrink:0; color: var(--text-tertiary); display:flex;">
                       <sc-if value="{{ f.cell.isOverridden }}" hint-placeholder-val="{{ false }}">

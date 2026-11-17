@@ -203,12 +203,26 @@ test.describe('Two-click cell selection (GitHub Projects-style)', () => {
     expect(await second.locator('input').count()).toBe(0); // still just selected, not editing
   });
 
-  // The dropdown arrow bypasses the two-click gate entirely -- a single
-  // click on it always opens the popover directly, matching GitHub
-  // Projects' own convention.
-  test('a single click directly on the dropdown arrow opens the popover immediately', async ({ page }) => {
+  // The dropdown arrow is a table-only affordance now (live-reported,
+  // Tom) -- the whole table cell is already clickable regardless, via
+  // the two-click gate above, so it added nothing there; removed
+  // entirely from the grid, kept in the individual-issue (slide-over)
+  // view, where it still bypasses the two-click gate the same way.
+  test('the table has no dropdown arrow at all -- even a direct click where it used to be still only selects, needing the normal two-click gate', async ({ page }) => {
     const cell = h.fieldCell(page, 1, 'priority');
-    const arrow = cell.locator('span[style*="border-top: 7px solid"]');
+    await expect(cell.locator('[data-testid=select-cell-arrow]')).toHaveCount(0);
+    await cell.click();
+    await page.waitForTimeout(150);
+    await expect(page.getByText('Select an item', { exact: true })).toHaveCount(0); // one click only selects
+    await cell.click();
+    await page.waitForTimeout(150);
+    await expect(page.getByText('Select an item', { exact: true })).toBeVisible(); // second click opens it
+  });
+
+  test('in the slide-over, a single click directly on the dropdown arrow still opens the popover immediately', async ({ page }) => {
+    await h.clickTitleToPeek(page, 1);
+    await page.waitForTimeout(200);
+    const arrow = h.slideoverField(page, 'priority').locator('[data-testid=select-cell-arrow]');
     await arrow.click();
     await page.waitForTimeout(150);
     await expect(page.getByText('Select an item', { exact: true })).toBeVisible();

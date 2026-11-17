@@ -1219,3 +1219,42 @@ test.describe('Retired "Refresh all linked issues" toolbar button', () => {
     await expect(page.locator('[data-testid=mobile-overflow-refresh]')).toHaveCount(0);
   });
 });
+
+// Live-reported (Tom): the down arrow on a plain (unbound) select/
+// multiselect cell is a table-only affordance now -- the whole cell is
+// already clickable regardless, so it added nothing there; the
+// individual-issue (slide-over) view keeps it, same as before. A
+// bound/overridden cell already drops the arrow in BOTH places (see
+// the corner-badge work) -- this is specifically about the PLAIN case.
+test.describe('Select/multiselect down arrow: table-only, kept in the individual-issue view', () => {
+  test('a plain select cell shows no arrow in the table, but does in the slide-over', async ({ page }) => {
+    await h.gotoTracker(page);
+    const tableArrow = h.fieldCell(page, 1, 'priority').locator('[data-testid=select-cell-arrow]');
+    await expect(tableArrow).toHaveCount(0);
+
+    await h.clickTitleToPeek(page, 1);
+    await page.waitForTimeout(200);
+    const slideoverArrow = h.slideoverField(page, 'priority').locator('[data-testid=select-cell-arrow]');
+    await expect(slideoverArrow).toHaveCount(1);
+  });
+
+  test('a plain multiselect cell shows no arrow in the table, but does in the slide-over', async ({ page }) => {
+    await h.gotoTracker(page);
+    const tableArrow = h.fieldCell(page, 1, 'teams').locator('[data-testid=select-cell-arrow]');
+    await expect(tableArrow).toHaveCount(0);
+
+    await h.clickTitleToPeek(page, 1);
+    await page.waitForTimeout(200);
+    const slideoverArrow = h.slideoverField(page, 'teams').locator('[data-testid=select-cell-arrow]');
+    await expect(slideoverArrow).toHaveCount(1);
+  });
+
+  test('the whole plain select cell stays clickable in the table even with no arrow', async ({ page }) => {
+    await h.gotoTracker(page);
+    const cell = h.fieldCell(page, 1, 'priority');
+    await cell.click(); // first click selects (spreadsheet-style); second opens the popover
+    await cell.click();
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=select-option]').first()).toBeVisible();
+  });
+});

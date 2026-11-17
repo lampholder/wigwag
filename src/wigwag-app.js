@@ -9722,7 +9722,7 @@ class Component extends DCLogic {
       onClick: textClick, onCellClick: gatedClick, cellHighlight, isBoundLive, isOverridden, showBoundGlyph, boundGlyphTitle, boundGlyphGutterStyle, titleFontWeight: '400' };
   }
 
-  buildSelectCell(issue, colId, def, readOnly, width) {
+  buildSelectCell(issue, colId, def, readOnly, width, inTable) {
     const s = this.state;
     const affordance = computeAffordanceFade(width);
     const affordanceOpacity = affordance.opacity, affordanceWidth = affordance.width, affordanceGap = affordance.gap;
@@ -9736,7 +9736,12 @@ class Component extends DCLogic {
     const isSelected = s.selectedCell && s.selectedCell.issueId === issue.id && s.selectedCell.colId === colId;
     const popoverOpen = !readOnly && s.activeCell && s.activeCell.issueId === issue.id && s.activeCell.colId === colId;
     const isBoundCol = isBoundLive || isOverridden;
-    const cell = { isSelect: true, isBoundLive, isOverridden, showArrow: !isBoundCol, showCornerBadge: isBoundCol,
+    // The down arrow is a table-only affordance now -- live-reported
+    // (Tom): the whole cell is already clickable regardless, and the
+    // individual-issue (slide-over) view keeps it for a plain,
+    // not-yet-bound cell (only a bound/overridden cell there drops it,
+    // same as the table, via the corner badge above).
+    const cell = { isSelect: true, isBoundLive, isOverridden, showArrow: !isBoundCol && !inTable, showCornerBadge: isBoundCol,
       badgeFill: isOverridden ? 'var(--accent-fill)' : 'transparent', badgeColor: isOverridden ? 'var(--accent-fill)' : 'var(--text-tertiary)',
       affordanceOpacity, affordanceWidth, affordanceGap, hasOption: !!opt, noOption: !opt,
       optionLabel: opt ? opt.label : '', optionEmoji: opt ? opt.emoji : '', optionBg: opt ? col(opt.color).bg : '', optionFg: opt ? col(opt.color).fg : '',
@@ -9764,7 +9769,7 @@ class Component extends DCLogic {
     return cell;
   }
 
-  buildMultiCell(issue, colId, def, readOnly, width) {
+  buildMultiCell(issue, colId, def, readOnly, width, inTable) {
     const s = this.state;
     const affordance = computeAffordanceFade(width);
     const affordanceOpacity = affordance.opacity, affordanceWidth = affordance.width, affordanceGap = affordance.gap;
@@ -9779,7 +9784,9 @@ class Component extends DCLogic {
     const isSelected = s.selectedCell && s.selectedCell.issueId === issue.id && s.selectedCell.colId === colId;
     const popoverOpen = !readOnly && s.activeCell && s.activeCell.issueId === issue.id && s.activeCell.colId === colId;
     const isBoundCol = isBoundLive || isOverridden;
-    const cell = { isMulti: true, isBoundLive, isOverridden, showArrow: !isBoundCol, showCornerBadge: isBoundCol,
+    // Same table-only arrow removal as buildSelectCell -- see its own
+    // comment.
+    const cell = { isMulti: true, isBoundLive, isOverridden, showArrow: !isBoundCol && !inTable, showCornerBadge: isBoundCol,
       badgeFill: isOverridden ? 'var(--accent-fill)' : 'transparent', badgeColor: isOverridden ? 'var(--accent-fill)' : 'var(--text-tertiary)',
       affordanceOpacity, affordanceWidth, affordanceGap, hasChips: ids.length > 0, noChips: ids.length === 0,
       chips: sortedIds.map(id => { const o = (def.options || []).find(x => x.id === id); return { id, label: o ? o.label : id, bg: o ? col(o.color).bg : col('gray').bg, fg: o ? col(o.color).fg : col('gray').fg }; }),
@@ -9940,10 +9947,10 @@ class Component extends DCLogic {
     }
     return cell;
   }
-  buildCell(issue, colId, def, readOnly, width) {
+  buildCell(issue, colId, def, readOnly, width, inTable) {
     let cell;
-    if (def.type === 'select') cell = this.buildSelectCell(issue, colId, def, readOnly, width);
-    else if (def.type === 'multiselect') cell = this.buildMultiCell(issue, colId, def, readOnly, width);
+    if (def.type === 'select') cell = this.buildSelectCell(issue, colId, def, readOnly, width, inTable);
+    else if (def.type === 'multiselect') cell = this.buildMultiCell(issue, colId, def, readOnly, width, inTable);
     else if (def.type === 'date') cell = this.buildDateCell(issue, colId, def, readOnly);
     else if (def.type === 'timestamp') cell = this.buildTimestampCell(issue, colId);
     else if (def.type === 'commentStream') cell = this.buildCommentStreamCell(issue, colId, readOnly);
@@ -10391,7 +10398,7 @@ class Component extends DCLogic {
       const title = { ...this.withEmbeddedWigwagLinks(this.buildTextCell(issue, 'title', issue.values.title, 'var(--text-placeholder)', rowReadOnly), issue.values.title || '', s.filterQuery, !!s.columnWrap.title),
         textWrapStyle: this.wrapStyleFor('title'),
         highlightSegments: splitHighlightSegments(issue.values.title || '', s.filterQuery) };
-      const cells = realColumnOrder(s.columnOrder).map(colId => { const w = s.columnWidths[colId] || WIDTHS[colId] || 160; return { ...this.buildCell(issue, colId, fieldDefs[colId], rowReadOnly, w), width: w, padding: cellPaddingForWidth(w), colId, textWrapStyle: this.wrapStyleFor(colId) }; });
+      const cells = realColumnOrder(s.columnOrder).map(colId => { const w = s.columnWidths[colId] || WIDTHS[colId] || 160; return { ...this.buildCell(issue, colId, fieldDefs[colId], rowReadOnly, w, true), width: w, padding: cellPaddingForWidth(w), colId, textWrapStyle: this.wrapStyleFor(colId) }; });
       const cellsById = {};
       cells.forEach(c => { cellsById[c.colId] = c; });
       const rowIsSelected = selectedSet.has(issue.id);

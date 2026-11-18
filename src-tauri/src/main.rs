@@ -6,6 +6,8 @@ use connected_sources::{
     connected_source_delete_credential, connected_source_fetch, connected_source_get_credential,
     connected_source_set_credential, ConnectedSourcesHttp,
 };
+mod identity_credentials;
+use identity_credentials::{identity_credential_delete, identity_credential_get, identity_credential_set};
 
 // Tracker: Connected Sources (Phase 1) risk-reduction spike. A trivial,
 // no-op command to settle -- cheaply, before any real reqwest/keyring
@@ -128,6 +130,9 @@ fn main() {
             connected_source_set_credential,
             connected_source_get_credential,
             connected_source_delete_credential,
+            identity_credential_set,
+            identity_credential_get,
+            identity_credential_delete,
             open_project_window
         ])
         .setup(|_app| {

@@ -4833,13 +4833,14 @@ const WIGWAG_MATRIX_LAYOUT_PROPOSAL_TYPE = 'work.wigwag.layout-proposal';
 // browser/device, LAYOUT_PROPOSAL_DEVICE_ID_KEY) is what the self-check
 // actually uses -- the account id is kept only as descriptive metadata,
 // not for suppression.
-function matrixStateEventContentFromLayoutProposal({ columnOrder, columnWidths, hiddenFieldIds, freezeColId, proposedBy, proposedByMatrixUserId, proposedByDeviceId, proposedAt }) {
+function matrixStateEventContentFromLayoutProposal({ columnOrder, columnWidths, hiddenFieldIds, freezeColId, kanbanColId, proposedBy, proposedByMatrixUserId, proposedByDeviceId, proposedAt }) {
   return {
     v: WIGWAG_MATRIX_EVENT_VERSION,
     columnOrder: columnOrder || [],
     columnWidths: columnWidths || {},
     hiddenFieldIds: hiddenFieldIds || [],
     freezeColId: freezeColId || null,
+    kanbanColId: kanbanColId || null,
     proposedBy: proposedBy || null,
     proposedByMatrixUserId: proposedByMatrixUserId || null,
     proposedByDeviceId: proposedByDeviceId || null,
@@ -4860,6 +4861,7 @@ function layoutProposalFromMatrixStateEvent(rawEvent) {
     columnWidths: (content.columnWidths && typeof content.columnWidths === 'object') ? content.columnWidths : {},
     hiddenFieldIds: Array.isArray(content.hiddenFieldIds) ? content.hiddenFieldIds : [],
     freezeColId: content.freezeColId || null,
+    kanbanColId: content.kanbanColId || null,
     proposedBy: content.proposedBy || null,
     proposedByMatrixUserId: content.proposedByMatrixUserId || null,
     proposedByDeviceId: content.proposedByDeviceId || null,

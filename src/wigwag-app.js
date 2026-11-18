@@ -1943,7 +1943,7 @@ class Component extends DCLogic {
       addItemOpen: false, addItemDraft: '', filterQuery: '', widgetFilterOpen: false, jumpDismissed: false, jumpActiveIndex: 0, filterSuggestDismissed: true, filterSuggestActiveIndex: 0, sort: this.sortFor(id), sortSnapshot: computeSortSnapshot(this.sortFor(id), hydratedIssues, hydratedFieldDefs), columnFilters: this.columnFiltersFor(id),
       columnFilterExcludedIds: computeColumnFilterExcludedIds(this.columnFiltersFor(id), hydratedIssues, hydratedFieldDefs),
       draggingColId: null, dragOverColId: null, dragOverSide: null, openColMenuId: null,
-      kanbanColId: null, draggingKanbanIssueId: null, dragOverKanbanOptId: null, freezeColId: null,
+      kanbanColId: null, draggingKanbanIssueId: null, dragOverKanbanOptId: null, kanbanColOverflow: {}, freezeColId: null,
       draggingRuleRowIndex: null, dragOverRuleRowIndex: null, dragOverRuleRowSide: null,
       fieldEditorColId: null, fieldEditorNewOptLabel: '', colorPickerOptIndex: null,
       ruleBuilderColId: null, ruleBuilderVisible: false,
@@ -2137,6 +2137,27 @@ class Component extends DCLogic {
     });
     mount.innerHTML = '';
     mount.appendChild(canvas);
+  }
+  // Same pattern as measureTableOverflow, one level per kanban column
+  // instead of one level for the whole table -- see cornerRadius's own
+  // comment (kanbanColumns build, renderVals) for why this exists.
+  measureKanbanOverflow() {
+    const bodies = document.querySelectorAll('[data-testid="kanban-col-body"]');
+    if (!bodies.length) { if (Object.keys(this.state.kanbanColOverflow || {}).length) this.setState({ kanbanColOverflow: {} }); return; }
+    const next = {};
+    bodies.forEach(el => { next[el.getAttribute('data-opt')] = el.scrollHeight > el.clientHeight + 1; });
+    const cur = this.state.kanbanColOverflow || {};
+    const keys = Object.keys(next);
+    const changed = keys.length !== Object.keys(cur).length || keys.some(k => next[k] !== cur[k]);
+    if (changed) this.setState({ kanbanColOverflow: next });
+  }
+  maybeMeasureKanbanOverflow() {
+    const s = this.state;
+    const deps = [s.issues, s.filterQuery, s.columnFilters, s.columnFilterExcludedIds, s.kanbanColId, s.projectId];
+    const lastDeps = this._lastMeasureKanbanOverflowDeps;
+    if (lastDeps && deps.every((v, i) => v === lastDeps[i])) return;
+    this._lastMeasureKanbanOverflowDeps = deps;
+    this.measureKanbanOverflow();
   }
   // Only called from componentDidUpdate's own blanket fan-out -- see
   // measureTableOverflow's own comment for why this gate cannot live
@@ -2488,7 +2509,7 @@ class Component extends DCLogic {
     this.autoGrowTextareas();
     this.measureTableOverflow();
     this.measureStatusBarOverflow();
-    this._onWindowResize = () => { this.measureTableOverflow(); this.measureStatusBarOverflow(); };
+    this._onWindowResize = () => { this.measureTableOverflow(); this.measureStatusBarOverflow(); this.measureKanbanOverflow(); };
     window.addEventListener('resize', this._onWindowResize);
     this.setupAppearanceControl();
     this._mobileMq = window.matchMedia('(max-width: 640px)');
@@ -3737,7 +3758,7 @@ class Component extends DCLogic {
       this.setState({ issues: hydratedIssues });
     } catch (err) { console.warn('[tracker] failed to adopt external issues:', err); }
   }
-  componentDidUpdate() { this.ensureHeaderPattern(); this.persist(); this.persistSecrets(); this.persistProjectIndex(); this.persistIdentities(); this.persistCommentReads(); this.persistColumnWidths(); this.persistColumnWrap(); this.persistColumnOrder(); this.persistHiddenFieldIds(); this.persistColumnFilters(); this.persistSort(); this.maybeScheduleGithubPush(); this.hydrateMarkdownBodies(); this.autoGrowTextareas(); this.maybeMeasureTableOverflow(); this.maybeMeasureStatusBarOverflow(); }
+  componentDidUpdate() { this.ensureHeaderPattern(); this.persist(); this.persistSecrets(); this.persistProjectIndex(); this.persistIdentities(); this.persistCommentReads(); this.persistColumnWidths(); this.persistColumnWrap(); this.persistColumnOrder(); this.persistHiddenFieldIds(); this.persistColumnFilters(); this.persistSort(); this.maybeScheduleGithubPush(); this.hydrateMarkdownBodies(); this.autoGrowTextareas(); this.maybeMeasureTableOverflow(); this.maybeMeasureStatusBarOverflow(); this.maybeMeasureKanbanOverflow(); }
   // Covers every markdown-rendered surface in the app -- issue/project
   // comments, project notes, and (as of the text-field markdown feature)
   // every plain 'text' field's cell/slide-over display -- all through the
@@ -3983,7 +4004,7 @@ class Component extends DCLogic {
     columnWrap: {},
     columnOrder: defaultColumnOrder(),
     draggingColId: null, dragOverColId: null, dragOverSide: null,
-    kanbanColId: null, draggingKanbanIssueId: null, dragOverKanbanOptId: null, freezeColId: null,
+    kanbanColId: null, draggingKanbanIssueId: null, dragOverKanbanOptId: null, kanbanColOverflow: {}, freezeColId: null,
     draggingRuleRowIndex: null, dragOverRuleRowIndex: null, dragOverRuleRowSide: null,
     hiddenFieldIds: [],
     openColMenuId: null,
@@ -6686,7 +6707,15 @@ class Component extends DCLogic {
     if (changed) this.requireAttribution(commit); else commit();
   }
   handleEditKey(e, issueId, colId) {
-    if (e.key === 'Enter') { e.target.blur(); }
+    if (e.key === 'Enter') {
+      // Live-reported (Tom): submitting a title edit (outside the slide-
+      // over) hands focus back to the add-item box -- goToAddItemInput's
+      // own focus() call blurs this input first (same implicit
+      // blur-before-focus the ArrowDown bottom-out below already relies
+      // on), so the edit still commits via the normal onInputBlur path.
+      if (colId === 'title' && this.state.slideOverIssueId !== issueId) this.goToAddItemInput();
+      else e.target.blur();
+    }
     else if (e.key === 'Escape') { e.stopPropagation(); this.cancelEdit(); }
     else if (e.key === 'ArrowUp' && colId === 'title' && this.state.slideOverIssueId !== issueId && e.target.selectionStart === 0 && e.target.selectionEnd === 0) {
       // Tracker 69502216: Element-style chained walk-up -- a single-line
@@ -7471,6 +7500,15 @@ class Component extends DCLogic {
     if (e.key === 'Enter') { e.preventDefault(); this.addIssue(this.state.addItemDraft); }
     else if (e.key === 'Escape') { e.stopPropagation(); this.setState({ addItemOpen: false, addItemDraft: '' }); }
     else if (e.key === 'ArrowUp') {
+      // Live-reported (Tom): with text typed into the draft, a bare
+      // ArrowUp should behave like it would in any text input -- home the
+      // caret to the start -- NOT immediately steal focus into the last
+      // issue. Only a caret already collapsed at position 0 (trivially
+      // true for an empty draft too, so the original "jump straight away"
+      // behavior is unchanged there) falls through to the jump below;
+      // same caret-at-start gate handleEditKey's own ArrowUp climb uses.
+      const atStart = e.target.selectionStart === 0 && e.target.selectionEnd === 0;
+      if (!atStart) { e.preventDefault(); e.target.setSelectionRange(0, 0); return; }
       // Tracker 69502216: jump straight into editing the bottommost
       // (last-displayed, respecting the current sort/filter) issue's
       // title, same row order _visibleIssueOrder already tracks for
@@ -7977,6 +8015,7 @@ class Component extends DCLogic {
       columnWidths: s.columnWidths,
       hiddenFieldIds: s.hiddenFieldIds,
       freezeColId: s.freezeColId || null,
+      kanbanColId: s.kanbanColId || null,
       proposedBy: (identity && identity.label) || null,
       proposedByMatrixUserId: (identity && identity.matrixUserId) || null,
       proposedByDeviceId: (identity && identity.matrixDeviceId) || this.getOrCreateDeviceId(),
@@ -8037,10 +8076,17 @@ class Component extends DCLogic {
     this._handledLayoutProposalKeyByProject[projectId] = this.layoutProposalKey(proposal);
     const hiddenFieldIds = proposal.hiddenFieldIds || [];
     const columnOrder = reconcileColumnOrder(proposal.columnOrder, this.effectiveFieldDefs(), hiddenFieldIds);
+    // Same "this device might not have what was proposed" guard as
+    // reconcileColumnOrder above, for the field a proposal wants grouped
+    // by -- a renamed/deleted/retyped field falls back to plain table
+    // view rather than pointing kanbanColId at something that no longer
+    // makes sense to group by.
+    const proposedGroupDef = proposal.kanbanColId ? this.effectiveFieldDefs()[proposal.kanbanColId] : null;
+    const kanbanColId = (proposedGroupDef && proposedGroupDef.type === 'select') ? proposal.kanbanColId : null;
     this.setState(s => {
       const layoutProposals = Object.assign({}, s.layoutProposals);
       delete layoutProposals[projectId];
-      return { columnOrder, columnWidths: proposal.columnWidths || {}, hiddenFieldIds, freezeColId: proposal.freezeColId || null, layoutProposals };
+      return { columnOrder, columnWidths: proposal.columnWidths || {}, hiddenFieldIds, freezeColId: proposal.freezeColId || null, kanbanColId, layoutProposals };
     });
   }
   // Live-reported (Tom, 2026-09-29): dismissing the one currently showing
@@ -10233,12 +10279,21 @@ class Component extends DCLogic {
           chips, hasChips: chips.length > 0
         };
       };
+      // Live-reported (Tom): a column whose cards don't all fit the
+      // available height always looked like it simply ended there (full
+      // rounded bottom corners, same as a column that genuinely fits) --
+      // confusing, since there's really more content below, scrollable.
+      // kanbanColOverflow is a real DOM measurement (measureKanbanOverflow,
+      // same pattern as tableOverflow), keyed by column id; only a column
+      // confirmed NOT to overflow gets the "this is where it naturally
+      // ends" rounded-bottom treatment.
+      const cornerRadius = id => (s.kanbanColOverflow && s.kanbanColOverflow[id]) ? '8px 8px 0 0' : '8px';
       const opts = groupDef ? (groupDef.options || []) : [];
       kanbanColumns = opts.map(opt => {
         const cards = issues.filter(iss => this.resolveSelectOption(iss, s.kanbanColId).opt && this.resolveSelectOption(iss, s.kanbanColId).opt.id === opt.id).map(buildCard);
         return {
           id: opt.id, label: opt.label, dotColor: col(opt.color).dot, count: cards.length, cards,
-          hasCards: cards.length > 0, noCards: cards.length === 0,
+          hasCards: cards.length > 0, noCards: cards.length === 0, cornerRadius: cornerRadius(opt.id),
           dragOverStyle: s.dragOverKanbanOptId === opt.id ? 'background: var(--surface-hover); outline:2px dashed var(--border-strong); outline-offset:-2px;' : '',
           onDragOver: e => this.kanbanDragOverCol(opt.id, e),
           onDragLeave: () => { if (this.state.dragOverKanbanOptId === opt.id) this.setState({ dragOverKanbanOptId: null }); },
@@ -10246,9 +10301,11 @@ class Component extends DCLogic {
         };
       });
       const noneCards = issues.filter(iss => !this.resolveSelectOption(iss, s.kanbanColId).opt).map(buildCard);
-      kanbanColumns.push({
+      // Live-reported (Tom): "(No value)" should be the LEFTMOST kanban
+      // column, not the rightmost -- unshift, not push.
+      kanbanColumns.unshift({
         id: '__none__', label: 'No ' + groupByLabel.toLowerCase(), dotColor: 'var(--text-tertiary)', count: noneCards.length, cards: noneCards,
-        hasCards: noneCards.length > 0, noCards: noneCards.length === 0,
+        hasCards: noneCards.length > 0, noCards: noneCards.length === 0, cornerRadius: cornerRadius('__none__'),
         dragOverStyle: s.dragOverKanbanOptId === '__none__' ? 'background: var(--surface-hover); outline:2px dashed var(--border-strong); outline-offset:-2px;' : '',
         onDragOver: e => this.kanbanDragOverCol('__none__', e),
         onDragLeave: () => { if (this.state.dragOverKanbanOptId === '__none__') this.setState({ dragOverKanbanOptId: null }); },

@@ -218,6 +218,47 @@ test.describe('Widget body 4a: no state chip strip (removed)', () => {
   });
 });
 
+// Live-reported (Tom): the widget's own add-item row and ungroup control
+// were both missing in Kanban view -- the add-row lived only inside the
+// table-only render branch, and the only "back to table" control was the
+// desktop-only "Grouped by" pill, neither of which the widget ever shows.
+test.describe('Widget body: Kanban view parity', () => {
+  test('the slim add-row is also visible in Kanban view, not just the table', async ({ page }) => {
+    await h.gotoFakeWidgetHost(page, { roomId: '!kanban4a-addrow:example.org', roomName: 'Kanban Add Row', initialEntries: seedIssues(['Alpha task']) });
+    const frame = page.frameLocator('#widget').frameLocator('#frame');
+    await expect(frame.locator('[data-testid=tracker-name-title]')).toBeVisible();
+
+    await openColumnMenuInFrame(frame, 'type');
+    await frame.locator('[data-testid=col-menu-group-by]').last().click();
+    await expect(frame.locator('[data-testid=kanban-board]')).toBeVisible();
+
+    await expect(frame.locator('[data-testid=widget-add-row]')).toBeVisible();
+    await frame.locator('[data-testid=widget-add-row]').click();
+    const input = frame.locator('[data-testid=widget-add-item-input]');
+    await expect(input).toBeFocused();
+    await input.fill('New kanban-added issue');
+    await input.press('Enter');
+    await expect(frame.locator('[data-testid=kanban-card]', { hasText: 'New kanban-added issue' })).toBeVisible();
+  });
+
+  test('a toolbar ungroup button appears only while grouped, and returns to the table', async ({ page }) => {
+    await h.gotoFakeWidgetHost(page, { roomId: '!kanban4a-ungroup:example.org', roomName: 'Kanban Ungroup', initialEntries: seedIssues(['Alpha task']) });
+    const frame = page.frameLocator('#widget').frameLocator('#frame');
+    await expect(frame.locator('[data-testid=tracker-name-title]')).toBeVisible();
+    await expect(frame.locator('[data-testid=btn-widget-clear-group-by]')).toHaveCount(0);
+
+    await openColumnMenuInFrame(frame, 'type');
+    await frame.locator('[data-testid=col-menu-group-by]').last().click();
+    await expect(frame.locator('[data-testid=kanban-board]')).toBeVisible();
+    await expect(frame.locator('[data-testid=btn-widget-clear-group-by]')).toBeVisible();
+
+    await frame.locator('[data-testid=btn-widget-clear-group-by]').click();
+    await expect(frame.locator('[data-testid=kanban-board]')).toHaveCount(0);
+    await expect(frame.locator('[data-testid=row]')).toBeVisible();
+    await expect(frame.locator('[data-testid=btn-widget-clear-group-by]')).toHaveCount(0);
+  });
+});
+
 test.describe('Widget body 4a: slim sticky add-row', () => {
   test('replaces the desktop add-item card; clicking it opens the same add flow', async ({ page }) => {
     await h.gotoFakeWidgetHost(page, { roomId: '!addrow4a-a:example.org', roomName: 'Add Row A', initialEntries: seedIssues(['Alpha task']) });

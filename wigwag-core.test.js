@@ -2633,11 +2633,31 @@ test('matrixStateEventContentFromLayoutProposal / layoutProposalFromMatrixStateE
     columnWidths: { f1: 200, f2: 140 },
     hiddenFieldIds: ['f3'],
     freezeColId: 'f1',
+    kanbanColId: null,
     proposedBy: '@mod:example.org',
     proposedByMatrixUserId: null,
     proposedByDeviceId: null,
     proposedAt: 1234,
   });
+});
+
+// Live-reported (Tom): switching into Kanban/group-by view should be
+// pushable state via "propose this layout", same as columns/widths/
+// visibility/freeze already are -- not just table-shaped layout.
+test('matrixStateEventContentFromLayoutProposal / layoutProposalFromMatrixStateEvent: round-trips kanbanColId', () => {
+  const content = core.matrixStateEventContentFromLayoutProposal({
+    columnOrder: ['__title__', 'f1'],
+    kanbanColId: 'f1',
+    proposedBy: '@mod:example.org',
+    proposedAt: 1,
+  });
+  const proposal = core.layoutProposalFromMatrixStateEvent({ type: 'work.wigwag.layout-proposal', state_key: '', content });
+  assert.equal(proposal.kanbanColId, 'f1');
+
+  // Omitted entirely (plain table layout) -- never undefined, always null.
+  const tableContent = core.matrixStateEventContentFromLayoutProposal({ columnOrder: ['__title__'], proposedAt: 1 });
+  const tableProposal = core.layoutProposalFromMatrixStateEvent({ type: 'work.wigwag.layout-proposal', state_key: '', content: tableContent });
+  assert.equal(tableProposal.kanbanColId, null);
 });
 
 test('matrixStateEventContentFromLayoutProposal / layoutProposalFromMatrixStateEvent: round-trips proposedByMatrixUserId and proposedByDeviceId (the account vs. device distinction behind cross-device pushes)', () => {

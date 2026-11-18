@@ -1803,13 +1803,12 @@ test.describe('Keep "add an item" reachable: full-height flex shell', () => {
   // straight into editing the bottommost row's title, so a user who's
   // just typed a new item (or is about to) can reach the row right
   // above it without touching the mouse.
-  test('pressing ArrowUp in the add-item composer starts editing the bottommost row\'s title, leaving the draft untouched', async ({ page }) => {
+  test('with an empty draft, pressing ArrowUp in the add-item composer immediately starts editing the bottommost row\'s title', async ({ page }) => {
     const lastRow = page.locator('[data-testid=row]').last();
     const beforeTitle = (await lastRow.locator('[data-testid=title-cell]').textContent()).trim();
 
     await page.keyboard.down('Control'); await page.keyboard.press('Space'); await page.keyboard.up('Control');
     await page.waitForTimeout(150);
-    await page.keyboard.type('unsent draft');
     await page.keyboard.press('ArrowUp');
     await page.waitForTimeout(150);
 
@@ -1817,13 +1816,60 @@ test.describe('Keep "add an item" reachable: full-height flex shell', () => {
     expect(active.tag).toBe('INPUT');
     expect(beforeTitle).toContain(active.value); // the LAST row's own title, not the add-item draft
 
-    // The add-item box's own draft survives untouched -- ArrowUp moves
-    // focus, it doesn't submit or clear anything.
-    await expect(page.locator('[data-testid=add-item-input]')).toHaveValue('unsent draft');
-
     await h.typeAndCommit(page, 'Retitled via ArrowUp from the composer');
     await page.waitForTimeout(200);
     await expect(lastRow.locator('[data-testid=title-cell]')).toContainText('Retitled via ArrowUp from the composer');
+  });
+
+  // Live-reported (Tom): with text already typed into the draft, the
+  // FIRST ArrowUp should behave like it would in any text input -- home
+  // the caret -- not immediately steal focus away from an in-progress
+  // draft. Only once the caret is already at the start does ArrowUp jump
+  // to the bottommost row, same as how a mid-text ArrowUp inside an
+  // in-progress title edit is a no-op elsewhere in the table.
+  test('with text typed into the draft, the first ArrowUp homes the caret; only the second jumps to the bottommost row', async ({ page }) => {
+    const lastRow = page.locator('[data-testid=row]').last();
+    const beforeTitle = (await lastRow.locator('[data-testid=title-cell]').textContent()).trim();
+
+    await page.keyboard.down('Control'); await page.keyboard.press('Space'); await page.keyboard.up('Control');
+    await page.waitForTimeout(150);
+    await page.keyboard.type('hello');
+    await page.keyboard.press('ArrowUp');
+    await page.waitForTimeout(100);
+
+    // Still in the add-item box, caret now at the very start, draft intact.
+    const afterFirstUp = await page.evaluate(() => ({
+      tag: document.activeElement && document.activeElement.getAttribute('data-testid'),
+      value: document.activeElement && document.activeElement.value,
+      start: document.activeElement && document.activeElement.selectionStart
+    }));
+    expect(afterFirstUp.tag).toBe('add-item-input');
+    expect(afterFirstUp.value).toBe('hello');
+    expect(afterFirstUp.start).toBe(0);
+
+    await page.keyboard.press('ArrowUp');
+    await page.waitForTimeout(150);
+    const afterSecondUp = await page.evaluate(() => ({ tag: document.activeElement && document.activeElement.tagName, value: document.activeElement && document.activeElement.value }));
+    expect(afterSecondUp.tag).toBe('INPUT');
+    expect(beforeTitle).toContain(afterSecondUp.value); // the LAST row's own title, not the add-item draft
+
+    // The add-item box's own draft survives untouched throughout.
+    await expect(page.locator('[data-testid=add-item-input]')).toHaveValue('hello');
+  });
+
+  // Live-reported (Tom): submitting the title edit this ArrowUp chain
+  // lands on should hand focus straight back to the add-item box, so a
+  // user can immediately type the next new item with no extra click.
+  test('pressing Enter to submit a title edit reached via ArrowUp returns focus to the add-item box', async ({ page }) => {
+    await page.keyboard.down('Control'); await page.keyboard.press('Space'); await page.keyboard.up('Control');
+    await page.waitForTimeout(150);
+    await page.keyboard.press('ArrowUp');
+    await page.waitForTimeout(150);
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(200);
+
+    const active = await page.evaluate(() => document.activeElement && document.activeElement.getAttribute('data-testid'));
+    expect(active).toBe('add-item-input');
   });
 
   // Tracker 69502216, follow-up: Tom asked whether this chains like

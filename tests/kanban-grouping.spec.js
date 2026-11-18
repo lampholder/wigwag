@@ -38,18 +38,19 @@ test.describe('Kanban grouping', () => {
     await expect(pill).toContainText('Priority');
   });
 
-  test('one column per option, in the field\'s own option order, plus a trailing "No <field>" column', async ({ page }) => {
+  test('a leading "No <field>" column, then one column per option in the field\'s own option order', async ({ page }) => {
     await h.openColumnMenu(page, 'priority');
     await page.locator('[data-testid=col-menu-group-by]').click();
     await page.waitForTimeout(300);
 
     const cols = page.locator('[data-testid=kanban-col]');
     const labels = await cols.allTextContents();
-    // P0, P1, P2 (option order), then the trailing "No priority" column.
-    expect(labels[0]).toContain('P0');
-    expect(labels[1]).toContain('P1');
-    expect(labels[2]).toContain('P2');
-    expect(labels[labels.length - 1]).toContain('No priority');
+    // Live-reported (Tom): "(No value)" is the LEFTMOST column, not the
+    // rightmost -- then P0, P1, P2 in the field's own option order.
+    expect(labels[0]).toContain('No priority');
+    expect(labels[1]).toContain('P0');
+    expect(labels[2]).toContain('P1');
+    expect(labels[3]).toContain('P2');
   });
 
   test('empty option columns still render (fixed-width, not collapsed) with a "No issues" caption', async ({ page }) => {
@@ -118,8 +119,9 @@ test.describe('Kanban grouping', () => {
     await page.locator('[data-testid=col-menu-group-by]').click();
     await page.waitForTimeout(300);
 
-    const p0Col = page.locator('[data-testid=kanban-col]').nth(0);
-    const p1ColBody = page.locator('[data-testid=kanban-col]').nth(1).locator('[data-testid=kanban-col-body]');
+    // nth(0) is the leading "No priority" column -- P0/P1 start at nth(1).
+    const p0Col = page.locator('[data-testid=kanban-col]').nth(1);
+    const p1ColBody = page.locator('[data-testid=kanban-col]').nth(2).locator('[data-testid=kanban-col-body]');
     const card = p0Col.locator('[data-testid=kanban-card]').first();
     const shortRef = (await card.locator('span').first().textContent()).trim(); // "#<first 8 chars of issue.id>"
     const issueId = shortRef.slice(1);
@@ -138,15 +140,14 @@ test.describe('Kanban grouping', () => {
     expect(last.value).toBe('p1');
   });
 
-  test('dropping a card on the trailing "No <field>" column clears the value', async ({ page }) => {
+  test('dropping a card on the leading "No <field>" column clears the value', async ({ page }) => {
     await h.openColumnMenu(page, 'priority');
     await page.locator('[data-testid=col-menu-group-by]').click();
     await page.waitForTimeout(300);
 
     const cols = page.locator('[data-testid=kanban-col]');
-    const n = await cols.count();
-    const noneCol = cols.nth(n - 1).locator('[data-testid=kanban-col-body]');
-    const sourceCard = cols.nth(0).locator('[data-testid=kanban-card]').first();
+    const noneCol = cols.nth(0).locator('[data-testid=kanban-col-body]');
+    const sourceCard = cols.nth(1).locator('[data-testid=kanban-card]').first();
     await expect(sourceCard).toBeVisible();
     const before = await noneCol.locator('[data-testid=kanban-card]').count();
 
@@ -274,5 +275,57 @@ test.describe('Kanban grouping', () => {
     await expect(pill).toHaveCount(1);
     await expect(pill).toContainText('RAG');
     await expect(pill).not.toContainText('Priority');
+  });
+});
+
+// Live-reported (Tom): a column taller than the available viewport always
+// showed full rounded bottom corners, same as a column that genuinely
+// fits -- looking like the column's content simply ends there when really
+// it's just cut off (scrollable). measureKanbanOverflow (a real DOM
+// scrollHeight/clientHeight measurement, same pattern as the table's own
+// tableOverflow) now drives border-radius per column: full rounded
+// corners only for a column confirmed NOT to overflow.
+test.describe('Kanban grouping: overflow-aware corner rounding', () => {
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  test('a column whose cards overflow the viewport loses its rounded bottom corners; a guaranteed-empty one keeps them', async ({ page }) => {
+    await page.setViewportSize({ width: 1000, height: 420 });
+    const doc = await h.readActiveMilestoneDoc(page);
+    // A 4th, guaranteed-empty option (same technique as the "empty option
+    // columns" test above) -- it can never overflow, so it isolates the
+    // comparison from however many issues the demo fixture's own "No
+    // priority" bucket happens to contain.
+    const priorityEntries = doc.projectHistory.filter(hh => hh.field === 'priority');
+    const latest = priorityEntries.reduce((a, b) => (b.sortKey > a.sortKey ? b : a));
+    const updatedDef = { ...latest.value, options: [...latest.value.options, { id: 'p3', label: 'P3', color: 'gray', emoji: '' }] };
+    const maxSortKey = Math.max(...doc.projectHistory.map(hh => hh.sortKey || 0));
+    doc.projectHistory.push({
+      id: 'test-add-p3-option-overflow', time: 'Aug 1', actor: 'tom', email: '',
+      text: 'Priority options updated', field: 'priority', value: updatedDef,
+      origin: 'authored', sortKey: maxSortKey + 1, sig: null, sigRedacted: null, pubKey: null
+    });
+    for (let i = 0; i < 25; i++) {
+      const iss = { id: 'overflow-fixture-' + i, fieldRefs: {}, fieldLoading: {}, fields: {} };
+      h.pushFieldEntry(iss, 'title', 'Overflow fixture issue ' + i);
+      h.pushFieldEntry(iss, 'priority', 'p0');
+      doc.issues.push(iss);
+    }
+    await h.writeActiveMilestoneDoc(page, doc);
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    await h.openColumnMenu(page, 'priority');
+    await page.locator('[data-testid=col-menu-group-by]').click();
+    await page.waitForTimeout(400);
+
+    const p3Col = page.locator('[data-testid=kanban-col]').filter({ hasText: 'P3' });
+    const p0Col = page.locator('[data-testid=kanban-col]').filter({ hasText: 'P0' });
+    await expect(p3Col.locator('[data-testid=kanban-card]')).toHaveCount(0);
+    expect(await p0Col.locator('[data-testid=kanban-card]').count()).toBeGreaterThanOrEqual(25);
+
+    await expect(p0Col).toHaveCSS('border-bottom-left-radius', '0px');
+    await expect(p0Col).toHaveCSS('border-bottom-right-radius', '0px');
+    await expect(p3Col).toHaveCSS('border-bottom-left-radius', '8px');
+    await expect(p3Col).toHaveCSS('border-bottom-right-radius', '8px');
   });
 });

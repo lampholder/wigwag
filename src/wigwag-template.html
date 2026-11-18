@@ -456,6 +456,9 @@
     <div class="{{ widgetToolbarPillClass }}" style="position:relative; z-index:72; display:flex; align-items:stretch; height:28px; border:1px solid var(--border); background:color-mix(in oklch, var(--surface) 80%, transparent); border-radius:7px; overflow:hidden; flex-shrink:0; color:var(--text-strong);">
       <div class="wigwag-toolbar-segment" data-testid="btn-global-search" sc-camel-on-click="{{ globalSearch.onOpen }}" title="Search all projects ({{ globalSearch.shortcutLabel }})" style="display:flex; align-items:center; justify-content:center; cursor:pointer;" style-hover="background:rgba(0,0,0,0.05);"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="flex-shrink:0;"><circle cx="11" cy="11" r="7"></circle><path d="M21 21l-4.8-4.8"></path></svg><span class="wigwag-toolbar-hint">{{ globalSearch.shortcutLabel }}</span></div>
       <div data-testid="btn-widget-filter" sc-camel-on-click="{{ onOpenWidgetFilter }}" title="Filter this project (/)" style="width:30px; height:100%; flex-shrink:0; display:flex; align-items:center; justify-content:center; cursor:pointer; color:{{ widgetFunnelColor }}; background:{{ widgetFunnelBg }};" style-hover="background:rgba(0,0,0,0.05);"><svg width="13" height="13" viewBox="0 0 16 16" fill="{{ widgetFunnelFill }}" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" style="flex-shrink:0;"><path d="M2 3h12l-4.6 5.4V13L6.6 14.2V8.4z"></path></svg></div>
+      <sc-if value="{{ isKanbanView }}" hint-placeholder-val="{{ false }}">
+      <div data-testid="btn-widget-clear-group-by" sc-camel-on-click="{{ onClearGroupBy }}" title="Back to table (grouped by {{ groupByLabel }})" style="width:30px; height:100%; flex-shrink:0; display:flex; align-items:center; justify-content:center; cursor:pointer; color:var(--accent-ink);" style-hover="background:rgba(0,0,0,0.05);"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><rect x="2" y="2.5" width="12" height="11" rx="1.5"></rect><path d="M6.2 2.5v11"></path><path d="M3.3 13.3L12.7 2.7"></path></svg></div>
+      </sc-if>
       <div style="width:1px; background:rgba(0,0,0,0.12);"></div>
       <button class="wigwag-toolbar-segment" data-testid="btn-notes" sc-camel-on-click="{{ onToggleNotes }}" title="Project notes &amp; comments" style="height:100%; display:flex; align-items:center; justify-content:center; cursor:pointer; border:none; background:transparent; color: {{ notesButtonColor }}; font-family:inherit;" style-hover="background:rgba(0,0,0,0.05);"><svg width="13" height="13" sc-camel-view-box="0 0 12 12" fill="none" style="flex-shrink:0;"><path d="M2.5 1.5h7v9h-7z" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"></path><path d="M4.3 4.2h3.4M4.3 6.2h3.4M4.3 8.2h2" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"></path></svg><span class="wigwag-toolbar-label">Project</span></button>
       <div data-testid="export-menu-wrap" style="position:relative;">
@@ -1299,15 +1302,15 @@
 
 
   <sc-if value="{{ isKanbanView }}" hint-placeholder-val="{{ false }}">
-    <div data-testid="kanban-board" style="flex:1 1 auto; min-height:0; overflow-x:auto; overflow-y:hidden; padding: 0 28px 20px; display:flex; gap:14px; align-items:flex-start;">
+    <div data-testid="kanban-board" style="flex:1 1 auto; min-height:0; overflow-x:auto; overflow-y:hidden; padding: 20px 28px 20px; display:flex; gap:14px; align-items:flex-start;">
       <sc-for list="{{ kanbanColumns }}" as="kcol" hint-placeholder-count="4">
-        <div data-testid="kanban-col" style="width:272px; flex-shrink:0; display:flex; flex-direction:column; max-height:100%; border:1px solid var(--border); border-radius:8px; background: var(--surface-page); overflow:hidden;">
+        <div data-testid="kanban-col" style="width:272px; flex-shrink:0; display:flex; flex-direction:column; max-height:100%; border:1px solid var(--border); border-radius: {{ kcol.cornerRadius }}; background: var(--surface-page); overflow:hidden;">
           <div style="flex-shrink:0; padding:11px 12px; display:flex; align-items:center; gap:8px; border-bottom:1px solid var(--border);">
             <span style="width:8px; height:8px; border-radius:50%; background: {{ kcol.dotColor }}; flex-shrink:0;"></span>
             <span style="font-size:13px; font-weight:600; color: var(--text-primary); flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ kcol.label }}</span>
             <span style="font-size:11.5px; color: var(--text-tertiary); font-variant-numeric:tabular-nums;">{{ kcol.count }}</span>
           </div>
-          <div data-testid="kanban-col-body" sc-camel-on-drag-over="{{ kcol.onDragOver }}" sc-camel-on-drag-leave="{{ kcol.onDragLeave }}" sc-camel-on-drop="{{ kcol.onDrop }}" style="{{ kcol.dragOverStyle }} flex:1 1 auto; min-height:80px; overflow-y:auto; padding:10px; display:flex; flex-direction:column; gap:8px;">
+          <div data-testid="kanban-col-body" data-opt="{{ kcol.id }}" sc-camel-on-drag-over="{{ kcol.onDragOver }}" sc-camel-on-drag-leave="{{ kcol.onDragLeave }}" sc-camel-on-drop="{{ kcol.onDrop }}" style="{{ kcol.dragOverStyle }} flex:1 1 auto; min-height:80px; overflow-y:auto; padding:10px; display:flex; flex-direction:column; gap:8px;">
             <sc-for list="{{ kcol.cards }}" as="card" hint-placeholder-count="2">
               <div data-testid="kanban-card" draggable="{{ card.draggable }}" title="{{ card.boundGlyphTitle }}" sc-camel-on-drag-start="{{ card.onDragStart }}" sc-camel-on-drag-end="{{ card.onDragEnd }}" sc-camel-on-click="{{ card.onOpen }}" style="opacity: {{ card.dragOpacity }}; cursor:pointer; background:var(--surface); border:1px solid var(--border); border-radius:7px; padding:10px 12px; display:flex; flex-direction:column; gap:6px; box-shadow:0 1px 2px var(--sh7);" style-hover="border-color: var(--border-strong);">
                 <span style="display:flex; align-items:center; gap:6px;">
@@ -1342,6 +1345,21 @@
     </div>
   </sc-if>
 
+  <sc-if value="{{ isKanbanView }}" hint-placeholder-val="{{ false }}">
+  <sc-if value="{{ isWidgetMode }}" hint-placeholder-val="{{ false }}">
+  <div data-testid="widget-add-row" sc-camel-on-click="{{ onAddItemBoxClick }}" style="position:sticky; left:0; right:0; bottom:0; z-index:40; box-sizing:border-box; min-height:44px; display:flex; align-items:center; padding:0 14px 0 0; border-top:1px solid var(--n34); background:var(--surface); cursor:pointer;">
+    <span sc-camel-on-click="{{ onAddItemPlusClick }}" style="cursor:pointer; width: {{ gutterWidth }}px; flex-shrink:0; box-sizing:border-box; display:flex; align-items:center; justify-content:center;">
+      <span style="color: var(--text-muted); font-size:14px; line-height:1; margin-left: {{ gutterCheckboxMarginLeft }};">+</span>
+    </span>
+    <sc-if value="{{ addItemOpen }}" hint-placeholder-val="{{ false }}">
+      <input data-testid="widget-add-item-input" sc-camel-auto-focus="{{ true }}" placeholder="Start typing to create an item, or paste a public GitHub issue link" value="{{ addItemDraft }}" sc-camel-on-change="{{ onAddItemDraftChange }}" sc-camel-on-key-down="{{ onAddItemKeyDown }}" sc-camel-on-blur="{{ onAddItemBlur }}" sc-camel-on-paste="{{ onAddItemPaste }}" style="border:none; outline:none; font-size:13px; font-family:inherit; flex:1; color: var(--n43); padding-left: {{ addItemTextIndent }}; background:transparent;">
+    </sc-if>
+    <sc-if value="{{ !addItemOpen }}" hint-placeholder-val="{{ true }}">
+      <span style="font-size:13px; color: var(--text-secondary); flex:1; display:flex; align-items:center; gap:5px; padding-left: {{ addItemTextIndent }};">You can use <span style="border:1px solid var(--border-strong); border-radius:5px; padding:1px 6px; font-size:11px; background: var(--surface-hover);">{{ addItemShortcutHint }}</span> to add an item</span>
+    </sc-if>
+  </div>
+  </sc-if>
+  </sc-if>
 
   <sc-if value="{{ showDesktopAddItem }}" hint-placeholder-val="{{ true }}">
   <sc-if value="{{ !bulkPaste }}" hint-placeholder-val="{{ true }}">

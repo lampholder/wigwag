@@ -3052,6 +3052,53 @@ test.describe('wigwag-matrix-host.html: moderator-proposed table layouts', () =>
     expect(state.sentProjectStateEvents.length).toBe(0);
   });
 
+  // Live-reported (Tom): switching into Kanban/group-by view should be
+  // part of what a proposed layout can push, same as columns/widths/
+  // visibility/freeze already are.
+  test('Accept also applies a proposed kanbanColId, switching the accepting viewer straight into Kanban grouped by that field', async ({ page }) => {
+    const proposalContent = core.matrixStateEventContentFromLayoutProposal({
+      columnOrder: ['__title__', 'priority', '__comments__'],
+      kanbanColId: 'priority',
+      proposedBy: 'Alex',
+      proposedByMatrixUserId: '@alex:example.org',
+      proposedByDeviceId: 'alex-device',
+      proposedAt: 555
+    });
+    await connect(page, { initialLayoutProposals: { [PROJ]: proposalContent } });
+    const frame = page.frameLocator('#frame');
+    await expect(frame.locator('[data-testid=layout-proposal-banner]')).toBeVisible();
+    await expect(frame.locator('[data-testid=kanban-board]')).toHaveCount(0); // not applied yet, just offered
+
+    await frame.locator('[data-testid=btn-accept-layout]').click();
+    await page.waitForTimeout(300);
+
+    await expect(frame.locator('[data-testid=kanban-board]')).toBeVisible();
+    await expect(frame.locator('[data-testid=kanban-col]').first()).toContainText('No priority');
+  });
+
+  // Reconciliation guard, same spirit as reconcileColumnOrder for
+  // columnOrder: a proposed kanbanColId naming a field this device
+  // doesn't have (deleted/renamed) or that isn't select-typed anymore
+  // falls back to plain table view, rather than pointing at a
+  // group-by axis that no longer makes sense.
+  test('Accept falls back to the table view if the proposed kanbanColId no longer names a real select field', async ({ page }) => {
+    const proposalContent = core.matrixStateEventContentFromLayoutProposal({
+      columnOrder: ['__title__', 'priority', '__comments__'],
+      kanbanColId: 'this-field-does-not-exist',
+      proposedBy: 'Alex',
+      proposedByMatrixUserId: '@alex:example.org',
+      proposedByDeviceId: 'alex-device-2',
+      proposedAt: 555
+    });
+    await connect(page, { initialLayoutProposals: { [PROJ]: proposalContent } });
+    const frame = page.frameLocator('#frame');
+    await frame.locator('[data-testid=btn-accept-layout]').click();
+    await page.waitForTimeout(300);
+
+    await expect(frame.locator('[data-testid=kanban-board]')).toHaveCount(0);
+    await expect(frame.locator('[data-testid=row]').first()).toBeVisible();
+  });
+
   test('Dismiss clears the banner without applying anything', async ({ page }) => {
     const proposalContent = core.matrixStateEventContentFromLayoutProposal({
       columnOrder: ['__title__', 'priority', '__comments__'],

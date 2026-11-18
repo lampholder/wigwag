@@ -1521,6 +1521,17 @@ function deriveIssueValues(issue, fieldDefs) {
     const latest = latestFieldEntry(issue, colId);
     if (latest && latest.value !== undefined) {
       const v = latest.value;
+      // Multi-issue linking: an 'issue'-type field's value becomes an
+      // array once it holds 2+ entries (see docs/FORMAT_V2.md) -- each
+      // element independently unwraps by the exact same rule as the
+      // single-value case below, index-aligned with deriveIssueFieldRefs'
+      // own array branch. Gated on def.type === 'issue' so a multiselect
+      // value (already an array of option ids, never link-shaped) is
+      // untouched.
+      if (def.type === 'issue' && Array.isArray(v)) {
+        values[colId] = v.map(el => (el && typeof el === 'object' && !Array.isArray(el)) ? (('title' in el) ? el.title : '') : el);
+        continue;
+      }
       // Format v2: a linked field's real ref is folded INTO value now
       // ({title, href} or {title, wigwag:{...}} -- see docs/FORMAT_V2.md),
       // but `values[colId]` has always been the plain display value
@@ -1597,8 +1608,23 @@ function parseWigwagUri(href) {
 function deriveIssueFieldRefs(issue, fieldDefs) {
   const fieldRefs = {};
   for (const colId in fieldDefs) {
+    const def = fieldDefs[colId];
     const latest = latestFieldEntry(issue, colId);
     const v = latest && latest.value;
+    // Multi-issue linking: index-aligned with deriveIssueValues' own
+    // array branch -- one ref (or null, for that entry's plain-text
+    // elements) per array element. Gated on def.type === 'issue' so a
+    // real multiselect value (an array of option ids) is never
+    // mistaken for this shape.
+    if (def && def.type === 'issue' && Array.isArray(v)) {
+      const refs = v.map(el => {
+        if (!el || typeof el !== 'object' || Array.isArray(el) || !el.href) return null;
+        const wg = parseWigwagUri(el.href);
+        return wg ? { system: 'wigwag', ...wg } : { href: el.href };
+      });
+      if (refs.some(Boolean)) fieldRefs[colId] = refs;
+      continue;
+    }
     if (!v || typeof v !== 'object' || Array.isArray(v) || !v.href) continue; // a multiselect value is an array, never a ref; a value with no href at all isn't ref-shaped (e.g. a field-def value on project history)
     const wg = parseWigwagUri(v.href);
     fieldRefs[colId] = wg ? { system: 'wigwag', ...wg } : { href: v.href };
@@ -2560,6 +2586,15 @@ function applyComputedToField(values, colId, def, computed) {
     const cur = values[colId] || [];
     const same = cur.length === ids.length && cur.every((v, i) => v === ids[i]);
     return same ? values : { ...values, [colId]: ids };
+  }
+  if (def.type === 'issue' && Array.isArray(computed)) {
+    // Multi-issue linking non-goal: a rule that computes 2+ issues
+    // doesn't merge/union them into this field -- leave values
+    // untouched, same "stay plain" signal an unresolvable rule already
+    // produces (liveBindState reads `applied === issue.values` as
+    // plain, not bound). A single-element array still binds normally.
+    if (computed.length > 1) return values;
+    computed = computed.length === 1 ? computed[0] : null;
   }
   const next = computed == null ? '' : String(computed);
   return next === values[colId] ? values : { ...values, [colId]: next };

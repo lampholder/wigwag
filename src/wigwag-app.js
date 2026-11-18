@@ -204,7 +204,7 @@ function buildProjectSummaryFromDoc(doc) {
       // refTexts carries each linked field's search text (e.g. a Jira key
       // like "CSI-123") so universal search can match on it, same as the
       // in-table filter bar already does via fieldRefSearchText.
-      const refTexts = Object.values(deriveIssueFieldRefs(iss, fieldDefs)).map(fieldRefSearchText).filter(Boolean).map(t => t.toLowerCase());
+      const refTexts = Object.values(deriveIssueFieldRefs(iss, fieldDefs)).flatMap(r => Array.isArray(r) ? r : [r]).map(fieldRefSearchText).filter(Boolean).map(t => t.toLowerCase());
       return { id: iss.id, title: String(title), refTexts };
     })
   };
@@ -3543,7 +3543,12 @@ class Component extends DCLogic {
   appendSignedHistory(issueId, { field, value, fieldRef }) {
     const colId = field;
     const href = fieldRef && fieldRef.system === 'wigwag' ? buildWigwagUri(fieldRef) : (fieldRef && fieldRef.href);
-    const finalValue = href ? { title: value, href } : value;
+    // Multi-issue linking: a 2+-entry commit already builds its own
+    // array of (string | {title, href}) elements and calls this with
+    // that array as `value` directly (no sibling fieldRef -- each
+    // element carries its own href already) -- pass it through as-is,
+    // never re-wrap the whole array under one shared href.
+    const finalValue = Array.isArray(value) ? value : (href ? { title: value, href } : value);
     const entryBase = {
       id: crypto.randomUUID ? crypto.randomUUID() : 'h-' + Date.now() + '-' + Math.random().toString(36).slice(2),
       actor: this.displayName(),
@@ -8993,7 +8998,7 @@ class Component extends DCLogic {
         return { project: p, issues: s.issues.map(iss => {
           let title = '';
           try { title = deriveIssueValues(iss, s.fieldDefs).title || ''; } catch (e) { title = (iss.values && iss.values.title) || ''; }
-          const refTexts = Object.values(iss.fieldRefs || {}).map(fieldRefSearchText).filter(Boolean).map(t => t.toLowerCase());
+          const refTexts = Object.values(iss.fieldRefs || {}).flatMap(r => Array.isArray(r) ? r : [r]).map(fieldRefSearchText).filter(Boolean).map(t => t.toLowerCase());
           return { id: iss.id, title: String(title), refTexts };
         }) };
       }
@@ -10180,7 +10185,7 @@ class Component extends DCLogic {
       issues = issues.filter(i =>
         issueMatchesFieldTokens(i, filterParsed.fieldTokens, fieldDefs) &&
         (!q || (i.values.title || '').toLowerCase().includes(q) ||
-          Object.values(i.fieldRefs || {}).some(ref => fieldRefSearchText(ref).toLowerCase().includes(q)))
+          Object.values(i.fieldRefs || {}).flatMap(r => Array.isArray(r) ? r : [r]).some(ref => fieldRefSearchText(ref).toLowerCase().includes(q)))
       );
     }
     // Tracker #105: a keyword match that an active column filter is

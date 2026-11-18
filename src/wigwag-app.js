@@ -201,7 +201,11 @@ function buildProjectSummaryFromDoc(doc) {
     issues: issues.map(iss => {
       let title = '';
       try { title = deriveIssueValues(iss, fieldDefs).title || ''; } catch (e) { /* malformed issue -- blank title, not a crash */ }
-      return { id: iss.id, title: String(title) };
+      // refTexts carries each linked field's search text (e.g. a Jira key
+      // like "CSI-123") so universal search can match on it, same as the
+      // in-table filter bar already does via fieldRefSearchText.
+      const refTexts = Object.values(deriveIssueFieldRefs(iss, fieldDefs)).map(fieldRefSearchText).filter(Boolean).map(t => t.toLowerCase());
+      return { id: iss.id, title: String(title), refTexts };
     })
   };
 }
@@ -8933,7 +8937,8 @@ class Component extends DCLogic {
         return { project: p, issues: s.issues.map(iss => {
           let title = '';
           try { title = deriveIssueValues(iss, s.fieldDefs).title || ''; } catch (e) { title = (iss.values && iss.values.title) || ''; }
-          return { id: iss.id, title: String(title) };
+          const refTexts = Object.values(iss.fieldRefs || {}).map(fieldRefSearchText).filter(Boolean).map(t => t.toLowerCase());
+          return { id: iss.id, title: String(title), refTexts };
         }) };
       }
       const summary = this._projectSummaries[p.id];
@@ -8948,12 +8953,21 @@ class Component extends DCLogic {
     const textOk = raw.length >= 2 && !raw.startsWith('#');
     const cur = this.state.projectId;
     const out = [];
+    // Score tiers (lower = higher priority): 0 is an exact id/key match --
+    // as deliberate a lookup as either kind gets, so it outranks kind
+    // entirely. Below that, projects rank ahead of issues on a plain text
+    // match (1 vs 2), and a linked-ref substring match (e.g. part of a
+    // Jira key like CSI-123) is the weakest tier since it's a secondary
+    // field, not the issue's own identity.
     (this._gsIndex || []).forEach(({ project, issues }) => {
       if (idOk && project.id.toLowerCase().startsWith(idq)) out.push({ kind: 'project', score: 0, project });
-      else if (textOk && project.name.toLowerCase().includes(raw)) out.push({ kind: 'project', score: 2, project });
+      else if (textOk && project.name.toLowerCase().includes(raw)) out.push({ kind: 'project', score: 1, project });
       issues.forEach(iss => {
-        if (idOk && iss.id.toLowerCase().startsWith(idq)) out.push({ kind: 'issue', score: 0, project, iss });
-        else if (textOk && iss.title.toLowerCase().includes(raw)) out.push({ kind: 'issue', score: 1, project, iss });
+        const refTexts = iss.refTexts || [];
+        const refExact = textOk && refTexts.some(t => t === raw || t.endsWith('/' + raw));
+        if ((idOk && iss.id.toLowerCase().startsWith(idq)) || refExact) out.push({ kind: 'issue', score: 0, project, iss });
+        else if (textOk && iss.title.toLowerCase().includes(raw)) out.push({ kind: 'issue', score: 2, project, iss });
+        else if (textOk && refTexts.some(t => t.includes(raw))) out.push({ kind: 'issue', score: 3, project, iss });
       });
     });
     out.sort((a, b) => (a.score - b.score) || ((b.project.id === cur) - (a.project.id === cur)));

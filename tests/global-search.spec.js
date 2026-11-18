@@ -122,6 +122,56 @@ test.describe('Global search: matching and results', () => {
     await expect(page.locator('[data-testid=global-search-result]')).toHaveCount(0);
   });
 
+  test('searching by a linked issue\'s key (e.g. a Jira key) finds it even when the key never appears in the title', async ({ page }) => {
+    const doc = await h.readActiveMilestoneDoc(page);
+    const linkedIssue = { id: 'linked-ref-fixture', fieldRefs: {}, fieldLoading: {}, fields: {} };
+    h.pushFieldEntry(linkedIssue, 'title', 'Totally unrelated title', { href: 'https://example.atlassian.net/browse/CSI-123' });
+    h.pushFieldEntry(linkedIssue, 'type', 'chore');
+    h.pushFieldEntry(linkedIssue, 'priority', 'p2');
+    doc.issues.push(linkedIssue);
+    await h.writeActiveMilestoneDoc(page, doc);
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    await openGlobalSearch(page);
+    await page.locator('[data-testid=global-search-input]').fill('CSI-123');
+    await page.waitForTimeout(250);
+    await expect(page.locator('[data-testid=global-search-result]')).toHaveCount(1);
+    await expect(page.locator('[data-testid=global-search-result]')).toContainText('Totally unrelated title');
+
+    // case-insensitive, and a partial key still finds it (weaker tier, see below)
+    await page.locator('[data-testid=global-search-input]').fill('csi-1');
+    await page.waitForTimeout(250);
+    await expect(page.locator('[data-testid=global-search-result]')).toHaveCount(1);
+  });
+
+  test('a project-name match ranks above an issue-title match for the same query', async ({ page }) => {
+    await h.openTrackerSwitcher(page);
+    await h.createNamedBlankProject(page, 'Zzyzx Project');
+    await page.waitForTimeout(300);
+    await h.openTrackerSwitcher(page);
+    await h.milestoneRow(page, 'Delivery tracker').click();
+    await page.waitForTimeout(300);
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    const zIssue = { id: 'zzyzx-issue-fixture', fieldRefs: {}, fieldLoading: {}, fields: {} };
+    h.pushFieldEntry(zIssue, 'title', 'Zzyzx issue title');
+    h.pushFieldEntry(zIssue, 'type', 'chore');
+    h.pushFieldEntry(zIssue, 'priority', 'p2');
+    doc.issues.push(zIssue);
+    await h.writeActiveMilestoneDoc(page, doc);
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    await openGlobalSearch(page);
+    await page.locator('[data-testid=global-search-input]').fill('zzyzx');
+    await page.waitForTimeout(250);
+    const rows = page.locator('[data-testid=global-search-result]');
+    await expect(rows).toHaveCount(2);
+    await expect(rows.first()).toContainText('Zzyzx Project');
+    await expect(rows.nth(1)).toContainText('Zzyzx issue title');
+  });
+
   test('results are capped and sorted: current project before others at equal score', async ({ page }) => {
     // "field" appears in more than one demo title -- just confirm the
     // list never exceeds the documented cap of 30 regardless of query.

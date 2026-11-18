@@ -1155,6 +1155,50 @@
                 </sc-if>
               </sc-if>
 
+              <sc-if value="{{ seg.cell.isIssuesMulti }}">
+                <span sc-camel-on-click="{{ seg.cell.onClick }}" style="cursor:text; display:flex; align-items:center; flex-wrap:wrap; gap:4px; width:100%; max-width:100%; overflow:hidden;">
+                  <sc-if value="{{ seg.cell.collapsed }}" hint-placeholder-val="{{ false }}">
+                    <span data-testid="issues-pill" sc-camel-on-click="{{ seg.cell.onPillClick }}" style="font-size:12px; font-family: ui-monospace, monospace; padding:2px 8px; border-radius:9px; background: var(--surface-hover); color: var(--text-secondary); white-space:nowrap; cursor:pointer;">{{ seg.cell.countLabel }}</span>
+                  </sc-if>
+                  <sc-if value="{{ !seg.cell.collapsed }}" hint-placeholder-val="{{ true }}">
+                    <sc-for list="{{ seg.cell.entries }}" as="entry" hint-placeholder-count="2">
+                      <sc-if value="{{ entry.isPill }}" hint-placeholder-val="{{ true }}">
+                        <span data-testid="issues-pill" sc-camel-on-click="{{ seg.cell.onPillClick }}" style="font-size:12px; font-family: ui-monospace, monospace; padding:2px 8px; border-radius:9px; background: var(--surface-hover); color: var(--text-secondary); white-space:nowrap; cursor:pointer;">{{ entry.label }}</span>
+                      </sc-if>
+                      <sc-if value="{{ !entry.isPill }}" hint-placeholder-val="{{ false }}">
+                        <span style="font-size:13px; color: var(--text-primary); white-space:nowrap;">{{ entry.text }}</span>
+                      </sc-if>
+                    </sc-for>
+                  </sc-if>
+                </span>
+                <sc-if value="{{ seg.cell.popoverOpen }}">
+                  <div style="{{ seg.cell.popoverStyle }} background:var(--surface); border:1px solid var(--border); border-radius:10px; box-shadow:0 14px 34px var(--sh6); width:360px; z-index:75; overflow:hidden;">
+                    <div style="padding:12px 14px 8px; font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; color: var(--text-tertiary);">{{ seg.cell.headerLabel }}</div>
+                    <div style="max-height:220px; overflow-y:auto; padding:0 8px;">
+                      <div style="width:100%; display:table; table-layout:fixed; border-collapse:collapse; font-size:12.5px;">
+                        <sc-for list="{{ seg.cell.rows }}" as="row" hint-placeholder-count="2">
+                          <div data-testid="issues-popover-row" style="display:table-row; border-top:1px solid var(--border-subtle);">
+                            <div style="display:table-cell; width:92px; padding:6px 6px; font-family: ui-monospace, monospace; color: var(--text-tertiary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+                              <sc-if value="{{ row.hasHref }}" hint-placeholder-val="{{ false }}">
+                                <a href="{{ row.href }}" target="_blank" rel="noopener noreferrer" sc-camel-on-click="{{ row.onRowClick }}" style="color: var(--text-tertiary); text-decoration:none;">{{ row.idLabel }}</a>
+                              </sc-if>
+                              <sc-if value="{{ !row.hasHref }}" hint-placeholder-val="{{ true }}">—</sc-if>
+                            </div>
+                            <div style="display:table-cell; width:auto; padding:6px 6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{{ row.titleLabel }}">{{ row.titleLabel }}</div>
+                            <div style="display:table-cell; width:24px; padding:6px 6px; text-align:right;">
+                              <span data-testid="issues-popover-remove" sc-camel-on-click="{{ row.onRemove }}" style="color: var(--text-tertiary); cursor:pointer; padding:2px 4px;">✕</span>
+                            </div>
+                          </div>
+                        </sc-for>
+                      </div>
+                    </div>
+                    <div style="border-top:1px solid var(--border-subtle); padding:8px;">
+                      <input data-testid="issues-popover-add-input" placeholder="Paste a link, or CST-123…" value="{{ seg.cell.addDraft }}" sc-camel-on-change="{{ seg.cell.onAddDraftChange }}" sc-camel-on-key-down="{{ seg.cell.onAddKeyDown }}" style="width:100%; box-sizing:border-box; border:1px solid var(--border-strong); border-radius:6px; padding:6px 8px; font-size:12.5px; font-family:inherit; outline:none;">
+                    </div>
+                  </div>
+                </sc-if>
+              </sc-if>
+
               <sc-if value="{{ seg.cell.showCornerBadge }}" hint-placeholder-val="{{ false }}">
                 <span data-testid="bound-badge" title="{{ seg.cell.boundGlyphTitle }}" style="position:absolute; top:4px; right:4px; width:5px; height:5px; border-radius:50%; background: {{ seg.cell.badgeFill }}; border: 1px solid {{ seg.cell.badgeColor }}; cursor:default; user-select:none;"></span>
               </sc-if>

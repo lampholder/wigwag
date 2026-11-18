@@ -2304,10 +2304,21 @@ class Component extends DCLogic {
       }
       if (s.activeCell) {
         const def = s.fieldDefs[s.activeCell.colId];
-        const isPopoverField = def && (def.type === 'select' || def.type === 'multiselect' || def.type === 'commentStream');
+        // Multi-issue linking's own 2+-entry popover reuses this exact
+        // activeCell/togglePopover mechanism -- MUST be in this allowlist
+        // or outside-click never closes it (this exact gotcha has
+        // recurred 5 times already per project memory).
+        // Gated on activeCell.popover for 'issue' specifically -- that
+        // type's activeCell ALSO represents an ordinary textarea edit
+        // (0/1 entries), which must keep relying on the textarea's own
+        // native blur -> commitEdit, exactly like a 'text' field already
+        // does, not this outside-mousedown path (which would otherwise
+        // race setState's activeCell-clear against the browser's own
+        // blur-driven commit).
+        const isPopoverField = def && (def.type === 'select' || def.type === 'multiselect' || def.type === 'commentStream' || (def.type === 'issue' && s.activeCell.colId !== 'title' && s.activeCell.popover));
         const insidePopoverHost = e.target.closest('[data-testid="field-cell"]') || e.target.closest('[data-testid="slideover-field"]') || e.target.closest('[data-testid="slideover-description"]') || e.target.closest('[data-testid="mobile-field-picker-page"]') || e.target.closest('[data-testid="mobile-row-detail-field"]');
         if (isPopoverField && !insidePopoverHost) {
-          patch = Object.assign(patch || {}, { activeCell: null, optionFilterQuery: '' });
+          patch = Object.assign(patch || {}, { activeCell: null, optionFilterQuery: '', issuesPopoverDraft: '' });
         }
       }
       if (s.selectedCell) {
@@ -3540,15 +3551,24 @@ class Component extends DCLogic {
   // pass a `text`/`origin` (now silently ignored -- left harmless
   // rather than ripped out of every caller, since neither carries any
   // remaining meaning to strip by hand at each site).
+  // The fieldRef-folded-into-value shape (docs/FORMAT_V2.md) factored out
+  // of appendSignedHistory so multi-issue linking's own popover add/
+  // remove paths (which rebuild a raw per-element value directly from
+  // issue.values/fieldRefs, never through appendSignedHistory itself for
+  // every element) can fold ONE element the exact same way, instead of
+  // duplicating this href/system check.
+  foldIssueFieldRef(value, fieldRef) {
+    const href = fieldRef && fieldRef.system === 'wigwag' ? buildWigwagUri(fieldRef) : (fieldRef && fieldRef.href);
+    return href ? { title: value, href } : value;
+  }
   appendSignedHistory(issueId, { field, value, fieldRef }) {
     const colId = field;
-    const href = fieldRef && fieldRef.system === 'wigwag' ? buildWigwagUri(fieldRef) : (fieldRef && fieldRef.href);
     // Multi-issue linking: a 2+-entry commit already builds its own
     // array of (string | {title, href}) elements and calls this with
     // that array as `value` directly (no sibling fieldRef -- each
     // element carries its own href already) -- pass it through as-is,
     // never re-wrap the whole array under one shared href.
-    const finalValue = Array.isArray(value) ? value : (href ? { title: value, href } : value);
+    const finalValue = Array.isArray(value) ? value : this.foldIssueFieldRef(value, fieldRef);
     const entryBase = {
       id: crypto.randomUUID ? crypto.randomUUID() : 'h-' + Date.now() + '-' + Math.random().toString(36).slice(2),
       actor: this.displayName(),
@@ -6595,6 +6615,139 @@ class Component extends DCLogic {
     setTimeout(() => this.setState({ ruleBuilderColId: null }), 280);
   };
   cancelEdit() { this.setState({ activeCell: null, editDraft: '' }); }
+  // Multi-issue linking: resolves ONE line of a multi-entry draft (the
+  // textarea commit, or the popover's own add-entry input -- decision 3,
+  // same rule in both places) into a final per-entry value. Same
+  // connectorMatches-then-wigwagUrlMatch-then-plain-text order
+  // commitEdit's single-entry path already uses, but an AMBIGUOUS (2+)
+  // connector match falls through to plain text silently here (decision
+  // 2) -- classifyBulkPasteLines/createIssueFromText's own no-picker
+  // precedent, not commitEdit's connectorPickerOpen UI, since there's no
+  // picker affordance for one line out of a multi-line commit. Returns a
+  // Promise resolving to null for an empty line, a plain string, or
+  // {title, href} -- the exact per-element shape appendSignedHistory's
+  // array branch expects, never written itself (no per-line history
+  // entry -- see commitIssueFieldRawEntries for the one combined write).
+  resolveIssueFieldEntry(text) {
+    const t = (text || '').trim();
+    if (!t) return Promise.resolve(null);
+    const connMatches = this.connectorMatches(t);
+    if (connMatches.length === 1) return this.fetchIssueFieldEntry(connMatches[0]);
+    if (connMatches.length === 0) {
+      const wg = this.wigwagUrlMatch(t);
+      if (wg && this.resolveWigwagProjectId(wg)) {
+        const fieldRef = { system: 'wigwag', projectId: this.resolveWigwagProjectId(wg), issueId: wg.issueId || null, from: wg.from || null, path: wg.path || null, ref: wg.ref || null };
+        return Promise.resolve({ title: this.resolveWigwagRef(wg).label, href: buildWigwagUri(fieldRef) });
+      }
+    }
+    return Promise.resolve(this.translateWigwagLinksInText(t));
+  }
+  // The async connector-fetch half of resolveIssueFieldEntry -- mirrors
+  // applyLinkToField's own value computation (kind-specific akaPrefix/
+  // salesforce-name branching) and its failed-fetch fallback (the typed
+  // identifier survives as plain text, never left blank), but RETURNS
+  // the value instead of writing it -- there's no per-line history
+  // entry, only the one combined array commit in commitIssueFieldRawEntries.
+  fetchIssueFieldEntry(match) {
+    const connector = this.resolveFetchConnector(match.fetchedVia);
+    const matchedIdDisplay = (match.matchedId && typeof match.matchedId === 'object')
+      ? (match.matchedId.akaText || (match.matchedId.owner ? match.matchedId.owner + '/' + match.matchedId.repo + '#' + match.matchedId.num : JSON.stringify(match.matchedId)))
+      : match.matchedId;
+    if (!connector) return Promise.resolve(matchedIdDisplay);
+    const kind = connector.kind;
+    return this.fetchLinkData(match.fetchedVia, match.matchedId, connector).then(({ data, href }) => {
+      const akaPrefix = kind === 'github' ? (match.matchedId && match.matchedId.akaText) : null;
+      const value = kind === 'salesforce' ? data.name : (akaPrefix ? akaPrefix + ': ' + data.title : data.title);
+      return { title: value, href };
+    }).catch(err => {
+      console.error('[wigwag] multi-issue link fetch failed: ' + (connector.name || match.fetchedVia) + ' for ' + JSON.stringify(match.matchedId) + ' -- ' + err.message);
+      return matchedIdDisplay;
+    });
+  }
+  // Rebuilds the raw per-element (string | {title, href}) values a
+  // multi-entry issue field's CURRENT state represents -- from the
+  // already-derived display values[colId]/fieldRefs[colId] arrays (or,
+  // for a field currently at 0/1 entries, their scalar equivalents),
+  // via the exact same fold rule appendSignedHistory itself uses. Lets
+  // the popover's add/remove paths write a correct combined array
+  // without ever touching the issue's actual signed history directly.
+  rebuildIssueFieldRawEntries(iss, colId) {
+    const v = iss.values ? iss.values[colId] : undefined;
+    const r = iss.fieldRefs ? iss.fieldRefs[colId] : undefined;
+    const values = Array.isArray(v) ? v : (v ? [v] : []);
+    const refs = Array.isArray(r) ? r : (r ? [r] : []);
+    return values.map((val, i) => this.foldIssueFieldRef(val, refs[i] || null));
+  }
+  // Shared commit tail for multi-issue linking's textarea commit AND the
+  // popover's add/remove paths -- 2+ raw entries write the array value
+  // (one combined signed entry); 0 or 1 remaining quietly unwraps back
+  // to today's ordinary scalar value/fieldRef shape, so a field demoted
+  // by removal renders exactly like any other 0/1-entry issue field
+  // (no separate "was once multi" residue).
+  commitIssueFieldRawEntries(issueId, colId, raw) {
+    const fieldLabel = (this.state.fieldDefs[colId] && this.state.fieldDefs[colId].label) || colId;
+    const iss0 = this.findIssue(issueId);
+    const beforeValues = iss0 ? iss0.values : {};
+    const beforeFieldRefs = iss0 ? iss0.fieldRefs : {};
+    if (raw.length >= 2) {
+      this.appendSignedHistory(issueId, { text: fieldLabel + ' set to ' + raw.length + ' linked entries', field: colId, value: raw });
+    } else {
+      const el = raw[0];
+      const value = (el && typeof el === 'object') ? el.title : (el || '');
+      const fieldRef = (el && typeof el === 'object' && el.href) ? { href: el.href } : null;
+      this.appendSignedHistory(issueId, { text: value ? (fieldLabel + ' set to "' + truncate(value, 60) + '"') : (fieldLabel + ' cleared'), field: colId, value, fieldRef });
+    }
+    // Demoting to 0/1 entries (a popover remove, never the textarea path
+    // -- that already cleared activeCell itself before this ever runs)
+    // also closes the now-inapplicable popover, so the cell returns to
+    // its ordinary plain/editable display instead of activeCell staying
+    // set and the SAME cell's buildTextCell active-check silently
+    // flipping it into the edit textarea with no click to cause it.
+    this.setState(s => ({
+      activeCell: raw.length >= 2 ? s.activeCell : null,
+      issues: s.issues.map(iss => iss.id === issueId ? settleLinkedRules(iss, effectiveFieldDefs(s.fieldDefs, s.localFieldBindings), this.liveRuleCtx(issueId)) : iss)
+    }));
+    this.logDerivedChanges(issueId, beforeValues, colId, beforeFieldRefs);
+  }
+  // Multi-issue linking (Phase 2): commits 2+ newline-separated textarea
+  // lines as one combined array-valued entry -- each line is
+  // independently re-resolved (even an untouched line from before, per
+  // the design's own "every line is independently re-resolved" rule),
+  // fetched in parallel, then handed to the one shared commit tail.
+  commitIssueFieldMultiEntry(issueId, colId, lines) {
+    this.setState({
+      activeCell: null, editDraft: '',
+      issues: this.state.issues.map(i => i.id === issueId ? { ...i, fieldLoading: { ...(i.fieldLoading || {}), [colId]: true } } : i)
+    });
+    Promise.all(lines.map(l => this.resolveIssueFieldEntry(l))).then(raw => {
+      this.setState(s => ({ issues: s.issues.map(i => i.id === issueId ? { ...i, fieldLoading: { ...(i.fieldLoading || {}), [colId]: false } } : i) }));
+      this.commitIssueFieldRawEntries(issueId, colId, raw);
+    });
+  }
+  // Multi-issue linking: popover's x (decision 4: commits immediately,
+  // not staged).
+  removeIssueFieldEntry(issueId, colId, index) {
+    const iss = this.findIssue(issueId);
+    if (!iss) return;
+    const raw = this.rebuildIssueFieldRawEntries(iss, colId).filter((_, i) => i !== index);
+    this.requireAttribution(() => this.commitIssueFieldRawEntries(issueId, colId, raw));
+  }
+  // Multi-issue linking: the popover's own add-entry footer input
+  // (decision 3: same silent-fallback resolution rule as the textarea).
+  addIssueFieldEntry(issueId, colId) {
+    const draft = (this.state.issuesPopoverDraft || '').trim();
+    if (!draft) return;
+    this.setState({ issuesPopoverDraft: '' });
+    this.requireAttribution(() => {
+      this.resolveIssueFieldEntry(draft).then(entry => {
+        if (entry === null) return;
+        const iss = this.findIssue(issueId);
+        if (!iss) return;
+        const raw = this.rebuildIssueFieldRawEntries(iss, colId).concat([entry]);
+        this.commitIssueFieldRawEntries(issueId, colId, raw);
+      });
+    });
+  }
   // Unified for every text-like field, Title included (colId 'title' is not
   // special-cased) — a resolvable GitHub link always does a fresh (cache-
   // bypassing) fetch on submit; anything else saves as plain text and
@@ -6613,6 +6766,18 @@ class Component extends DCLogic {
     // Salesforce URL, so someone can't end up with a partially-linked
     // column they later can't bind to.
     if (commitDef && commitDef.type === 'issue') {
+      // Multi-issue linking: 2+ non-empty newline-separated lines (never
+      // for Title -- see the plan's decision #1) diverts to the array
+      // commit path entirely, BEFORE the single-entry no-op/ambiguity
+      // logic below ever runs. 0 or exactly 1 line falls straight
+      // through to that existing logic completely unchanged, using the
+      // ORIGINAL raw `draft` (not this split/trimmed/filtered copy) --
+      // keeps the common 0/1-entry case byte-identical, whitespace
+      // included.
+      if (colId !== 'title') {
+        const lines = draft.split(/\r\n|\r|\n/).map(l => l.trim()).filter(l => l.length > 0);
+        if (lines.length >= 2) { this.requireAttribution(() => this.commitIssueFieldMultiEntry(issueId, colId, lines)); return; }
+      }
       // A genuine no-op check BEFORE any paste-match recognition runs --
       // editValueForRef is exactly what populated `draft` in the first
       // place when this field already has a link; if the user changed
@@ -6816,7 +6981,14 @@ class Component extends DCLogic {
       openUpward = a.spaceBelow < estimatedPopoverHeight && a.spaceAbove > a.spaceBelow;
       anchorLeft = a.left; anchorTopPx = a.bottom + 6; anchorBottomPx = a.upwardOffsetPx;
     }
-    this.setState({ activeCell: isOpen ? null : { issueId, colId, openUpward, anchorLeft, anchorTopPx, anchorBottomPx }, optionFilterQuery: '' });
+    // popover:true distinguishes this from startEdit's own activeCell
+    // (same state field, two meanings) -- only matters for an 'issue'-
+    // type field, which (unlike select/multiselect/commentStream) also
+    // has its own textarea-editing use of activeCell via buildTextCell's
+    // `active` check; without this tag, opening the popover on a 2+-
+    // entry field was indistinguishable from "start editing" and the
+    // textarea won every time instead of the popover ever showing.
+    this.setState({ activeCell: isOpen ? null : { issueId, colId, openUpward, anchorLeft, anchorTopPx, anchorBottomPx, popover: true }, optionFilterQuery: '', issuesPopoverDraft: '' });
   }
   selectOption(issueId, colId, optionId) {
     const fieldLabel = (this.state.fieldDefs[colId] && this.state.fieldDefs[colId].label) || colId;
@@ -9634,7 +9806,35 @@ class Component extends DCLogic {
     const matchedId = this.resolveMatchedIdForDisplay(ref, n);
     return matchedId != null ? matchedId : currentText;
   }
-  buildTextCell(issue, colId, currentText, placeholderColor, readOnly, suppressTitlePeek) {
+  // Multi-issue linking: seeds the edit textarea for a 2+-entry field --
+  // "edit the source," literally, one line per entry, in the exact same
+  // per-element shape editValueForRef already reconstructs for a single
+  // ref (an unresolved entry's own ref is null, which editValueForRef
+  // already treats as "just return the current text").
+  editValueForMultiIssueField(issue, colId) {
+    const values = Array.isArray(issue.values[colId]) ? issue.values[colId] : [];
+    const refs = Array.isArray(issue.fieldRefs && issue.fieldRefs[colId]) ? issue.fieldRefs[colId] : [];
+    return values.map((v, i) => this.editValueForRef(refs[i] || null, v)).join('\n');
+  }
+  // Multi-issue linking: the short-form id shown on ONE mini-pill --
+  // mirrors the single-value ref branch's own refLabel computation
+  // below closely enough for visual consistency (github owner/repo#num,
+  // a connector's own linkTextTemplate, or the resolved matchedId/href
+  // for anything else) without refactoring that branch.
+  resolveIssuePillLabel(ref, text) {
+    if (!ref) return text;
+    if (ref.system === 'wigwag') return this.resolveWigwagRef(ref).label || text;
+    const n = normalizeRef(ref);
+    if (!n) return text;
+    const fetchedVia = this.liveFetchedViaForRef(n);
+    const matchedId = this.resolveMatchedIdForDisplay(ref, n);
+    const connDef = fetchedVia ? this.connectedSourcesForDispatch().find(c => c.id === fetchedVia) : null;
+    const resolvedKind = n.href ? (resolveRefSystem(n.href, { connectedSources: this.connectedSourcesForDispatch() }) || {}).kind : null;
+    if (resolvedKind === 'github') return matchedId ? matchedId.owner + '/' + matchedId.repo + '#' + matchedId.num : (n.href || text);
+    if (connDef && !connDef.kind) return connectorLinkText(connDef.linkTextTemplate, text, matchedId);
+    return matchedId != null ? String(matchedId) : (n.href || text);
+  }
+  buildTextCell(issue, colId, currentText, placeholderColor, readOnly, suppressTitlePeek, width) {
     const s = this.state;
     const isTitle = colId === 'title' && !suppressTitlePeek;
     const isSelected = s.selectedCell && s.selectedCell.issueId === issue.id && s.selectedCell.colId === colId;
@@ -9645,7 +9845,17 @@ class Component extends DCLogic {
     // computed once here and merged into every return branch below.
     const bindState = def && def.linkedSourceId ? liveBindState(issue, colId, def, this.liveRuleCtx(issue.id)) : 'plain';
     const isBoundLive = bindState === 'bound', isOverridden = bindState === 'overridden';
-    const rawRef = issue.fieldRefs && issue.fieldRefs[colId];
+    // Multi-issue linking: editing is ALWAYS the multiline textarea for a
+    // non-Title 'issue'-type field, regardless of how many entries it
+    // currently holds (isMultiIssueField) -- but the ref/display
+    // computation just below (which assumes a single ref object
+    // throughout) only gets bypassed once the CURRENT value is actually
+    // an array, i.e. 2+ entries (isMultiIssueEntries). A 0/1-entry
+    // non-Title issue field still falls through every line below
+    // completely unchanged.
+    const isMultiIssueField = !!def && def.type === 'issue' && colId !== 'title';
+    const isMultiIssueEntries = isMultiIssueField && Array.isArray(issue.values[colId]);
+    const rawRef = isMultiIssueEntries ? null : (issue.fieldRefs && issue.fieldRefs[colId]);
     // Live-reported (Tom): a bound issue-type field must render like its
     // source issue -- title + link, exactly as if the link had been
     // pasted in directly -- not just when its OWN persisted fieldRef
@@ -9692,20 +9902,33 @@ class Component extends DCLogic {
     // Editing always shows the editable SOURCE, not a derived/fetched value:
     // the reconstructed URL if resolved (or the bare key for Jira, which is
     // exactly what a user would re-type), the raw stored text otherwise.
-    const editValue = this.editValueForRef(ref, currentText);
-    const active = !readOnly && s.activeCell && s.activeCell.issueId === issue.id && s.activeCell.colId === colId;
+    // Multi-issue linking: a 2+-entry field seeds one line per entry
+    // instead (editValueForMultiIssueField), via the array-aware sibling
+    // of the exact same per-ref reconstruction.
+    const editValue = isMultiIssueEntries ? this.editValueForMultiIssueField(issue, colId) : this.editValueForRef(ref, currentText);
+    // Multi-issue linking: activeCell.popover (set by togglePopover) means
+    // the pill popover is open, not "start editing" -- without excluding
+    // it here, clicking a pill on a 2+-entry field opened the edit
+    // textarea instead of ever showing the popover.
+    const active = !readOnly && s.activeCell && s.activeCell.issueId === issue.id && s.activeCell.colId === colId && !s.activeCell.popover;
     if (active) {
-      // Only plain 'text' fields get the multiline/markdown textarea --
-      // 'issue'-type fields (Title/"Issue" is always one now, and any
-      // other GitHub/Jira/Salesforce link target) keep the original
-      // single-line input untouched.
-      const isMultiline = !!def && def.type === 'text';
+      // Plain 'text' fields, and now any non-Title 'issue'-type field
+      // regardless of its current entry count, get the multiline/
+      // markdown textarea -- Title alone keeps the original single-line
+      // input untouched.
+      const isMultiline = !!def && (def.type === 'text' || isMultiIssueField);
       return { isText: true, isEditing: true, isDisplay: false, isMultiline, isPlainInput: !isMultiline, inputValue: s.editDraft, onCellClick: undefined,
         onInputChange: e => this.setState({ editDraft: e.target.value }),
         onInputPaste: e => this.handleMarkdownLinkPaste(e, v => this.setState({ editDraft: v })),
         onInputBlur: () => this.commitEdit(issue.id, colId),
         onInputKeyDown: isMultiline ? (e => this.handleMarkdownEditKey(e, issue.id, colId)) : (e => this.handleEditKey(e, issue.id, colId)),
         cellHighlight: '' };
+    }
+    // Multi-issue linking: 2+ entries renders as a pill row instead of
+    // every branch below (all of which assume a single ref object) --
+    // completely separate builder, see its own comment.
+    if (isMultiIssueEntries) {
+      return this.buildIssuesMultiDisplayCell(issue, colId, readOnly, width, { isBoundLive, isOverridden, boundGlyphTitle, cellHighlight, editValue });
     }
     const commitEditFn = () => this.startEdit(issue.id, colId, editValue);
     // A bound field's own ref-link row still opens on a modified click
@@ -9802,6 +10025,61 @@ class Component extends DCLogic {
     return { isText: true, isEditing: false, isDisplay: true, isLoading: false, isRef: false, isPlain: true, hasRef: false,
       displayText: currentText || '—', textColor: currentText ? 'var(--text-primary)' : placeholderColor,
       onClick: textClick, onCellClick: gatedClick, cellHighlight, isBoundLive, isOverridden, showBoundGlyph, boundGlyphTitle, boundGlyphGutterStyle, titleFontWeight: '400' };
+  }
+  // Multi-issue linking: the 2+-entry display -- a row of mini-pills (one
+  // per resolved entry, id-only, monospace) with any plain-text entries
+  // rendered inline alongside them, collapsing to a single count pill
+  // when the column is too narrow (mirrors buildSelectCell/buildMultiCell's
+  // own width-driven affordance pattern, just a hard collapse instead of
+  // a fade). Click a pill/the count pill -> popover (inspect/add/remove);
+  // click anywhere else in the cell -> the same multiline edit textarea
+  // buildTextCell's own active-edit branch already builds for this field.
+  // Status pill per entry (the design's Col 3) is a known, deliberate cut
+  // for this first pass -- no single-entry issue field persists a raw
+  // fetched status today either, so there's nothing to extend from
+  // without widening the stored shape; flagged on the tracker issue.
+  buildIssuesMultiDisplayCell(issue, colId, readOnly, width, extra) {
+    const s = this.state;
+    const { isBoundLive, isOverridden, boundGlyphTitle, cellHighlight, editValue } = extra;
+    const values = Array.isArray(issue.values[colId]) ? issue.values[colId] : [];
+    const refs = Array.isArray(issue.fieldRefs && issue.fieldRefs[colId]) ? issue.fieldRefs[colId] : [];
+    const entries = values.map((text, i) => {
+      const ref = refs[i] || null;
+      return ref ? { isPill: true, label: this.resolveIssuePillLabel(ref, text) || text } : { isPill: false, text };
+    });
+    const collapsed = width != null && width < 120;
+    const commitEditFn = () => this.startEdit(issue.id, colId, editValue);
+    const gatedClick = readOnly ? undefined : e => { if (e && e.target.closest && e.target.closest('[data-testid="issues-pill"]')) return; this.cellClickGate(issue.id, colId, commitEditFn); };
+    const popoverOpen = !readOnly && s.activeCell && s.activeCell.issueId === issue.id && s.activeCell.colId === colId && !!s.activeCell.popover;
+    const openPopover = readOnly ? undefined : e => { e.stopPropagation(); this.togglePopover(issue.id, colId, e, 360); };
+    const cell = {
+      isIssuesMulti: true, isBoundLive, isOverridden, boundGlyphTitle,
+      showBoundGlyph: isBoundLive || isOverridden,
+      showCornerBadge: isBoundLive || isOverridden,
+      badgeFill: isOverridden ? 'var(--accent-fill)' : 'transparent', badgeColor: isOverridden ? 'var(--accent-fill)' : 'var(--text-tertiary)',
+      collapsed, countLabel: values.length + ' issue' + (values.length === 1 ? '' : 's'),
+      entries,
+      onClick: gatedClick, onPillClick: openPopover, popoverOpen, cellHighlight
+    };
+    if (popoverOpen) {
+      cell.popoverStyle = 'position:fixed; left:' + s.activeCell.anchorLeft + 'px; ' +
+        (s.activeCell.openUpward ? ('bottom:' + s.activeCell.anchorBottomPx + 'px;') : ('top:' + s.activeCell.anchorTopPx + 'px;'));
+      cell.headerLabel = 'ISSUES (' + values.length + ')';
+      cell.rows = values.map((text, i) => {
+        const ref = refs[i] || null;
+        const isWg = ref && ref.system === 'wigwag';
+        return {
+          idLabel: ref ? (this.resolveIssuePillLabel(ref, text) || text) : '', titleLabel: text,
+          hasHref: !!ref, href: ref ? (isWg ? '#' : (ref.href || null)) : null,
+          onRowClick: isWg ? (e => { e.preventDefault(); this.openWigwagRef(ref); }) : undefined,
+          onRemove: () => this.removeIssueFieldEntry(issue.id, colId, i)
+        };
+      });
+      cell.addDraft = s.issuesPopoverDraft || '';
+      cell.onAddDraftChange = e => this.setState({ issuesPopoverDraft: e.target.value });
+      cell.onAddKeyDown = e => { if (e.key === 'Enter') { e.preventDefault(); this.addIssueFieldEntry(issue.id, colId); } };
+    }
+    return cell;
   }
 
   buildSelectCell(issue, colId, def, readOnly, width, inTable) {
@@ -10038,7 +10316,7 @@ class Component extends DCLogic {
     else if (def.type === 'commentStream') cell = this.buildCommentStreamCell(issue, colId, readOnly);
     // 'text' and 'issue' field types render identically — both detect/live-fetch
     // GitHub references, matching how the Title column already behaves.
-    else cell = this.buildTextCell(issue, colId, issue.values[colId], 'var(--text-placeholder)', readOnly);
+    else cell = this.buildTextCell(issue, colId, issue.values[colId], 'var(--text-placeholder)', readOnly, false, width);
     this.applyPendingState(cell, this.pendingStatusFor(issue.id, colId));
     return cell;
   }

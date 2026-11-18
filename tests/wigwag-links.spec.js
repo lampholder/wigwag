@@ -71,7 +71,9 @@ test.describe('wigwag: links -- issue-type fields', () => {
     await cell.dispatchEvent('click');
     await page.waitForTimeout(120);
     await cell.dispatchEvent('click');
-    const input = cell.locator('input');
+    // Multi-issue linking: every non-Title 'issue'-type field now edits
+    // via the same multiline textarea plain text fields use.
+    const input = cell.locator('textarea');
     await expect(input).toHaveValue('wigwag:/project/demo-milestone/issue/i2');
   });
 

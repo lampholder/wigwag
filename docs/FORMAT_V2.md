@@ -212,6 +212,18 @@ just because fewer keys is nicer:**
     for now — today's connector model is one `rootUrl` per entry, so
     this isn't a regression, just a limit not worth solving before it's
     a real need.
+- **Multi-issue linking: `value` becomes an array for 2+ entries** — an
+  `issue`-type field (never Title, which stays single-entry forever)
+  can hold more than one linked reference. 0 or exactly 1 entry keeps
+  the `string | {title, href}` shape above, byte-for-byte unchanged —
+  this is what makes the common case completely unaffected by this
+  feature. 2+ entries widens `value` to an **array** of that same
+  per-element shape, one element per entry, in display order —
+  `Array.isArray(value)` is the complete discriminant, no schema/version
+  bump. A rule bound to this field that computes a single issue still
+  binds normally; one that computes 2+ issues doesn't merge/union them,
+  it leaves the field unbound (same signal an unresolvable rule already
+  produces) — see the worked example below.
 - **`origin`** — had three real values (`authored`, `legacy-backfill`,
   a vestigial `derived`). `authored` is the default/common case and
   carries no information once nothing else needs distinguishing;
@@ -299,6 +311,23 @@ just because fewer keys is nicer:**
             "href": "https://github.com/acme/app/issues/3298"
           },
           "sortKey": 1738594440000,
+          "sig": { "alg": "ES256", "full": "base64url…", "redacted": "base64url…" },
+          "pubKey": { "kty": "EC", "crv": "P-256", "x": "…", "y": "…" }
+        }
+      ]
+    },
+
+    "issue__related_issues": {
+      "_comment": { "label": "Issues" },
+      "history": [
+        {
+          "id": "h_q7r8s9",
+          "actor": "tom@example.com",
+          "value": [
+            { "title": "ACME – New rooms added to spaces don't show until sync", "href": "https://github.com/acme/app/issues/3298" },
+            "fix after Q3 freeze"
+          ],
+          "sortKey": 1738680000000,
           "sig": { "alg": "ES256", "full": "base64url…", "redacted": "base64url…" },
           "pubKey": { "kty": "EC", "crv": "P-256", "x": "…", "y": "…" }
         }

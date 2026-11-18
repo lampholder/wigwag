@@ -217,7 +217,11 @@ test.describe('Binding an issue-type field to another field ("copy field")', () 
     await page.waitForTimeout(150);
     await cell.click();
     await page.waitForTimeout(200);
-    await expect(cell.locator('input')).toHaveValue('wigwag:/project/demo-milestone/issue/i2');
+    // Multi-issue linking: every non-Title 'issue'-type field now edits
+    // via the same multiline textarea plain text fields use (always, not
+    // just at 2+ entries) -- this field is a single entry, so the
+    // textarea contains exactly its one source line.
+    await expect(cell.locator('textarea')).toHaveValue('wigwag:/project/demo-milestone/issue/i2');
     // Still editable to a plain value too, same as any field.
     await page.keyboard.press('Control+A');
     await page.keyboard.type('manually typed override');
@@ -265,7 +269,8 @@ test.describe('Binding an issue-type field to another field ("copy field")', () 
     await expect(cell.locator('[title="Linked to Issue\'s data"]')).toHaveCount(0);
 
     await h.clickFieldToEdit(page, 3, remedyId);
-    const input = cell.locator('input');
+    // Multi-issue linking: non-Title issue fields now edit via textarea.
+    const input = cell.locator('textarea');
     await expect(input).toBeVisible();
     await input.fill('manually typed remedy');
     await page.keyboard.press('Tab');

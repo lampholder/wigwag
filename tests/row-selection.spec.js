@@ -204,6 +204,33 @@ test.describe('Bulk actions: Set field', () => {
     await expect(page.locator('[data-testid=row]').nth(1).locator('[data-testid=field-cell][data-col=priority]')).toContainText('P0');
   });
 
+  test('bulk-sets a select field to "no value", clearing it across the selection', async ({ page }) => {
+    await h.gotoTracker(page);
+    const idx = { activeMilestoneId: await h.activeMilestoneId(page) };
+    {
+      const doc = await h.idbGetProjectDoc(page, idx.activeMilestoneId);
+      h.pushFieldEntry(doc.issues[0], 'priority', 'p0');
+      h.pushFieldEntry(doc.issues[1], 'priority', 'p1');
+      await h.idbSetProjectDoc(page, idx.activeMilestoneId, doc);
+    }
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    await page.locator('[data-testid=row]').nth(0).locator('[data-testid=row-select-checkbox]').click();
+    await page.locator('[data-testid=row]').nth(1).locator('[data-testid=row-select-checkbox]').click({ modifiers: ['ControlOrMeta'] });
+    await page.locator('[data-testid=bulk-set-field-btn]').click();
+    await page.locator('[data-testid=bulk-field-row][data-col=priority]').click();
+    await expect(page.locator('[data-testid=bulk-value-picker]')).toBeVisible();
+    await page.locator('[data-testid=bulk-value-option]').filter({ hasText: 'No value' }).click();
+    await page.waitForTimeout(300);
+
+    await expect(page.locator('[data-testid=bulk-value-picker]')).toHaveCount(0);
+    const doc = await h.idbGetProjectDoc(page, idx.activeMilestoneId);
+    expect(h.latestFieldHistoryEntry(doc.issues[0], 'priority').value).toBeFalsy();
+    expect(h.latestFieldHistoryEntry(doc.issues[1], 'priority').value).toBeFalsy();
+    await expect(page.locator('[data-testid=row]').nth(0).locator('[data-testid=field-cell][data-col=priority]')).not.toContainText(/P0|P1/);
+  });
+
   test('bulk-sets a multiselect field by REPLACING each row\'s existing selections, not adding to them', async ({ page }) => {
     await h.gotoTracker(page);
     // Give row 0 a pre-existing "teams" value with MULTIPLE options set,

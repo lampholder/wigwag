@@ -7019,14 +7019,24 @@ class Component extends DCLogic {
     const label = def.label;
     const currentValues = selectedIssuesFull.map(iss => iss.values[colId]);
     if (def.type === 'select') {
-      const options = (def.options || []).map(opt => {
+      const noValueCount = currentValues.filter(v => !v).length;
+      // Mirrors the per-cell picker's own "— No value —" entry
+      // (buildSelectCell's clearEntry) -- bulk Set-field had no way to
+      // clear a select field across a selection at all before this,
+      // only ever able to pick a real option.
+      const clearOpt = {
+        id: null, label: '— No value —', ringFill: 'transparent',
+        matchNote: noValueCount > 0 ? (noValueCount + '/' + selectedIssuesFull.length + ' already') : '',
+        onSelect: () => this.applyBulkFieldValue(colId, null)
+      };
+      const options = [clearOpt].concat((def.options || []).map(opt => {
         const matchCount = currentValues.filter(v => v === opt.id).length;
         return {
           id: opt.id, label: opt.label, ringFill: col(opt.color).bg,
           matchNote: matchCount > 0 ? (matchCount + '/' + selectedIssuesFull.length + ' already') : '',
           onSelect: () => this.applyBulkFieldValue(colId, opt.id)
         };
-      });
+      }));
       return { label, isSelect: true, isMultiselect: false, isText: false, isDate: false, options };
     }
     if (def.type === 'multiselect') {

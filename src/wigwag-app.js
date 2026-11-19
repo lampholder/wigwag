@@ -7031,6 +7031,26 @@ class Component extends DCLogic {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.target.blur(); }
     else if (e.key === 'Escape') { e.stopPropagation(); this.cancelEdit(); }
   }
+  // Live-reported (Tom): the multiline-text convention above (plain Enter
+  // = newline, Cmd/Ctrl+Enter = commit) tripped him up on the Issues
+  // field specifically -- deliberately INVERTED here, scoped to this one
+  // field type only: plain Enter commits (same blur -> commitEdit() path).
+  // Cmd/Ctrl+Enter must insert a newline, but a textarea's native default
+  // action for Enter does NOT fire when a modifier key is held (confirmed
+  // empirically -- unlike plain/Shift+Enter, Ctrl/Cmd+Enter inserts
+  // nothing at all left to its own devices), so it has to be done by
+  // hand via execCommand('insertText', ...) -- the standard trick for
+  // "insert text as if typed", which fires a real 'input' event (so
+  // onInputChange's own state sync still picks it up) and keeps the
+  // caret position and undo stack intact, unlike splicing e.target.value
+  // directly. Plain Text fields (Title's description, Mitigation, notes,
+  // comments) keep handleMarkdownEditKey's original convention untouched
+  // -- this split is Issues-field-only, not an app-wide reversal.
+  handleIssuesFieldEditKey(e, issueId, colId) {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); document.execCommand('insertText', false, '\n'); }
+    else if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); }
+    else if (e.key === 'Escape') { e.stopPropagation(); this.cancelEdit(); }
+  }
 
   // See the comment above computeAnchor(): position:fixed popups need
   // coordinates relative to the nearest transformed ancestor (the
@@ -10068,7 +10088,8 @@ class Component extends DCLogic {
         onInputChange: e => this.setState({ editDraft: e.target.value }),
         onInputPaste: e => this.handleMarkdownLinkPaste(e, v => this.setState({ editDraft: v })),
         onInputBlur: () => this.commitEdit(issue.id, colId),
-        onInputKeyDown: isMultiline ? (e => this.handleMarkdownEditKey(e, issue.id, colId)) : (e => this.handleEditKey(e, issue.id, colId)),
+        onInputKeyDown: isMultiIssueField ? (e => this.handleIssuesFieldEditKey(e, issue.id, colId))
+          : isMultiline ? (e => this.handleMarkdownEditKey(e, issue.id, colId)) : (e => this.handleEditKey(e, issue.id, colId)),
         cellHighlight: '' };
     }
     // Multi-issue linking: 2+ entries renders as a pill row instead of

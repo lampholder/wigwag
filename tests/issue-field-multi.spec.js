@@ -18,9 +18,18 @@ async function addField(page, name, type) {
   return page.locator('[data-testid=col-header]').last().getAttribute('data-col');
 }
 
+// Live-reported (Tom): plain Enter commits the Issues field now (not
+// newline) -- Ctrl+Enter inserts a newline instead, the inverse of every
+// other multiline field's convention, scoped to this field type only
+// (see handleIssuesFieldEditKey). A bare '\n' inside page.keyboard.type()
+// presses plain Enter, which would now commit early mid-paste -- insert
+// each line separately with an explicit Control+Enter between them.
 async function typeMultilineAndCommit(page, lines) {
   await page.keyboard.press('Control+A');
-  await page.keyboard.type(lines.join('\n'));
+  for (let i = 0; i < lines.length; i++) {
+    if (i > 0) await page.keyboard.press('Control+Enter');
+    await page.keyboard.type(lines[i]);
+  }
   await page.keyboard.press('Tab');
 }
 
@@ -138,5 +147,27 @@ test.describe('Multi-issue linking: a non-Title issue field holding 2+ entries',
     // into a bound state it can't represent -- stays plain/editable.
     await expect(remedyCell).not.toContainText('[object');
     expect(await remedyCell.locator('[title="Linked to Issue\'s data"]').count()).toBe(0);
+  });
+
+  test('plain Enter commits the field; Ctrl+Enter inserts a newline instead -- the inverse of every other multiline field', async ({ page }) => {
+    const colId = await addField(page, 'Issues', 'issue');
+    await h.clickFieldToEdit(page, 1, colId);
+    const textarea = page.locator('textarea');
+    await textarea.fill('first line');
+    await page.keyboard.press('Control+Enter');
+    // Ctrl+Enter must NOT commit -- still editing, and the newline landed
+    // in the draft (not swallowed) so the second line is distinct.
+    await expect(textarea).toBeVisible();
+    await page.keyboard.type('https://github.com/octocat/Hello-World/issues/1');
+    await expect(textarea).toHaveValue('first line\nhttps://github.com/octocat/Hello-World/issues/1');
+
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(400);
+    // Plain Enter commits -- textarea is gone, both lines landed (one
+    // plain, one resolved into a pill).
+    await expect(page.locator('textarea')).toHaveCount(0);
+    const cell = h.fieldCell(page, 1, colId);
+    await expect(cell).toContainText('first line');
+    await expect(cell.locator('[data-testid="issues-pill"]')).toHaveText('octocat/Hello-World#1');
   });
 });

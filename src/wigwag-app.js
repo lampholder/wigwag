@@ -9944,7 +9944,14 @@ class Component extends DCLogic {
   // for anything else) without refactoring that branch.
   resolveIssuePillLabel(ref, text) {
     if (!ref) return text;
-    if (ref.system === 'wigwag') return this.resolveWigwagRef(ref).label || text;
+    // Pills stay compact -- unlike the single-ref field's own display
+    // (which shows the full "Project / Issue title", see
+    // resolveWigwagRef's own doc), a Wigwag pill shows its short uuid,
+    // same convention withEmbeddedWigwagLinks already uses for an
+    // embedded link's pill ('#' + issueId.slice(0, 8)). A project-only
+    // link (no issueId) has no uuid to shorten, so it keeps the
+    // resolved project-name label.
+    if (ref.system === 'wigwag') return ref.issueId ? '#' + ref.issueId.slice(0, 8) : (this.resolveWigwagRef(ref).label || text);
     const n = normalizeRef(ref);
     if (!n) return text;
     const fetchedVia = this.liveFetchedViaForRef(n);

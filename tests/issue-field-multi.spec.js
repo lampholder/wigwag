@@ -170,4 +170,17 @@ test.describe('Multi-issue linking: a non-Title issue field holding 2+ entries',
     await expect(cell).toContainText('first line');
     await expect(cell.locator('[data-testid="issues-pill"]')).toHaveText('octocat/Hello-World#1');
   });
+
+  test('hovering a mini-pill shows the full title via its native title attribute, not just the short form', async ({ page }) => {
+    const colId = await addField(page, 'Issues', 'issue');
+    await h.clickFieldToEdit(page, 1, colId);
+    await typeMultilineAndCommit(page, ['https://github.com/octocat/Hello-World/issues/1', 'https://github.com/octocat/Hello-World/issues/2']);
+    await page.waitForTimeout(400);
+
+    const pill = h.fieldCell(page, 1, colId).locator('[data-testid="issues-pill"]').first();
+    await expect(pill).toHaveText('octocat/Hello-World#1');
+    await expect(pill).toHaveAttribute('title', /.+/);
+    const title = await pill.getAttribute('title');
+    expect(title).not.toBe('octocat/Hello-World#1');
+  });
 });

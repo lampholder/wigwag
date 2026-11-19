@@ -10214,7 +10214,7 @@ class Component extends DCLogic {
     const entries = values.map((text, i) => {
       const ref = refs[i] || null;
       if (!ref) return { isPill: false, text };
-      return { isPill: true, label: this.resolveIssuePillLabel(ref, text) || text, ...this.resolveIssuePillGlyph(ref) };
+      return { isPill: true, label: this.resolveIssuePillLabel(ref, text) || text, fullTitle: text, ...this.resolveIssuePillGlyph(ref) };
     });
     const collapsed = width != null && width < 120;
     const commitEditFn = () => this.startEdit(issue.id, colId, editValue);

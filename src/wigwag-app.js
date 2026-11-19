@@ -9955,6 +9955,25 @@ class Component extends DCLogic {
     if (connDef && !connDef.kind) return connectorLinkText(connDef.linkTextTemplate, text, matchedId);
     return matchedId != null ? String(matchedId) : (n.href || text);
   }
+  // Mini-pill source glyph (better_multi_pills handoff): same branding
+  // detection buildTextCell's own single-ref branch already does
+  // (~line 10108), just returning the flags alone -- resolveIssuePillLabel
+  // above already owns the label text, kept separate so the popover's
+  // plain-text id column (which deliberately has no glyph per the
+  // handoff) doesn't have to carry this around unused.
+  resolveIssuePillGlyph(ref) {
+    const empty = { isGithubRef: false, isJiraRef: false, isSalesforceRef: false, isWigwagRef: false, isConnectorRef: false, connectorGlyph: '', connectorColor: '' };
+    if (!ref) return empty;
+    if (ref.system === 'wigwag') return { ...empty, isWigwagRef: true };
+    const n = normalizeRef(ref);
+    if (!n) return empty;
+    const fetchedVia = this.liveFetchedViaForRef(n);
+    const connDef = fetchedVia ? this.connectedSourcesForDispatch().find(c => c.id === fetchedVia) : null;
+    const resolvedKind = n.href ? (resolveRefSystem(n.href, { connectedSources: this.connectedSourcesForDispatch() }) || {}).kind : null;
+    const isConnectorRef = !!connDef && !connDef.kind;
+    return { isGithubRef: resolvedKind === 'github', isJiraRef: resolvedKind === 'jira', isSalesforceRef: resolvedKind === 'salesforce',
+      isWigwagRef: false, isConnectorRef, connectorGlyph: isConnectorRef ? connDef.glyph : '', connectorColor: isConnectorRef ? connDef.color : '' };
+  }
   buildTextCell(issue, colId, currentText, placeholderColor, readOnly, suppressTitlePeek, width) {
     const s = this.state;
     const isTitle = colId === 'title' && !suppressTitlePeek;
@@ -10166,7 +10185,8 @@ class Component extends DCLogic {
     const refs = Array.isArray(issue.fieldRefs && issue.fieldRefs[colId]) ? issue.fieldRefs[colId] : [];
     const entries = values.map((text, i) => {
       const ref = refs[i] || null;
-      return ref ? { isPill: true, label: this.resolveIssuePillLabel(ref, text) || text } : { isPill: false, text };
+      if (!ref) return { isPill: false, text };
+      return { isPill: true, label: this.resolveIssuePillLabel(ref, text) || text, ...this.resolveIssuePillGlyph(ref) };
     });
     const collapsed = width != null && width < 120;
     const commitEditFn = () => this.startEdit(issue.id, colId, editValue);

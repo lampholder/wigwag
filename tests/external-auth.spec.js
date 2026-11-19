@@ -63,14 +63,21 @@ test.describe('GitHub built-in linking', () => {
 test.describe('GitHub repo-sync token (unrelated to built-in issue linking)', () => {
   test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
 
-  test('the token is stored separately and never appears in the tracker\'s own persisted state or "View source"', async ({ page }) => {
+  test('the token is stored in the OS keychain (Tauri), never in the tracker\'s own persisted state, the legacy secrets blob, or "View source"', async ({ page }) => {
     await h.setGithubToken(page, 'ghp_shouldNeverLeak');
     const storage = {
       main: JSON.stringify(await h.readActiveMilestoneDoc(page)),
       secrets: await page.evaluate(() => localStorage.getItem('git_native_tracker_secrets_v1')),
+      identities: await page.evaluate(() => localStorage.getItem('git_native_tracker_identities_v1')),
     };
     expect(storage.main).not.toContain('shouldNeverLeak');
-    expect(storage.secrets).toContain('shouldNeverLeak');
+    // Tracker 46100efc: once the (mocked) OS keychain has it, it's
+    // redacted out of BOTH localStorage blobs that used to carry it --
+    // the real secret only ever reaches the keychain IPC call.
+    expect(storage.secrets).not.toContain('shouldNeverLeak');
+    expect(storage.identities).not.toContain('shouldNeverLeak');
+    const setCall = (await page.evaluate(() => window.__invokeCalls)).find(c => c.cmd === 'identity_credential_set' && c.args.field === 'githubToken');
+    expect(setCall.args.value).toBe('ghp_shouldNeverLeak');
 
     const sourceText = await h.readSourceViewText(page);
     expect(sourceText).not.toContain('shouldNeverLeak');

@@ -489,6 +489,7 @@ test.describe('Settings modal: section navigation', () => {
     await page.locator('[data-testid=settings-nav-item][data-section-id=remoteDataStores]').click();
     await page.waitForTimeout(120);
     await page.locator('[data-testid=settings-github-token]').fill('ghp_configured');
+    await page.locator('[data-testid=settings-github-token-save]').click();
     await page.waitForTimeout(200);
     await expect(githubNav.locator('span[style*="border-radius"]')).toHaveCount(1);
   });
@@ -568,6 +569,7 @@ test.describe('Settings is scoped to the active identity', () => {
     await page.waitForTimeout(120);
     await expect(page.locator('[data-testid=settings-github-token]')).toHaveValue('');
     await page.locator('[data-testid=settings-github-token]').fill('ghp_personal');
+    await page.locator('[data-testid=settings-github-token-save]').click();
     await page.mouse.click(10, 10);
     await page.waitForTimeout(150);
 
@@ -586,6 +588,7 @@ test.describe('Settings is scoped to the active identity', () => {
     await page.locator('[data-testid=settings-nav-item][data-section-id=remoteDataStores]').click();
     await page.waitForTimeout(120);
     await page.locator('[data-testid=settings-github-token]').fill('ghp_renamed');
+    await page.locator('[data-testid=settings-github-token-save]').click();
     await page.waitForTimeout(200);
 
     let idsRaw = await page.evaluate(() => localStorage.getItem('git_native_tracker_identities_v1'));

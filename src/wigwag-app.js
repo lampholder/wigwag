@@ -600,6 +600,8 @@ class Component extends DCLogic {
     this.ingestEmbeddedSnapshotIfPresent();
     this.loadSecrets();
     this.hydrateActiveIdentitySecrets();
+    this.migrateGithubTokenToKeychain();
+    this.hydrateGithubTokenFromKeychainIfNeeded(this.state.activeIdentityId);
     this.migrateBuiltinConnectors();
     this._lastPersistedProjectIndexJson = JSON.stringify({ activeMilestoneId: this.state.projectId, milestones: this.state.projects });
     return this.finishBootSequenceAsync();
@@ -768,6 +770,50 @@ class Component extends DCLogic {
     Object.assign(this.state, identityProxyFieldsFrom(active));
     this.state.identityPublicKeyJwk = active.signingPublicKeyJwk || null;
     this.state.identityPrivateKeyJwk = active.signingPrivateKeyJwk || null;
+  }
+  // GitHub-token keychain migration (tracker 46100efc), one-time-per-
+  // identity: moves whatever real token is still sitting in localStorage
+  // (from before this migration existed, or an install where Tauri
+  // wasn't available at the time it was typed) into the OS keychain, via
+  // the SAME fire-and-forget-write pattern migrateBuiltinConnectors'
+  // own legacyToken migration already uses just above in boot. Never
+  // touches the in-memory identity.githubToken itself (every existing
+  // reader keeps working unchanged) -- only marks it githubTokenConfigured
+  // so persistIdentities' own redaction starts applying, then re-saves.
+  migrateGithubTokenToKeychain() {
+    if (!this.isTauriConnectorRuntime()) return;
+    this.state.identities.forEach(identity => {
+      if (identity.githubTokenConfigured) return;
+      const token = (identity.githubToken || '').trim();
+      if (!token) return;
+      window.__TAURI__.core.invoke('identity_credential_set', { identityId: identity.id, field: 'githubToken', value: token })
+        .then(() => { identity.githubTokenConfigured = true; this.persistIdentities(); })
+        .catch(e => console.error('[wigwag] failed to migrate GitHub token to the keychain for identity ' + identity.id + ': ' + e.message));
+    });
+  }
+  // The read-side counterpart: once an identity's token has been
+  // redacted out of localStorage (githubTokenConfigured true, no raw
+  // githubToken left in whatever was just loaded/mirrored from disk),
+  // this fetches the real value back from the keychain and patches it
+  // into both the identity record and the s.githubToken mirror -- a
+  // no-op whenever the token is already present in memory (the common
+  // case, since the in-memory copy is never cleared, only the on-disk
+  // one is). Called after every place that mirrors identity.githubToken
+  // from a freshly loaded/synced identities array: boot,
+  // switchIdentity, confirmAttributionGate, and the cross-tab storage
+  // listener.
+  hydrateGithubTokenFromKeychainIfNeeded(identityId) {
+    if (!this.isTauriConnectorRuntime()) return;
+    const identity = this.state.identities.find(i => i.id === identityId);
+    if (!identity || !identity.githubTokenConfigured || identity.githubToken) return;
+    window.__TAURI__.core.invoke('identity_credential_get', { identityId, field: 'githubToken' }).then(token => {
+      if (!token) return;
+      this.setState(s => ({
+        identities: s.identities.map(i => i.id === identityId ? { ...i, githubToken: token } : i),
+        githubToken: s.activeIdentityId === identityId ? token : s.githubToken
+      }));
+      if (this.state.activeIdentityId === identityId) this._lastConfirmedGithubToken = token.trim();
+    }).catch(e => console.error('[wigwag] failed to read GitHub token from the keychain: ' + e.message));
   }
   docKey(id) { return STORAGE_KEY + ':' + id; }
   // If this file was produced by "Export as HTML", it carries one extra
@@ -1021,9 +1067,26 @@ class Component extends DCLogic {
     try {
       const s = this.state;
       if (!s.activeIdentityId) return;
+      // GitHub-token keychain migration (tracker 46100efc): once an
+      // identity's real token has been written to the OS keychain
+      // (migrateGithubTokenToKeychain/onSaveGithubToken set
+      // githubTokenConfigured on it), its raw githubToken is redacted
+      // out of what actually reaches disk -- never written to
+      // localStorage again. s.identities ITSELF (in memory) keeps the
+      // real token always, for every existing reader; only this
+      // serialized copy changes, so no other call site needs to know
+      // about the keychain at all. Tauri-only -- outside it there's no
+      // secure storage to redact TO, so a browser/widget install keeps
+      // today's plain-localStorage behavior, unchanged.
+      const isTauri = this.isTauriConnectorRuntime();
+      const identitiesForDisk = s.identities.map(i => {
+        if (!isTauri || !i.githubTokenConfigured) return i;
+        const { githubToken, ...rest } = i;
+        return rest;
+      });
       const payload = {
         activeIdentityId: s.activeIdentityId,
-        identities: s.identities, lastActiveProjectByIdentity: s.lastActiveProjectByIdentity
+        identities: identitiesForDisk, lastActiveProjectByIdentity: s.lastActiveProjectByIdentity
       };
       const payloadJson = JSON.stringify(payload);
       if (payloadJson === this._lastPersistedIdentitiesJson) return;
@@ -1724,6 +1787,7 @@ class Component extends DCLogic {
       commentReads: this.commentReadsFor(id),
       issueSubscriptions: this.issueSubscriptionsFor(id)
     });
+    this.hydrateGithubTokenFromKeychainIfNeeded(id);
     if (targetId) this.switchProject(targetId, after);
     else this.createBlankProject(this.nextUntitledProjectName(id), id).then(() => { if (after) after(); });
     this.ensureIdentity();
@@ -1811,7 +1875,10 @@ class Component extends DCLogic {
       identityPublicKeyJwk: target ? (target.signingPublicKeyJwk || null) : s.identityPublicKeyJwk,
       identityPrivateKeyJwk: target ? (target.signingPrivateKeyJwk || null) : s.identityPrivateKeyJwk,
       attributionGateOpen: false, attributionGateSelectedId: null
-    }), () => { if (action) this.requireIdentityEmail(action); });
+    }), () => {
+      this.hydrateGithubTokenFromKeychainIfNeeded(selectedId);
+      if (action) this.requireIdentityEmail(action);
+    });
   }
   requireIdentityEmail(action) {
     if ((this.state.identityEmail || '').trim()) { action(); return; }
@@ -2441,6 +2508,7 @@ class Component extends DCLogic {
             }
             return patch;
           });
+          this.hydrateGithubTokenFromKeychainIfNeeded(this.state.activeIdentityId);
         } catch (err) { console.warn('[tracker] failed to sync identities from another tab:', err); }
         return;
       }
@@ -3620,8 +3688,16 @@ class Component extends DCLogic {
   persistSecrets() {
     try {
       const s = this.state;
+      // GitHub-token keychain migration (tracker 46100efc): this legacy
+      // blob mirrors s.githubToken into localStorage too, independent of
+      // (and otherwise completely bypassing) persistIdentities' own
+      // redaction -- writing the real token straight back to disk here
+      // on every single render would silently defeat the whole
+      // migration. Same Tauri+githubTokenConfigured gate as there.
+      const active = this.state.identities.find(i => i.id === s.activeIdentityId);
+      const redactToken = this.isTauriConnectorRuntime() && active && active.githubTokenConfigured;
       localStorage.setItem(SECRETS_KEY, JSON.stringify(Object.assign({
-        githubToken: s.githubToken,
+        githubToken: redactToken ? undefined : s.githubToken,
         identityEmail: s.identityEmail,
         identityPublicKeyJwk: s.identityPublicKeyJwk, identityPrivateKeyJwk: s.identityPrivateKeyJwk,
         knownIdentities: s.knownIdentities
@@ -3928,6 +4004,12 @@ class Component extends DCLogic {
     identityPrivateKeyJwk: null,
     knownIdentities: {},
     githubToken: '',
+    // null (not editing) means the field displays s.githubToken, the
+    // real committed value -- typing sets this WITHOUT touching
+    // s.githubToken/identities/localStorage at all (tracker 033296ea:
+    // "saved on type" is a bad paradigm for a credential). Only
+    // onSaveGithubToken commits it; onCancelGithubToken resets to null.
+    githubTokenDraft: null,
     // undefined (never set) means "never confirmed" -- distinct from an
     // explicit null, which confirmGithubIdentityToken sets only after a
     // confirmation attempt actually failed. Both read as falsy via ==
@@ -8877,6 +8959,45 @@ class Component extends DCLogic {
   // one immediately, rather than silently coasting on stale status until
   // some unrelated content edit happens to trigger the next auto-push.
   // See connectGithubRepo's own comment for the incident this closes.
+  // Tracker 033296ea: the GitHub token field used to commit (and retry
+  // sync) on every keystroke, same as onGithubConnectionSettingChange's
+  // other fields -- a bad paradigm for editing a credential specifically
+  // (Tom: typing a replacement character-by-character hammered sync
+  // with a half-typed token the whole time). onGithubTokenChange now
+  // only ever updates githubTokenDraft; nothing commits/retries until
+  // onSaveGithubToken.
+  onSaveGithubToken() {
+    const value = (this.state.githubTokenDraft || '').trim();
+    this.setState({ githubTokenDraft: null });
+    this.updateActiveIdentityField('githubToken', value, 'githubToken');
+    if (this.isTauriConnectorRuntime()) {
+      const identityId = this.state.activeIdentityId;
+      // githubTokenConfigured only flips once the keychain write/delete
+      // has actually CONFIRMED -- flipping it first (optimistically)
+      // would let persistIdentities redact the real token out of
+      // localStorage before the keychain genuinely has it, silently
+      // losing it for good if that write then fails (same resilience
+      // reasoning setConnectorCredential's own comment already gives).
+      const op = value
+        ? window.__TAURI__.core.invoke('identity_credential_set', { identityId, field: 'githubToken', value })
+        : window.__TAURI__.core.invoke('identity_credential_delete', { identityId, field: 'githubToken' });
+      op.then(() => {
+        this.setState(s => ({ identities: s.identities.map(i => i.id === identityId ? { ...i, githubTokenConfigured: !!value } : i) }));
+      }).catch(e => console.error('[wigwag] failed to save GitHub token to the keychain: ' + e.message));
+    }
+    // Same invalidate-stale-state-then-retry this field's siblings
+    // (repo/path/branch/override) already do on every change -- this is
+    // also the fix for tracker 03b7aeea (nothing used to re-trigger
+    // sync after fixing a broken token; only a full reload did).
+    this.setState({ githubSyncStatus: 'disconnected', githubSyncError: '', githubSyncTokenExpired: false }, () => {
+      if (document.hidden) return;
+      if ((this.state.githubRepo || '').trim().includes('/')) this.connectGithubRepo();
+    });
+  }
+  onCancelGithubToken() {
+    this.setState({ githubTokenDraft: null });
+    this.confirmGithubIdentityToken(this.state.githubToken); // re-checks the real committed token (cheap no-op if unchanged since it was last confirmed)
+  }
   onGithubConnectionSettingChange(patch) {
     this._githubFileSha = null;
     this._githubEtag = null;
@@ -11768,8 +11889,21 @@ class Component extends DCLogic {
       // connectorFormVisible state the connector editor's own slide-in
       // uses, so both panels move in lockstep.
       settingsModalTransformOffset: s.connectorFormVisible ? '-100vw' : '0',
-      githubToken: s.githubToken,
-      onGithubTokenChange: e => { this.updateActiveIdentityField('githubToken', e.target.value, 'githubToken'); this.confirmGithubIdentityToken(e.target.value); },
+      // Shows the pending draft while editing, the real committed value
+      // otherwise -- see githubTokenDraft's own state comment.
+      githubToken: s.githubTokenDraft !== null ? s.githubTokenDraft : s.githubToken,
+      onGithubTokenChange: e => { this.setState({ githubTokenDraft: e.target.value }); this.confirmGithubIdentityToken(e.target.value); },
+      showGithubTokenSaveCancel: s.githubTokenDraft !== null && s.githubTokenDraft.trim() !== (s.githubToken || ''),
+      onSaveGithubTokenClick: () => this.onSaveGithubToken(),
+      onCancelGithubTokenClick: () => this.onCancelGithubToken(),
+      // Tracker 46100efc: accurate per-runtime storage note -- real OS
+      // keychain on the Tauri desktop app (identity_credential_set/get),
+      // plain localStorage everywhere else (a browser tab/widget has no
+      // secure-storage API to use instead). Either way: never exported,
+      // never in "View source" -- unchanged from before.
+      githubTokenStorageNote: this.isTauriConnectorRuntime()
+        ? 'Stored in this device\'s OS keychain — never exported, never in "View source".'
+        : 'Stored in this browser\'s localStorage (no OS keychain outside the desktop app) — never exported, never in "View source".',
       // Same deep-link mechanism as the builtin connector/sync-override
       // fields (tracker 1e557816) -- contents:write since this is the
       // default SYNC token (pushes), not tied to any one project's name

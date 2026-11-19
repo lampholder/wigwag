@@ -568,6 +568,21 @@ async function mockGithubApi(page) {
         window.__invokeCalls.push({ cmd, args });
         if (cmd === 'connected_source_get_credential') return Promise.resolve('');
         if (cmd === 'connected_source_set_credential' || cmd === 'connected_source_delete_credential') return Promise.resolve(null);
+        // Fake OS keychain for identity-level credentials (tracker
+        // 46100efc) -- a real keychain survives a page reload, so this
+        // persists into its OWN localStorage key (never read by any
+        // production code path -- distinct from the real
+        // IDENTITIES_KEY/SECRETS_KEY blobs a "never leaks to disk" test
+        // checks) rather than an in-memory object, which addInitScript
+        // would otherwise reset on every navigation.
+        if (cmd === 'identity_credential_set' || cmd === 'identity_credential_get' || cmd === 'identity_credential_delete') {
+          const KEY = '__test_fake_keychain__';
+          const store = JSON.parse(localStorage.getItem(KEY) || '{}');
+          const entryKey = args.identityId + ':' + args.field;
+          if (cmd === 'identity_credential_set') { store[entryKey] = args.value; localStorage.setItem(KEY, JSON.stringify(store)); return Promise.resolve(null); }
+          if (cmd === 'identity_credential_delete') { delete store[entryKey]; localStorage.setItem(KEY, JSON.stringify(store)); return Promise.resolve(null); }
+          return Promise.resolve(entryKey in store ? store[entryKey] : null);
+        }
         if (cmd === 'connected_source_fetch') {
           const m = args.url.match(/\/repos\/([^/]+\/[^/]+\/issues\/\d+)$/);
           const fixture = m && fixtures[m[1]];
@@ -752,6 +767,10 @@ async function openSettingsSection(page, sectionId) {
 async function setGithubToken(page, token) {
   await openSettingsSection(page, 'remoteDataStores');
   await page.locator('[data-testid=settings-github-token]').fill(token);
+  // Tracker 033296ea: the token field no longer saves on type -- an
+  // explicit Save click is required to actually commit it.
+  await page.locator('[data-testid=settings-github-token-save]').click();
+  await page.waitForTimeout(150);
   await page.mouse.click(10, 10); // outside Settings -- its full-screen backdrop closes it from anywhere
   await page.waitForTimeout(150);
 }
@@ -784,6 +803,8 @@ async function setGithubRepoSync(page, { repo, path, branch, token, tokenOverrid
   if (token !== undefined) {
     await openSettingsSection(page, 'remoteDataStores');
     await page.locator('[data-testid=settings-github-token]').fill(token);
+    await page.locator('[data-testid=settings-github-token-save]').click();
+    await page.waitForTimeout(150);
     await page.mouse.click(10, 10); // outside Settings -- its full-screen backdrop closes it from anywhere
     await page.waitForTimeout(150);
   }

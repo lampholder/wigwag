@@ -482,6 +482,15 @@ test.describe('Settings modal: section navigation', () => {
     await expect(page.locator('[data-testid=settings-github-token]')).toHaveCount(0);
   });
 
+  test('the sidebar footer caption no longer blanket-claims "saved as you type" while viewing the GitHub token section -- that field needs an explicit Save', async ({ page }) => {
+    const footer = page.locator('text=Saved as you type, in this browser only');
+    await expect(footer).toHaveText('Saved as you type, in this browser only.');
+
+    await page.locator('[data-testid=settings-nav-item][data-section-id=remoteDataStores]').click();
+    await page.waitForTimeout(120);
+    await expect(footer).toHaveText('Saved as you type, in this browser only -- except the GitHub token above, which needs an explicit Save.');
+  });
+
   test('a section shows a small accent dot once it has something configured', async ({ page }) => {
     const githubNav = page.locator('[data-testid=settings-nav-item][data-section-id=remoteDataStores]');
     await expect(githubNav.locator('span[style*="border-radius"]')).toHaveCount(0);

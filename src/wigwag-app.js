@@ -11731,7 +11731,12 @@ class Component extends DCLogic {
       settingsSection: s.mobileSettingsSection,
       onBackFromSettingsSection: () => this.setState({ mobileSettingsSection: null }),
       isSettingsIdentity: s.mobileSettingsSection === 'identity',
-      isSettingsGithub: s.mobileSettingsSection === 'github',
+      // Stale sentinel ('github', from before the section was renamed to
+      // 'remoteDataStores' -- see settingsSectionDefs/settingsIsRemoteDataStores
+      // above) meant this never matched settingsSectionsList's real onPick
+      // value: the mobile "Project sync" page has never actually shown the
+      // GITHUB TOKEN field, found while fixing 033296ea/03b7aeea for mobile.
+      isSettingsGithub: s.mobileSettingsSection === 'remoteDataStores',
       isSettingsNotifications: s.mobileSettingsSection === 'notifications',
       settingsSectionTitle: (settingsSectionDefs.find(d => d.id === s.mobileSettingsSection) || {}).title || ''
     };
@@ -12026,6 +12031,16 @@ class Component extends DCLogic {
       settingsIsIdentity: activeSettingsSectionId === 'identity',
       settingsIsRemoteDataStores: activeSettingsSectionId === 'remoteDataStores',
       settingsIsConnectedDataSources: activeSettingsSectionId === 'connectedDataSources',
+      // Tracker: this caption used to be true of every field in every
+      // section -- no longer, since the GitHub token (remoteDataStores)
+      // got its own explicit Save/Cancel (033296ea). Leaving the old
+      // blanket claim up while viewing that one section is actively
+      // wrong, not just stale -- it's exactly what told Tom his saved
+      // token "didn't do anything" when in fact it just hadn't been
+      // saved yet.
+      settingsFooterCaption: activeSettingsSectionId === 'remoteDataStores'
+        ? 'Saved as you type, in this browser only -- except the GitHub token above, which needs an explicit Save.'
+        : 'Saved as you type, in this browser only.',
       connectedSourcesSettings: (() => {
         const form = s.connectorFormOpen;
         const draft = form ? form.draft : null;

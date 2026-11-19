@@ -796,6 +796,40 @@ test.describe('M8: settings', () => {
     await expect(inputs.first()).toHaveValue('Personal');
   });
 
+  // Regression: mobileSettingsSection's real value is 'remoteDataStores'
+  // (settingsSectionsList's onPick uses the section def's own id), but
+  // isSettingsGithub used to check the stale sentinel 'github' -- always
+  // false, so this field has never actually appeared on mobile. Also
+  // covers the identity-level token needing an explicit Save now
+  // (033296ea/03b7aeea), same as desktop -- a plain sc-camel-on-change
+  // alone can no longer commit it.
+  test('the Project sync page shows the identity GITHUB TOKEN field, and it needs an explicit Save like desktop', async ({ page }) => {
+    await page.locator('[data-testid=btn-overflow]').click();
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=mobile-overflow-settings]').click();
+    await page.waitForTimeout(300);
+    await page.locator('[data-testid=mobile-settings-row]').filter({ hasText: 'Project sync' }).click();
+    await page.waitForTimeout(300);
+
+    const tokenInput = page.locator('[data-testid=mobile-settings-github-token]');
+    await expect(tokenInput).toBeVisible();
+    await expect(page.locator('[data-testid=mobile-settings-github-token-save]')).toHaveCount(0);
+
+    await tokenInput.fill('ghp_frommobile');
+    await expect(page.locator('[data-testid=mobile-settings-github-token-save]')).toBeVisible();
+
+    await page.locator('[data-testid=mobile-settings-github-token-save]').click();
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-testid=mobile-settings-github-token-save]')).toHaveCount(0);
+
+    // Persisted for real -- survives leaving and reopening the page.
+    await page.locator('[data-testid=mobile-settings-back]').click();
+    await page.waitForTimeout(300);
+    await page.locator('[data-testid=mobile-settings-row]').filter({ hasText: 'Project sync' }).click();
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=mobile-settings-github-token]')).toHaveValue('ghp_frommobile');
+  });
+
   test('Context connectors, Project sync, and Notifications pages all render without error', async ({ page }) => {
     await page.locator('[data-testid=btn-overflow]').click();
     await page.waitForTimeout(150);

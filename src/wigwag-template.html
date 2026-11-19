@@ -2857,7 +2857,7 @@
                     </div>
                   </sc-for>
                 </div>
-                <div style="padding:12px 18px; font-size:10px; color: var(--text-tertiary); line-height:1.4;">Saved as you type, in this browser only.</div>
+                <div style="padding:12px 18px; font-size:10px; color: var(--text-tertiary); line-height:1.4;">{{ settingsFooterCaption }}</div>
               </div>
               <div style="flex:1; min-width:0; display:flex; flex-direction:column;">
                 <div style="padding:18px 24px 14px; border-bottom:1px solid var(--border-subtle); display:flex; align-items:flex-start; justify-content:space-between; gap:12px; flex-shrink:0;">
@@ -3637,8 +3637,17 @@
         </sc-if>
         <sc-if value="{{ mobile.isSettingsGithub }}" hint-placeholder-val="{{ false }}">
           <div style="font-size:11px; font-weight:600; letter-spacing:0.04em; color:var(--n24); margin-bottom:6px;">GITHUB TOKEN</div>
-          <input type="password" value="{{ githubToken }}" sc-camel-on-change="{{ onGithubTokenChange }}" style="width:100%; box-sizing:border-box; border:1px solid var(--border); border-radius:8px; padding:11px 12px; font-size:14px; color:var(--n18); margin-bottom:6px; font-family:inherit; background:var(--surface);">
-          <div style="font-size:10.5px; color:var(--n24); line-height:1.5;">Needed for private repos, and for pushing/pulling this tracker's own data if you connect a repo.</div>
+          <input data-testid="mobile-settings-github-token" type="password" value="{{ githubToken }}" sc-camel-on-change="{{ onGithubTokenChange }}" style="width:100%; box-sizing:border-box; border:1px solid var(--border); border-radius:8px; padding:11px 12px; font-size:14px; color:var(--n18); margin-bottom:6px; font-family:inherit; background:var(--surface);">
+          <sc-if value="{{ showGithubTokenSaveCancel }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex; gap:10px; margin-bottom:8px;">
+              <span data-testid="mobile-settings-github-token-save" sc-camel-on-click="{{ onSaveGithubTokenClick }}" style="font-size:14px; font-weight:600; color:var(--accent-ink); cursor:pointer;">Save</span>
+              <span data-testid="mobile-settings-github-token-cancel" sc-camel-on-click="{{ onCancelGithubTokenClick }}" style="font-size:14px; color:var(--n24); cursor:pointer;">Cancel</span>
+            </div>
+          </sc-if>
+          <sc-if value="{{ showGithubTokenConfirmedText }}" hint-placeholder-val="{{ false }}">
+            <div style="font-size:10.5px; color:var(--n24); line-height:1.5; margin-bottom:6px;">{{ githubTokenConfirmedText }}</div>
+          </sc-if>
+          <div style="font-size:10.5px; color:var(--n24); line-height:1.5;">Needed for private repos, and for pushing/pulling this tracker's own data if you connect a repo. Nothing saves until you tap Save.</div>
         </sc-if>
         <sc-if value="{{ mobile.isSettingsNotifications }}" hint-placeholder-val="{{ false }}">
           <div data-testid="mobile-mention-toggle" sc-camel-on-click="{{ onToggleMentionNotifications }}" style="display:flex; align-items:center; justify-content:space-between; padding:11px 0; cursor:pointer; border-bottom:1px solid var(--border-subtle); margin-bottom:16px;">

@@ -2364,8 +2364,12 @@
           </sc-if>
         </div>
         <sc-if value="{{ slideOver.isCommentsTab }}" hint-placeholder-val="{{ true }}">
-          <div style="display:flex; gap:8px; margin-bottom:16px; align-items:flex-end;">
+          <div sc-camel-on-drag-over="{{ onCommentDragOver }}" sc-camel-on-drop="{{ onCommentDrop }}" style="display:flex; gap:8px; margin-bottom:16px; align-items:flex-end;">
             <textarea data-testid="new-comment-input" placeholder="Add a comment… (Markdown supported — ⌘/Ctrl+Enter to post)" value="{{ newCommentDraft }}" sc-camel-on-change="{{ onNewCommentChange }}" sc-camel-on-paste="{{ onNewCommentPaste }}" sc-camel-on-key-down="{{ onCommentKeyDown }}" style="flex:1; box-sizing:border-box; min-height:60px; max-height:300px; padding:8px 10px; border:1px solid var(--border); border-radius:6px; font-size:13px; font-family:inherit; resize:none; overflow-y:hidden;"></textarea>
+            <input data-testid="comment-attach-input" type="file" sc-camel-on-change="{{ onCommentAttachInputChange }}" style="display:none;">
+            <span data-testid="comment-attach-btn" title="Attach a file — inserts a markdown reference at the cursor" sc-camel-on-click="{{ onCommentAttachClick }}" style="cursor:pointer; color:var(--text-secondary); display:flex; align-items:center; padding:7px; border-radius:6px; flex-shrink:0;" style-hover="background: var(--surface-hover);">
+              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M11.5 4.5l-6 6a2.1 2.1 0 003 3l6.5-6.5a3.5 3.5 0 00-5-5L3.5 8.5a5 5 0 007 7l5-5"></path></svg>
+            </span>
             <button sc-camel-on-click="{{ addComment }}" style="padding:8px 14px; border:none; border-radius:6px; background: var(--accent-fill); color:var(--ink-on-accent); font-size:13px; font-weight:600; cursor:pointer; flex-shrink:0;">Post</button>
           </div>
         </sc-if>

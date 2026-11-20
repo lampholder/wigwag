@@ -4854,6 +4854,74 @@ class Component extends DCLogic {
     clearTimeout(this._missingMediaCopiedTimer);
     this._missingMediaCopiedTimer = setTimeout(() => this.setState({ missingMediaRequestCopied: false }), 1400);
   }
+  // Generalizes insertIntoRule's own caret-insert pattern (a plain
+  // data-testid query at click/drop time -- the template engine has no
+  // ref-callback primitive) for any textarea, not just the rule-advanced
+  // one -- used by the comment composer's attach flow below. Replaces
+  // the current selection (or inserts at the caret when nothing's
+  // selected), never just appends to the end.
+  insertTextAtCaret(testid, insertText, applyNewValue) {
+    const el = document.querySelector('[data-testid="' + testid + '"]');
+    const current = el ? el.value : '';
+    const hasSel = el && typeof el.selectionStart === 'number';
+    const start = hasSel ? el.selectionStart : current.length;
+    const end = hasSel ? el.selectionEnd : current.length;
+    applyNewValue(current.slice(0, start) + insertText + current.slice(end));
+    const pos = start + insertText.length;
+    requestAnimationFrame(() => {
+      const el2 = document.querySelector('[data-testid="' + testid + '"]');
+      if (el2) { el2.focus(); el2.setSelectionRange(pos, pos); }
+    });
+  }
+  // Comment composer attach (design handoff attachments.zip, tracker
+  // e16588b6): hash the dropped/picked file, copy it into local
+  // storage, insert [filename](wigwag-media:hash) at the cursor --
+  // same mechanism as pasting a GitHub/wigwag link, just a reference
+  // Wigwag itself originates instead of one found in pasted text.
+  // Scoped to the main Comments composer only for v1 (the doc only
+  // specs this one surface for attaching, not every comment-stream
+  // field or notes/text fields -- those can still RENDER a reference
+  // via Phase 3, just have no attach UI of their own yet).
+  // Returns a promise so multi-file callers (onCommentAttachInputChange/
+  // onCommentDrop below) can chain attaches one at a time -- each one
+  // reads the textarea's CURRENT value/caret via insertTextAtCaret, so
+  // running two concurrently races: both read the pre-insert value and
+  // whichever setState lands last silently discards the other's
+  // reference (confirmed live, the hard way, by a two-file-drop test).
+  // The resolved-promise wait after setState gives this custom
+  // framework's own render a tick to actually commit the new value to
+  // the real DOM textarea before the next file in the chain reads it.
+  attachFileToComment(file) {
+    if (!this.isTauriConnectorRuntime()) { window.alert('Attaching files needs the desktop app.'); return Promise.resolve(); }
+    // ']' would terminate the markdown label early (renderMarkdownInline's
+    // own [^\]\n]+ label pattern) -- stripped rather than built out a
+    // full escaping scheme for what's genuinely a rare filename
+    // character to begin with.
+    const label = file.name.replace(/[[\]]/g, '');
+    return file.arrayBuffer().then(buf => {
+      const bytes = new Uint8Array(buf);
+      return this.hashBytes(bytes).then(hash => this.mediaStoreWrite(hash, bytes).then(() => hash));
+    }).then(hash => {
+      this.insertTextAtCaret('new-comment-input', '[' + label + '](wigwag-media:' + hash + ')', v => this.setState({ newCommentDraft: v }));
+      return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    }).catch(e => window.alert('Could not attach "' + file.name + '": ' + e.message));
+  }
+  onCommentAttachClick() {
+    const el = document.querySelector('[data-testid="comment-attach-input"]');
+    if (el) el.click();
+  }
+  attachFilesSequentially(files) {
+    return Array.from(files || []).reduce((p, f) => p.then(() => this.attachFileToComment(f)), Promise.resolve());
+  }
+  onCommentAttachInputChange(e) {
+    this.attachFilesSequentially(e.target.files);
+    e.target.value = '';
+  }
+  onCommentDragOver(e) { e.preventDefault(); }
+  onCommentDrop(e) {
+    e.preventDefault();
+    this.attachFilesSequentially(e.dataTransfer && e.dataTransfer.files);
+  }
   // Settings UI: Connected sources add/edit form (Phase 1's one
   // remaining piece -- see /home/dev/.claude/plans/encapsulated-waddling-gizmo.md).
   // A fresh draft each time the form opens -- editing an EXISTING
@@ -12871,6 +12939,14 @@ class Component extends DCLogic {
       onNewCommentPaste: e => this.handleMarkdownLinkPaste(e, v => this.setState({ newCommentDraft: v })),
       onCommentKeyDown: e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); this.addComment(); } },
       addComment: this.addComment,
+      // Media attachments (e16588b6): paperclip + drag-drop onto the
+      // composer, Tauri-only -- shown regardless of runtime (same as
+      // every other always-visible affordance here), attachFileToComment
+      // itself is what gates on isTauriConnectorRuntime.
+      onCommentAttachClick: () => this.onCommentAttachClick(),
+      onCommentAttachInputChange: e => this.onCommentAttachInputChange(e),
+      onCommentDragOver: e => this.onCommentDragOver(e),
+      onCommentDrop: e => this.onCommentDrop(e),
       editCommentDraft: s.editCommentDraft,
       onEditCommentDraftChange: e => this.setState({ editCommentDraft: e.target.value }),
       onEditCommentPaste: e => this.handleMarkdownLinkPaste(e, v => this.setState({ editCommentDraft: v })),

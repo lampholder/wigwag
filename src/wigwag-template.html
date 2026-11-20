@@ -124,6 +124,30 @@
     <div data-testid="switcher-row-context-open-new-window" sc-camel-on-click="{{ switcherRowContextMenu.onOpenInNewWindow }}" style="padding:7px 10px; border-radius:5px; cursor:pointer; color: var(--text-primary); white-space:nowrap;" style-hover="background: var(--n22);">Open in new window</div>
   </div>
 </sc-if>
+<sc-if value="{{ missingMediaPopover.open }}" hint-placeholder-val="{{ false }}">
+  <div data-testid="missing-media-popover" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; {{ missingMediaPopover.style }} background:var(--surface); border:1px solid var(--border); border-radius:10px; box-shadow:0 14px 34px var(--sh6); width:320px; z-index:150; overflow:hidden; font-size:13px; color:var(--text-primary);">
+    <div style="padding:10px 12px; border-bottom:1px solid var(--border-subtle);">
+      <div style="font-size:12.5px; font-weight:650; margin-bottom:2px;">You don't have this file</div>
+      <div style="font-size:11px; color:var(--text-tertiary); font-family:ui-monospace,monospace;">{{ missingMediaPopover.hashLabel }}</div>
+    </div>
+    <sc-if value="{{ missingMediaPopover.hasAuthor }}" hint-placeholder-val="{{ false }}">
+      <div style="padding:10px 12px; border-bottom:1px solid var(--border-subtle);">
+        <div style="font-size:11px; color:var(--text-tertiary); margin-bottom:6px;">Likely has it</div>
+        <div style="display:flex; align-items:center; gap:7px;">
+          <span style="width:18px; height:18px; border-radius:50%; background:var(--accent-fill); color:var(--ink-on-accent); font-size:9px; font-weight:700; display:flex; align-items:center; justify-content:center; flex-shrink:0;">{{ missingMediaPopover.authorInitial }}</span>
+          <span style="font-size:12.5px;" data-testid="missing-media-likely-has-it">{{ missingMediaPopover.author }}</span>
+        </div>
+      </div>
+    </sc-if>
+    <sc-if value="{{ !missingMediaPopover.hasAuthor }}" hint-placeholder-val="{{ true }}">
+      <div style="padding:10px 12px; border-bottom:1px solid var(--border-subtle); font-size:12px; color:var(--text-tertiary);" data-testid="missing-media-likely-has-it">Ask anyone who has it</div>
+    </sc-if>
+    <div style="padding:10px 12px;">
+      <button data-testid="missing-media-copy-request" sc-camel-on-click="{{ missingMediaPopover.onCopy }}" style="width:100%; padding:7px; border:none; border-radius:6px; background:var(--accent-fill); color:var(--ink-on-accent); font-size:12.5px; font-weight:600; margin-bottom:8px; cursor:pointer; font-family:inherit;">{{ missingMediaPopover.copyLabel }}</button>
+      <div style="font-family:ui-monospace,monospace; font-size:10.5px; color:var(--text-secondary); background:var(--surface-hover); border-radius:5px; padding:8px; line-height:1.5; white-space:pre-wrap;">{{ missingMediaPopover.requestMessage }}</div>
+    </div>
+  </div>
+</sc-if>
 <sc-if value="{{ notUnknownProjectCold }}" hint-placeholder-val="{{ true }}">
 <sc-if value="{{ isDesktopViewport }}" hint-placeholder-val="{{ true }}">
 <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; background: var(--surface-page); {{ appRootHeightStyle }} display:flex; flex-direction:column; color: var(--text-primary);">
@@ -2389,7 +2413,7 @@
                     </div>
                   </sc-if>
                   <sc-if value="{{ a.showCommentBody }}" hint-placeholder-val="{{ true }}">
-                    <div data-testid="comment-md" data-raw-text="{{ a.text }}" class="md-body"></div>
+                    <div data-testid="comment-md" data-raw-text="{{ a.text }}" data-media-author="{{ a.mediaAuthor }}" data-media-context="{{ a.mediaContext }}" class="md-body"></div>
                   </sc-if>
                 </sc-if>
                 <sc-if value="{{ a.isHistory }}">
@@ -2536,7 +2560,7 @@
                     </div>
                   </sc-if>
                   <sc-if value="{{ a.showCommentBody }}" hint-placeholder-val="{{ true }}">
-                    <div data-testid="project-comment-md" data-raw-text="{{ a.rawText }}" class="md-body" style="font-size:13px; line-height:1.5;"></div>
+                    <div data-testid="project-comment-md" data-raw-text="{{ a.rawText }}" data-media-author="{{ a.mediaAuthor }}" data-media-context="{{ a.mediaContext }}" class="md-body" style="font-size:13px; line-height:1.5;"></div>
                   </sc-if>
                 </sc-if>
                 <sc-if value="{{ a.isHistory }}">
@@ -3556,7 +3580,7 @@
                     </sc-if>
                     <sc-if value="{{ !a.isRedacted }}" hint-placeholder-val="{{ true }}">
                       <sc-if value="{{ mobile.rowDetail.isCommentsTab }}" hint-placeholder-val="{{ true }}">
-                        <div data-testid="comment-md" data-raw-text="{{ a.text }}" class="md-body"></div>
+                        <div data-testid="comment-md" data-raw-text="{{ a.text }}" data-media-author="{{ a.mediaAuthor }}" data-media-context="{{ a.mediaContext }}" class="md-body"></div>
                       </sc-if>
                       <sc-if value="{{ mobile.rowDetail.isHistoryTab }}" hint-placeholder-val="{{ false }}">
                         <sc-if value="{{ a.hasPill }}" hint-placeholder-val="{{ false }}">{{ a.pill.before }}<span style="font-size:12px; padding:2px 8px; border-radius:10px; background: {{ a.pill.bg }}; color: {{ a.pill.fg }};">{{ a.pill.emoji }} {{ a.pill.label }}</span>{{ a.pill.after }}</sc-if>

@@ -2364,6 +2364,15 @@ class Component extends DCLogic {
       if (s.switcherRowContextMenu && !e.target.closest('[data-testid="switcher-row-context-menu"]')) {
         patch = Object.assign(patch || {}, { switcherRowContextMenu: null });
       }
+      // Media attachments' missing-file popover (tracker e16588b6) -- its
+      // OWN top-level flag, not activeCell (a media pill can appear
+      // anywhere markdown renders -- comments, notes, text fields -- not
+      // just inside one field cell). Added to this allowlist from the
+      // start, the one checklist item this exact class of bug has
+      // recurred 5 times over for forgetting.
+      if (s.missingMediaPopover && !e.target.closest('[data-testid="missing-media-popover"]') && !e.target.closest('[data-testid="missing-media-card"]')) {
+        patch = Object.assign(patch || {}, { missingMediaPopover: null });
+      }
       if (!s.jumpDismissed && !e.target.closest('[data-testid="filter-input-wrap"]') && !e.target.closest('[data-testid="jump-panel"]') && !e.target.closest('[data-testid="mobile-filter-header"]') && !e.target.closest('[data-testid="mobile-row-list"]')) {
         patch = Object.assign(patch || {}, { jumpDismissed: true });
       }
@@ -3884,6 +3893,38 @@ class Component extends DCLogic {
         pill.style.cssText = 'font-size:12.5px; color: var(--c13); text-decoration:none; cursor:pointer;' + (resolved.found ? '' : ' opacity:0.6;');
         pill.onclick = e => { e.preventDefault(); if (wg) this.openWigwagRef(wg); };
       });
+      // Media attachments (tracker e16588b6): same placeholder-pill ->
+      // real-content hydration shape as wigwag-ref-pill just above, but
+      // the "real content" lookup is a synchronous local Map read
+      // (mediaIndexHasHash/mediaIndexSizeFor), never a fetch -- a
+      // present reference becomes a file card, a missing one the same
+      // footprint grayed/dashed with a click-to-ask popover, matching
+      // the design doc's "same click target position/size so the layout
+      // doesn't shift when a file arrives."
+      const mediaAuthor = el.getAttribute('data-media-author') || '';
+      const mediaContext = el.getAttribute('data-media-context') || '';
+      el.querySelectorAll('.wigwag-media-pill').forEach(pill => {
+        const hash = pill.getAttribute('data-media-hash') || '';
+        const filename = pill.getAttribute('data-media-filename') || '';
+        const fileIconSvg = '<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M4 1.5h5l3 3v8.5a1 1 0 01-1 1H4a1 1 0 01-1-1v-10.5a1 1 0 011-1z"></path><path d="M9 1.5v3h3"></path></svg>';
+        pill.style.cssText = 'display:inline-flex; align-items:center; gap:8px; width:200px; max-width:100%; box-sizing:border-box; padding:8px 10px; border-radius:8px; cursor:pointer; vertical-align:middle; text-decoration:none; color:inherit;';
+        if (this.mediaIndexHasHash(hash)) {
+          pill.style.cssText += 'border:1px solid var(--border); background:var(--surface);';
+          pill.innerHTML = '<span style="color:var(--text-secondary); display:flex;">' + fileIconSvg + '</span>' +
+            '<span style="min-width:0; flex:1;"><span style="display:block; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-primary);">' + escapeHtml(filename) + '</span>' +
+            '<span style="display:block; font-size:10.5px; color:var(--text-tertiary);">' + escapeHtml(humanFileSize(this.mediaIndexSizeFor(hash) || 0)) + '</span></span>';
+          pill.setAttribute('data-testid', 'media-card-present');
+          pill.onclick = e => { e.preventDefault(); this.revealMediaInFolder(hash); };
+        } else {
+          pill.style.cssText += 'border:1.5px dashed var(--border-strong); background:var(--surface-hover);';
+          pill.innerHTML = '<span style="position:relative; display:inline-flex; color:var(--text-placeholder); flex-shrink:0;">' + fileIconSvg +
+            '<svg width="11" height="11" viewBox="0 0 16 16" style="position:absolute; bottom:-2px; right:-3px; color:var(--text-tertiary);"><circle cx="8" cy="8" r="7" fill="var(--surface-hover)" stroke="currentColor" stroke-width="1.2"></circle><path d="M5 5l6 6M11 5l-6 6" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"></path></svg></span>' +
+            '<span style="min-width:0; flex:1;"><span style="display:block; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-tertiary);">' + escapeHtml(filename) + '</span>' +
+            '<span style="display:block; font-size:10.5px; color:var(--text-placeholder);">not stored locally</span></span>';
+          pill.setAttribute('data-testid', 'media-card-missing');
+          pill.onclick = e => { e.preventDefault(); this.toggleMissingMediaPopover(hash, filename, mediaAuthor, mediaContext, e); };
+        }
+      });
     });
   }
   autoGrowTextareas() {
@@ -3988,6 +4029,7 @@ class Component extends DCLogic {
     attributionGateMode: 'first',
     attributionGateSelectedId: null,
     attributionGateAddOpen: false,
+    missingMediaPopover: null,
     tableOverflow: false,
     rowsBelow: 0,
     rowsFitting: 0,
@@ -4779,6 +4821,38 @@ class Component extends DCLogic {
   mediaStoreRevealPath(hash) {
     if (!this.isTauriConnectorRuntime()) return Promise.resolve(null);
     return window.__TAURI__.core.invoke('media_store_reveal_path', { hash });
+  }
+  // tauri-plugin-opener's revealItemInDir needs a real absolute path (not
+  // the hash) -- resolved fresh each click rather than cached, since this
+  // is already a rare, deliberate user action, not a hot path.
+  revealMediaInFolder(hash) {
+    this.mediaStoreRevealPath(hash).then(path => {
+      if (!path) return;
+      if (window.__TAURI__ && window.__TAURI__.opener) return window.__TAURI__.opener.revealItemInDir(path);
+    }).catch(e => console.error('[wigwag] failed to reveal attachment in folder: ' + e.message));
+  }
+  toggleMissingMediaPopover(hash, filename, author, context, e) {
+    const s = this.state;
+    if (s.missingMediaPopover && s.missingMediaPopover.hash === hash) { this.setState({ missingMediaPopover: null }); return; }
+    const a = this.computeAnchor(e.currentTarget, 320);
+    const openUpward = a.spaceBelow < 260 && a.spaceAbove > a.spaceBelow;
+    this.setState({
+      missingMediaPopover: {
+        hash, filename, author, context, openUpward,
+        anchorLeft: a.left, anchorTopPx: a.top, anchorBottomPx: a.upwardOffsetPx
+      }
+    });
+  }
+  copyMissingMediaRequestMessage() {
+    const m = this.state.missingMediaPopover;
+    if (!m) return;
+    const who = m.author ? ('Could you send me ' + m.filename + '?') : ('Could anyone send me ' + m.filename + '?');
+    const text = who + '\nI don\'t have it locally — hash sha256:' + m.hash + '.' +
+      (m.context ? ('\nFrom Wigwag · ' + m.context) : '');
+    this.writeToClipboard(text);
+    this.setState({ missingMediaRequestCopied: true });
+    clearTimeout(this._missingMediaCopiedTimer);
+    this._missingMediaCopiedTimer = setTimeout(() => this.setState({ missingMediaRequestCopied: false }), 1400);
   }
   // Settings UI: Connected sources add/edit form (Phase 1's one
   // remaining piece -- see /home/dev/.claude/plans/encapsulated-waddling-gizmo.md).
@@ -11057,7 +11131,13 @@ class Component extends DCLogic {
             showEditBtn: canEdit && !isEditing && !!c.id && !c.redacted,
             showRedactBtn: !isEditing && !!c.id && !c.redacted,
             onStartEdit: () => this.startEditCommentStreamEntry(fieldId, c.id, c.text),
-            onRedact: () => this.redactCommentStreamEntry(issue.id, fieldId, c.id) };
+            onRedact: () => this.redactCommentStreamEntry(issue.id, fieldId, c.id),
+            // Media attachments (e16588b6): "likely has it" -- this
+            // comment's own author, plus enough issue context for a
+            // copyable request message. Scoped to comments only for v1;
+            // a media reference in notes/a plain text field falls back
+            // to the doc's own documented "no source to suggest" path.
+            mediaAuthor: c.actor || '', mediaContext: (issue.values.title || 'an issue') + ' (#' + issue.id.slice(0, 8) + ')' };
         }).sort((a, b) => b.sortKey - a.sortKey);
         const slideOverCommentEntries = buildStreamActivityEntries('comments');
         const streamFieldIds = Object.keys(fieldDefs).filter(id => fieldDefs[id].type === 'commentStream' && id !== 'comments');
@@ -11155,7 +11235,8 @@ class Component extends DCLogic {
           showEditBtn: canEdit && !isEditing && !!c.id && !c.redacted,
           showRedactBtn: !isEditing && !!c.id && !c.redacted,
           onStartEdit: () => this.startEditProjectComment(c.id, c.text),
-          onRedact: () => this.redactProjectComment(c.id) };
+          onRedact: () => this.redactProjectComment(c.id),
+          mediaAuthor: c.actor || '', mediaContext: (meta && meta.name ? meta.name : 'this project') + ' · project notes' };
       }).sort((a, b) => b.sortKey - a.sortKey);
       const noteHistoryEntries = s.projectHistory.filter(h => h.origin !== 'legacy-backfill').map(h => ({
         isComment: false, isHistory: true,
@@ -11488,6 +11569,25 @@ class Component extends DCLogic {
         this.setState({ switcherRowContextMenu: null });
       }
     } : { open: false, x: 0, y: 0, onOpenInNewWindow: () => {} };
+    // Media attachments' missing-file popover (e16588b6) -- same
+    // anchor/style shape as every other field popover (computeAnchor's
+    // left/top/upwardOffsetPx), just not tied to activeCell since a
+    // media pill can live in a comment, project notes, or a text field.
+    const missingMediaPopover = s.missingMediaPopover ? {
+      open: true,
+      style: 'position:fixed; left:' + s.missingMediaPopover.anchorLeft + 'px; ' +
+        (s.missingMediaPopover.openUpward ? ('bottom:' + s.missingMediaPopover.anchorBottomPx + 'px;') : ('top:' + s.missingMediaPopover.anchorTopPx + 'px;')),
+      filename: s.missingMediaPopover.filename,
+      hashLabel: 'sha256:' + s.missingMediaPopover.hash.slice(0, 16) + '…',
+      hasAuthor: !!s.missingMediaPopover.author,
+      author: s.missingMediaPopover.author,
+      authorInitial: (s.missingMediaPopover.author || '?')[0].toUpperCase(),
+      requestMessage: (s.missingMediaPopover.author ? ('Could you send me ' + s.missingMediaPopover.filename + '?') : ('Could anyone send me ' + s.missingMediaPopover.filename + '?')) +
+        '\nI don\'t have it locally — hash sha256:' + s.missingMediaPopover.hash + '.' +
+        (s.missingMediaPopover.context ? ('\nFrom Wigwag · ' + s.missingMediaPopover.context) : ''),
+      copyLabel: s.missingMediaRequestCopied ? 'Copied!' : 'Copy request message',
+      onCopy: () => this.copyMissingMediaRequestMessage()
+    } : { open: false };
     const emailGate = {
       open: s.emailGateOpen,
       draft: s.emailGateDraft,
@@ -11619,7 +11719,8 @@ class Component extends DCLogic {
       if (issue) {
         const mobileDescriptionColId = Object.keys(fieldDefs).find(id => id !== 'title' && fieldDefs[id].type === 'text' && (fieldDefs[id].label || '').trim().toLowerCase() === 'description');
         const mobileCommentEntries = latestCommentsById((issue.fields.comments && issue.fields.comments.history) || []).map(c => ({
-          actor: c.actor || 'Someone', initial: (c.actor || '?')[0].toUpperCase(), time: this.timeLabelFor(c), text: c.text, isRedacted: !!c.redacted, sortKey: c.sortKey || 0
+          actor: c.actor || 'Someone', initial: (c.actor || '?')[0].toUpperCase(), time: this.timeLabelFor(c), text: c.text, isRedacted: !!c.redacted, sortKey: c.sortKey || 0,
+          mediaAuthor: c.actor || '', mediaContext: (issue.values.title || 'an issue') + ' (#' + issue.id.slice(0, 8) + ')'
         })).sort((a, b) => b.sortKey - a.sortKey);
         const mobileHistoryEntries = this.buildIssueHistoryActivityEntries(issue, fieldDefs);
         const mobileActiveActivity = s.activityTab === 'history' ? mobileHistoryEntries : mobileCommentEntries;
@@ -11809,6 +11910,7 @@ class Component extends DCLogic {
       ident,
       switcher,
       switcherRowContextMenu,
+      missingMediaPopover,
       globalSearch: this.globalSearchVals(),
       emailGate,
       attributionGate,

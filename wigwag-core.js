@@ -1198,6 +1198,16 @@ function renderMarkdownInline(line) {
   const MARK = '';
   const push = function (html) { stash.push(html); return MARK + (stash.length - 1) + MARK; };
   out = out.replace(/`([^`]+)`/g, function (m, code) { return push('<code>' + code + '</code>'); });
+  // Media attachments (tracker e16588b6): [filename](wigwag-media:<sha256
+  // hex>), Wigwag's own reference syntax for a locally-hashed attachment --
+  // must run BEFORE the generic markdown-link pass just below, which would
+  // otherwise consume it and discard the wigwag-media: URL entirely (it
+  // isn't https:/mailto:, so that pass's own fallback keeps only the
+  // plain label). Placeholder only -- hydrateMarkdownBodies fills in the
+  // real present/missing card via a LOCAL lookup, never a fetch.
+  out = out.replace(/\[([^\]\n]+)\]\(wigwag-media:([a-f0-9]{64})\)/g, function (m, label, hash) {
+    return push('<a href="#" class="wigwag-media-pill" data-media-hash="' + hash + '" data-media-filename="' + label + '">' + label + '</a>');
+  });
   out = out.replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g, function (m, label, url) {
     const trimmed = url.trim();
     return /^(https?:|mailto:)/i.test(trimmed) ? push('<a href="' + trimmed + '" target="_blank" rel="noopener noreferrer">' + label + '</a>') : label;

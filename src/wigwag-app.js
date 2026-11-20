@@ -2324,6 +2324,7 @@ class Component extends DCLogic {
     if (this.isTauriUpdaterRuntime()) {
       this.checkForUpdate();
     }
+    this.refreshMediaStoreIndex();
     // file: origins can't register a service worker at all (same restriction
     // mentionNotificationsFileOrigin already surfaces for in-tab notifications)
     // -- skip quietly rather than let the rejection hit the console.
@@ -4720,6 +4721,65 @@ class Component extends DCLogic {
     if (!this.isTauriConnectorRuntime()) return Promise.resolve();
     return window.__TAURI__.core.invoke('connected_source_delete_credential', { connectorId }).catch(() => {});
   };
+  // Media attachments (design handoff attachments.zip, tracker
+  // e16588b6), Tauri-only for now -- Tom: durable storage was the hard
+  // requirement, a browser/widget version needs a different backing
+  // store entirely and is an explicit second pass, not this one. Every
+  // method here is a no-op (or the obvious empty-result equivalent)
+  // outside Tauri, same isTauriConnectorRuntime gate every other
+  // native-only feature in this file already uses -- the render/hydrate
+  // side built on top of these stays inert with nothing to hydrate
+  // against, rather than needing its own separate runtime branch.
+  //
+  // sha256 hex digest via the browser's own SubtleCrypto -- no reason
+  // to also hash in Rust just to re-derive what's computed here first
+  // and handed to media_store_write as the key.
+  async hashBytes(bytes) {
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+  // In-memory index of every hash this device actually has bytes for
+  // (plus its size), refreshed from the real store rather than
+  // maintained incrementally -- cheap (one directory walk) and immune
+  // to ever drifting from what's really on disk. Read synchronously by
+  // every render (mediaIndexHasHash/mediaIndexSizeFor) since a
+  // markdown/pill render can't itself await a promise -- this is the
+  // same "cache refreshed on known triggers, read synchronously at
+  // render time" shape plenty of other live-fetched state in this app
+  // already uses (e.g. liveFetchedViaForRef).
+  refreshMediaStoreIndex() {
+    if (!this.isTauriConnectorRuntime()) return Promise.resolve();
+    return window.__TAURI__.core.invoke('media_store_list').then(entries => {
+      this._mediaStoreIndex = new Map(entries.map(e => [e.hash, e.size]));
+      this.setState({});
+    }).catch(e => console.error('[wigwag] failed to read the local media store: ' + e.message));
+  }
+  mediaIndexHasHash(hash) { return !!(this._mediaStoreIndex && this._mediaStoreIndex.has(hash)); }
+  mediaIndexSizeFor(hash) { return this._mediaStoreIndex ? this._mediaStoreIndex.get(hash) : undefined; }
+  // Stores bytes under their own hash (content-addressed -- the caller
+  // always already knows the hash, either freshly computed via
+  // hashBytes for a brand-new attach, or re-derived while verifying an
+  // incoming Receive/zip-import candidate) and updates the in-memory
+  // index so a render immediately after sees it as present, with no
+  // extra round trip back to media_store_list.
+  mediaStoreWrite(hash, bytes) {
+    if (!this.isTauriConnectorRuntime()) return Promise.reject(new Error('media storage needs the desktop app'));
+    return window.__TAURI__.core.invoke('media_store_write', { hash, bytes }).then(() => {
+      if (this._mediaStoreIndex) this._mediaStoreIndex.set(hash, bytes.length);
+    });
+  }
+  // Tauri's own command-return serialization hands a Vec<u8> back as a
+  // plain JSON number array, not a typed array -- normalized to a real
+  // Uint8Array here so every caller gets one consistent shape regardless
+  // of transport.
+  mediaStoreRead(hash) {
+    if (!this.isTauriConnectorRuntime()) return Promise.resolve(null);
+    return window.__TAURI__.core.invoke('media_store_read', { hash }).then(bytes => bytes ? new Uint8Array(bytes) : null);
+  }
+  mediaStoreRevealPath(hash) {
+    if (!this.isTauriConnectorRuntime()) return Promise.resolve(null);
+    return window.__TAURI__.core.invoke('media_store_reveal_path', { hash });
+  }
   // Settings UI: Connected sources add/edit form (Phase 1's one
   // remaining piece -- see /home/dev/.claude/plans/encapsulated-waddling-gizmo.md).
   // A fresh draft each time the form opens -- editing an EXISTING

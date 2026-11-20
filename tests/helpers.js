@@ -583,6 +583,28 @@ async function mockGithubApi(page) {
           if (cmd === 'identity_credential_delete') { delete store[entryKey]; localStorage.setItem(KEY, JSON.stringify(store)); return Promise.resolve(null); }
           return Promise.resolve(entryKey in store ? store[entryKey] : null);
         }
+        // Fake local media store (tracker e16588b6) -- same persists-
+        // across-reload shape as the fake keychain above, its own
+        // localStorage key, bytes kept base64-encoded since
+        // localStorage only ever holds strings. media_store_read's real
+        // Rust return is a plain JSON number array (confirmed: Vec<u8>
+        // serializes that way, not as a typed array), so this stub
+        // matches that shape rather than handing back a Uint8Array --
+        // mediaStoreRead's own JS wrapper is what normalizes it.
+        if (cmd === 'media_store_write' || cmd === 'media_store_read' || cmd === 'media_store_exists' || cmd === 'media_store_reveal_path' || cmd === 'media_store_list') {
+          const KEY = '__test_fake_media_store__';
+          const toB64 = bytes => btoa(String.fromCharCode.apply(null, new Uint8Array(bytes)));
+          const fromB64 = b64 => Array.from(atob(b64), c => c.charCodeAt(0));
+          const store = JSON.parse(localStorage.getItem(KEY) || '{}');
+          if (cmd === 'media_store_write') {
+            if (!(args.hash in store)) { store[args.hash] = toB64(args.bytes); localStorage.setItem(KEY, JSON.stringify(store)); }
+            return Promise.resolve(null);
+          }
+          if (cmd === 'media_store_read') return Promise.resolve(args.hash in store ? fromB64(store[args.hash]) : null);
+          if (cmd === 'media_store_exists') return Promise.resolve(args.hash in store);
+          if (cmd === 'media_store_reveal_path') return Promise.resolve(args.hash in store ? ('/fake/media/store/' + args.hash) : null);
+          return Promise.resolve(Object.keys(store).map(hash => ({ hash, size: fromB64(store[hash]).length })));
+        }
         if (cmd === 'connected_source_fetch') {
           const m = args.url.match(/\/repos\/([^/]+\/[^/]+\/issues\/\d+)$/);
           const fixture = m && fixtures[m[1]];

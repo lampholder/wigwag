@@ -252,3 +252,59 @@ test.describe('Media attachments: Receive\'s ingestion path', () => {
     await expect(page.locator('[data-testid=receive-media-row]')).toHaveCount(0);
   });
 });
+
+test.describe('Media attachments: Send menu\'s "Send media by hash…"', () => {
+  test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
+
+  test('a new highlighted row sits at the bottom of the existing Send menu', async ({ page }) => {
+    await page.locator('[data-testid=btn-export]').click();
+    await page.waitForTimeout(150);
+    const row = page.locator('[data-testid=btn-send-media-by-hash]');
+    await expect(row).toBeVisible();
+    await expect(row).toContainText('Send media by hash');
+    // Sits after the three existing rows, not before/between them.
+    const allRows = page.locator('[data-testid^=btn-export-], [data-testid=btn-copy-to-clipboard], [data-testid=btn-send-media-by-hash]');
+    await expect(allRows.last()).toHaveAttribute('data-testid', 'btn-send-media-by-hash');
+  });
+
+  test('pasting a hash that matches a locally stored file shows its name/size/context and a working Reveal in folder; a non-matching hash says so plainly', async ({ page }) => {
+    const hash = await page.evaluate(async () => {
+      const digest = await crypto.subtle.digest('SHA-256', new Uint8Array([5, 5, 5]));
+      return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+    });
+    await openFirstIssue(page);
+    const [chooser] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      page.locator('[data-testid=comment-attach-btn]').click()
+    ]);
+    await chooser.setFiles({ name: 'network-diagram.pdf', mimeType: 'application/pdf', buffer: Buffer.from([5, 5, 5]) });
+    await page.waitForTimeout(300);
+    await page.locator('[data-testid=new-comment-input]').press('Control+Enter');
+    await page.waitForTimeout(400);
+    await h.closeSlideover(page);
+    await page.waitForTimeout(200);
+
+    await page.locator('[data-testid=btn-export]').click();
+    await page.waitForTimeout(150);
+    await page.locator('[data-testid=btn-send-media-by-hash]').click();
+    await page.waitForTimeout(150);
+    const popover = page.locator('[data-testid=send-media-by-hash-popover]');
+    await expect(popover).toBeVisible();
+
+    await page.locator('[data-testid=send-media-by-hash-input]').fill('sha256:' + hash);
+    await page.waitForTimeout(150);
+    const match = page.locator('[data-testid=send-media-by-hash-match]');
+    await expect(match).toContainText('network-diagram.pdf');
+    await expect(match).toContainText('3 B');
+    await expect(page.locator('[data-testid=send-media-by-hash-not-found]')).toHaveCount(0);
+
+    await page.locator('[data-testid=send-media-by-hash-input]').fill('sha256:' + 'f'.repeat(64));
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=send-media-by-hash-not-found]')).toBeVisible();
+    await expect(page.locator('[data-testid=send-media-by-hash-match]')).toHaveCount(0);
+
+    await page.mouse.click(10, 10);
+    await page.waitForTimeout(150);
+    await expect(popover).toHaveCount(0);
+  });
+});

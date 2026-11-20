@@ -2373,6 +2373,11 @@ class Component extends DCLogic {
       if (s.missingMediaPopover && !e.target.closest('[data-testid="missing-media-popover"]') && !e.target.closest('[data-testid="missing-media-card"]')) {
         patch = Object.assign(patch || {}, { missingMediaPopover: null });
       }
+      // Send menu's "Send media by hash…" popover (e16588b6) -- same
+      // allowlist discipline as missingMediaPopover above.
+      if (s.sendMediaByHashOpen && !e.target.closest('[data-testid="send-media-by-hash-popover"]') && !e.target.closest('[data-testid="btn-send-media-by-hash"]')) {
+        patch = Object.assign(patch || {}, { sendMediaByHashOpen: false });
+      }
       if (!s.jumpDismissed && !e.target.closest('[data-testid="filter-input-wrap"]') && !e.target.closest('[data-testid="jump-panel"]') && !e.target.closest('[data-testid="mobile-filter-header"]') && !e.target.closest('[data-testid="mobile-row-list"]')) {
         patch = Object.assign(patch || {}, { jumpDismissed: true });
       }
@@ -4922,32 +4927,41 @@ class Component extends DCLogic {
     e.preventDefault();
     this.attachFilesSequentially(e.dataTransfer && e.dataTransfer.files);
   }
-  // Receive's media-ingestion path (e16588b6): every wigwag-media:
-  // reference visible in the CURRENTLY LOADED project that this
-  // device doesn't have bytes for yet -- "visible to the user" scoped
-  // to the open project, not every project ever opened on this
-  // device. hash -> best-effort filename (from the first [label](...)
-  // found for it), for the "Matched · attached to X" sub-label.
-  findVisibleMissingMediaHashes() {
+  // Every wigwag-media: reference visible in the CURRENTLY LOADED
+  // project -- "visible to the user" scoped to the open project, not
+  // every project ever opened on this device. hash -> {filename,
+  // context}, context being WHERE it's attached (an issue's own title
+  // + short id, or "project notes"/"a project comment"), not the
+  // filename again -- used by both Receive's auto-match ("Matched ·
+  // attached to X") and Send's hash lookup ("attached to CST-108" in
+  // the design doc, translated to this app's own #<uuid-prefix>
+  // convention since there's no sequential issue id here).
+  findVisibleMediaReferences() {
     const found = new Map();
     const labelRe = /\[([^\]\n]*)\]\(wigwag-media:([a-f0-9]{64})\)/g;
-    const scanText = text => {
+    const scanText = (text, context) => {
       if (typeof text !== 'string') return;
       labelRe.lastIndex = 0;
       let m;
-      while ((m = labelRe.exec(text))) { if (!found.has(m[2])) found.set(m[2], m[1]); }
+      while ((m = labelRe.exec(text))) { if (!found.has(m[2])) found.set(m[2], { filename: m[1], context }); }
     };
     this.state.issues.forEach(iss => {
+      const context = (iss.values.title || 'an issue') + ' (#' + iss.id.slice(0, 8) + ')';
       // Comment-type entries carry their text in h.text, not h.value
       // (confirmed: addCommentStreamEntry's own entryBase has no .value
       // at all) -- scanning both covers comments and every other field
       // type uniformly.
-      Object.values(iss.fields || {}).forEach(f => (f.history || []).forEach(h => { scanText(h.value); scanText(h.text); }));
+      Object.values(iss.fields || {}).forEach(f => (f.history || []).forEach(h => { scanText(h.value, context); scanText(h.text, context); }));
     });
-    scanText(this.state.projectNotes);
-    (this.state.projectComments || []).forEach(c => scanText(c.text));
+    const projectMeta = this.state.projects.find(p => p.id === this.state.projectId);
+    const projectName = (projectMeta && projectMeta.name) || 'this project';
+    scanText(this.state.projectNotes, projectName + ' · project notes');
+    (this.state.projectComments || []).forEach(c => scanText(c.text, projectName + ' · a project comment'));
+    return found;
+  }
+  findVisibleMissingMediaHashes() {
     const missing = new Map();
-    found.forEach((filename, hash) => { if (!this.mediaIndexHasHash(hash)) missing.set(hash, filename); });
+    this.findVisibleMediaReferences().forEach((info, hash) => { if (!this.mediaIndexHasHash(hash)) missing.set(hash, info.filename); });
     return missing;
   }
   // A match ingests straight into local storage immediately (tracker
@@ -4960,11 +4974,12 @@ class Component extends DCLogic {
     return file.arrayBuffer().then(buf => {
       const bytes = new Uint8Array(buf);
       return this.hashBytes(bytes).then(hash => {
-        const missing = this.findVisibleMissingMediaHashes();
-        const matched = missing.has(hash);
+        const refs = this.findVisibleMediaReferences();
+        const info = refs.get(hash);
+        const matched = !!info && !this.mediaIndexHasHash(hash);
         const row = {
           name: file.name, hash, matched, unmatched: !matched, kept: matched,
-          sub: matched ? ('Matched · attached to ' + (missing.get(hash) || 'this project')) : ('sha256:' + hash.slice(0, 10) + '… · no matching request')
+          sub: matched ? ('Matched · attached to ' + info.context) : ('sha256:' + hash.slice(0, 10) + '… · no matching request')
         };
         if (matched) return this.mediaStoreWrite(hash, bytes).then(() => row);
         this._pendingMediaBytes = this._pendingMediaBytes || new Map();
@@ -4979,6 +4994,37 @@ class Component extends DCLogic {
     this.mediaStoreWrite(hash, bytes).then(() => {
       this.setState(s => ({ receiveMediaResults: (s.receiveMediaResults || []).map(r => r.hash === hash ? { ...r, kept: true } : r) }));
     });
+  }
+  // Send menu's "Send media by hash…" (e16588b6): someone asked for a
+  // file OUTSIDE Wigwag (email/Slack) carrying its hash -- there's
+  // deliberately no in-app request inbox for this (see the design
+  // doc's own README). Paste the hash, check local storage, hand back
+  // Reveal in folder on a match so the user attaches it to their reply
+  // themselves. A truncated/partial hash is treated the same as a
+  // non-match rather than a special "ambiguous" state -- simple and
+  // honest, not worth a prefix-search UI for what's meant to be a
+  // full hash pasted from elsewhere anyway.
+  toggleSendMediaByHash(e) {
+    const s = this.state;
+    if (s.sendMediaByHashOpen) { this.setState({ sendMediaByHashOpen: false, exportMenuOpen: false }); return; }
+    const a = this.computeAnchor(e.currentTarget, 300);
+    this.setState({
+      sendMediaByHashOpen: true, exportMenuOpen: false, sendMediaByHashDraft: '',
+      sendMediaByHashAnchorLeft: a.left, sendMediaByHashAnchorTopPx: a.top
+    });
+  }
+  sendMediaByHashResult() {
+    const raw = (this.state.sendMediaByHashDraft || '').trim().replace(/^sha256:/i, '');
+    if (!/^[a-f0-9]{64}$/i.test(raw)) return null;
+    const hash = raw.toLowerCase();
+    if (!this.mediaIndexHasHash(hash)) return { found: false };
+    const info = this.findVisibleMediaReferences().get(hash);
+    return {
+      found: true, hash,
+      name: (info && info.filename) || '(unknown filename)',
+      size: humanFileSize(this.mediaIndexSizeFor(hash) || 0),
+      context: (info && info.context) || null
+    };
   }
   // Shared by the Receive modal's file-input AND (new) drop handler --
   // a real filename/extension is the one honest, cheap signal for
@@ -12783,6 +12829,22 @@ class Component extends DCLogic {
           .then(html => this.downloadTextFile(html, this.exportFilename('html'), 'text/html'))
           .catch(err => window.alert('Could not build the HTML export: ' + err.message));
       },
+      onToggleSendMediaByHash: e => this.toggleSendMediaByHash(e),
+      sendMediaByHash: (() => {
+        if (!s.sendMediaByHashOpen) return { open: false };
+        const result = this.sendMediaByHashResult();
+        return {
+          open: true,
+          style: 'position:fixed; left:' + s.sendMediaByHashAnchorLeft + 'px; top:' + s.sendMediaByHashAnchorTopPx + 'px;',
+          draft: s.sendMediaByHashDraft,
+          onDraftChange: e => this.setState({ sendMediaByHashDraft: e.target.value }),
+          found: !!(result && result.found),
+          showNotFound: !!(result && !result.found),
+          name: result && result.found ? result.name : '', size: result && result.found ? result.size : '',
+          context: result && result.found ? result.context : '',
+          onReveal: result && result.found ? (() => this.revealMediaInFolder(result.hash)) : (() => {})
+        };
+      })(),
       sourceView: s.sourceViewOpen,
       notSourceView: !s.sourceViewOpen,
       toggleSourceView: this.toggleSourceView,

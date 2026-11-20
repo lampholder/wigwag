@@ -2455,7 +2455,7 @@
                     </div>
                   </sc-if>
                   <sc-if value="{{ a.showCommentBody }}" hint-placeholder-val="{{ true }}">
-                    <div data-testid="comment-md" data-raw-text="{{ a.text }}" data-media-author="{{ a.mediaAuthor }}" data-media-context="{{ a.mediaContext }}" class="md-body"></div>
+                    <div data-testid="comment-md" data-raw-text="{{ a.text }}" data-media-author="{{ a.mediaAuthor }}" data-media-context="{{ a.mediaContext }}" data-media-issue-id="{{ a.mediaIssueId }}" class="md-body"></div>
                   </sc-if>
                 </sc-if>
                 <sc-if value="{{ a.isHistory }}">
@@ -2602,7 +2602,7 @@
                     </div>
                   </sc-if>
                   <sc-if value="{{ a.showCommentBody }}" hint-placeholder-val="{{ true }}">
-                    <div data-testid="project-comment-md" data-raw-text="{{ a.rawText }}" data-media-author="{{ a.mediaAuthor }}" data-media-context="{{ a.mediaContext }}" class="md-body" style="font-size:13px; line-height:1.5;"></div>
+                    <div data-testid="project-comment-md" data-raw-text="{{ a.rawText }}" data-media-author="{{ a.mediaAuthor }}" data-media-context="{{ a.mediaContext }}" data-media-issue-id="{{ a.mediaIssueId }}" class="md-body" style="font-size:13px; line-height:1.5;"></div>
                   </sc-if>
                 </sc-if>
                 <sc-if value="{{ a.isHistory }}">
@@ -3672,7 +3672,7 @@
                     </sc-if>
                     <sc-if value="{{ !a.isRedacted }}" hint-placeholder-val="{{ true }}">
                       <sc-if value="{{ mobile.rowDetail.isCommentsTab }}" hint-placeholder-val="{{ true }}">
-                        <div data-testid="comment-md" data-raw-text="{{ a.text }}" data-media-author="{{ a.mediaAuthor }}" data-media-context="{{ a.mediaContext }}" class="md-body"></div>
+                        <div data-testid="comment-md" data-raw-text="{{ a.text }}" data-media-author="{{ a.mediaAuthor }}" data-media-context="{{ a.mediaContext }}" data-media-issue-id="{{ a.mediaIssueId }}" class="md-body"></div>
                       </sc-if>
                       <sc-if value="{{ mobile.rowDetail.isHistoryTab }}" hint-placeholder-val="{{ false }}">
                         <sc-if value="{{ a.hasPill }}" hint-placeholder-val="{{ false }}">{{ a.pill.before }}<span style="font-size:12px; padding:2px 8px; border-radius:10px; background: {{ a.pill.bg }}; color: {{ a.pill.fg }};">{{ a.pill.emoji }} {{ a.pill.label }}</span>{{ a.pill.after }}</sc-if>

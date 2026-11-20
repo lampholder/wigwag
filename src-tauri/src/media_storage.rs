@@ -98,6 +98,70 @@ pub fn media_store_reveal_path(app: tauri::AppHandle, hash: String) -> Result<Op
     Ok(Some(path.to_string_lossy().into_owned()))
 }
 
+// Keeps a path segment confined to one real filesystem entry: no
+// separators (so e.g. a filename of "../../etc/passwd" can't climb out
+// of the attachments tree) and no leading dots (so a segment can't
+// collapse to "." or ".." once separators are stripped). Project/issue
+// ids are app-controlled UUIDs already, but the filename is whatever
+// the user's own file was called, so it's the one untrusted input here.
+fn sanitize_path_segment(s: &str) -> String {
+    let cleaned: String = s
+        .chars()
+        .map(|c| if c == '/' || c == '\\' || c == '\0' { '_' } else { c })
+        .collect();
+    let trimmed = cleaned.trim_start_matches('.');
+    if trimmed.is_empty() { "_".to_string() } else { trimmed.to_string() }
+}
+
+// Materializes a friendly-named copy (well, usually a hard link -- see
+// below) of an already-stored hash's bytes at
+// <app-data>/attachments/<project>/<issue>/<hash>/<original filename>,
+// so "open"/"reveal" can point the OS at a path that actually has the
+// right extension and a recognizable name (tracker e16588b6 follow-up:
+// Finder opening a bare 64-hex-char file with no extension doesn't know
+// how to preview it). The <hash> directory level exists purely so two
+// different attachments in the same issue that happen to share an
+// original filename never collide -- the global hash store above
+// remains the only deduplicated source of truth; this is just a
+// convenience view onto it, rebuilt lazily and left to accumulate
+// (nothing here ever needs to be swept -- it's a tiny fraction of the
+// real store's size, and stale entries are harmless).
+#[tauri::command]
+pub fn media_store_materialize_friendly(
+    app: tauri::AppHandle,
+    hash: String,
+    project_id: String,
+    issue_id: String,
+    filename: String,
+) -> Result<String, String> {
+    let src = path_for_hash(&app, &hash)?;
+    if !src.exists() {
+        return Err("no stored bytes for this hash".into());
+    }
+    let filename = sanitize_path_segment(&filename);
+    let filename = if filename.is_empty() { hash.clone() } else { filename };
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("attachments")
+        .join(sanitize_path_segment(&project_id))
+        .join(sanitize_path_segment(&issue_id))
+        .join(&hash);
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let dest = dir.join(&filename);
+    if !dest.exists() {
+        // Hard link when possible (same volume, zero extra disk use);
+        // fall back to a real copy if that ever fails (e.g. a
+        // cross-device app-data layout) -- either way `dest` ends up
+        // with the right bytes under the right name.
+        if fs::hard_link(&src, &dest).is_err() {
+            fs::copy(&src, &dest).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(dest.to_string_lossy().into_owned())
+}
+
 #[derive(serde::Serialize)]
 pub struct MediaStoreEntry {
     hash: String,

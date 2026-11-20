@@ -52,6 +52,26 @@ test.describe('Media attachments: reference rendering', () => {
     await expect(page.locator('[data-testid=media-card-missing]')).toHaveCount(0);
   });
 
+  test('clicking a present card materializes a friendly-named copy (real filename, not the bare hash) and opens it -- not just reveals it', async ({ page }) => {
+    await openFirstIssue(page);
+    const [chooser] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      page.locator('[data-testid=comment-attach-btn]').click()
+    ]);
+    await chooser.setFiles({ name: 'report.pdf', mimeType: 'application/pdf', buffer: Buffer.from('hello world') });
+    await page.waitForTimeout(300);
+    await page.locator('[data-testid=new-comment-input]').press('Control+Enter');
+    await page.waitForTimeout(400);
+
+    await page.locator('[data-testid=media-card-present]').click();
+    await page.waitForTimeout(300);
+    const calls = await page.evaluate(() => window.__openerCalls);
+    expect(calls.length).toBe(1);
+    expect(calls[0].fn).toBe('openPath');
+    expect(calls[0].path.endsWith('/report.pdf')).toBe(true);
+    expect(calls[0].path).not.toContain('report.pdf.pdf');
+  });
+
   test('a plain [label](https://...) link is unaffected -- the new reference type only intercepts wigwag-media: URLs', async ({ page }) => {
     await openFirstIssue(page);
     await page.locator('[data-testid=new-comment-input]').fill('See [the doc](https://example.com/doc).');

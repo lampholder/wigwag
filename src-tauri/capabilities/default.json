@@ -18,6 +18,7 @@
     "core:window:allow-start-dragging",
     "core:window:allow-set-title",
     "opener:allow-reveal-item-in-dir",
+    "opener:allow-open-path",
     "dialog:allow-save",
     "fs:allow-write-file",
     "fs:allow-download-write-recursive",

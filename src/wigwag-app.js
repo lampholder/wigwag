@@ -3908,6 +3908,7 @@ class Component extends DCLogic {
       // doesn't shift when a file arrives."
       const mediaAuthor = el.getAttribute('data-media-author') || '';
       const mediaContext = el.getAttribute('data-media-context') || '';
+      const mediaIssueId = el.getAttribute('data-media-issue-id') || '';
       el.querySelectorAll('.wigwag-media-pill').forEach(pill => {
         const hash = pill.getAttribute('data-media-hash') || '';
         const filename = pill.getAttribute('data-media-filename') || '';
@@ -3919,7 +3920,7 @@ class Component extends DCLogic {
             '<span style="min-width:0; flex:1;"><span style="display:block; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-primary);">' + escapeHtml(filename) + '</span>' +
             '<span style="display:block; font-size:10.5px; color:var(--text-tertiary);">' + escapeHtml(humanFileSize(this.mediaIndexSizeFor(hash) || 0)) + '</span></span>';
           pill.setAttribute('data-testid', 'media-card-present');
-          pill.onclick = e => { e.preventDefault(); this.revealMediaInFolder(hash); };
+          pill.onclick = e => { e.preventDefault(); this.openMediaFile(hash, filename, mediaIssueId); };
         } else {
           pill.style.cssText += 'border:1.5px dashed var(--border-strong); background:var(--surface-hover);';
           pill.innerHTML = '<span style="position:relative; display:inline-flex; color:var(--text-placeholder); flex-shrink:0;">' + fileIconSvg +
@@ -4835,6 +4836,27 @@ class Component extends DCLogic {
       if (!path) return;
       if (window.__TAURI__ && window.__TAURI__.opener) return window.__TAURI__.opener.revealItemInDir(path);
     }).catch(e => console.error('[wigwag] failed to reveal attachment in folder: ' + e.message));
+  }
+  // Materializes a friendly-named copy of a stored hash's bytes (real
+  // filename, real extension) under this project/issue, so the OS can
+  // actually tell what kind of file it is -- the raw hash store's
+  // files have no extension at all, which is why opening/revealing
+  // *those* directly just shows Finder a file it can't preview. Resolved
+  // fresh each call rather than cached, same rationale as
+  // mediaStoreRevealPath above.
+  mediaStoreMaterializeFriendly(hash, issueId, filename) {
+    if (!this.isTauriConnectorRuntime()) return Promise.resolve(null);
+    return window.__TAURI__.core.invoke('media_store_materialize_friendly', {
+      hash, projectId: this.state.projectId || '_project', issueId: issueId || '_project', filename: filename || hash
+    });
+  }
+  // The actual "click a pdf, it opens in Preview" action -- distinct
+  // from revealMediaInFolder (which just highlights it in Finder).
+  openMediaFile(hash, filename, issueId) {
+    this.mediaStoreMaterializeFriendly(hash, issueId, filename).then(path => {
+      if (!path) return;
+      if (window.__TAURI__ && window.__TAURI__.opener) return window.__TAURI__.opener.openPath(path);
+    }).catch(e => console.error('[wigwag] failed to open attachment: ' + e.message));
   }
   toggleMissingMediaPopover(hash, filename, author, context, e) {
     const s = this.state;
@@ -11399,7 +11421,7 @@ class Component extends DCLogic {
             // copyable request message. Scoped to comments only for v1;
             // a media reference in notes/a plain text field falls back
             // to the doc's own documented "no source to suggest" path.
-            mediaAuthor: c.actor || '', mediaContext: (issue.values.title || 'an issue') + ' (#' + issue.id.slice(0, 8) + ')' };
+            mediaAuthor: c.actor || '', mediaContext: (issue.values.title || 'an issue') + ' (#' + issue.id.slice(0, 8) + ')', mediaIssueId: issue.id };
         }).sort((a, b) => b.sortKey - a.sortKey);
         const slideOverCommentEntries = buildStreamActivityEntries('comments');
         const streamFieldIds = Object.keys(fieldDefs).filter(id => fieldDefs[id].type === 'commentStream' && id !== 'comments');
@@ -11499,7 +11521,7 @@ class Component extends DCLogic {
           showRedactBtn: !isEditing && !!c.id && !c.redacted,
           onStartEdit: () => this.startEditProjectComment(c.id, c.text),
           onRedact: () => this.redactProjectComment(c.id),
-          mediaAuthor: c.actor || '', mediaContext: (meta && meta.name ? meta.name : 'this project') + ' · project notes' };
+          mediaAuthor: c.actor || '', mediaContext: (meta && meta.name ? meta.name : 'this project') + ' · project notes', mediaIssueId: '_project' };
       }).sort((a, b) => b.sortKey - a.sortKey);
       const noteHistoryEntries = s.projectHistory.filter(h => h.origin !== 'legacy-backfill').map(h => ({
         isComment: false, isHistory: true,
@@ -11989,7 +12011,7 @@ class Component extends DCLogic {
         const mobileDescriptionColId = Object.keys(fieldDefs).find(id => id !== 'title' && fieldDefs[id].type === 'text' && (fieldDefs[id].label || '').trim().toLowerCase() === 'description');
         const mobileCommentEntries = latestCommentsById((issue.fields.comments && issue.fields.comments.history) || []).map(c => ({
           actor: c.actor || 'Someone', initial: (c.actor || '?')[0].toUpperCase(), time: this.timeLabelFor(c), text: c.text, isRedacted: !!c.redacted, sortKey: c.sortKey || 0,
-          mediaAuthor: c.actor || '', mediaContext: (issue.values.title || 'an issue') + ' (#' + issue.id.slice(0, 8) + ')'
+          mediaAuthor: c.actor || '', mediaContext: (issue.values.title || 'an issue') + ' (#' + issue.id.slice(0, 8) + ')', mediaIssueId: issue.id
         })).sort((a, b) => b.sortKey - a.sortKey);
         const mobileHistoryEntries = this.buildIssueHistoryActivityEntries(issue, fieldDefs);
         const mobileActiveActivity = s.activityTab === 'history' ? mobileHistoryEntries : mobileCommentEntries;

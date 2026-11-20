@@ -591,7 +591,7 @@ async function mockGithubApi(page) {
         // serializes that way, not as a typed array), so this stub
         // matches that shape rather than handing back a Uint8Array --
         // mediaStoreRead's own JS wrapper is what normalizes it.
-        if (cmd === 'media_store_write' || cmd === 'media_store_read' || cmd === 'media_store_exists' || cmd === 'media_store_reveal_path' || cmd === 'media_store_list') {
+        if (cmd === 'media_store_write' || cmd === 'media_store_read' || cmd === 'media_store_exists' || cmd === 'media_store_reveal_path' || cmd === 'media_store_list' || cmd === 'media_store_materialize_friendly') {
           const KEY = '__test_fake_media_store__';
           const toB64 = bytes => btoa(String.fromCharCode.apply(null, new Uint8Array(bytes)));
           const fromB64 = b64 => Array.from(atob(b64), c => c.charCodeAt(0));
@@ -603,6 +603,10 @@ async function mockGithubApi(page) {
           if (cmd === 'media_store_read') return Promise.resolve(args.hash in store ? fromB64(store[args.hash]) : null);
           if (cmd === 'media_store_exists') return Promise.resolve(args.hash in store);
           if (cmd === 'media_store_reveal_path') return Promise.resolve(args.hash in store ? ('/fake/media/store/' + args.hash) : null);
+          if (cmd === 'media_store_materialize_friendly') {
+            if (!(args.hash in store)) return Promise.reject(new Error('no stored bytes for this hash'));
+            return Promise.resolve('/fake/media/store/attachments/' + args.projectId + '/' + args.issueId + '/' + args.hash + '/' + args.filename);
+          }
           return Promise.resolve(Object.keys(store).map(hash => ({ hash, size: fromB64(store[hash]).length })));
         }
         if (cmd === 'connected_source_fetch') {
@@ -623,6 +627,14 @@ async function mockGithubApi(page) {
         if (cmd === 'plugin:opener|open_url') { window.open(args.url, '_blank'); return Promise.resolve(null); }
         return Promise.resolve(null);
       }
+    };
+    // revealMediaInFolder/openMediaFile call window.__TAURI__.opener
+    // directly (the JS global API, not core.invoke) -- stubbed here so
+    // a test can assert which one actually ran, and with what path.
+    window.__openerCalls = window.__openerCalls || [];
+    window.__TAURI__.opener = window.__TAURI__.opener || {
+      revealItemInDir: path => { window.__openerCalls.push({ fn: 'revealItemInDir', path }); return Promise.resolve(null); },
+      openPath: path => { window.__openerCalls.push({ fn: 'openPath', path }); return Promise.resolve(null); }
     };
   }, GITHUB_FIXTURES);
 }

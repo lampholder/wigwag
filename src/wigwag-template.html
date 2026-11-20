@@ -1247,13 +1247,21 @@
                       <div style="width:100%; display:table; table-layout:fixed; border-collapse:collapse; font-size:12.5px;">
                         <sc-for list="{{ seg.cell.rows }}" as="row" hint-placeholder-count="2">
                           <div data-testid="issues-popover-row" style="display:table-row; border-top:1px solid var(--border-subtle);">
-                            <div style="display:table-cell; width:92px; padding:6px 6px; font-family: ui-monospace, monospace; color: var(--text-tertiary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+                            <div style="display:table-cell; width:76px; padding:6px 6px; font-family: ui-monospace, monospace; color: var(--text-tertiary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
                               <sc-if value="{{ row.hasHref }}" hint-placeholder-val="{{ false }}">
                                 <a href="{{ row.href }}" target="_blank" rel="noopener noreferrer" sc-camel-on-click="{{ row.onRowClick }}" style="color: var(--text-tertiary); text-decoration:none;">{{ row.idLabel }}</a>
                               </sc-if>
                               <sc-if value="{{ !row.hasHref }}" hint-placeholder-val="{{ true }}">—</sc-if>
                             </div>
                             <div style="display:table-cell; width:auto; padding:6px 6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{{ row.titleLabel }}">{{ row.titleLabel }}</div>
+                            <div style="display:table-cell; width:62px; padding:6px 4px; text-align:right; overflow:hidden;">
+                              <sc-if value="{{ row.statusLoading }}" hint-placeholder-val="{{ false }}">
+                                <span style="font-size:11px; color: var(--text-placeholder);">…</span>
+                              </sc-if>
+                              <sc-if value="{{ row.showStatus }}" hint-placeholder-val="{{ false }}">
+                                <span data-testid="issues-popover-status" style="display:inline-block; max-width:100%; box-sizing:border-box; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:10.5px; font-weight:600; padding:2px 7px; border-radius:9px; background: {{ row.statusBg }}; color: {{ row.statusFg }};">{{ row.statusLabel }}</span>
+                              </sc-if>
+                            </div>
                             <div style="display:table-cell; width:24px; padding:6px 6px; text-align:right;">
                               <span data-testid="issues-popover-remove" sc-camel-on-click="{{ row.onRemove }}" style="color: var(--text-tertiary); cursor:pointer; padding:2px 4px;">✕</span>
                             </div>

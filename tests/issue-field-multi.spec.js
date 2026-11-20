@@ -82,6 +82,23 @@ test.describe('Multi-issue linking: a non-Title issue field holding 2+ entries',
     await expect(rows).toHaveCount(0);
   });
 
+  test('the popover fetches each built-in entry\'s live status and shows it as a colored pill, not persisted anywhere', async ({ page }) => {
+    const colId = await addField(page, 'Issues', 'issue');
+    await h.clickFieldToEdit(page, 1, colId);
+    // Fixture #1 is 'closed' (statusCategory done), #3 is 'open' (new) --
+    // see GITHUB_FIXTURES in tests/helpers.js.
+    await typeMultilineAndCommit(page, ['https://github.com/octocat/Hello-World/issues/1', 'https://github.com/octocat/Hello-World/issues/3']);
+    await page.waitForTimeout(400);
+
+    const cell = h.fieldCell(page, 1, colId);
+    await cell.locator('[data-testid="issues-pill"]').first().click();
+    await page.waitForTimeout(400);
+    const statusPills = page.locator('[data-testid="issues-popover-status"]');
+    await expect(statusPills).toHaveCount(2);
+    await expect(statusPills.nth(0)).toHaveText('closed');
+    await expect(statusPills.nth(1)).toHaveText('open');
+  });
+
   test('popover remove (x) commits immediately; removing down to one entry demotes the field back to ordinary single-value display', async ({ page }) => {
     const colId = await addField(page, 'Issues', 'issue');
     await h.clickFieldToEdit(page, 1, colId);

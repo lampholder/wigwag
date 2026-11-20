@@ -10277,16 +10277,18 @@ class Component extends DCLogic {
       onClick: readOnly ? undefined : e => this.cellClickGate(issue.id, colId, () => this.togglePopover(issue.id, colId, e)),
       onArrowClick: readOnly ? undefined : e => { e.stopPropagation(); this.togglePopover(issue.id, colId, e); },
       popoverOpen,
-      boundGlyphTitle: isOverridden ? 'Manually set — overrides the rule. Pick "Resync to rule" to clear it.' : (isBoundLive ? this.lockTitle(def) + ' — click to override.' : ''),
+      // Tracker 9b5cd23b: there used to be a "Resync to rule" clear
+      // option here, implying it would recompute/refetch the rule's
+      // actual value -- it never did (selectOption(.., null) just clears
+      // to empty, same as plain "No value"). Tom: that affordance should
+      // just go away -- refreshing (the real refetch-and-resettle path)
+      // is how you actually get the bound value back.
+      boundGlyphTitle: isOverridden ? 'Manually set — overrides the rule. Refresh to pull the rule\'s value back in.' : (isBoundLive ? this.lockTitle(def) + ' — click to override.' : ''),
       cellHighlight: (popoverOpen || isSelected) ? 'outline:2px solid var(--accent-fill); outline-offset:-2px;' : '' };
     if (popoverOpen) {
       cell.popoverStyle = 'position:fixed; left:' + s.activeCell.anchorLeft + 'px; ' +
         (s.activeCell.openUpward ? ('bottom:' + s.activeCell.anchorBottomPx + 'px;') : ('top:' + s.activeCell.anchorTopPx + 'px;'));
-      cell.clearEntry = isBoundCol
-        ? { id: null, label: '↻ Resync to rule', emoji: '', ringColor: 'var(--n41)', ringFill: 'transparent',
-            selected: !isOverridden, rowBg: !isOverridden ? 'var(--surface-selected)' : 'transparent',
-            onSelect: () => this.selectOption(issue.id, colId, null) }
-        : { id: null, label: '— No value —', emoji: '', ringColor: 'var(--n41)', ringFill: 'transparent',
+      cell.clearEntry = { id: null, label: '— No value —', emoji: '', ringColor: 'var(--n41)', ringFill: 'transparent',
             selected: !curId, rowBg: !curId ? 'var(--surface-selected)' : 'transparent',
             onSelect: () => this.selectOption(issue.id, colId, null) };
       cell.options = (def.options || []).map(o => ({
@@ -10322,7 +10324,10 @@ class Component extends DCLogic {
       onClick: readOnly ? undefined : e => this.cellClickGate(issue.id, colId, () => this.togglePopover(issue.id, colId, e)),
       onArrowClick: readOnly ? undefined : e => { e.stopPropagation(); this.togglePopover(issue.id, colId, e); },
       popoverOpen,
-      boundGlyphTitle: isOverridden ? 'Manually set — overrides the rule. Clear all to resync.' : (isBoundLive ? this.lockTitle(def) + ' — click to override.' : ''),
+      // Tracker 9b5cd23b: same fix as buildSelectCell's own -- "Clear all
+      // to resync" implied clearing would bring the rule's value back;
+      // it never did. Refreshing is the real way to get it back.
+      boundGlyphTitle: isOverridden ? 'Manually set — overrides the rule. Refresh to pull the rule\'s value back in.' : (isBoundLive ? this.lockTitle(def) + ' — click to override.' : ''),
       cellHighlight: (popoverOpen || isSelected) ? 'outline:2px solid var(--accent-fill); outline-offset:-2px;' : '' };
     if (popoverOpen) {
       cell.popoverStyle = 'position:fixed; left:' + s.activeCell.anchorLeft + 'px; ' +

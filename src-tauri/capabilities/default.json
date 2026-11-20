@@ -18,7 +18,10 @@
     "core:window:allow-start-dragging",
     "core:window:allow-set-title",
     "opener:allow-reveal-item-in-dir",
-    "opener:allow-open-path",
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [{ "path": "$APPDATA/attachments/**" }]
+    },
     "dialog:allow-save",
     "fs:allow-write-file",
     "fs:allow-download-write-recursive",

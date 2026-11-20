@@ -8,6 +8,8 @@ use connected_sources::{
 };
 mod identity_credentials;
 use identity_credentials::{identity_credential_delete, identity_credential_get, identity_credential_set};
+mod media_storage;
+use media_storage::{media_store_exists, media_store_list, media_store_read, media_store_reveal_path, media_store_write};
 
 // Tracker: Connected Sources (Phase 1) risk-reduction spike. A trivial,
 // no-op command to settle -- cheaply, before any real reqwest/keyring
@@ -133,6 +135,11 @@ fn main() {
             identity_credential_set,
             identity_credential_get,
             identity_credential_delete,
+            media_store_write,
+            media_store_read,
+            media_store_exists,
+            media_store_reveal_path,
+            media_store_list,
             open_project_window
         ])
         .setup(|_app| {

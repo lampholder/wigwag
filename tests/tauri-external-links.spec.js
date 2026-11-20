@@ -48,7 +48,12 @@ test.describe('Tauri external link handling', () => {
     ]);
     expect(popup).toBeNull();
 
-    const calls = await page.evaluate(() => window.__testInvokeCalls);
+    // media_store_list is a real, unrelated boot-time call (tracker
+    // e16588b6's refreshMediaStoreIndex, componentDidMount) that fires
+    // any time window.__TAURI__.core exists at all, same gate as every
+    // other native-only feature here -- filtered out since this test is
+    // about the external-link intercept specifically, not that.
+    const calls = (await page.evaluate(() => window.__testInvokeCalls)).filter(c => c.cmd !== 'media_store_list');
     expect(calls).toEqual([{ cmd: 'plugin:opener|open_url', args: { url: 'https://example.com/an-issue' } }]);
   });
 
@@ -78,7 +83,7 @@ test.describe('Tauri external link handling', () => {
     });
     await page.locator('#link-3').click();
     await page.waitForTimeout(100);
-    const calls = await page.evaluate(() => window.__testInvokeCalls || []);
+    const calls = (await page.evaluate(() => window.__testInvokeCalls || [])).filter(c => c.cmd !== 'media_store_list');
     expect(calls).toEqual([]);
   });
 
@@ -94,7 +99,7 @@ test.describe('Tauri external link handling', () => {
     await expect(pill).toHaveCount(1);
     await pill.click();
     await page.waitForTimeout(150);
-    const calls = await page.evaluate(() => window.__testInvokeCalls || []);
+    const calls = (await page.evaluate(() => window.__testInvokeCalls || [])).filter(c => c.cmd !== 'media_store_list');
     expect(calls).toEqual([]);
   });
 });

@@ -224,6 +224,22 @@ just because fewer keys is nicer:**
   binds normally; one that computes 2+ issues doesn't merge/union them,
   it leaves the field unbound (same signal an unresolvable rule already
   produces) — see the worked example below.
+- **Media attachments: `wigwag-media:<sha256 hex>` references live
+  entirely in plain text, no new value shape at all** — unlike an
+  `issue`-type field's own `href`, a dropped/attached file is referenced
+  as ordinary markdown, `[filename](wigwag-media:<64-char hex>)`, inside
+  whatever `text`/`value` a comment, note, or text field already holds.
+  The bytes themselves are never part of the JSONL at all: they live in
+  a local, content-addressed store (one device's own disk, Tauri-only
+  as shipped — a browser/widget-backed version is a deliberate later
+  phase, not this one), keyed purely by hash and shared across every
+  project that happens to reference the same file. A device missing the
+  bytes for a hash it sees referenced doesn't mean the reference is
+  broken — same "absent, not broken" posture format v2 already takes for
+  a `wigwag:` link to a project this device has never seen (see the
+  `wigwag:/project/…`/`wigwag:/remote/…` grammar elsewhere in this
+  codebase) — delivery of the actual bytes happens entirely outside
+  Wigwag.
 - **`origin`** — had three real values (`authored`, `legacy-backfill`,
   a vestigial `derived`). `authored` is the default/common case and
   carries no information once nothing else needs distinguishing;
@@ -369,7 +385,7 @@ just because fewer keys is nicer:**
       "history": [
         {
           "id": "c_1", "actor": "tom@example.com",
-          "text": "Looping in support.",
+          "text": "Looping in support, see attached.\n\n[network-diagram-v3.pdf](wigwag-media:7f3a9c2e1b8d4f60a2c1e5d9b6f0837c4e2a1d8f9c6b3e0a7d4f1c8e5b2a9d6c)",
           "sortKey": 1738594560000,
           "sig": { "alg": "ES256", "full": "base64url…", "redacted": "base64url…" },
           "pubKey": { "kty": "EC", "crv": "P-256", "x": "…", "y": "…" }
@@ -431,3 +447,15 @@ entry shape.
   re-identified by its persisted href alone on refresh, since its own
   identification mechanism (pattern matching) is keyed to the
   originally-pasted text, not the href the macro's fetch produced.
+- **Media attachments (tracker e16588b6), deliberate v1 scope cuts**:
+  Tauri-only — a browser/widget version needs a genuinely different
+  backing store (no real local filesystem to point "reveal in folder"
+  at) and is an explicit second pass, not deferred by accident. A
+  missing reference's "likely has it" is only ever recovered from a
+  comment's own author (the field/project-notes case always falls back
+  to "ask anyone," same as a comment with no author at all) — not a
+  full cross-history "whoever last provided this hash" search. No
+  per-row status pill in the missing-file popover, and no dedicated
+  "unclaimed files" library UI for something Received but not matched
+  to any visible reference — it's offered a plain "Keep," which writes
+  it into the local store with nothing yet pointing at it.

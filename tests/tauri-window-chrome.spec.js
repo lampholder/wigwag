@@ -247,7 +247,12 @@ test.describe('"Open in new window" (switcher project row right-click)', () => {
     await page.locator('[data-testid=switcher-row-context-open-new-window]').click();
     await expect(menu).toHaveCount(0); // closes itself after firing
 
-    const calls = await page.evaluate(() => window.__invokeCalls);
+    // media_store_list is a real, unrelated boot-time call (tracker
+    // e16588b6's refreshMediaStoreIndex, componentDidMount) that fires
+    // any time window.__TAURI__.core exists, same gate as every other
+    // native-only feature here -- filtered out since this test is about
+    // open_project_window specifically, not that.
+    const calls = (await page.evaluate(() => window.__invokeCalls)).filter(c => c.cmd !== 'media_store_list');
     expect(calls).toEqual([{ cmd: 'open_project_window', args: { projectId, projectName: 'Second project for right-click' } }]);
   });
 

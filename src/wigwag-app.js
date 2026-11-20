@@ -4922,6 +4922,98 @@ class Component extends DCLogic {
     e.preventDefault();
     this.attachFilesSequentially(e.dataTransfer && e.dataTransfer.files);
   }
+  // Receive's media-ingestion path (e16588b6): every wigwag-media:
+  // reference visible in the CURRENTLY LOADED project that this
+  // device doesn't have bytes for yet -- "visible to the user" scoped
+  // to the open project, not every project ever opened on this
+  // device. hash -> best-effort filename (from the first [label](...)
+  // found for it), for the "Matched · attached to X" sub-label.
+  findVisibleMissingMediaHashes() {
+    const found = new Map();
+    const labelRe = /\[([^\]\n]*)\]\(wigwag-media:([a-f0-9]{64})\)/g;
+    const scanText = text => {
+      if (typeof text !== 'string') return;
+      labelRe.lastIndex = 0;
+      let m;
+      while ((m = labelRe.exec(text))) { if (!found.has(m[2])) found.set(m[2], m[1]); }
+    };
+    this.state.issues.forEach(iss => {
+      // Comment-type entries carry their text in h.text, not h.value
+      // (confirmed: addCommentStreamEntry's own entryBase has no .value
+      // at all) -- scanning both covers comments and every other field
+      // type uniformly.
+      Object.values(iss.fields || {}).forEach(f => (f.history || []).forEach(h => { scanText(h.value); scanText(h.text); }));
+    });
+    scanText(this.state.projectNotes);
+    (this.state.projectComments || []).forEach(c => scanText(c.text));
+    const missing = new Map();
+    found.forEach((filename, hash) => { if (!this.mediaIndexHasHash(hash)) missing.set(hash, filename); });
+    return missing;
+  }
+  // A match ingests straight into local storage immediately (tracker
+  // e16588b6: "a match ingests straight into local storage"); a
+  // non-match is NOT written yet -- its bytes sit in memory
+  // (_pendingMediaBytes) until the user explicitly clicks Keep, so an
+  // unrelated file dropped in by mistake isn't silently adopted into
+  // the store.
+  ingestMediaFile(file) {
+    return file.arrayBuffer().then(buf => {
+      const bytes = new Uint8Array(buf);
+      return this.hashBytes(bytes).then(hash => {
+        const missing = this.findVisibleMissingMediaHashes();
+        const matched = missing.has(hash);
+        const row = {
+          name: file.name, hash, matched, unmatched: !matched, kept: matched,
+          sub: matched ? ('Matched · attached to ' + (missing.get(hash) || 'this project')) : ('sha256:' + hash.slice(0, 10) + '… · no matching request')
+        };
+        if (matched) return this.mediaStoreWrite(hash, bytes).then(() => row);
+        this._pendingMediaBytes = this._pendingMediaBytes || new Map();
+        this._pendingMediaBytes.set(hash, bytes);
+        return row;
+      });
+    });
+  }
+  keepPendingMedia(hash) {
+    const bytes = this._pendingMediaBytes && this._pendingMediaBytes.get(hash);
+    if (!bytes) return;
+    this.mediaStoreWrite(hash, bytes).then(() => {
+      this.setState(s => ({ receiveMediaResults: (s.receiveMediaResults || []).map(r => r.hash === hash ? { ...r, kept: true } : r) }));
+    });
+  }
+  // Shared by the Receive modal's file-input AND (new) drop handler --
+  // a real filename/extension is the one honest, cheap signal for
+  // "is this a project update or a media file" (vs. sniffing decoded
+  // content, which risks misreading a short binary file as text, or
+  // reading binary bytes through FileReader.readAsText at all and
+  // corrupting them before they'd ever reach the hasher). .jsonl/.csv/
+  // .txt -- the three extensions this input already accepted before
+  // media attachments existed -- keep the exact existing CSV/JSONL
+  // path unchanged; anything else is handled as a media candidate.
+  handleReceivedFile(file) {
+    if (/\.(jsonl|txt|csv)$/i.test(file.name)) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const text = String(reader.result || '');
+        // Tracker 728eeac8: a .csv (by extension, or sniffed in case
+        // it got renamed) always means "update THIS project" -- there
+        // is no "new project from CSV" path, so this skips
+        // handleApplyUpdateParsed's new-vs-update branching entirely
+        // and goes straight to its own review step.
+        if (/\.csv$/i.test(file.name) || looksLikeCsvText(text)) { this.openCsvImportReview(text); return; }
+        const parsed = this.parseJsonl(text);
+        this.classifyIngestProvenance(text).then(result => {
+          const inboundInfo = { exportedBy: result.envelope ? result.envelope.exported_by : '', exportedAt: result.envelope ? result.envelope.exported_at : null, provenance: result.provenance, fingerprint: result.fingerprint, envelope: result.envelope };
+          this.handleApplyUpdateParsed(parsed, file.name.replace(/\.[^.]+$/, ''), inboundInfo);
+        });
+      };
+      reader.readAsText(file);
+      return;
+    }
+    if (!this.isTauriConnectorRuntime()) { window.alert('Receiving media needs the desktop app.'); return; }
+    this.ingestMediaFile(file).then(row => {
+      this.setState(s => ({ pasteMergeOpen: true, receiveMediaResults: [...(s.receiveMediaResults || []), row] }));
+    });
+  }
   // Settings UI: Connected sources add/edit form (Phase 1's one
   // remaining piece -- see /home/dev/.claude/plans/encapsulated-waddling-gizmo.md).
   // A fresh draft each time the form opens -- editing an EXISTING
@@ -12623,37 +12715,28 @@ class Component extends DCLogic {
       onMergeFileChange: e => {
         const file = e.target.files && e.target.files[0];
         e.target.value = '';
-        if (!file) return;
-        const reader = new FileReader();
-        reader.onload = () => {
-          const text = String(reader.result || '');
-          // Tracker 728eeac8: a .csv (by extension, or sniffed in case
-          // it got renamed) always means "update THIS project" -- there
-          // is no "new project from CSV" path, so this skips
-          // handleApplyUpdateParsed's new-vs-update branching entirely
-          // and goes straight to its own review step.
-          if (/\.csv$/i.test(file.name) || looksLikeCsvText(text)) { this.openCsvImportReview(text); return; }
-          const parsed = this.parseJsonl(text);
-          this.classifyIngestProvenance(text).then(result => {
-            const inboundInfo = { exportedBy: result.envelope ? result.envelope.exported_by : '', exportedAt: result.envelope ? result.envelope.exported_at : null, provenance: result.provenance, fingerprint: result.fingerprint, envelope: result.envelope };
-            this.handleApplyUpdateParsed(parsed, file.name.replace(/\.[^.]+$/, ''), inboundInfo);
-          });
-        };
-        reader.readAsText(file);
+        if (file) this.handleReceivedFile(file);
       },
-      onTogglePasteMerge: () => this.setState(st => ({ pasteMergeOpen: !st.pasteMergeOpen, pasteMergeDraft: '' })),
+      onPasteMergeDragOver: e => e.preventDefault(),
+      onPasteMergeDrop: e => {
+        e.preventDefault();
+        Array.from((e.dataTransfer && e.dataTransfer.files) || []).forEach(f => this.handleReceivedFile(f));
+      },
+      receiveMediaResults: (s.receiveMediaResults || []).map(row => ({ ...row, showKeep: row.unmatched && !row.kept, onKeep: () => this.keepPendingMedia(row.hash) })),
+      onTogglePasteMerge: () => { this._pendingMediaBytes = null; this.setState(st => ({ pasteMergeOpen: !st.pasteMergeOpen, pasteMergeDraft: '', receiveMediaResults: [] })); },
       pasteMergeOpen: s.pasteMergeOpen,
       pasteMergeDraft: s.pasteMergeDraft,
       onPasteMergeDraftChange: e => this.setState({ pasteMergeDraft: e.target.value }),
-      onCancelPasteMerge: () => this.setState({ pasteMergeOpen: false, pasteMergeDraft: '' }),
+      onCancelPasteMerge: () => { this._pendingMediaBytes = null; this.setState({ pasteMergeOpen: false, pasteMergeDraft: '', receiveMediaResults: [] }); },
       // e.target === e.currentTarget means the mousedown landed on the
       // backdrop itself, not something inside the modal that bubbled up
       // -- so a drag-select starting inside the textarea and ending
       // outside it doesn't close the modal.
-      onPasteMergeBackdrop: e => { if (e.target === e.currentTarget) this.setState({ pasteMergeOpen: false, pasteMergeDraft: '' }); },
+      onPasteMergeBackdrop: e => { if (e.target === e.currentTarget) { this._pendingMediaBytes = null; this.setState({ pasteMergeOpen: false, pasteMergeDraft: '', receiveMediaResults: [] }); } },
       onSubmitPasteMerge: () => {
         const text = this.state.pasteMergeDraft;
-        this.setState({ pasteMergeOpen: false, pasteMergeDraft: '' });
+        this._pendingMediaBytes = null;
+        this.setState({ pasteMergeOpen: false, pasteMergeDraft: '', receiveMediaResults: [] });
         // Tracker 728eeac8: the paste modal has no filename/extension to
         // go on, unlike the file-input path above -- looksLikeCsvText
         // sniffs it (a real JSONL line always parses as JSON; a CSV

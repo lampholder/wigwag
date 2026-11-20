@@ -175,3 +175,80 @@ test.describe('Media attachments: the missing-file popover', () => {
     await expect(page.locator('[data-testid=missing-media-likely-has-it]')).toHaveText('Ask anyone who has it');
   });
 });
+
+test.describe('Media attachments: Receive\'s ingestion path', () => {
+  test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
+
+  test('an unmatched file (no missing reference points at its hash) is NOT auto-stored -- only after clicking Keep', async ({ page }) => {
+    await openFirstIssue(page);
+    await h.closeSlideover(page);
+    await page.waitForTimeout(200);
+
+    await page.locator('[data-testid=btn-import-merge]').click();
+    await page.waitForTimeout(200);
+    const [chooser] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      page.locator('[data-testid=btn-paste-merge-open-file]').click()
+    ]);
+    await chooser.setFiles({ name: 'unrelated.bin', mimeType: 'application/octet-stream', buffer: Buffer.from([1, 2, 3]) });
+    await page.waitForTimeout(300);
+
+    const row = page.locator('[data-testid=receive-media-row]');
+    await expect(row).toHaveCount(1);
+    await expect(row).toContainText('unrelated.bin');
+    await expect(row).toContainText('no matching request');
+    await expect(row.locator('[data-testid=receive-media-row-keep]')).toBeVisible();
+
+    await row.locator('[data-testid=receive-media-row-keep]').click();
+    await page.waitForTimeout(200);
+    await expect(row.locator('[data-testid=receive-media-row-keep]')).toHaveCount(0);
+  });
+
+  test('a file matching a missing reference visible in the project auto-ingests immediately, no Keep needed, and the card flips to present', async ({ page }) => {
+    const matchHash = await page.evaluate(async () => {
+      const digest = await crypto.subtle.digest('SHA-256', new Uint8Array([9, 9, 9]));
+      return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+    });
+    await openFirstIssue(page);
+    await page.locator('[data-testid=new-comment-input]').fill('[payload.bin](wigwag-media:' + matchHash + ')');
+    await page.locator('[data-testid=new-comment-input]').press('Control+Enter');
+    await page.waitForTimeout(400);
+    await expect(page.locator('[data-testid=media-card-missing]')).toHaveCount(1);
+    await h.closeSlideover(page);
+    await page.waitForTimeout(200);
+
+    await page.locator('[data-testid=btn-import-merge]').click();
+    await page.waitForTimeout(200);
+    const [chooser] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      page.locator('[data-testid=btn-paste-merge-open-file]').click()
+    ]);
+    await chooser.setFiles({ name: 'payload.bin', mimeType: 'application/octet-stream', buffer: Buffer.from([9, 9, 9]) });
+    await page.waitForTimeout(400);
+
+    const row = page.locator('[data-testid=receive-media-row]');
+    await expect(row).toHaveCount(1);
+    await expect(row).toContainText('Matched');
+    await expect(row.locator('[data-testid=receive-media-row-keep]')).toHaveCount(0);
+
+    await page.locator('[data-testid=btn-cancel-paste-merge]').click();
+    await page.waitForTimeout(300);
+    await openFirstIssue(page);
+    const present = page.locator('[data-testid=slideover] [data-testid=media-card-present]');
+    await expect(present).toHaveCount(1);
+    await expect(present).toContainText('payload.bin');
+  });
+
+  test('a real JSONL project update still goes through the existing merge path unchanged -- the media branch never intercepts it', async ({ page }) => {
+    await page.locator('[data-testid=btn-import-merge]').click();
+    await page.waitForTimeout(200);
+    const [chooser] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      page.locator('[data-testid=btn-paste-merge-open-file]').click()
+    ]);
+    await chooser.setFiles({ name: 'export.jsonl', mimeType: 'application/x-jsonl', buffer: Buffer.from('not real jsonl but has the right extension') });
+    await page.waitForTimeout(400);
+    // Never shows up as a "media" row -- it went down the text/JSONL path.
+    await expect(page.locator('[data-testid=receive-media-row]')).toHaveCount(0);
+  });
+});

@@ -373,7 +373,7 @@
           </svg>
           Receive
         </button>
-        <input type="file" accept=".jsonl,.txt,.csv" data-testid="merge-file-input" style="display:none;" sc-camel-on-change="{{ onMergeFileChange }}">
+        <input type="file" data-testid="merge-file-input" style="display:none;" sc-camel-on-change="{{ onMergeFileChange }}">
       </div>
 
     </div>
@@ -527,7 +527,7 @@
       </div>
       <div data-testid="apply-update-menu-wrap" style="position:relative;">
         <button class="wigwag-toolbar-segment" data-testid="btn-import-merge" sc-camel-on-click="{{ onTogglePasteMerge }}" title="Receive" style="height:100%; display:flex; align-items:center; justify-content:center; cursor:pointer; border:none; background:transparent; color: var(--text-strong); font-family:inherit;" style-hover="background:rgba(0,0,0,0.05);"><svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M7 2v7.2M7 9.2 4.3 6.5M7 9.2l2.7-2.7"></path><path d="M2.6 8.6v3h8.8v-3"></path></svg><span class="wigwag-toolbar-label">Receive</span></button>
-        <input type="file" accept=".jsonl,.txt,.csv" data-testid="merge-file-input" style="display:none;" sc-camel-on-change="{{ onMergeFileChange }}">
+        <input type="file" data-testid="merge-file-input" style="display:none;" sc-camel-on-change="{{ onMergeFileChange }}">
       </div>
       <sc-if value="{{ showProposeLayout }}" hint-placeholder-val="{{ false }}">
       <div style="width:1px; background:rgba(0,0,0,0.12);"></div>
@@ -3249,9 +3249,9 @@
   <sc-if value="{{ isDesktopViewport }}" hint-placeholder-val="{{ true }}">
   <sc-if value="{{ pasteMergeOpen }}" hint-placeholder-val="{{ false }}">
     <div data-testid="paste-merge-overlay" sc-camel-on-mouse-down="{{ onPasteMergeBackdrop }}" style="position:fixed; inset:0; background: var(--sh11); z-index:200; display:flex; align-items:center; justify-content:center;">
-      <div data-testid="paste-merge-modal" style="background:var(--surface); border-radius:11px; box-shadow:0 14px 38px var(--sh1); width:480px; max-width:92vw; padding:22px 24px; box-sizing:border-box;">
+      <div data-testid="paste-merge-modal" sc-camel-on-drag-over="{{ onPasteMergeDragOver }}" sc-camel-on-drop="{{ onPasteMergeDrop }}" style="background:var(--surface); border-radius:11px; box-shadow:0 14px 38px var(--sh1); width:480px; max-width:92vw; padding:22px 24px; box-sizing:border-box;">
         <div style="font-size:15px; font-weight:700; margin-bottom:6px;">Receive</div>
-        <div style="font-size:12.5px; color: var(--n57); line-height:1.5; margin-bottom:12px;">Paste what someone sent you. An update to an existing project is merged into it; anything else arrives as a new project.</div>
+        <div style="font-size:12.5px; color: var(--n57); line-height:1.5; margin-bottom:12px;">Paste what someone sent you, or open/drop a file. An update to an existing project is merged into it; a media file is hashed and matched against what's missing.</div>
         <textarea data-testid="paste-merge-textarea" sc-camel-auto-focus="{{ true }}" placeholder="Paste here…" value="{{ pasteMergeDraft }}" sc-camel-on-change="{{ onPasteMergeDraftChange }}" style="width:100%; box-sizing:border-box; min-height:180px; padding:10px 12px; border:1px solid var(--border-strong); border-radius:7px; font-size:12px; font-family:ui-monospace,monospace; resize:vertical; margin-bottom:14px; background:var(--surface-page); color:var(--text-primary);"></textarea>
         <div style="display:flex; gap:8px; align-items:center;">
           <button data-testid="btn-paste-merge-open-file" sc-camel-on-click="{{ onImportMergeClick }}" style="display:inline-flex; align-items:center; gap:6px; border:1px solid var(--border); background:transparent; border-radius:6px; padding:7px 12px; font-size:12.5px; font-weight:500; cursor:pointer; color:var(--text-strong); font-family:inherit;" style-hover="background: var(--surface-hover);"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" style="flex-shrink:0;"><path d="M3.5 1.8h5.6l3.4 3.4v9H3.5z"></path><path d="M9 1.8v3.5h3.5"></path></svg>Open a file instead…</button>
@@ -3259,6 +3259,28 @@
           <span data-testid="btn-cancel-paste-merge" sc-camel-on-click="{{ onCancelPasteMerge }}" style="cursor:pointer; font-size:12.5px; color: var(--text-muted); padding:7px 12px; border-radius:6px;" style-hover="background:var(--n55);">Cancel</span>
           <button data-testid="btn-submit-paste-merge" sc-camel-on-click="{{ onSubmitPasteMerge }}" style="border:none; border-radius:6px; background: var(--accent-fill); color:var(--ink-on-accent); font-size:12.5px; font-weight:600; padding:7px 14px; cursor:pointer;" style-hover="background: var(--c22);">Receive</button>
         </div>
+        <sc-if value="{{ receiveMediaResults.length }}" hint-placeholder-val="{{ false }}">
+          <div style="border-top:1px solid var(--border-subtle); margin-top:14px; padding-top:10px;">
+            <div style="font-size:10.5px; font-weight:700; letter-spacing:0.05em; color: var(--text-tertiary); margin-bottom:6px;">{{ receiveMediaResults.length }} FILE(S) RECOGNIZED AS MEDIA</div>
+            <sc-for list="{{ receiveMediaResults }}" as="row" hint-placeholder-count="2">
+              <div data-testid="receive-media-row" style="display:flex; align-items:center; gap:8px; padding:6px 0;">
+                <sc-if value="{{ row.kept }}" hint-placeholder-val="{{ false }}">
+                  <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="var(--ok-fg, var(--accent-ink))" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><circle cx="8" cy="8" r="6.5"></circle><path d="M5.5 8l1.8 1.8L10.8 6"></path></svg>
+                </sc-if>
+                <sc-if value="{{ !row.kept }}" hint-placeholder-val="{{ true }}">
+                  <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0; color:var(--text-tertiary);"><path d="M4 1.5h5l3 3v8.5a1 1 0 01-1 1H4a1 1 0 01-1-1v-10.5a1 1 0 011-1z"></path><path d="M9 1.5v3h3"></path></svg>
+                </sc-if>
+                <div style="min-width:0; flex:1;">
+                  <div style="font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" data-testid="receive-media-row-name">{{ row.name }}</div>
+                  <div style="font-size:10.5px; color: var(--text-tertiary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" data-testid="receive-media-row-sub">{{ row.sub }}</div>
+                </div>
+                <sc-if value="{{ row.showKeep }}" hint-placeholder-val="{{ false }}">
+                  <span data-testid="receive-media-row-keep" sc-camel-on-click="{{ row.onKeep }}" style="font-size:11px; color: var(--accent-ink); cursor:pointer; white-space:nowrap;">Keep</span>
+                </sc-if>
+              </div>
+            </sc-for>
+          </div>
+        </sc-if>
       </div>
     </div>
   </sc-if>

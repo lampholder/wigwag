@@ -9,7 +9,7 @@
 // names like deriveIssueValues(...), not window.WigwagCore.xxx(...))
 // because this destructure is the only thing that needed to change.
 const {
-  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, columnFilterIsActive, dateFilterPresetRanges, parseFilterQuery, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, isPastedTextASingleUrl, wrapSelectionWithMarkdownLink, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, deriveFieldDefs, effectiveFieldDefs, deriveProjectName, PROJECT_NAME_FIELD_ID, deriveProjectNotes, PROJECT_NOTES_FIELD_ID, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, principalKind, SIGN_ALG, JOSE_ALG_ES256, signEntryPayload, verifyEntryPayload, signableEntryPayload, signableProjectEntryPayload, redactedEntryPayload, redactedProjectEntryPayload, signableCommentEntryPayload, signableProjectCommentEntryPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER
+  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxInflateRaw, parseZipEntries, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, columnFilterIsActive, dateFilterPresetRanges, parseFilterQuery, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, isPastedTextASingleUrl, wrapSelectionWithMarkdownLink, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, deriveFieldDefs, effectiveFieldDefs, deriveProjectName, PROJECT_NAME_FIELD_ID, deriveProjectNotes, PROJECT_NOTES_FIELD_ID, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, principalKind, SIGN_ALG, JOSE_ALG_ES256, signEntryPayload, verifyEntryPayload, signableEntryPayload, signableProjectEntryPayload, redactedEntryPayload, redactedProjectEntryPayload, signableCommentEntryPayload, signableProjectCommentEntryPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER
 ,
   buildSource, normalizeRef, sourceRefHasFullData, evalRule, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, fieldLocalBindState, liveBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, builtinKindConfigured, builtinKindReachable, resolveRefSystem, parseGithubUrl, parseGithubShortId, githubTokenCreationUrl, GITHUB_TOKEN_LIST_URL, parseGithubTokenExpiryHeader, parseGithubNextLink, parseJiraKey, parseSalesforceId, hostFromUrl, buildWigwagUri, parseWigwagUri, buildProjectTree, flattenProjectTree,
   CSV_ID_COLUMN_HEADER, parseCsvText, looksLikeCsvText, nextPaletteColor, buildCsvImportPlan,
@@ -5025,6 +5025,62 @@ class Component extends DCLogic {
       size: humanFileSize(this.mediaIndexSizeFor(hash) || 0),
       context: (info && info.context) || null
     };
+  }
+  // Project Settings' Media section (e16588b6, doc section 6) -- stats
+  // + bulk zip export/import, "same shape/position as the existing
+  // 'Download all projects (.zip)'" per the design doc, reusing
+  // xlsxBuildZip/parseZipEntries (Phase 8's own generalization/new
+  // reader) rather than a separate zip implementation just for this.
+  mediaProjectStats() {
+    const index = this._mediaStoreIndex || new Map();
+    let totalSize = 0;
+    index.forEach(size => { totalSize += size; });
+    return {
+      fileCount: index.size,
+      totalSizeLabel: humanFileSize(totalSize),
+      missingCount: this.findVisibleMissingMediaHashes().size
+    };
+  }
+  exportAllMediaZip() {
+    const index = this._mediaStoreIndex || new Map();
+    const hashes = Array.from(index.keys());
+    Promise.all(hashes.map(hash => this.mediaStoreRead(hash).then(bytes => ({ name: 'media/' + hash, content: bytes }))))
+      .then(entries => xlsxBuildZip(entries.filter(e => e.content)))
+      .then(bytes => this.downloadTextFile(bytes, this.sanitizeFilename((this.state.projects.find(p => p.id === this.state.projectId) || {}).name || 'project') + ' - media.zip', 'application/zip'))
+      .catch(e => window.alert('Could not build the media zip: ' + e.message));
+  }
+  // Each entry is re-hashed from its REAL decompressed bytes (never
+  // trusted from its filename) and only ingested if that hash is
+  // already referenced somewhere in this project -- protects against a
+  // zip from the wrong project, or a tampered one, silently mismatching
+  // records (same rationale the design doc itself gives).
+  importMediaZip(file) {
+    return file.arrayBuffer().then(buf => parseZipEntries(new Uint8Array(buf))).then(entries => {
+      const refs = this.findVisibleMediaReferences();
+      return Promise.all(entries.map(e => this.hashBytes(e.content).then(hash => ({ hash, content: e.content, matches: refs.has(hash) }))));
+    }).then(candidates => {
+      const toWrite = candidates.filter(c => c.matches);
+      return Promise.all(toWrite.map(c => this.mediaStoreWrite(c.hash, c.content))).then(() => ({
+        imported: toWrite.length, skipped: candidates.length - toWrite.length
+      }));
+    });
+  }
+  onImportMediaZipClick() {
+    const el = document.querySelector('[data-testid="import-media-zip-input"]');
+    if (el) el.click();
+  }
+  onImportMediaZipChange(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    this.importMediaZip(file).then(result => {
+      // mediaStoreWrite already mutated _mediaStoreIndex directly (Phase
+      // 2), but nothing here has triggered a render yet -- without this,
+      // the stats line / any now-present card stays stale until some
+      // unrelated state change happens to re-render.
+      this.setState({});
+      window.alert('Imported ' + result.imported + ' file(s)' + (result.skipped ? ('; skipped ' + result.skipped + ' not referenced by this project') : '') + '.');
+    }).catch(e2 => window.alert('Could not read that zip: ' + e2.message));
   }
   // Shared by the Receive modal's file-input AND (new) drop handler --
   // a real filename/extension is the one honest, cheap signal for
@@ -11423,6 +11479,7 @@ class Component extends DCLogic {
       { id: 'notes', label: 'Notes', configured: false, dotColor: 'var(--accent-fill)' },
       { id: 'sync', label: ROOM_MODE_CAPABILITIES ? 'Export' : 'Sync & Export', configured: !ROOM_MODE_CAPABILITIES && !!(s.githubRepo && s.githubRepo.trim()), dotColor: 'var(--accent-fill)' },
       { id: 'merge-history', label: 'Merge history', configured: mergeHistoryNeedsAttention, dotColor: 'var(--c31)' },
+      { id: 'media', label: 'Media', configured: false, dotColor: 'var(--accent-fill)' },
       { id: 'danger', label: 'Danger Zone', configured: false, dotColor: 'var(--accent-fill)' }
     ];
     const activeProjectPanelSectionId = s.projectPanelSection || 'notes';
@@ -11464,6 +11521,12 @@ class Component extends DCLogic {
         isSync: activeProjectPanelSectionId === 'sync',
         showGithubSyncSection: activeProjectPanelSectionId === 'sync' && !ROOM_MODE_CAPABILITIES,
         isMergeHistory: activeProjectPanelSectionId === 'merge-history',
+        isMedia: activeProjectPanelSectionId === 'media',
+        mediaIsTauri: this.isTauriConnectorRuntime(),
+        mediaStats: activeProjectPanelSectionId === 'media' && this.isTauriConnectorRuntime() ? this.mediaProjectStats() : { fileCount: 0, totalSizeLabel: '0 B', missingCount: 0 },
+        onExportAllMedia: () => this.exportAllMediaZip(),
+        onImportMediaZipClick: () => this.onImportMediaZipClick(),
+        onImportMediaZipChange: e => this.onImportMediaZipChange(e),
         isDanger: activeProjectPanelSectionId === 'danger',
         mergeHistory: this.buildMergeHistoryViewModel(issuesByIdForMerge),
         projectName: meta ? meta.name : 'Untitled',

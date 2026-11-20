@@ -145,13 +145,18 @@ function xlsxU32(n) { return [n & 0xFF, (n >>> 8) & 0xFF, (n >>> 16) & 0xFF, (n 
 // Fixed mod-date/time per entry -- correctness doesn't depend on it, and
 // a fixed value keeps output reproducible.
 const XLSX_DOS_TIME = 0, XLSX_DOS_DATE = ((2020 - 1980) << 9) | (1 << 5) | 1;
+// content may be a plain string (XLSX's own sheet XML, every caller
+// before media attachments existed) or raw bytes directly (a media
+// file's real content, which must never round-trip through a text
+// encoding) -- generalized here rather than giving media export its
+// own separate zip writer.
 async function xlsxBuildZip(entries) {
   const enc = new TextEncoder();
   const localParts = [], centralParts = [];
   let offset = 0;
   for (const { name, content } of entries) {
     const nameBytes = enc.encode(name);
-    const dataBytes = enc.encode(content);
+    const dataBytes = content instanceof Uint8Array ? content : enc.encode(content);
     const crc = xlsxCrc32(dataBytes);
     const compressed = await xlsxDeflateRaw(dataBytes);
     const localHeader = new Uint8Array([
@@ -186,6 +191,82 @@ async function xlsxBuildZip(entries) {
   let pos = 0;
   for (const p of allParts) { out.set(p, pos); pos += p.length; }
   return out;
+}
+// Symmetric to xlsxDeflateRaw -- the browser's native DecompressionStream,
+// no new dependency. Used by parseZipEntries below to read back a zip
+// this app (or anything else) wrote with ordinary deflate compression.
+async function xlsxInflateRaw(compressedBytes) {
+  const ds = new DecompressionStream('deflate-raw');
+  const writer = ds.writable.getWriter();
+  writer.write(compressedBytes);
+  writer.close();
+  const chunks = [];
+  const reader = ds.readable.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+  }
+  const total = chunks.reduce((n, c) => n + c.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) { out.set(c, off); off += c.length; }
+  return out;
+}
+// Media attachments (tracker e16588b6): "Import media zip…" needs a
+// real zip READER -- nothing in this codebase had one before (the
+// XLSX/all-projects export path only ever WRITES zips). Reads entries
+// from the CENTRAL DIRECTORY (name, compression method, sizes -- one
+// place to trust, rather than every local header, which some tools pad
+// differently), then jumps to each entry's own LOCAL header purely to
+// find where its data starts (that header's OWN filename/extra lengths
+// decide the offset, not the central directory's -- they aren't
+// guaranteed to match). Supports the two methods any real zip tool
+// (including this app's own xlsxBuildZip) actually uses: 0 (stored,
+// copied as-is) and 8 (deflate, inflated via xlsxInflateRaw) -- any
+// other method is a real, honest failure, not silently skipped.
+async function parseZipEntries(bytes) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const EOCD_SIG = 0x06054b50;
+  let eocdOffset = -1;
+  // EOCD's own trailing comment field is variable length (up to 64KB),
+  // so it isn't always exactly 22 bytes from the end -- scan backward
+  // for its signature instead of assuming a fixed offset.
+  const minOffset = Math.max(0, bytes.length - 22 - 65535);
+  for (let i = bytes.length - 22; i >= minOffset; i--) {
+    if (dv.getUint32(i, true) === EOCD_SIG) { eocdOffset = i; break; }
+  }
+  if (eocdOffset === -1) throw new Error('Not a valid zip file (no end-of-central-directory record found)');
+  const totalEntries = dv.getUint16(eocdOffset + 10, true);
+  const cdOffset = dv.getUint32(eocdOffset + 16, true);
+  const dec = new TextDecoder();
+  const entries = [];
+  let pos = cdOffset;
+  for (let i = 0; i < totalEntries; i++) {
+    if (dv.getUint32(pos, true) !== 0x02014b50) throw new Error('Corrupt zip central directory');
+    const method = dv.getUint16(pos + 10, true);
+    const compressedSize = dv.getUint32(pos + 20, true);
+    const uncompressedSizeHint = dv.getUint32(pos + 24, true);
+    const nameLen = dv.getUint16(pos + 28, true);
+    const extraLen = dv.getUint16(pos + 30, true);
+    const commentLen = dv.getUint16(pos + 32, true);
+    const localHeaderOffset = dv.getUint32(pos + 42, true);
+    const name = dec.decode(bytes.subarray(pos + 46, pos + 46 + nameLen));
+    const localNameLen = dv.getUint16(localHeaderOffset + 26, true);
+    const localExtraLen = dv.getUint16(localHeaderOffset + 28, true);
+    const dataStart = localHeaderOffset + 30 + localNameLen + localExtraLen;
+    const compressed = bytes.subarray(dataStart, dataStart + compressedSize);
+    let content;
+    if (method === 0) content = compressed.slice();
+    else if (method === 8) content = await xlsxInflateRaw(compressed);
+    else throw new Error('Unsupported zip compression method (' + method + ') for "' + name + '"');
+    if (uncompressedSizeHint && content.length !== uncompressedSizeHint) {
+      throw new Error('Zip entry "' + name + '" decompressed to the wrong size -- the file may be corrupt');
+    }
+    entries.push({ name, content });
+    pos += 46 + nameLen + extraLen + commentLen;
+  }
+  return entries;
 }
 function xlsxEscape(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]));
@@ -5576,7 +5657,7 @@ function flattenProjectTree(nodes, depth, guides) {
 }
 
 const WigwagCoreExports = {
-  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxEscape, xlsxColLetter, xlsxDateSerial, xlsxDateTimeSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_NS, storageNamespacePrefix, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, LAYOUT_PROPOSAL_DEVICE_ID_KEY, CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, slugifyLabel, uniqueSlugId, newFieldId, newOptionId, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, tokenizeFilterQuery, parseFilterQuery, issueMatchesFieldToken, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, pickConnectorFields, connectorLinkText, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, deriveFieldDefs, effectiveFieldDefs, PROJECT_NAME_FIELD_ID, deriveProjectName, PROJECT_NOTES_FIELD_ID, deriveProjectNotes, simpleStringHash, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, issueTimestampValue, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, MATRIX_USER_ID_RE, principalKind, identityPrincipal, SIGN_ALG, JOSE_ALG_ES256, base64UrlFromBytes, bytesFromBase64Url, signEntryPayload, verifyEntryPayload, signableEntryPayload, signableProjectEntryPayload, redactedEntryPayload, redactedProjectEntryPayload, signableCommentEntryPayload, signableProjectCommentEntryPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, normalizeRef, sourceRefHasFullData, evalRule, compileConnectorMacro, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, resolveRefSystem, parseGithubUrl, parseGithubShortId, githubTokenCreationUrl, GITHUB_TOKEN_LIST_URL, parseGithubTokenExpiryHeader, parseGithubNextLink, parseJiraKey, parseSalesforceId, hostFromUrl, buildWigwagUri, parseWigwagUri, builtinKindConfigured, builtinKindReachable, fieldLocalBindState, liveBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, issueCreatedAt,
+  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxInflateRaw, parseZipEntries, xlsxEscape, xlsxColLetter, xlsxDateSerial, xlsxDateTimeSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_NS, storageNamespacePrefix, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, LAYOUT_PROPOSAL_DEVICE_ID_KEY, CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, slugifyLabel, uniqueSlugId, newFieldId, newOptionId, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, tokenizeFilterQuery, parseFilterQuery, issueMatchesFieldToken, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, pickGithubFields, pickJiraFields, pickSalesforceFields, pickConnectorFields, connectorLinkText, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, deriveFieldDefs, effectiveFieldDefs, PROJECT_NAME_FIELD_ID, deriveProjectName, PROJECT_NOTES_FIELD_ID, deriveProjectNotes, simpleStringHash, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, issueTimestampValue, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, MATRIX_USER_ID_RE, principalKind, identityPrincipal, SIGN_ALG, JOSE_ALG_ES256, base64UrlFromBytes, bytesFromBase64Url, signEntryPayload, verifyEntryPayload, signableEntryPayload, signableProjectEntryPayload, redactedEntryPayload, redactedProjectEntryPayload, signableCommentEntryPayload, signableProjectCommentEntryPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, normalizeRef, sourceRefHasFullData, evalRule, compileConnectorMacro, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, resolveRefSystem, parseGithubUrl, parseGithubShortId, githubTokenCreationUrl, GITHUB_TOKEN_LIST_URL, parseGithubTokenExpiryHeader, parseGithubNextLink, parseJiraKey, parseSalesforceId, hostFromUrl, buildWigwagUri, parseWigwagUri, builtinKindConfigured, builtinKindReachable, fieldLocalBindState, liveBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, issueCreatedAt,
   importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry,
   squashHistory, redactEntry, redactProjectEntry, displayValueForHistory, buildSourceText, keyRegistryEncoder, rehydrateKeyRef, humanFileSize, parseJsonl, parseCsvText, CSV_ID_COLUMN_HEADER, looksLikeCsvText, nextPaletteColor, buildCsvImportPlan, entryKey, unionByKey, mergeIssuePair, computeIssueMerge, mergeHasRealChanges, computeFieldDefsMerge, computeDerivedChangeEntries,
   isPastedTextASingleUrl, wrapSelectionWithMarkdownLink,

@@ -2815,6 +2815,34 @@
       </div>
       </sc-if>
 
+      <sc-if value="{{ note.isMedia }}" hint-placeholder-val="{{ false }}">
+      <div style="padding:16px 24px 28px;">
+        <sc-if value="{{ !note.mediaIsTauri }}" hint-placeholder-val="{{ false }}">
+          <div style="font-size:12px; color: var(--text-tertiary); max-width:460px; line-height:1.5;">Media attachments need the desktop app -- this browser/widget has no durable local storage for them yet.</div>
+        </sc-if>
+        <sc-if value="{{ note.mediaIsTauri }}" hint-placeholder-val="{{ true }}">
+        <div style="border:1px solid var(--border); border-radius:8px; max-width:460px; overflow:hidden;">
+          <div style="padding:12px 16px; border-bottom:1px solid var(--border-subtle);">
+            <div style="font-size:13px; font-weight:650;">Media</div>
+            <div data-testid="media-settings-stats" style="font-size:11px; color: var(--text-tertiary); margin-top:2px;">{{ note.mediaStats.fileCount }} file(s) · {{ note.mediaStats.totalSizeLabel }} stored locally · {{ note.mediaStats.missingCount }} missing across this project</div>
+          </div>
+          <div style="padding:14px 16px; display:flex; flex-direction:column; gap:8px; align-items:flex-start;">
+            <div data-testid="btn-export-all-media" sc-camel-on-click="{{ note.onExportAllMedia }}" style="display:inline-flex; align-items:center; gap:8px; padding:7px 13px; border:1px solid var(--border); border-radius:6px; font-size:12.5px; cursor:pointer;" style-hover="background: var(--surface-hover);">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v13M7 12l5 5 5-5M5 21h14"></path></svg>
+              Export all media (.zip)
+            </div>
+            <div data-testid="btn-import-media-zip" sc-camel-on-click="{{ note.onImportMediaZipClick }}" style="display:inline-flex; align-items:center; gap:8px; padding:7px 13px; border:1px solid var(--border); border-radius:6px; font-size:12.5px; cursor:pointer;" style-hover="background: var(--surface-hover);">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21V8M7 12l5-5 5 5M5 3h14"></path></svg>
+              Import media zip…
+            </div>
+            <input data-testid="import-media-zip-input" type="file" accept=".zip" style="display:none;" sc-camel-on-change="{{ note.onImportMediaZipChange }}">
+            <div style="font-size:10.5px; color: var(--text-tertiary); line-height:1.4; margin-top:4px;">Each file is re-hashed on import; only ones matching a hash already referenced somewhere in this project get ingested.</div>
+          </div>
+        </div>
+        </sc-if>
+      </div>
+      </sc-if>
+
       <sc-if value="{{ note.isDanger }}" hint-placeholder-val="{{ false }}">
       <div style="padding:16px 24px 28px;">
         <div style="font-size:11px; font-weight:600; letter-spacing:0.04em; color: var(--c17); margin-bottom:9px;">DANGER ZONE</div>

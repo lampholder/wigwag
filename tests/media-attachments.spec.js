@@ -10,6 +10,7 @@
 // use for their own fake keychain.
 const { test, expect } = require('@playwright/test');
 const h = require('./helpers');
+const core = require('../wigwag-core.js');
 
 async function openFirstIssue(page) {
   await h.clickTitleToPeek(page, 1);
@@ -306,5 +307,86 @@ test.describe('Media attachments: Send menu\'s "Send media by hash…"', () => {
     await page.mouse.click(10, 10);
     await page.waitForTimeout(150);
     await expect(popover).toHaveCount(0);
+  });
+});
+
+test.describe('Media attachments: Project Settings\' Media section', () => {
+  test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
+
+  async function openMediaSettings(page) {
+    await page.locator('[data-testid=btn-notes]').click();
+    await page.waitForTimeout(250);
+    await page.locator('[data-testid=project-panel-nav-item][data-section-id=media]').click();
+    await page.waitForTimeout(200);
+  }
+
+  test('shows file count / size / missing-count stats, and Export all media (.zip) produces a real zip', async ({ page }) => {
+    await openFirstIssue(page);
+    const [chooser] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      page.locator('[data-testid=comment-attach-btn]').click()
+    ]);
+    await chooser.setFiles({ name: 'spec.docx', mimeType: 'application/octet-stream', buffer: Buffer.from('spec content here') });
+    await page.waitForTimeout(300);
+    await page.locator('[data-testid=new-comment-input]').press('Control+Enter');
+    await page.waitForTimeout(400);
+    await h.closeSlideover(page);
+    await page.waitForTimeout(200);
+
+    await openMediaSettings(page);
+    const stats = page.locator('[data-testid=media-settings-stats]');
+    await expect(stats).toContainText('1 file(s)');
+    await expect(stats).toContainText('17 B');
+    await expect(stats).toContainText('0 missing');
+
+    const [download] = await Promise.all([
+      page.waitForEvent('download'),
+      page.locator('[data-testid=btn-export-all-media]').click()
+    ]);
+    const fs = require('fs');
+    const bytes = fs.readFileSync(await download.path());
+    expect(bytes.slice(0, 4).toString('hex')).toBe('504b0304'); // real zip signature
+  });
+
+  test('Import media zip… only ingests files whose re-hashed content matches a reference already in this project, and the stats/card update live', async ({ page }) => {
+    const hash = await page.evaluate(async () => {
+      const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('real content'));
+      return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+    });
+    await openFirstIssue(page);
+    await page.locator('[data-testid=new-comment-input]').fill('[doc.txt](wigwag-media:' + hash + ')');
+    await page.locator('[data-testid=new-comment-input]').press('Control+Enter');
+    await page.waitForTimeout(400);
+    await h.closeSlideover(page);
+    await page.waitForTimeout(200);
+
+    // Build a real zip the same way the app itself does (the same
+    // xlsxBuildZip, run here in Node via wigwag-core.js) containing one
+    // file that matches the reference and one that doesn't.
+    const zipBytes = await core.xlsxBuildZip([
+      { name: 'doc.txt', content: new TextEncoder().encode('real content') },
+      { name: 'unrelated.bin', content: new Uint8Array([9, 8, 7]) }
+    ]);
+
+    await openMediaSettings(page);
+    await expect(page.locator('[data-testid=media-settings-stats]')).toContainText('1 missing');
+
+    page.once('dialog', d => d.accept());
+    const [chooser] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      page.locator('[data-testid=btn-import-media-zip]').click()
+    ]);
+    await chooser.setFiles({ name: 'media.zip', mimeType: 'application/zip', buffer: Buffer.from(zipBytes) });
+    await page.waitForTimeout(500);
+
+    await expect(page.locator('[data-testid=media-settings-stats]')).toContainText('1 file(s)');
+    await expect(page.locator('[data-testid=media-settings-stats]')).toContainText('0 missing');
+
+    await page.locator('[data-testid=notes-overlay]').click({ position: { x: 5, y: 5 } });
+    await page.waitForTimeout(250);
+    await openFirstIssue(page);
+    const present = page.locator('[data-testid=slideover] [data-testid=media-card-present]');
+    await expect(present).toHaveCount(1);
+    await expect(present).toContainText('doc.txt');
   });
 });

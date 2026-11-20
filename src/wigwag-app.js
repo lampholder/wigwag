@@ -15,7 +15,7 @@ const {
   CSV_ID_COLUMN_HEADER, parseCsvText, looksLikeCsvText, nextPaletteColor, buildCsvImportPlan,
   CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, newFieldId, newOptionId, pickConnectorFields, connectorLinkText, compileConnectorMacro,
   importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry,
-  squashHistory, redactEntry, redactProjectEntry, displayValueForHistory, buildSourceText, humanFileSize, parseJsonl, entryKey, unionByKey, mergeIssuePair, computeIssueMerge, mergeHasRealChanges, computeFieldDefsMerge, computeDerivedChangeEntries, buildGithubContentsUrl, buildGithubContentsHeaders, buildGithubCommitMessage, pullGithubFile, pushGithubFile, probeGithubRepoAccess, issueCreatedAt, computeHeaderMeshTriangles, computeHeaderCompression, cellPaddingForWidth, computeAffordanceFade,
+  squashHistory, redactEntry, redactProjectEntry, displayValueForHistory, buildSourceText, humanFileSize, isImageFilename, parseJsonl, entryKey, unionByKey, mergeIssuePair, computeIssueMerge, mergeHasRealChanges, computeFieldDefsMerge, computeDerivedChangeEntries, buildGithubContentsUrl, buildGithubContentsHeaders, buildGithubCommitMessage, pullGithubFile, pushGithubFile, probeGithubRepoAccess, issueCreatedAt, computeHeaderMeshTriangles, computeHeaderCompression, cellPaddingForWidth, computeAffordanceFade,
   diff3Merge, formatDateLabel, provenanceMarkerSuffix, conflictMarkerLines, hasUnresolvedMergeMarkers, computeMergeProseEntries, MERGE_LOG_TYPE, MERGE_LOG_VERSION, mergeLogStorageKey, buildMergeRecord, buildMergeIssueSummary, latestEntryIdsByField,
   patchMergeSummaryResultEntryId, fieldStillSafeToRevert, computeMergeRollbackEntries, buildMergePreviewViewModel, buildMergeFieldTimeline, mergeRecordNeedsAttention, buildMergeFieldDiffLines, mergeSettledValueView, buildMergeIssueTimeline, resolveFieldValueView,
   WIGWAG_EXPORT_TYPE, WIGWAG_EXPORT_VERSION, canonicalRecordsText, computeContentSha256Hex, fingerprintPublicKey, buildExportEnvelope, parseExportEnvelope, verifyExportEnvelope, EXPORT_TRUST_KEY, lookupSenderTrust, classifySenderTrust, rememberSenderTrust, classifyExportProvenance
@@ -3913,8 +3913,24 @@ class Component extends DCLogic {
         const hash = pill.getAttribute('data-media-hash') || '';
         const filename = pill.getAttribute('data-media-filename') || '';
         const fileIconSvg = '<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M4 1.5h5l3 3v8.5a1 1 0 01-1 1H4a1 1 0 01-1-1v-10.5a1 1 0 011-1z"></path><path d="M9 1.5v3h3"></path></svg>';
+        const present = this.mediaIndexHasHash(hash);
+        // Images render inline instead of the generic file card (Tom:
+        // "images should render inline... with a sensible max visual
+        // size") -- mediaImageUrlFor returns null on the first render
+        // after a reload (bytes not fetched yet), which falls through to
+        // the ordinary present-file-card below as a loading state until
+        // the async read resolves and setState() re-hydrates.
+        const imageUrl = present && isImageFilename(filename) ? this.mediaImageUrlFor(hash) : null;
+        if (imageUrl) {
+          pill.style.cssText = 'display:inline-block; vertical-align:middle; cursor:pointer; padding:4px; border:1px solid var(--border); background:var(--surface); border-radius:8px; text-decoration:none; color:inherit; max-width:100%; box-sizing:border-box;';
+          pill.innerHTML = '<img src="' + imageUrl + '" alt="' + escapeHtml(filename) + '" style="display:block; max-width:320px; max-height:320px; width:auto; height:auto; border-radius:4px; object-fit:contain;">' +
+            '<span style="display:block; margin-top:4px; max-width:320px; font-size:10.5px; color:var(--text-tertiary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + escapeHtml(filename) + ' · ' + escapeHtml(humanFileSize(this.mediaIndexSizeFor(hash) || 0)) + '</span>';
+          pill.setAttribute('data-testid', 'media-card-image');
+          pill.onclick = e => { e.preventDefault(); this.openMediaFile(hash, filename, mediaIssueId); };
+          return;
+        }
         pill.style.cssText = 'display:inline-flex; align-items:center; gap:8px; width:200px; max-width:100%; box-sizing:border-box; padding:8px 10px; border-radius:8px; cursor:pointer; vertical-align:middle; text-decoration:none; color:inherit;';
-        if (this.mediaIndexHasHash(hash)) {
+        if (present) {
           pill.style.cssText += 'border:1px solid var(--border); background:var(--surface);';
           pill.innerHTML = '<span style="color:var(--text-secondary); display:flex;">' + fileIconSvg + '</span>' +
             '<span style="min-width:0; flex:1;"><span style="display:block; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-primary);">' + escapeHtml(filename) + '</span>' +
@@ -4836,6 +4852,38 @@ class Component extends DCLogic {
       if (!path) return;
       if (window.__TAURI__ && window.__TAURI__.opener) return window.__TAURI__.opener.revealItemInDir(path);
     }).catch(e => console.error('[wigwag] failed to reveal attachment in folder: ' + ((e && e.message) || e)));
+  }
+  // Inline image previews (hydrateMarkdownBodies) need a real <img>-
+  // decodable src -- a blob: URL built from the same bytes
+  // mediaStoreRead already exposes for export, rather than a new Tauri
+  // asset-protocol scope (that would need its own capabilities entry,
+  // same class of fix as the opener scope above, for a feature that
+  // doesn't need it: a blob: URL works identically in the Tauri webview
+  // and in a plain browser). Cached per hash -- the content-addressed
+  // store's own dedup key, so this is safe to share across every
+  // project/issue that happens to reference the same bytes -- and never
+  // evicted; one object URL per unique image a session actually views
+  // is a small, bounded cost. Returns null (and kicks off the async
+  // read, deduped via _mediaImageUrlRequests so a burst of renders
+  // before the first resolves doesn't re-read the same hash) until the
+  // real URL is ready, at which point setState({}) re-hydrates.
+  mediaImageUrlFor(hash) {
+    this._mediaImageUrlCache = this._mediaImageUrlCache || new Map();
+    if (this._mediaImageUrlCache.has(hash)) return this._mediaImageUrlCache.get(hash);
+    this._mediaImageUrlRequests = this._mediaImageUrlRequests || new Set();
+    if (!this._mediaImageUrlRequests.has(hash)) {
+      this._mediaImageUrlRequests.add(hash);
+      this.mediaStoreRead(hash).then(bytes => {
+        this._mediaImageUrlRequests.delete(hash);
+        if (!bytes) return;
+        this._mediaImageUrlCache.set(hash, URL.createObjectURL(new Blob([bytes])));
+        this.setState({});
+      }).catch(e => {
+        this._mediaImageUrlRequests.delete(hash);
+        console.error('[wigwag] failed to load image preview: ' + ((e && e.message) || e));
+      });
+    }
+    return null;
   }
   // Materializes a friendly-named copy of a stored hash's bytes (real
   // filename, real extension) under this project/issue, so the OS can

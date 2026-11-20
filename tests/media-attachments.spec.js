@@ -72,6 +72,36 @@ test.describe('Media attachments: reference rendering', () => {
     expect(calls[0].path).not.toContain('report.pdf.pdf');
   });
 
+  test('an image attachment renders inline as a real <img>, not the generic file card', async ({ page }) => {
+    await openFirstIssue(page);
+    const [chooser] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      page.locator('[data-testid=comment-attach-btn]').click()
+    ]);
+    await chooser.setFiles({ name: 'photo.png', mimeType: 'image/png', buffer: Buffer.from('not real png bytes, just testing the plumbing') });
+    await page.waitForTimeout(300);
+    await page.locator('[data-testid=new-comment-input]').press('Control+Enter');
+    await page.waitForTimeout(400);
+
+    const imageCard = page.locator('[data-testid=media-card-image]');
+    await expect(imageCard).toHaveCount(1);
+    await expect(page.locator('[data-testid=media-card-present]')).toHaveCount(0);
+    const img = imageCard.locator('img');
+    await expect(img).toHaveCount(1);
+    expect(await img.getAttribute('src')).toMatch(/^blob:/);
+    await expect(imageCard).toContainText('photo.png');
+
+    // Still opens through the same real-filename materialize+open path
+    // as any other attachment -- the inline preview is additive, not a
+    // separate interaction model.
+    await imageCard.click();
+    await page.waitForTimeout(300);
+    const calls = await page.evaluate(() => window.__openerCalls);
+    expect(calls.length).toBe(1);
+    expect(calls[0].fn).toBe('openPath');
+    expect(calls[0].path.endsWith('/photo.png')).toBe(true);
+  });
+
   test('a plain [label](https://...) link is unaffected -- the new reference type only intercepts wigwag-media: URLs', async ({ page }) => {
     await openFirstIssue(page);
     await page.locator('[data-testid=new-comment-input]').fill('See [the doc](https://example.com/doc).');

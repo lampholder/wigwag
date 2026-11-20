@@ -4835,7 +4835,7 @@ class Component extends DCLogic {
     this.mediaStoreRevealPath(hash).then(path => {
       if (!path) return;
       if (window.__TAURI__ && window.__TAURI__.opener) return window.__TAURI__.opener.revealItemInDir(path);
-    }).catch(e => console.error('[wigwag] failed to reveal attachment in folder: ' + e.message));
+    }).catch(e => console.error('[wigwag] failed to reveal attachment in folder: ' + ((e && e.message) || e)));
   }
   // Materializes a friendly-named copy of a stored hash's bytes (real
   // filename, real extension) under this project/issue, so the OS can
@@ -4856,7 +4856,7 @@ class Component extends DCLogic {
     this.mediaStoreMaterializeFriendly(hash, issueId, filename).then(path => {
       if (!path) return;
       if (window.__TAURI__ && window.__TAURI__.opener) return window.__TAURI__.opener.openPath(path);
-    }).catch(e => console.error('[wigwag] failed to open attachment: ' + e.message));
+    }).catch(e => console.error('[wigwag] failed to open attachment: ' + ((e && e.message) || e)));
   }
   toggleMissingMediaPopover(hash, filename, author, context, e) {
     const s = this.state;

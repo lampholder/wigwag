@@ -140,6 +140,56 @@ test.describe('Kanban grouping', () => {
     expect(last.value).toBe('p1');
   });
 
+  // Live-reported (Tom): the drag was "detected" (the target column's
+  // dashed-outline highlight worked, and the drop committed) but the
+  // card itself never visibly moved -- just its own text got
+  // highlighted, native-text-selection style. Root cause: mousedown
+  // never called preventDefault, so the browser's own text-selection
+  // drag ran instead of (well, alongside) ours, and the dragged card
+  // had no visual feedback of its own beyond a nearly-invisible opacity
+  // dim. This is the regression guard for both: mid-drag (before
+  // mouseup), the card itself must be the thing visibly moving (real
+  // position:fixed tracking the cursor), and dragging must not leave
+  // any text selected afterward.
+  test('mid-drag, the card itself visibly detaches and tracks the cursor -- not just the target column\'s highlight', async ({ page }) => {
+    await h.openColumnMenu(page, 'priority');
+    await page.locator('[data-testid=col-menu-group-by]').click();
+    await page.waitForTimeout(300);
+
+    const p0Col = page.locator('[data-testid=kanban-col]').nth(1);
+    const p1ColBody = page.locator('[data-testid=kanban-col]').nth(2).locator('[data-testid=kanban-col-body]');
+    const card = p0Col.locator('[data-testid=kanban-card]').first();
+
+    const cardBox = await card.boundingBox();
+    const targetBox = await p1ColBody.boundingBox();
+    await page.mouse.move(cardBox.x + cardBox.width / 2, cardBox.y + cardBox.height / 2);
+    await page.mouse.down();
+    // Past the movement threshold, still short of the target -- proves
+    // the card is already tracking mid-flight, not just snapping once
+    // dropped.
+    await page.mouse.move(cardBox.x + cardBox.width / 2 + 40, cardBox.y + cardBox.height / 2 + 40, { steps: 5 });
+    await page.waitForTimeout(100);
+
+    const midDragPosition = await card.evaluate(el => {
+      const cs = getComputedStyle(el);
+      return { position: cs.position, left: parseFloat(cs.left), top: parseFloat(cs.top) };
+    });
+    expect(midDragPosition.position).toBe('fixed');
+    // Somewhere near the second mouse.move's coordinates (allowing for
+    // the grab-point offset kanbanCardMouseDown preserves), definitely
+    // not left at the card's original position.
+    expect(Math.abs(midDragPosition.left - cardBox.x)).toBeGreaterThan(20);
+
+    await page.mouse.move(targetBox.x + targetBox.width / 2, targetBox.y + targetBox.height / 2, { steps: 5 });
+    await expect(p1ColBody).toHaveAttribute('style', /dashed/);
+    // preventDefault on mousedown should mean nothing ends up selected,
+    // even mid-drag over the card's own text.
+    const selectionText = await page.evaluate(() => (window.getSelection() || {}).toString());
+    expect(selectionText).toBe('');
+
+    await page.mouse.up();
+  });
+
   test('dropping a card on the leading "No <field>" column clears the value', async ({ page }) => {
     await h.openColumnMenu(page, 'priority');
     await page.locator('[data-testid=col-menu-group-by]').click();

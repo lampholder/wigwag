@@ -2010,7 +2010,7 @@ class Component extends DCLogic {
       addItemOpen: false, addItemDraft: '', filterQuery: '', widgetFilterOpen: false, jumpDismissed: false, jumpActiveIndex: 0, filterSuggestDismissed: true, filterSuggestActiveIndex: 0, sort: this.sortFor(id), sortSnapshot: computeSortSnapshot(this.sortFor(id), hydratedIssues, hydratedFieldDefs), columnFilters: this.columnFiltersFor(id),
       columnFilterExcludedIds: computeColumnFilterExcludedIds(this.columnFiltersFor(id), hydratedIssues, hydratedFieldDefs),
       draggingColId: null, dragOverColId: null, dragOverSide: null, openColMenuId: null,
-      kanbanColId: null, draggingKanbanIssueId: null, dragOverKanbanOptId: null, kanbanColOverflow: {}, freezeColId: null,
+      kanbanColId: null, draggingKanbanIssueId: null, dragOverKanbanOptId: null, kanbanDragGhost: null, kanbanColOverflow: {}, freezeColId: null,
       draggingRuleRowIndex: null, dragOverRuleRowIndex: null, dragOverRuleRowSide: null,
       fieldEditorColId: null, fieldEditorNewOptLabel: '', colorPickerOptIndex: null,
       ruleBuilderColId: null, ruleBuilderVisible: false,
@@ -4177,7 +4177,7 @@ class Component extends DCLogic {
     columnWrap: {},
     columnOrder: defaultColumnOrder(),
     draggingColId: null, dragOverColId: null, dragOverSide: null,
-    kanbanColId: null, draggingKanbanIssueId: null, dragOverKanbanOptId: null, kanbanColOverflow: {}, freezeColId: null,
+    kanbanColId: null, draggingKanbanIssueId: null, dragOverKanbanOptId: null, kanbanDragGhost: null, kanbanColOverflow: {}, freezeColId: null,
     draggingRuleRowIndex: null, dragOverRuleRowIndex: null, dragOverRuleRowSide: null,
     hiddenFieldIds: [],
     openColMenuId: null,
@@ -8921,8 +8921,26 @@ class Component extends DCLogic {
   // by hand. A small movement threshold tells a real drag apart from a
   // plain click, so the card's own onOpen (slide-over) still fires for
   // a click that never moves -- see _suppressKanbanCardClick below.
+  //
+  // preventDefault on mousedown matters for real -- without it, the
+  // browser's own native text-selection drag kicks in over the card's
+  // text as the mouse moves (confirmed live: Tom saw the card's own
+  // text highlighting instead of anything actually moving).
+  // kanbanDragGhost drives the card's visual lift: the SAME card
+  // element switches to position:fixed, tracking the cursor 1:1 from
+  // wherever it was grabbed (offsetX/offsetY, captured once up front
+  // from the card's own real bounding rect) -- not a second cloned
+  // element, and not just an opacity dim, which alone reads as "nothing
+  // is happening" (also confirmed live). pointer-events:none on the
+  // floating card is required, not cosmetic: without it, elementFromPoint
+  // below would hit the floating card itself (now sitting exactly at
+  // the cursor) instead of the column underneath, breaking dragOverKanbanOptId.
   kanbanCardMouseDown(issueId, e) {
     if (e.button !== 0) return;
+    e.preventDefault();
+    const cardRect = e.currentTarget.getBoundingClientRect();
+    const grabOffsetX = e.clientX - cardRect.left, grabOffsetY = e.clientY - cardRect.top;
+    const ghostWidth = cardRect.width;
     const startX = e.clientX, startY = e.clientY;
     const THRESHOLD = 4;
     let dragging = false;
@@ -8936,10 +8954,13 @@ class Component extends DCLogic {
         if (Math.abs(ev.clientX - startX) < THRESHOLD && Math.abs(ev.clientY - startY) < THRESHOLD) return;
         dragging = true;
         this._suppressKanbanCardClick = true;
-        this.setState({ draggingKanbanIssueId: issueId });
       }
       const optId = optIdAt(ev.clientX, ev.clientY);
-      if (this.state.dragOverKanbanOptId !== optId) this.setState({ dragOverKanbanOptId: optId });
+      this.setState({
+        draggingKanbanIssueId: issueId,
+        dragOverKanbanOptId: optId,
+        kanbanDragGhost: { left: ev.clientX - grabOffsetX, top: ev.clientY - grabOffsetY, width: ghostWidth }
+      });
     };
     const onUp = ev => {
       document.removeEventListener('mousemove', onMove);
@@ -8947,7 +8968,7 @@ class Component extends DCLogic {
       if (!dragging) return;
       const optId = optIdAt(ev.clientX, ev.clientY);
       const colId = this.state.kanbanColId;
-      this.setState({ draggingKanbanIssueId: null, dragOverKanbanOptId: null });
+      this.setState({ draggingKanbanIssueId: null, dragOverKanbanOptId: null, kanbanDragGhost: null });
       if (colId) this.selectOption(issueId, colId, optId === '__none__' ? null : optId);
     };
     document.addEventListener('mousemove', onMove);
@@ -11345,7 +11366,15 @@ class Component extends DCLogic {
           // so dropping a card never also pops its slide-over open.
           onOpen: () => { if (this._suppressKanbanCardClick) { this._suppressKanbanCardClick = false; return; } this.openSlideOver(issue.id); },
           onMouseDown: e => this.kanbanCardMouseDown(issue.id, e),
-          dragOpacity: s.draggingKanbanIssueId === issue.id ? '0.4' : '1',
+          // The dragged card itself switches to position:fixed and tracks
+          // the cursor (kanbanDragGhost, set by kanbanCardMouseDown) --
+          // not a second cloned element, and not just an opacity dim
+          // (confirmed live: a dim alone reads as "nothing is happening").
+          // pointer-events:none keeps the floating card out of its own
+          // elementFromPoint hit-testing.
+          dragStyle: (s.draggingKanbanIssueId === issue.id && s.kanbanDragGhost)
+            ? ('position:fixed; left:' + s.kanbanDragGhost.left + 'px; top:' + s.kanbanDragGhost.top + 'px; width:' + s.kanbanDragGhost.width + 'px; z-index:1000; pointer-events:none; transform:rotate(-1.5deg); box-shadow:0 14px 28px var(--sh3);')
+            : '',
           isBoundLive: groupRes.isBoundLive, isOverridden: groupRes.isOverridden, showBoundGlyph: groupRes.isBoundLive || groupRes.isOverridden,
           boundGlyphTitle: groupRes.isOverridden ? this.overrideTitle(fieldDefs[s.kanbanColId]) : (groupRes.isBoundLive ? this.lockTitle(fieldDefs[s.kanbanColId]) : ''),
           chips, hasChips: chips.length > 0

@@ -381,5 +381,15 @@ test.describe('Kanban grouping: overflow-aware corner rounding', () => {
     await expect(p0Col).toHaveCSS('border-bottom-right-radius', '0px');
     await expect(p3Col).toHaveCSS('border-bottom-left-radius', '8px');
     await expect(p3Col).toHaveCSS('border-bottom-right-radius', '8px');
+
+    // Live-reported (Tom): the square-bottom cue should only hold while
+    // there's genuinely more below the current scroll position -- scroll
+    // the overflowing column all the way to its own end and it should
+    // round back, same as a column that never overflowed.
+    const p0Body = p0Col.locator('[data-testid=kanban-col-body]');
+    await p0Body.evaluate(el => { el.scrollTop = el.scrollHeight; el.dispatchEvent(new Event('scroll')); });
+    await page.waitForTimeout(150);
+    await expect(p0Col).toHaveCSS('border-bottom-left-radius', '8px');
+    await expect(p0Col).toHaveCSS('border-bottom-right-radius', '8px');
   });
 });

@@ -2208,11 +2208,19 @@ class Component extends DCLogic {
   // Same pattern as measureTableOverflow, one level per kanban column
   // instead of one level for the whole table -- see cornerRadius's own
   // comment (kanbanColumns build, renderVals) for why this exists.
+  // kanbanColOverflow[id] means "square this column's bottom corners" --
+  // true only while there's genuinely more content below the CURRENT
+  // scroll position. Scrolling a column all the way to its own end (or
+  // it never overflowing at all) rounds the corner back, matching
+  // onKanbanColScroll's own re-measurement on every scroll tick.
   measureKanbanOverflow() {
     const bodies = document.querySelectorAll('[data-testid="kanban-col-body"]');
     if (!bodies.length) { if (Object.keys(this.state.kanbanColOverflow || {}).length) this.setState({ kanbanColOverflow: {} }); return; }
     const next = {};
-    bodies.forEach(el => { next[el.getAttribute('data-opt')] = el.scrollHeight > el.clientHeight + 1; });
+    bodies.forEach(el => {
+      const atEnd = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
+      next[el.getAttribute('data-opt')] = el.scrollHeight > el.clientHeight + 1 && !atEnd;
+    });
     const cur = this.state.kanbanColOverflow || {};
     const keys = Object.keys(next);
     const changed = keys.length !== Object.keys(cur).length || keys.some(k => next[k] !== cur[k]);
@@ -11343,7 +11351,16 @@ class Component extends DCLogic {
     // showDesktopAddItem -- 2px here plus that 16px lands on the
     // requested ~18px gap, without touching that shared wrapper (which
     // the table view also uses unchanged).
-    const kanbanBoardPadding = ROOM_MODE_CAPABILITIES ? '20px 28px 0' : '0 28px 2px';
+    const kanbanBoardPadding = ROOM_MODE_CAPABILITIES ? '18px 28px 0' : '0 28px 2px';
+    // Widget mode's column body (the actual scrolling element) gets its
+    // own 18px bottom padding, so that scrolling a column all the way to
+    // its end still leaves ~18px of breathing room -- and reveals the
+    // column's own rounded bottom corner (clipped by kanban-col's
+    // overflow:hidden) -- above the add-item bar, matching the "touch
+    // the bar" gap the column's outer edge already has in that mode.
+    // Tauri/desktop already gets this for free from kanbanBoardPadding's
+    // own outer bottom gap, so it keeps the plain 10px on every side.
+    const kanbanColBodyPadding = ROOM_MODE_CAPABILITIES ? '10px 10px 18px' : '10px';
     let kanbanColumns = [];
     let groupByLabel = '';
     if (isKanbanView) {
@@ -11385,9 +11402,12 @@ class Component extends DCLogic {
       // rounded bottom corners, same as a column that genuinely fits) --
       // confusing, since there's really more content below, scrollable.
       // kanbanColOverflow is a real DOM measurement (measureKanbanOverflow,
-      // same pattern as tableOverflow), keyed by column id; only a column
-      // confirmed NOT to overflow gets the "this is where it naturally
-      // ends" rounded-bottom treatment.
+      // same pattern as tableOverflow), keyed by column id, re-measured on
+      // every scroll tick (onKanbanColScroll) as well as content/resize
+      // changes -- true only while there's still more below the current
+      // scroll position. Scroll a column all the way to its own end (or
+      // it never overflowed to begin with) and it gets the "this is where
+      // it naturally ends" rounded-bottom treatment back.
       const cornerRadius = id => (s.kanbanColOverflow && s.kanbanColOverflow[id]) ? '8px 8px 0 0' : '8px';
       const opts = groupDef ? (groupDef.options || []) : [];
       kanbanColumns = opts.map(opt => {
@@ -13258,6 +13278,12 @@ class Component extends DCLogic {
         el._lastScrollTop = el.scrollTop;
         this.measureTableOverflow();
       },
+      onKanbanColScroll: (e) => {
+        const el = e.currentTarget;
+        if (el._lastScrollTop === el.scrollTop) return;
+        el._lastScrollTop = el.scrollTop;
+        this.measureKanbanOverflow();
+      },
       rowsBelow: s.rowsBelow || 0,
       rowsBelowVisible: (s.rowsBelow || 0) > 0 && (s.rowsFitting || 0) >= 3,
       rowsBelowLabel: (s.rowsBelow || 0) === 1 ? '1 more below' : (s.rowsBelow || 0) + ' more below',
@@ -13281,7 +13307,7 @@ class Component extends DCLogic {
       onTitleSortAsc: () => (s.sort.colId === 'title' && s.sort.dir === 'asc') ? this.clearSort() : this.sortBy('title', 'asc'),
       onTitleSortDesc: () => (s.sort.colId === 'title' && s.sort.dir === 'desc') ? this.clearSort() : this.sortBy('title', 'desc'),
       columns, headerSegments, rows, cellPadding, titleCellPadding, titleHeaderPadding, totalWidth, titleWidth,
-      isTableView, isKanbanView, groupByLabel, kanbanColumns, kanbanBoardPadding,
+      isTableView, isKanbanView, groupByLabel, kanbanColumns, kanbanBoardPadding, kanbanColBodyPadding,
       onClearGroupBy: () => this.clearGroupBy(),
       isSelecting, selectionCount: s.selectedIssueIds.length, visibleIssueCount,
       headerChecked: headerAllSelected, headerIndeterminate: headerSomeSelected,

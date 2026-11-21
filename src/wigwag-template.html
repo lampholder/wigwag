@@ -1431,7 +1431,7 @@
             <span style="font-size:13px; font-weight:600; color: var(--text-primary); flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ kcol.label }}</span>
             <span style="font-size:11.5px; color: var(--text-tertiary); font-variant-numeric:tabular-nums;">{{ kcol.count }}</span>
           </div>
-          <div data-testid="kanban-col-body" data-opt="{{ kcol.id }}" style="{{ kcol.dragOverStyle }} flex:1 1 auto; min-height:80px; overflow-y:auto; padding:10px; display:flex; flex-direction:column; gap:8px;">
+          <div data-testid="kanban-col-body" data-opt="{{ kcol.id }}" sc-camel-on-scroll="{{ onKanbanColScroll }}" style="{{ kcol.dragOverStyle }} flex:1 1 auto; min-height:80px; overflow-y:auto; padding: {{ kanbanColBodyPadding }}; display:flex; flex-direction:column; gap:8px;">
             <sc-for list="{{ kcol.cards }}" as="card" hint-placeholder-count="2">
               <div data-testid="kanban-card" title="{{ card.boundGlyphTitle }}" sc-camel-on-mouse-down="{{ card.onMouseDown }}" sc-camel-on-click="{{ card.onOpen }}" style="cursor:pointer; background:var(--surface); border:1px solid var(--border); border-radius:7px; padding:10px 12px; display:flex; flex-direction:column; gap:6px; box-shadow:0 1px 2px var(--sh7); {{ card.dragStyle }}" style-hover="border-color: var(--border-strong);">
                 <span style="display:flex; align-items:center; gap:6px;">

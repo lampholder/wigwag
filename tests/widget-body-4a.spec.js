@@ -257,6 +257,41 @@ test.describe('Widget body: Kanban view parity', () => {
     await expect(frame.locator('[data-testid=row]')).toBeVisible();
     await expect(frame.locator('[data-testid=btn-widget-clear-group-by]')).toHaveCount(0);
   });
+
+  // Live-reported (Tom): widget mode's own top gap (no "Filter this
+  // project" row above it, unlike Tauri/desktop) was still a touch too
+  // generous at 20px -- trimmed to 18px. Separately, a column's own
+  // scroll area now reserves 18px below its last card (not just the
+  // plain 10px every side gets elsewhere) so scrolling an overflowing
+  // column all the way to its end still leaves the same ~18px gap, and
+  // reveals the column's rounded bottom corner, above the widget's own
+  // add-item bar.
+  test('widget mode: 18px top gap above the board, and 18px reserved below the last card in a column', async ({ page }) => {
+    await page.setViewportSize({ width: 1000, height: 420 });
+    const titles = [];
+    for (let i = 0; i < 25; i++) titles.push('Overflow fixture issue ' + i);
+    await h.gotoFakeWidgetHost(page, { roomId: '!kanban4a-scrollend:example.org', roomName: 'Kanban Scroll End', initialEntries: seedIssues(titles) });
+    const frame = page.frameLocator('#widget').frameLocator('#frame');
+    await expect(frame.locator('[data-testid=tracker-name-title]')).toBeVisible();
+
+    await openColumnMenuInFrame(frame, 'type');
+    await frame.locator('[data-testid=col-menu-group-by]').last().click();
+    await expect(frame.locator('[data-testid=kanban-board]')).toBeVisible();
+
+    await expect(frame.locator('[data-testid=kanban-board]')).toHaveCSS('padding-top', '18px');
+
+    // All 25 (no type assigned) land in the single leading "No type"
+    // column -- same bucket the other 4a kanban tests rely on.
+    const col = frame.locator('[data-testid=kanban-col]').first();
+    const colBody = col.locator('[data-testid=kanban-col-body]');
+    expect(await colBody.locator('[data-testid=kanban-card]').count()).toBeGreaterThanOrEqual(25);
+    await expect(colBody).toHaveCSS('padding-bottom', '18px');
+
+    await expect(col).toHaveCSS('border-bottom-left-radius', '0px'); // not yet scrolled to the end -- still squared
+    await colBody.evaluate(el => { el.scrollTop = el.scrollHeight; el.dispatchEvent(new Event('scroll')); });
+    await page.waitForTimeout(150);
+    await expect(col).toHaveCSS('border-bottom-left-radius', '8px');
+  });
 });
 
 test.describe('Widget body 4a: slim sticky add-row', () => {

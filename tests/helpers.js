@@ -609,6 +609,15 @@ async function mockGithubApi(page) {
           }
           return Promise.resolve(Object.keys(store).map(hash => ({ hash, size: fromB64(store[hash]).length })));
         }
+        // read_external_file's fake: a native OS drag-drop (tracker
+        // e16588b6 follow-up) hands over bare absolute paths, not File
+        // objects -- window.__fakeExternalFiles (plain path -> byte
+        // array, populated directly by a test) stands in for the real
+        // filesystem a Tauri build would actually read from.
+        if (cmd === 'read_external_file') {
+          const bytes = window.__fakeExternalFiles && window.__fakeExternalFiles[args.path];
+          return bytes ? Promise.resolve(bytes) : Promise.reject(new Error('no such file: ' + args.path));
+        }
         if (cmd === 'connected_source_fetch') {
           const m = args.url.match(/\/repos\/([^/]+\/[^/]+\/issues\/\d+)$/);
           const fixture = m && fixtures[m[1]];
@@ -635,6 +644,17 @@ async function mockGithubApi(page) {
     window.__TAURI__.opener = window.__TAURI__.opener || {
       revealItemInDir: path => { window.__openerCalls.push({ fn: 'revealItemInDir', path }); return Promise.resolve(null); },
       openPath: path => { window.__openerCalls.push({ fn: 'openPath', path }); return Promise.resolve(null); }
+    };
+    // setupNativeDragDrop's real target -- stashes the registered
+    // handler on window.__dragDropHandler so a test can simulate a
+    // native tauri://drag-drop 'drop' payload directly (position in
+    // PHYSICAL pixels, same contract the real event carries) instead of
+    // needing a real OS-level drag gesture, which Playwright can't do.
+    window.__fakeExternalFiles = window.__fakeExternalFiles || {};
+    window.__TAURI__.webview = window.__TAURI__.webview || {
+      getCurrentWebview: () => ({
+        onDragDropEvent: handler => { window.__dragDropHandler = handler; return Promise.resolve(() => {}); }
+      })
     };
   }, GITHUB_FIXTURES);
 }

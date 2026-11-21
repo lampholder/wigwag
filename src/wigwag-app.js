@@ -2325,6 +2325,7 @@ class Component extends DCLogic {
       this.checkForUpdate();
     }
     this.refreshMediaStoreIndex();
+    this.setupNativeDragDrop();
     // file: origins can't register a service worker at all (same restriction
     // mentionNotificationsFileOrigin already surfaces for in-tab notifications)
     // -- skip quietly rather than let the rejection hit the console.
@@ -4996,6 +4997,51 @@ class Component extends DCLogic {
   onCommentDrop(e) {
     e.preventDefault();
     this.attachFilesSequentially(e.dataTransfer && e.dataTransfer.files);
+  }
+  // Dragging a real OS file (e.g. from Finder) onto the composer is a
+  // SEPARATE problem from the kanban drag-and-drop fixed above: a file
+  // drag is never same-page, so there's no "replace HTML5 DnD with
+  // mouse events" option here -- the browser/webview has to recognize
+  // the pasteboard as real files, which only the native OS drag session
+  // can do. On macOS/Tauri that native delivery is the same broken path
+  // (tauri-apps/tauri#3277): with dragDropEnabled left false, the drop
+  // never reaches onCommentDrop above at all. The fix is to stop relying
+  // on it reaching the DOM: dragDropEnabled is back to true (tauri.conf.
+  // json) so wry's own handler claims every drag and reports it via
+  // Tauri's OWN event instead (tauri://drag-drop, exposed here as
+  // getCurrentWebview().onDragDropEvent) -- which hands over real
+  // absolute file paths directly, no DOM drop event, no File object,
+  // needed at all. This still runs alongside onCommentDrop/onCommentDragOver
+  // above unchanged -- those remain the only path (and still work) in a
+  // plain browser or the widget, where there's no wry/Tauri layer to
+  // fight in the first place.
+  //
+  // position arrives in PHYSICAL pixels relative to the webview's own
+  // top-left corner (Tauri's documented contract for this event) --
+  // divided by devicePixelRatio to land back in the CSS pixels
+  // elementFromPoint expects. Only a drop landing on the comment
+  // composer's own drop zone is handled; every other drop target is a
+  // future extension, not a silent no-op bug.
+  setupNativeDragDrop() {
+    if (!this.isTauriConnectorRuntime() || !window.__TAURI__.webview) return;
+    window.__TAURI__.webview.getCurrentWebview().onDragDropEvent(event => {
+      const p = event.payload;
+      if (!p || p.type !== 'drop' || !p.paths || !p.paths.length) return;
+      const scale = window.devicePixelRatio || 1;
+      const el = document.elementFromPoint(p.position.x / scale, p.position.y / scale);
+      const dropZone = el && el.closest && el.closest('[data-testid="comment-composer-drop-zone"]');
+      if (!dropZone) return;
+      this.attachFilesSequentially(p.paths.map(path => this.fileShimFromPath(path)));
+    }).catch(e => console.error('[wigwag] failed to set up native file drop: ' + ((e && e.message) || e)));
+  }
+  // A real File object (from <input type=file> or a same-origin HTML5
+  // drop) already has .name and .arrayBuffer() -- attachFileToComment
+  // only ever needs those two, so a native OS drop's bare path is
+  // wrapped in the same shape rather than giving attachFileToComment a
+  // second, parallel code path to read bytes from.
+  fileShimFromPath(path) {
+    const name = path.split(/[\\/]/).pop() || path;
+    return { name, arrayBuffer: () => window.__TAURI__.core.invoke('read_external_file', { path }).then(bytes => new Uint8Array(bytes).buffer) };
   }
   // Every wigwag-media: reference visible in the CURRENTLY LOADED
   // project -- "visible to the user" scoped to the open project, not
@@ -8860,15 +8906,52 @@ class Component extends DCLogic {
     const bindState = def.linkedSourceId ? liveBindState(issue, colId, def, this.liveRuleCtx(issue.id)) : 'plain';
     return { opt: opt || null, isBoundLive: bindState === 'bound', isOverridden: bindState === 'overridden' };
   }
-  kanbanDragStart(issueId, e) { if (e && e.dataTransfer) e.dataTransfer.effectAllowed = 'move'; this.setState({ draggingKanbanIssueId: issueId }); }
-  kanbanDragOverCol(optId, e) { if (e) e.preventDefault(); if (this.state.dragOverKanbanOptId !== optId) this.setState({ dragOverKanbanOptId: optId }); }
-  kanbanDragEnd() { this.setState({ draggingKanbanIssueId: null, dragOverKanbanOptId: null }); }
-  kanbanDropCol(optId, e) {
-    if (e) e.preventDefault();
-    const issueId = this.state.draggingKanbanIssueId;
-    const colId = this.state.kanbanColId;
-    this.setState({ draggingKanbanIssueId: null, dragOverKanbanOptId: null });
-    if (issueId && colId) this.selectOption(issueId, colId, optId);
+  // Native HTML5 drag-and-drop is unreliable in the Tauri desktop app on
+  // macOS -- wry's WKWebView subclass always overrides AppKit's own drag
+  // destination methods regardless of the dragDropEnabled config, and
+  // its fallback to native WKWebView behavior doesn't actually restore
+  // drag/drop delivery (confirmed, long-standing, unfixed upstream bug:
+  // tauri-apps/tauri#3277 -- toggling dragDropEnabled either way hits the
+  // same broken fallback). Reimplemented as plain mouse events instead --
+  // same mousedown/mousemove/mouseup pattern startColumnResize already
+  // uses -- which works identically in the browser, the widget, and
+  // Tauri, with zero dependency on any platform's native drag machinery.
+  // optIdAt hit-tests the real DOM under the cursor (data-opt, already
+  // on every kanban-col-body) rather than tracking column bounding boxes
+  // by hand. A small movement threshold tells a real drag apart from a
+  // plain click, so the card's own onOpen (slide-over) still fires for
+  // a click that never moves -- see _suppressKanbanCardClick below.
+  kanbanCardMouseDown(issueId, e) {
+    if (e.button !== 0) return;
+    const startX = e.clientX, startY = e.clientY;
+    const THRESHOLD = 4;
+    let dragging = false;
+    const optIdAt = (x, y) => {
+      const el = document.elementFromPoint(x, y);
+      const body = el && el.closest && el.closest('[data-testid="kanban-col-body"]');
+      return body ? body.getAttribute('data-opt') : null;
+    };
+    const onMove = ev => {
+      if (!dragging) {
+        if (Math.abs(ev.clientX - startX) < THRESHOLD && Math.abs(ev.clientY - startY) < THRESHOLD) return;
+        dragging = true;
+        this._suppressKanbanCardClick = true;
+        this.setState({ draggingKanbanIssueId: issueId });
+      }
+      const optId = optIdAt(ev.clientX, ev.clientY);
+      if (this.state.dragOverKanbanOptId !== optId) this.setState({ dragOverKanbanOptId: optId });
+    };
+    const onUp = ev => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      if (!dragging) return;
+      const optId = optIdAt(ev.clientX, ev.clientY);
+      const colId = this.state.kanbanColId;
+      this.setState({ draggingKanbanIssueId: null, dragOverKanbanOptId: null });
+      if (colId) this.selectOption(issueId, colId, optId === '__none__' ? null : optId);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
   }
   // Row order should only change when the sort itself is set/changed or
   // the page is reloaded -- never as a side effect of editing a field,
@@ -11256,10 +11339,12 @@ class Component extends DCLogic {
           id: issue.id,
           title: issue.values.title || '(untitled)',
           shortRef: '#' + issue.id.slice(0, 8),
-          onOpen: () => this.openSlideOver(issue.id),
-          draggable: true,
-          onDragStart: e => this.kanbanDragStart(issue.id, e),
-          onDragEnd: () => this.kanbanDragEnd(),
+          // _suppressKanbanCardClick (set by kanbanCardMouseDown once a
+          // real drag -- not just a click -- is detected) swallows the
+          // click the mouseup/mousedown pair would otherwise also fire,
+          // so dropping a card never also pops its slide-over open.
+          onOpen: () => { if (this._suppressKanbanCardClick) { this._suppressKanbanCardClick = false; return; } this.openSlideOver(issue.id); },
+          onMouseDown: e => this.kanbanCardMouseDown(issue.id, e),
           dragOpacity: s.draggingKanbanIssueId === issue.id ? '0.4' : '1',
           isBoundLive: groupRes.isBoundLive, isOverridden: groupRes.isOverridden, showBoundGlyph: groupRes.isBoundLive || groupRes.isOverridden,
           boundGlyphTitle: groupRes.isOverridden ? this.overrideTitle(fieldDefs[s.kanbanColId]) : (groupRes.isBoundLive ? this.lockTitle(fieldDefs[s.kanbanColId]) : ''),
@@ -11281,10 +11366,7 @@ class Component extends DCLogic {
         return {
           id: opt.id, label: opt.label, dotColor: col(opt.color).dot, count: cards.length, cards,
           hasCards: cards.length > 0, noCards: cards.length === 0, cornerRadius: cornerRadius(opt.id),
-          dragOverStyle: s.dragOverKanbanOptId === opt.id ? 'background: var(--surface-hover); outline:2px dashed var(--border-strong); outline-offset:-2px;' : '',
-          onDragOver: e => this.kanbanDragOverCol(opt.id, e),
-          onDragLeave: () => { if (this.state.dragOverKanbanOptId === opt.id) this.setState({ dragOverKanbanOptId: null }); },
-          onDrop: e => this.kanbanDropCol(opt.id, e)
+          dragOverStyle: s.dragOverKanbanOptId === opt.id ? 'background: var(--surface-hover); outline:2px dashed var(--border-strong); outline-offset:-2px;' : ''
         };
       });
       const noneCards = issues.filter(iss => !this.resolveSelectOption(iss, s.kanbanColId).opt).map(buildCard);
@@ -11293,10 +11375,7 @@ class Component extends DCLogic {
       kanbanColumns.unshift({
         id: '__none__', label: 'No ' + groupByLabel.toLowerCase(), dotColor: 'var(--text-tertiary)', count: noneCards.length, cards: noneCards,
         hasCards: noneCards.length > 0, noCards: noneCards.length === 0, cornerRadius: cornerRadius('__none__'),
-        dragOverStyle: s.dragOverKanbanOptId === '__none__' ? 'background: var(--surface-hover); outline:2px dashed var(--border-strong); outline-offset:-2px;' : '',
-        onDragOver: e => this.kanbanDragOverCol('__none__', e),
-        onDragLeave: () => { if (this.state.dragOverKanbanOptId === '__none__') this.setState({ dragOverKanbanOptId: null }); },
-        onDrop: e => this.kanbanDropCol(null, e)
+        dragOverStyle: s.dragOverKanbanOptId === '__none__' ? 'background: var(--surface-hover); outline:2px dashed var(--border-strong); outline-offset:-2px;' : ''
       });
     }
     const order = realColumnOrder(s.columnOrder);

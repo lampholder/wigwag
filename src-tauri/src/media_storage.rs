@@ -162,6 +162,24 @@ pub fn media_store_materialize_friendly(
     Ok(dest.to_string_lossy().into_owned())
 }
 
+// Reads an arbitrary, user-chosen file's bytes from disk -- the
+// counterpart to media_store_write for files that arrive via the
+// native OS drag-and-drop event (tauri://drag-drop) rather than
+// through an <input type=file>/HTML5 drop, which hand JS a real File
+// object (readable client-side, no IPC needed at all). A native drop
+// instead hands over only an absolute filesystem path, so this is how
+// those bytes actually reach the comment composer's existing
+// attachFileToComment -- which otherwise only ever needs a {name,
+// arrayBuffer()} shape, trivially shimmed in JS once these bytes are
+// back. No path scoping here, same trust level as the file the user
+// already has open in the native file-picker-based attach flow (both
+// are the user's own explicit, one-off choice of a file to read --
+// this isn't a capability any page content/remote data can reach).
+#[tauri::command]
+pub fn read_external_file(path: String) -> Result<Vec<u8>, String> {
+    fs::read(&path).map_err(|e| e.to_string())
+}
+
 #[derive(serde::Serialize)]
 pub struct MediaStoreEntry {
     hash: String,

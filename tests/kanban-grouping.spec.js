@@ -204,14 +204,18 @@ test.describe('Kanban grouping', () => {
     const cards = page.locator('[data-testid=kanban-card]');
     const n = await cards.count();
     expect(n).toBeGreaterThan(1);
-    for (let i = 0; i < n; i++) {
-      await expect(cards.nth(i)).toHaveAttribute('draggable', 'true');
-    }
 
     const boundCard = page.locator('[data-testid=kanban-card]', { hasText: i1Title });
     await expect(boundCard).toHaveAttribute('title', /Linked to/);
     await expect(boundCard.locator('svg')).toHaveCount(1);
-    await expect(boundCard).toHaveAttribute('draggable', 'true');
+
+    // Proof it drags exactly like any other card, not gated on bind
+    // state -- nth(0) is the leading "No type" column, which i1 (bound
+    // to a real type value already) doesn't start in.
+    const noneTypeCol = page.locator('[data-testid=kanban-col]').nth(0).locator('[data-testid=kanban-col-body]');
+    await boundCard.dragTo(noneTypeCol);
+    await page.waitForTimeout(400);
+    await expect(noneTypeCol.locator('[data-testid=kanban-card]', { hasText: i1Title })).toHaveCount(1);
   });
 
   // Matches existing precedent (tracker #46: "Switching project should

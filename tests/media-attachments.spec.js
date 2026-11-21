@@ -166,6 +166,48 @@ test.describe('Media attachments: the comment composer attach affordance', () =>
     expect(draft).toContain('[a.txt](wigwag-media:');
     expect(draft).toContain('[b.txt](wigwag-media:');
   });
+
+  // Tauri/macOS doesn't reliably deliver a native OS file drop as a DOM
+  // 'drop' event at all (confirmed, long-standing, unfixed upstream wry
+  // bug: tauri-apps/tauri#3277) -- setupNativeDragDrop's real fix routes
+  // around the DOM entirely via Tauri's own tauri://drag-drop event,
+  // simulated here the same way: window.__dragDropHandler is the actual
+  // handler registered via getCurrentWebview().onDragDropEvent (see the
+  // fake in tests/helpers.js), fed a payload shaped exactly like the
+  // real one -- paths (absolute, read via the new read_external_file
+  // command, not a File object) and position in PHYSICAL pixels, which
+  // the real handler divides by devicePixelRatio before hit-testing.
+  test('a native OS file drop (simulated via the real tauri://drag-drop handler, not a DOM drop event) attaches the file the same way', async ({ page }) => {
+    await openFirstIssue(page);
+    const box = await page.locator('[data-testid=comment-composer-drop-zone]').boundingBox();
+    await page.evaluate(({ box }) => {
+      window.__fakeExternalFiles['/Users/tom/Downloads/photo.png'] = [1, 2, 3, 4, 5];
+      const scale = window.devicePixelRatio || 1;
+      window.__dragDropHandler({
+        payload: {
+          type: 'drop',
+          paths: ['/Users/tom/Downloads/photo.png'],
+          position: { x: (box.x + box.width / 2) * scale, y: (box.y + box.height / 2) * scale }
+        }
+      });
+    }, { box });
+    await page.waitForTimeout(400);
+
+    const draft = await page.locator('[data-testid=new-comment-input]').inputValue();
+    expect(draft).toMatch(/^\[photo\.png\]\(wigwag-media:[a-f0-9]{64}\)$/);
+  });
+
+  test('a native drop landing outside the comment composer is ignored, not attached to whatever happens to be focused', async ({ page }) => {
+    await openFirstIssue(page);
+    await page.evaluate(() => {
+      window.__fakeExternalFiles['/Users/tom/Downloads/elsewhere.png'] = [9, 9];
+      window.__dragDropHandler({ payload: { type: 'drop', paths: ['/Users/tom/Downloads/elsewhere.png'], position: { x: 5, y: 5 } } });
+    });
+    await page.waitForTimeout(300);
+
+    const draft = await page.locator('[data-testid=new-comment-input]').inputValue();
+    expect(draft).toBe('');
+  });
 });
 
 test.describe('Media attachments: the missing-file popover', () => {

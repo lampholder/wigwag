@@ -658,28 +658,28 @@
   <sc-if value="{{ !isWidgetMode }}" hint-placeholder-val="{{ true }}">
   <div style="padding: 16px 28px; flex-shrink:0;">
     <div style="display:flex; align-items:center; gap:10px;">
-    <div data-testid="filter-input-wrap" role="combobox" aria-haspopup="listbox" aria-expanded="false" style="display:flex; align-items:center; gap:8px; width:340px; max-width:100%; padding:8px 12px; border:1px solid var(--border); border-radius:7px; background:var(--surface-page); box-sizing:border-box;">
+    <div data-testid="filter-input-wrap" role="combobox" aria-haspopup="listbox" aria-expanded="false" style="display:flex; align-items:center; gap:8px; width:340px; max-width:100%; height:34px; padding:0 12px; border:1px solid var(--border); border-radius:7px; background:var(--surface-page); box-sizing:border-box;">
         <svg width="13" height="13" sc-camel-view-box="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" style="color: var(--text-tertiary); flex-shrink:0;"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
       <input data-testid="filter-input" role="textbox" aria-autocomplete="list" placeholder="Filter this project" value="{{ filterQuery }}" sc-camel-on-change="{{ onFilterChange }}" sc-camel-on-key-down="{{ onFilterKeyDown }}" sc-camel-on-focus="{{ onFilterFocus }}" style="border:none; outline:none; font-size:13px; font-family:inherit; flex:1; background:transparent;">
       <sc-if value="{{ hasFilterQuery }}" hint-placeholder-val="{{ false }}">
         <span data-testid="filter-clear-btn" sc-camel-on-click="{{ onClearFilterQuery }}" title="Clear filter" style="cursor:pointer; display:flex; align-items:center; justify-content:center; width:18px; height:18px; border-radius:5px; color: var(--n61); flex-shrink:0;" style-hover="background: var(--n21); color: var(--surface);">✕</span>
       </sc-if>
     </div>
-    <span data-testid="btn-filter-field-picker" role="button" aria-haspopup="listbox" sc-camel-on-click="{{ onOpenFilterFieldPicker }}" title="Filter by field" style="display:flex; align-items:center; flex-shrink:0; padding:8px 12px; border:1px solid var(--border); border-radius:8px; background:var(--surface-page); font-size:13px; color: var(--text-secondary); cursor:pointer; box-sizing:border-box;" style-hover="background: var(--surface-hover);">+ Field</span>
+    <span data-testid="btn-filter-field-picker" role="button" aria-haspopup="listbox" sc-camel-on-click="{{ onOpenFilterFieldPicker }}" title="Filter by field" style="display:flex; align-items:center; flex-shrink:0; height:34px; padding:0 12px; border:1px solid var(--border); border-radius:8px; background:var(--surface-page); font-size:13px; color: var(--text-secondary); cursor:pointer; box-sizing:border-box;" style-hover="background: var(--surface-hover);">+ Field</span>
     <sc-if value="{{ showFreezePill }}" hint-placeholder-val="{{ false }}">
-    <div data-testid="freeze-pill" style="display:inline-flex; align-items:center; gap:8px; padding:6px 8px 6px 12px; border:1px solid var(--border); border-radius:999px; background:var(--surface); font-size:12.5px; color: var(--text-secondary); flex-shrink:0;">
+    <div data-testid="freeze-pill" style="display:inline-flex; align-items:center; gap:8px; height:34px; padding:0 8px 0 12px; border:1px solid var(--border); border-radius:999px; background:var(--surface); font-size:12.5px; color: var(--text-secondary); flex-shrink:0; box-sizing:border-box;">
       <span>Frozen through <strong>{{ freezeLabel }}</strong></span>
       <span data-testid="freeze-pill-clear" sc-camel-on-click="{{ onClearFreeze }}" title="Unfreeze columns" style="cursor:pointer; color: var(--text-muted); font-size:13px; padding:2px 6px; border-radius:5px; line-height:1;" style-hover="background: var(--surface-hover);">✕</span>
     </div>
     </sc-if>
     <sc-if value="{{ showHiddenByColumnFiltersHint }}" hint-placeholder-val="{{ false }}">
-    <div data-testid="hidden-by-column-filters-hint" style="display:inline-flex; align-items:center; gap:8px; padding:6px 12px; border:1px solid var(--border); border-radius:999px; background:var(--surface); font-size:12.5px; color: var(--text-secondary); flex-shrink:0;">
+    <div data-testid="hidden-by-column-filters-hint" style="display:inline-flex; align-items:center; gap:8px; height:34px; padding:0 12px; border:1px solid var(--border); border-radius:999px; background:var(--surface); font-size:12.5px; color: var(--text-secondary); flex-shrink:0; box-sizing:border-box;">
       <span>{{ hiddenByColumnFiltersLabel }}</span>
       <span data-testid="hidden-by-column-filters-clear" sc-camel-on-click="{{ onClearAllColumnFilters }}" style="cursor:pointer; color: var(--accent-ink); font-weight:600;" style-hover="text-decoration:underline;">Clear column filters</span>
     </div>
     </sc-if>
     <sc-if value="{{ isKanbanView }}" hint-placeholder-val="{{ false }}">
-    <div data-testid="kanban-grouped-pill" style="display:inline-flex; align-items:center; gap:8px; padding:6px 8px 6px 12px; border:1px solid var(--border); border-radius:999px; background:var(--surface); font-size:12.5px; color: var(--text-secondary); flex-shrink:0;">
+    <div data-testid="kanban-grouped-pill" style="display:inline-flex; align-items:center; gap:8px; height:34px; padding:0 8px 0 12px; border:1px solid var(--border); border-radius:999px; background:var(--surface); font-size:12.5px; color: var(--text-secondary); flex-shrink:0; box-sizing:border-box;">
       <span>Grouped by <strong>{{ groupByLabel }}</strong></span>
       <span data-testid="kanban-clear-group-by" sc-camel-on-click="{{ onClearGroupBy }}" title="Back to table" style="cursor:pointer; color: var(--text-muted); font-size:13px; padding:2px 6px; border-radius:5px; line-height:1;" style-hover="background: var(--surface-hover);">✕</span>
     </div>
@@ -1423,7 +1423,7 @@
 
 
   <sc-if value="{{ isKanbanView }}" hint-placeholder-val="{{ false }}">
-    <div data-testid="kanban-board" style="flex:1 1 auto; min-height:0; overflow-x:auto; overflow-y:hidden; padding: 20px 28px 20px; display:flex; gap:14px; align-items:flex-start;">
+    <div data-testid="kanban-board" style="flex:1 1 auto; min-height:0; overflow-x:auto; overflow-y:hidden; padding: {{ kanbanBoardPadding }}; display:flex; gap:14px; align-items:flex-start;">
       <sc-for list="{{ kanbanColumns }}" as="kcol" hint-placeholder-count="4">
         <div data-testid="kanban-col" style="width:272px; flex-shrink:0; display:flex; flex-direction:column; max-height:100%; border:1px solid var(--border); border-radius: {{ kcol.cornerRadius }}; background: var(--surface-page); overflow:hidden;">
           <div style="flex-shrink:0; padding:11px 12px; display:flex; align-items:center; gap:8px; border-bottom:1px solid var(--border);">

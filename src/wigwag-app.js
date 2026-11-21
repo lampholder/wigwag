@@ -11228,6 +11228,18 @@ class Component extends DCLogic {
 
     const isKanbanView = !!s.kanbanColId;
     const isTableView = !isKanbanView;
+    // Live-reported (Tom): the board's own top padding (added for the
+    // widget, which has no "Filter this project" row of its own above it
+    // to provide breathing room) was shared with desktop/Tauri, which
+    // DOES have that row -- doubling up on space there. Scoped to widget
+    // mode only now. Bottom padding is scoped too: widget's own add-item
+    // row sits directly below with nothing in between (0 here means
+    // "touch the bar"), while desktop/Tauri's add-item box already gets
+    // its own 16px top padding from the generic wrapper around
+    // showDesktopAddItem -- 2px here plus that 16px lands on the
+    // requested ~18px gap, without touching that shared wrapper (which
+    // the table view also uses unchanged).
+    const kanbanBoardPadding = ROOM_MODE_CAPABILITIES ? '20px 28px 0' : '0 28px 2px';
     let kanbanColumns = [];
     let groupByLabel = '';
     if (isKanbanView) {
@@ -13161,7 +13173,7 @@ class Component extends DCLogic {
       onTitleSortAsc: () => (s.sort.colId === 'title' && s.sort.dir === 'asc') ? this.clearSort() : this.sortBy('title', 'asc'),
       onTitleSortDesc: () => (s.sort.colId === 'title' && s.sort.dir === 'desc') ? this.clearSort() : this.sortBy('title', 'desc'),
       columns, headerSegments, rows, cellPadding, titleCellPadding, titleHeaderPadding, totalWidth, titleWidth,
-      isTableView, isKanbanView, groupByLabel, kanbanColumns,
+      isTableView, isKanbanView, groupByLabel, kanbanColumns, kanbanBoardPadding,
       onClearGroupBy: () => this.clearGroupBy(),
       isSelecting, selectionCount: s.selectedIssueIds.length, visibleIssueCount,
       headerChecked: headerAllSelected, headerIndeterminate: headerSomeSelected,

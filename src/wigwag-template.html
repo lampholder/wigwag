@@ -299,7 +299,7 @@
               <div style="display:flex; align-items:center; justify-content:space-between; padding-bottom:7px;">
                 <span style="font-size:9.5px; font-weight:700; letter-spacing:0.07em; color: var(--text-tertiary);">{{ switcher.scopeLabel }}</span>
               </div>
-              <div style="flex:1; overflow-y:auto; max-height:260px;">
+              <div style="flex:1; overflow-y:auto; max-height:min(440px, 70vh);">
                 <sc-for list="{{ switcher.projects }}" as="proj" hint-placeholder-count="2">
                   <div data-testid="switcher-project-row" data-project-id="{{ proj.id }}" sc-camel-on-click="{{ proj.onSelect }}" sc-camel-on-context-menu="{{ proj.onContextMenu }}" style="position:relative; display:flex; align-items:center; gap:{{ proj.gap }}; height:{{ proj.rowHeight }}px; padding:0 14px 0 {{ proj.indentPx }}px; cursor:{{ proj.cursor }}; font-size:{{ proj.fontSize }}; font-weight:400; letter-spacing:0.02em; line-height:1.3; color:{{ proj.color }}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
                     <sc-if value="{{ proj.clickable }}" hint-placeholder-val="{{ true }}">
@@ -472,7 +472,7 @@
               <div style="display:flex; align-items:center; justify-content:space-between; padding-bottom:7px;">
                 <span style="font-size:9.5px; font-weight:700; letter-spacing:0.07em; color: var(--text-tertiary);">{{ switcher.scopeLabel }}</span>
               </div>
-              <div style="flex:1; overflow-y:auto; max-height:260px;">
+              <div style="flex:1; overflow-y:auto; max-height:min(440px, 70vh);">
                 <sc-for list="{{ switcher.projects }}" as="proj" hint-placeholder-count="2">
                   <div data-testid="switcher-project-row" data-project-id="{{ proj.id }}" sc-camel-on-click="{{ proj.onSelect }}" sc-camel-on-context-menu="{{ proj.onContextMenu }}" style="position:relative; display:flex; align-items:center; gap:{{ proj.gap }}; height:{{ proj.rowHeight }}px; padding:0 14px 0 {{ proj.indentPx }}px; cursor:{{ proj.cursor }}; font-size:{{ proj.fontSize }}; font-weight:400; letter-spacing:0.02em; line-height:1.3; color:{{ proj.color }}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
                     <sc-if value="{{ proj.clickable }}" hint-placeholder-val="{{ true }}">
@@ -1241,7 +1241,7 @@
                   </sc-if>
                 </span>
                 <sc-if value="{{ seg.cell.popoverOpen }}">
-                  <div style="{{ seg.cell.popoverStyle }} background:var(--surface); border:1px solid var(--border); border-radius:10px; box-shadow:0 14px 34px var(--sh6); width:360px; z-index:75; overflow:hidden;">
+                  <div style="{{ seg.cell.popoverStyle }} background:var(--surface); border:1px solid var(--border); border-radius:10px; box-shadow:0 14px 34px var(--sh6); width:460px; z-index:75; overflow:hidden;">
                     <div style="padding:12px 14px 8px; font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; color: var(--text-tertiary);">{{ seg.cell.headerLabel }}</div>
                     <div style="max-height:220px; overflow-y:auto; padding:0 8px;">
                       <div style="width:100%; display:table; table-layout:fixed; border-collapse:collapse; font-size:12.5px;">
@@ -1254,7 +1254,7 @@
                               <sc-if value="{{ !row.hasHref }}" hint-placeholder-val="{{ true }}">—</sc-if>
                             </div>
                             <div style="display:table-cell; width:auto; padding:6px 6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{{ row.titleLabel }}">{{ row.titleLabel }}</div>
-                            <div style="display:table-cell; width:62px; padding:6px 4px; text-align:right; overflow:hidden;">
+                            <div style="display:table-cell; width:94px; padding:6px 4px; text-align:right; overflow:hidden;">
                               <sc-if value="{{ row.statusLoading }}" hint-placeholder-val="{{ false }}">
                                 <span style="font-size:11px; color: var(--text-placeholder);">…</span>
                               </sc-if>

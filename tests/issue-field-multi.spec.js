@@ -99,6 +99,41 @@ test.describe('Multi-issue linking: a non-Title issue field holding 2+ entries',
     await expect(statusPills.nth(1)).toHaveText('open');
   });
 
+  // Live-reported (Tom): "why are we not guessing and taking the Status
+  // value from wigwag issues?" -- a wigwag-internal link's status isn't
+  // fetched (there's nothing to fetch, resolveWigwagRef's own comment
+  // already establishes resolution is always local/synchronous), it just
+  // wasn't being read at all. guessStatusFieldId picks whichever field
+  // is actually called "Status" on the LINKED project, and the pill uses
+  // that option's own real authored color, not a guessed category.
+  test('a linked wigwag issue shows that project\'s own guessed "Status" field value and color, not just built-in connectors', async ({ page }) => {
+    const projectId = await h.activeMilestoneId(page);
+    const doc = await h.readActiveMilestoneDoc(page);
+    doc.fieldDefs.status = { label: 'Status', type: 'select', options: [
+      { id: 'open', label: 'Open', color: 'gray' },
+      { id: 'inprogress', label: 'In Progress', color: 'blue' },
+      { id: 'done', label: 'Done', color: 'green' }
+    ] };
+    const target = doc.issues[1];
+    h.pushFieldEntry(target, 'status', 'done');
+    const source = doc.issues[0];
+    const href = h.buildWigwagHref({ projectId, issueId: target.id });
+    h.pushFieldEntry(source, 'linked', [{ title: 'Target issue', href }, 'a plain-text second entry']);
+    await h.writeActiveMilestoneDoc(page, doc);
+    await page.reload({ waitUntil: 'networkidle' });
+    await h.waitForBootSplashGone(page);
+    await page.waitForTimeout(300);
+
+    const cell = h.fieldCell(page, 1, 'linked');
+    await cell.locator('[data-testid="issues-pill"]').first().click();
+    await page.waitForTimeout(200);
+    const statusPills = page.locator('[data-testid="issues-popover-status"]');
+    // Only the resolved wigwag-linked row gets a status pill -- the
+    // plain-text second entry has nothing to resolve and shows none.
+    await expect(statusPills).toHaveCount(1);
+    await expect(statusPills.first()).toHaveText('Done');
+  });
+
   test('popover remove (x) commits immediately; removing down to one entry demotes the field back to ordinary single-value display', async ({ page }) => {
     const colId = await addField(page, 'Issues', 'issue');
     await h.clickFieldToEdit(page, 1, colId);

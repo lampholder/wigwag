@@ -9,7 +9,7 @@
 // names like deriveIssueValues(...), not window.WigwagCore.xxx(...))
 // because this destructure is the only thing that needed to change.
 const {
-  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxInflateRaw, parseZipEntries, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, columnFilterIsActive, dateFilterPresetRanges, parseFilterQuery, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, isPastedTextASingleUrl, wrapSelectionWithMarkdownLink, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, statusCategoryColorName, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, deriveFieldDefs, effectiveFieldDefs, deriveProjectName, PROJECT_NAME_FIELD_ID, deriveProjectNotes, PROJECT_NOTES_FIELD_ID, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, principalKind, SIGN_ALG, JOSE_ALG_ES256, signEntryPayload, verifyEntryPayload, signableEntryPayload, signableProjectEntryPayload, redactedEntryPayload, redactedProjectEntryPayload, signableCommentEntryPayload, signableProjectCommentEntryPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER
+  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxInflateRaw, parseZipEntries, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, columnFilterIsActive, dateFilterPresetRanges, parseFilterQuery, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, isPastedTextASingleUrl, wrapSelectionWithMarkdownLink, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, statusCategoryColorName, guessStatusFieldId, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, deriveFieldDefs, effectiveFieldDefs, deriveProjectName, PROJECT_NAME_FIELD_ID, deriveProjectNotes, PROJECT_NOTES_FIELD_ID, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, principalKind, SIGN_ALG, JOSE_ALG_ES256, signEntryPayload, verifyEntryPayload, signableEntryPayload, signableProjectEntryPayload, redactedEntryPayload, redactedProjectEntryPayload, signableCommentEntryPayload, signableProjectCommentEntryPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER
 ,
   buildSource, normalizeRef, sourceRefHasFullData, evalRule, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, fieldLocalBindState, liveBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, builtinKindConfigured, builtinKindReachable, resolveRefSystem, parseGithubUrl, parseGithubShortId, githubTokenCreationUrl, GITHUB_TOKEN_LIST_URL, parseGithubTokenExpiryHeader, parseGithubNextLink, parseJiraKey, parseSalesforceId, hostFromUrl, buildWigwagUri, parseWigwagUri, buildProjectTree, flattenProjectTree,
   CSV_ID_COLUMN_HEADER, parseCsvText, looksLikeCsvText, nextPaletteColor, buildCsvImportPlan,
@@ -193,19 +193,32 @@ function idbPutMeta(key, value) { return idbPut('meta', key, value); }
 function buildProjectSummaryFromDoc(doc) {
   const fieldDefs = (doc && doc.fieldDefs) || {};
   const issues = (doc && doc.issues) || [];
+  // wigwagRefStatusFor's own cross-project case (the linked issue isn't
+  // in the currently-active project) only ever has this summary to read
+  // from -- carry a guessed status (see guessStatusFieldId) per issue
+  // alongside title/refTexts, same lazy-load-once cost as those two.
+  const statusFieldId = guessStatusFieldId(fieldDefs);
+  const statusDef = statusFieldId ? fieldDefs[statusFieldId] : null;
   return {
     issueCount: issues.filter(iss => !issueIsDeleted(iss)).length,
     githubRepo: (doc && doc.githubRepo) || '',
     githubRepoPath: (doc && doc.githubRepoPath) || 'tracker.jsonl',
     githubRepoBranch: (doc && doc.githubRepoBranch) || '',
     issues: issues.map(iss => {
-      let title = '';
-      try { title = deriveIssueValues(iss, fieldDefs).title || ''; } catch (e) { /* malformed issue -- blank title, not a crash */ }
+      let values = {};
+      try { values = deriveIssueValues(iss, fieldDefs); } catch (e) { /* malformed issue -- blank title/status, not a crash */ }
+      const title = values.title || '';
       // refTexts carries each linked field's search text (e.g. a Jira key
       // like "CSI-123") so universal search can match on it, same as the
       // in-table filter bar already does via fieldRefSearchText.
       const refTexts = Object.values(deriveIssueFieldRefs(iss, fieldDefs)).flatMap(r => Array.isArray(r) ? r : [r]).map(fieldRefSearchText).filter(Boolean).map(t => t.toLowerCase());
-      return { id: iss.id, title: String(title), refTexts };
+      let status = null;
+      const raw = statusFieldId ? values[statusFieldId] : null;
+      if (raw) {
+        const opt = statusDef.type === 'select' ? (statusDef.options || []).find(o => o.id === raw) : null;
+        status = { label: opt ? opt.label : String(raw), colorName: opt ? (opt.color || 'gray') : 'gray' };
+      }
+      return { id: iss.id, title: String(title), refTexts, status };
     })
   };
 }
@@ -10821,6 +10834,41 @@ class Component extends DCLogic {
     }
     return null; // still in flight
   }
+  // Multi-issue linking's popover status pill, for a link to another
+  // wigwag issue (Tom: "why are we not guessing and taking the Status
+  // value from wigwag issues?"). Unlike issuesPopoverStatusFor above,
+  // this never fetches anything -- resolveWigwagRef's own comment
+  // already established resolution is always local and synchronous, no
+  // staleness/caching concern at all, so this is too. guessStatusFieldId
+  // picks which field IS "Status" for that project; the color shown is
+  // the real one the project's own author picked for that option (a
+  // wigwag select option always carries a real authored color), not a
+  // guessed category the way the GitHub/Jira/Salesforce pill above has
+  // to. Returns undefined whenever there's nothing to show (not a
+  // wigwag ref, project not locally resolvable, issue/field not found,
+  // or the field's current value is empty) -- never null, since there's
+  // no "still loading" state possible here.
+  wigwagRefStatusFor(ref) {
+    if (!ref || ref.system !== 'wigwag') return undefined;
+    const projectId = this.resolveWigwagProjectId(ref);
+    if (!projectId || !ref.issueId) return undefined;
+    let fieldDefs, values;
+    if (projectId === this.state.projectId) {
+      const iss = this.state.issues.find(i => i.id === ref.issueId);
+      if (!iss) return undefined;
+      fieldDefs = this.state.fieldDefs; values = iss.values;
+    } else {
+      const summary = this._projectSummaries[projectId];
+      const iss = summary && summary.issues.find(i => i.id === ref.issueId);
+      return (iss && iss.status) ? { label: iss.status.label, color: col(iss.status.colorName) } : undefined;
+    }
+    const statusFieldId = guessStatusFieldId(fieldDefs);
+    const raw = statusFieldId ? values[statusFieldId] : null;
+    if (!raw) return undefined;
+    const def = fieldDefs[statusFieldId];
+    const opt = def.type === 'select' ? (def.options || []).find(o => o.id === raw) : null;
+    return { label: opt ? opt.label : String(raw), color: col(opt ? (opt.color || 'gray') : 'gray') };
+  }
   // Multi-issue linking: the 2+-entry display -- a row of mini-pills (one
   // per resolved entry, id-only, monospace) with any plain-text entries
   // rendered inline alongside them, collapsing to a single count pill
@@ -10843,7 +10891,7 @@ class Component extends DCLogic {
     const commitEditFn = () => this.startEdit(issue.id, colId, editValue);
     const gatedClick = readOnly ? undefined : e => { if (e && e.target.closest && e.target.closest('[data-testid="issues-pill"]')) return; this.cellClickGate(issue.id, colId, commitEditFn); };
     const popoverOpen = !readOnly && s.activeCell && s.activeCell.issueId === issue.id && s.activeCell.colId === colId && !!s.activeCell.popover;
-    const openPopover = readOnly ? undefined : e => { e.stopPropagation(); this.togglePopover(issue.id, colId, e, 360); };
+    const openPopover = readOnly ? undefined : e => { e.stopPropagation(); this.togglePopover(issue.id, colId, e, 460); };
     const cell = {
       isIssuesMulti: true, isBoundLive, isOverridden, boundGlyphTitle,
       showBoundGlyph: isBoundLive || isOverridden,
@@ -10861,14 +10909,16 @@ class Component extends DCLogic {
         const ref = refs[i] || null;
         const isWg = ref && ref.system === 'wigwag';
         const liveStatus = ref && !isWg ? this.issuesPopoverStatusFor(ref) : undefined;
-        const statusColor = liveStatus && typeof liveStatus === 'object' ? col(statusCategoryColorName(liveStatus.statusCategory)) : null;
+        const wgStatus = ref && isWg ? this.wigwagRefStatusFor(ref) : undefined;
+        const statusColor = liveStatus && typeof liveStatus === 'object' ? col(statusCategoryColorName(liveStatus.statusCategory)) : (wgStatus ? wgStatus.color : null);
+        const statusLabel = liveStatus && typeof liveStatus === 'object' ? liveStatus.status : (wgStatus ? wgStatus.label : '');
         return {
           idLabel: ref ? (this.resolveIssuePillLabel(ref, text) || text) : '', titleLabel: text,
           hasHref: !!ref, href: ref ? (isWg ? '#' : (ref.href || null)) : null,
           onRowClick: isWg ? (e => { e.preventDefault(); this.openWigwagRef(ref); }) : undefined,
           statusLoading: liveStatus === null,
           showStatus: !!statusColor,
-          statusLabel: statusColor ? liveStatus.status : '',
+          statusLabel,
           statusBg: statusColor ? statusColor.bg : '',
           statusFg: statusColor ? statusColor.fg : '',
           onRemove: () => this.removeIssueFieldEntry(issue.id, colId, i)

@@ -761,6 +761,63 @@ test.describe('M7: row detail', () => {
   });
 });
 
+// Live-reported (Tom): the cross-project reference preview (openWigwagRef
+// -> openForeignSlideOver for a different project naming an issue) must
+// apply everywhere a wigwag ref can be clicked, "in any field" -- this
+// surface (mobile row detail's own field list) built its display value
+// generically (String(v)) with no ref detection or tap handler at all,
+// so a resolved wigwag-linked field here was previously not even a tap
+// target, let alone one that could skip the preview and switch directly.
+test.describe('M7: a resolved wigwag-linked field previews the foreign issue instead of switching', () => {
+  const OTHER_ID = 'other-project';
+  const OTHER_NAME = 'Other Project';
+
+  test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
+
+  async function seedOtherProjectAndLink(page) {
+    await page.evaluate(({ id, name }) => {
+      const idx = JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1'));
+      idx.milestones.push({ id, name });
+      localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify(idx));
+      localStorage.setItem('git_native_tracker_v1:' + id, JSON.stringify({
+        fieldDefs: { title: { label: 'Issue', type: 'issue' } },
+        issues: [{
+          id: 'op-1', fieldRefs: {}, fieldLoading: {},
+          fields: { title: { history: [{ id: 'op-1-title', actor: 'test', value: 'A remote-project issue', sortKey: 1, sig: null, pubKey: null }] } }
+        }],
+        githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: ''
+      }));
+    }, { id: OTHER_ID, name: OTHER_NAME });
+
+    const doc = await h.readActiveMilestoneDoc(page);
+    h.pushFieldEntry(doc.issues[0], 'linked', 'A remote-project issue', { href: h.buildWigwagHref({ projectId: OTHER_ID, issueId: 'op-1' }) });
+    await h.writeActiveMilestoneDoc(page, doc);
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(400); // let the fire-and-forget project-summary sweep land
+  }
+
+  test('tapping it opens the read-only preview in place, without switching projects', async ({ page }) => {
+    await seedOtherProjectAndLink(page);
+
+    await page.locator('[data-testid=mobile-row]').first().click();
+    await page.waitForTimeout(350);
+    const row = page.locator('[data-testid=mobile-row-detail-field][data-col=linked]');
+    await expect(row.locator('[data-testid=mobile-field-chevron]')).toBeVisible();
+    await row.click();
+    await page.waitForTimeout(400);
+
+    const preview = page.locator('[data-testid=mobile-foreign-slideover]');
+    await expect(preview).toBeVisible();
+    await expect(page.locator('[data-testid=mobile-foreign-slideover-banner]')).toContainText(OTHER_NAME);
+    await expect(preview).toContainText('A remote-project issue');
+    expect(await h.activeMilestoneId(page)).not.toBe(OTHER_ID);
+
+    await page.locator('[data-testid=mobile-foreign-slideover-switch]').click();
+    await page.waitForTimeout(400);
+    expect(await h.activeMilestoneId(page)).toBe(OTHER_ID);
+  });
+});
+
 test.describe('M8: settings', () => {
   test.beforeEach(async ({ page }) => { await h.gotoTracker(page); });
 

@@ -12500,6 +12500,13 @@ class Component extends DCLogic {
             const isPickerType = def.type === 'select' || def.type === 'multiselect';
             const isDateType = def.type === 'date';
             const isEditingDate = isDateType && !isBound && s.activeCell && s.activeCell.issueId === issue.id && s.activeCell.colId === colId;
+            // Same chokepoint as the main table/slide-over: a resolved
+            // single wigwag ref taps through to openWigwagRef, same
+            // preview-not-switch behavior for a different project. Only
+            // the 0/1-entry shape -- a 2+-entry multi-issue field has no
+            // mobile pill/popover UI of its own yet, out of scope here.
+            const ref = def.type === 'issue' && !Array.isArray(v) ? (issue.fieldRefs && issue.fieldRefs[colId]) : null;
+            const isWg = ref && ref.system === 'wigwag';
             let displayValue = '', isPill = false, pillBg = '', pillFg = '';
             if (def.type === 'select' && v) {
               const opt = (def.options || []).find(o => o.id === v);
@@ -12511,12 +12518,13 @@ class Component extends DCLogic {
             }
             let onTap;
             if (isBound) onTap = () => { this.setState({ mobileActiveSheet: null }); this.openRuleBuilder(colId); };
+            else if (isWg) onTap = () => this.openWigwagRef(ref);
             else if (isPickerType) onTap = () => this.setState({ activeCell: { issueId: issue.id, colId }, optionFilterQuery: '' });
             else if (isDateType && !isEditingDate) onTap = () => this.startEdit(issue.id, colId, v || '');
             return {
               colId, label: def.label, displayValue, isPill, isPlainText: !isPill && !isEditingDate, pillBg, pillFg,
               isBound, boundSummary: isBound ? mobileBoundSummary(def) : '',
-              showChevron: !isBound && (isPickerType || isDateType) && !isEditingDate,
+              showChevron: !isBound && (isPickerType || isDateType || isWg) && !isEditingDate,
               isEditingDate, dateDraft: isEditingDate ? s.editDraft : '',
               onDateDraftChange: e => this.setState({ editDraft: e.target.value }),
               onDateBlur: () => this.commitEdit(issue.id, colId),

@@ -4016,6 +4016,86 @@
         </div>
       </div>
     </sc-if>
+
+    <!-- Cross-project reference preview, mobile-native rendering --
+         same foreignSlideOver state/data the desktop slide-in panel
+         uses (buildForeignSlideOverVals isn't viewport-gated), just a
+         full-screen page matching this tree's own mobile-*-page
+         convention instead of a side panel, since the desktop version
+         lives inside the isDesktopViewport-only tree and never reaches
+         an actual mobile-width viewport. -->
+    <sc-if value="{{ foreignSlideOver }}" hint-placeholder-val="{{ false }}">
+      <div data-testid="mobile-foreign-slideover" style="position:fixed; inset:0; background:var(--surface-page); z-index:210; display:flex; flex-direction:column;">
+        <div data-testid="mobile-foreign-slideover-banner" style="display:flex; align-items:center; gap:10px; padding:12px 16px; background: var(--c14); border-bottom:1px solid var(--c16); flex-shrink:0;">
+          <div style="width:24px; height:24px; border-radius:6px; background: var(--c16); color: var(--c13); display:flex; align-items:center; justify-content:center; flex-shrink:0;">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><path d="M15 3h6v6"></path><path d="M10 14L21 3"></path></svg>
+          </div>
+          <div style="flex:1; min-width:0; font-size:12.5px; color: var(--c13); line-height:1.4;">From <b style="font-weight:700;">{{ foreignSlideOver.projectName }}</b></div>
+          <span data-testid="mobile-foreign-slideover-close" sc-camel-on-click="{{ foreignSlideOver.onClose }}" style="cursor:pointer; font-size:15px; color:var(--n18); padding:4px; flex-shrink:0;">✕</span>
+        </div>
+        <div style="padding:14px 16px; border-bottom:1px solid var(--n8); flex-shrink:0;">
+          <div style="font-size:11px; color: var(--n24); margin-bottom:4px; font-family:ui-monospace,monospace;">{{ foreignSlideOver.shortRef }}</div>
+          <div style="font-size:16px; font-weight:700; color:var(--n18); line-height:1.3;">{{ foreignSlideOver.title }}</div>
+        </div>
+
+        <sc-if value="{{ foreignSlideOver.found }}" hint-placeholder-val="{{ true }}">
+          <div style="overflow-y:auto; flex:1;">
+            <sc-if value="{{ foreignSlideOver.hasDescription }}" hint-placeholder-val="{{ false }}">
+              <div style="padding:14px 16px; border-bottom:1px solid var(--n8);">
+                <div style="font-size:10.5px; font-weight:700; letter-spacing:0.04em; color: var(--n24); margin-bottom:5px;">{{ foreignSlideOver.description.label }}</div>
+                <div style="font-size:13.5px; line-height:1.5; color:var(--n18); white-space:pre-wrap;">{{ foreignSlideOver.description.text }}</div>
+              </div>
+            </sc-if>
+            <sc-if value="{{ foreignSlideOver.hasFields }}" hint-placeholder-val="{{ true }}">
+              <div style="padding:14px 16px; display:flex; flex-direction:column; gap:12px; border-bottom:1px solid var(--n8);">
+                <sc-for list="{{ foreignSlideOver.fields }}" as="f" hint-placeholder-count="4">
+                  <div>
+                    <div style="font-size:10.5px; font-weight:700; letter-spacing:0.04em; color: var(--n24); margin-bottom:5px;">{{ f.label }}</div>
+                    <sc-if value="{{ f.isPill }}" hint-placeholder-val="{{ false }}">
+                      <span style="display:inline-block; font-size:12.5px; padding:3px 9px; border-radius:10px; background: {{ f.pillBg }}; color: {{ f.pillFg }};">{{ f.displayValue }}</span>
+                    </sc-if>
+                    <sc-if value="{{ !f.isPill }}" hint-placeholder-val="{{ true }}">
+                      <span style="font-size:13.5px; color:var(--n18);">{{ f.displayValue }}</span>
+                    </sc-if>
+                  </div>
+                </sc-for>
+              </div>
+            </sc-if>
+            <div style="padding:14px 16px;">
+              <div style="font-size:10.5px; font-weight:700; letter-spacing:0.04em; color: var(--n24); margin-bottom:10px;">COMMENTS</div>
+              <sc-if value="{{ foreignSlideOver.hasComments }}" hint-placeholder-val="{{ false }}">
+                <sc-for list="{{ foreignSlideOver.comments }}" as="c" hint-placeholder-count="2">
+                  <div style="display:flex; gap:9px; margin-bottom:13px;">
+                    <div style="width:20px; height:20px; border-radius:50%; background: var(--accent-fill); color:var(--ink-on-accent); font-size:10px; font-weight:700; display:flex; align-items:center; justify-content:center; flex-shrink:0;">{{ c.initial }}</div>
+                    <div style="min-width:0; flex:1;">
+                      <div style="font-size:11.5px; color: var(--n24); margin-bottom:2px;"><b>{{ c.actor }}</b> · {{ c.time }}</div>
+                      <div style="font-size:13px; line-height:1.45; color:var(--n18);">{{ c.text }}</div>
+                    </div>
+                  </div>
+                </sc-for>
+                <sc-if value="{{ foreignSlideOver.commentsOverflow }}" hint-placeholder-val="{{ false }}">
+                  <div style="font-size:12px; color: var(--n24); font-style:italic;">+{{ foreignSlideOver.commentsOverflow }} more — switch to this project to see the full thread.</div>
+                </sc-if>
+              </sc-if>
+              <sc-if value="{{ !foreignSlideOver.hasComments }}" hint-placeholder-val="{{ true }}">
+                <div style="font-size:13px; color: var(--n39); font-style:italic;">No comments yet.</div>
+              </sc-if>
+            </div>
+          </div>
+          <div style="padding:14px 16px; flex-shrink:0;">
+            <div data-testid="mobile-foreign-slideover-switch" sc-camel-on-click="{{ foreignSlideOver.onSwitch }}" style="background:var(--accent-fill); color:var(--ink-on-accent); text-align:center; padding:13px; border-radius:10px; font-size:15px; font-weight:600; cursor:pointer;">Switch to {{ foreignSlideOver.projectName }}</div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ !foreignSlideOver.found }}" hint-placeholder-val="{{ false }}">
+          <div style="padding:32px 20px; text-align:center; flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center;">
+            <div style="font-size:14px; color: var(--n24); max-width:320px;">This issue couldn't be found in {{ foreignSlideOver.projectName }} — it may have been deleted or you may not have synced its latest data.</div>
+            <div data-testid="mobile-foreign-slideover-switch-notfound" sc-camel-on-click="{{ foreignSlideOver.onSwitch }}" style="cursor:pointer; margin-top:14px; font-size:13.5px; font-weight:600; color:var(--ink-on-accent); background:var(--accent-fill); padding:10px 16px; border-radius:9px;">Switch to {{ foreignSlideOver.projectName }} anyway →</div>
+          </div>
+        </sc-if>
+      </div>
+    </sc-if>
+
     <sc-if value="{{ attributionGate.open }}" hint-placeholder-val="{{ false }}">
       <div data-testid="mobile-attribution-gate-page" style="position:fixed; inset:0; background:var(--surface-page); z-index:210; display:flex; flex-direction:column;">
         <div style="display:flex; align-items:center; padding:12px 16px; border-bottom:1px solid var(--n8); flex-shrink:0;">

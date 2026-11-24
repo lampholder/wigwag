@@ -134,6 +134,132 @@ test.describe('Multi-issue linking: a non-Title issue field holding 2+ entries',
     await expect(statusPills.first()).toHaveText('Done');
   });
 
+  // Live-reported (Tom): several things "weren't feeling right" about
+  // mini-pills -- pill background indistinguishable from the row-hover
+  // color, the popover too narrow (titles aggressively truncated), and
+  // (in widget mode especially) the popover running off the top/bottom
+  // of a short viewport. Click-to-open-the-list stays as-is; hovering any
+  // one pill now highlights the whole group instead.
+  test.describe('Mini-pill polish: color, popover width/wrap, hover-group, positioning', () => {
+    async function seedTwoWigwagLinkedEntries(page) {
+      const projectId = await h.activeMilestoneId(page);
+      const doc = await h.readActiveMilestoneDoc(page);
+      const targetA = doc.issues[1];
+      const targetB = doc.issues[2];
+      const hrefA = h.buildWigwagHref({ projectId, issueId: targetA.id });
+      const hrefB = h.buildWigwagHref({ projectId, issueId: targetB.id });
+      const source = doc.issues[0];
+      // The displayed titleLabel is the snapshot title stored IN the
+      // link entry itself at link-creation time (deriveIssueValues reads
+      // it straight off {title, href}), not a live lookup of the target
+      // issue's current title -- the long title has to live here.
+      const longTitle = 'A genuinely very long issue title that would previously have been aggressively truncated in the old narrow popover column';
+      h.pushFieldEntry(source, 'linked', [{ title: longTitle, href: hrefA }, { title: 'Target B', href: hrefB }]);
+      await h.writeActiveMilestoneDoc(page, doc);
+      await page.reload({ waitUntil: 'networkidle' });
+      await h.waitForBootSplashGone(page);
+      await page.waitForTimeout(300);
+      return { projectId, targetA, targetB, longTitle };
+    }
+
+    test('a wigwag-linked pill shows <project-prefix>-<issue-prefix>, not a bare issue-uuid, matching in both the pill and the popover row', async ({ page }) => {
+      const { projectId, targetA } = await seedTwoWigwagLinkedEntries(page);
+      const expected = projectId.slice(0, 3) + '-' + targetA.id.slice(0, 5);
+
+      const cell = h.fieldCell(page, 1, 'linked');
+      const pill = cell.locator('[data-testid="issues-pill"]').first();
+      expect((await pill.innerText()).trim()).toBe(expected);
+
+      await pill.click();
+      await page.waitForTimeout(200);
+      const idCell = page.locator('[data-testid="issues-popover-row"]').first().locator('a');
+      expect((await idCell.innerText()).trim()).toBe(expected);
+    });
+
+    test('pill background is its own distinct tone, not the same color as the row-hover background', async ({ page }) => {
+      await seedTwoWigwagLinkedEntries(page);
+      const pill = h.fieldCell(page, 1, 'linked').locator('[data-testid="issues-pill"]').first();
+      const pillBg = await pill.evaluate(el => getComputedStyle(el).backgroundColor);
+      // Same token (--surface-selected) already used elsewhere (e.g. the
+      // inline-code background in markdown) -- confirms the pill picked
+      // it up, not the old --surface-hover (near-identical to the row's
+      // own hover color, which is the bug being fixed here).
+      const reference = await page.evaluate(() => {
+        const probe = document.createElement('div');
+        probe.style.background = 'var(--surface-selected)';
+        document.body.appendChild(probe);
+        const color = getComputedStyle(probe).backgroundColor;
+        probe.remove();
+        return color;
+      });
+      expect(pillBg).toBe(reference);
+    });
+
+    test('hovering one pill highlights the whole group, not just that pill', async ({ page }) => {
+      await seedTwoWigwagLinkedEntries(page);
+      const pills = h.fieldCell(page, 1, 'linked').locator('[data-testid="issues-pill"]');
+      await expect(pills).toHaveCount(2);
+
+      const otherFilterBefore = await pills.nth(1).evaluate(el => getComputedStyle(el).filter);
+      await pills.nth(0).hover();
+      await page.waitForTimeout(100);
+      const otherFilterDuring = await pills.nth(1).evaluate(el => getComputedStyle(el).filter);
+      expect(otherFilterDuring).not.toBe(otherFilterBefore); // the un-hovered sibling changed too
+    });
+
+    test('the popover is wide enough, and a long title wraps instead of single-line-truncating', async ({ page }) => {
+      await seedTwoWigwagLinkedEntries(page);
+      await h.fieldCell(page, 1, 'linked').locator('[data-testid="issues-pill"]').first().click();
+      await page.waitForTimeout(200);
+
+      const popover = page.locator('[data-testid="issues-popover-row"]').first().locator('..').locator('..');
+      const box = await popover.boundingBox();
+      expect(box.width).toBeGreaterThan(500);
+
+      const titleCell = page.locator('[data-testid="issues-popover-row"]').first().locator('div').nth(1);
+      const whiteSpace = await titleCell.evaluate(el => getComputedStyle(el).whiteSpace);
+      expect(whiteSpace).not.toBe('nowrap');
+      await expect(titleCell).toContainText('genuinely very long issue title');
+    });
+
+    // The positioning clamp lives in computeAnchor/togglePopover, shared
+    // by every popover type regardless of ROOM_MODE/widget vs desktop --
+    // no isWidgetMode branch was added, so a short viewport under the
+    // plain desktop harness exercises the exact same code path a short
+    // widget panel would. Many entries forces a genuinely tall popover
+    // (several rows), not just a short one that would trivially fit.
+    test('on a short viewport, the popover stays fully within the visible viewport instead of running off the top or bottom', async ({ page }) => {
+      const projectId = await h.activeMilestoneId(page);
+      const doc = await h.readActiveMilestoneDoc(page);
+      const source = doc.issues[0];
+      const entries = [];
+      for (let i = 1; i <= 6 && i < doc.issues.length; i++) {
+        entries.push({ title: 'Entry ' + i, href: h.buildWigwagHref({ projectId, issueId: doc.issues[i].id }) });
+      }
+      h.pushFieldEntry(source, 'linked', entries);
+      await h.writeActiveMilestoneDoc(page, doc);
+      // Short enough that a 6-row popover would overflow without the fix
+      // (its own natural height, header+rows+footer, comfortably exceeds
+      // what's left below row 1 once the app bar/toolbar/column headers
+      // are accounted for), but still tall enough to actually show row 1
+      // without the "very short viewport" min-height/overlap fallback
+      // (a separate, already-covered mechanism) kicking in and
+      // confounding the click itself.
+      await page.setViewportSize({ width: 1000, height: 420 });
+      await page.reload({ waitUntil: 'networkidle' });
+      await h.waitForBootSplashGone(page);
+      await page.waitForTimeout(300);
+
+      await h.fieldCell(page, 1, 'linked').locator('[data-testid="issues-pill"]').first().click();
+      await page.waitForTimeout(200);
+      const popoverRow = page.locator('[data-testid="issues-popover-row"]').first();
+      const popover = popoverRow.locator('xpath=ancestor::div[3]');
+      const box = await popover.boundingBox();
+      expect(box.y).toBeGreaterThanOrEqual(0);
+      expect(box.y + box.height).toBeLessThanOrEqual(420);
+    });
+  });
+
   test('popover remove (x) commits immediately; removing down to one entry demotes the field back to ordinary single-value display', async ({ page }) => {
     const colId = await addField(page, 'Issues', 'issue');
     await h.clickFieldToEdit(page, 1, colId);

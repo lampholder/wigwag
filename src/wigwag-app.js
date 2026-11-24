@@ -7757,7 +7757,7 @@ class Component extends DCLogic {
   }
   togglePopover(issueId, colId, e, width) {
     const isOpen = this.state.activeCell && this.state.activeCell.issueId === issueId && this.state.activeCell.colId === colId;
-    let openUpward = false, anchorLeft = 0, anchorTopPx = 0, anchorBottomPx = 0;
+    let openUpward = false, anchorLeft = 0, anchorTopPx = 0, anchorBottomPx = 0, spaceBelow = 0, spaceAbove = 0;
     const anchorEl = e && e.target && (e.target.closest('[data-testid="field-cell"]') || e.target.closest('[data-testid="slideover-field"]') || e.target.closest('[data-testid="title-cell"]') || e.currentTarget);
     if (!isOpen && anchorEl && anchorEl.getBoundingClientRect) {
       // Rough estimate of the popover's own height (header + up to ~220px
@@ -7768,6 +7768,14 @@ class Component extends DCLogic {
       const estimatedPopoverHeight = 320;
       openUpward = a.spaceBelow < estimatedPopoverHeight && a.spaceAbove > a.spaceBelow;
       anchorLeft = a.left; anchorTopPx = a.bottom + 6; anchorBottomPx = a.upwardOffsetPx;
+      // Live-reported (Tom, widget mode): the flip decision above picks a
+      // side but never actually bounds the popover to how much room that
+      // side really has -- a genuinely short viewport can still push a
+      // tall popover off the opposite edge. Carried through so a
+      // consumer (currently just the mini-pills popover) can clamp its
+      // own max-height to real available space; harmless/unused by
+      // select/multiselect/commentStream's popovers, which don't read it.
+      spaceBelow = a.spaceBelow; spaceAbove = a.spaceAbove;
     }
     // popover:true distinguishes this from startEdit's own activeCell
     // (same state field, two meanings) -- only matters for an 'issue'-
@@ -7776,7 +7784,7 @@ class Component extends DCLogic {
     // `active` check; without this tag, opening the popover on a 2+-
     // entry field was indistinguishable from "start editing" and the
     // textarea won every time instead of the popover ever showing.
-    this.setState({ activeCell: isOpen ? null : { issueId, colId, openUpward, anchorLeft, anchorTopPx, anchorBottomPx, popover: true }, optionFilterQuery: '', issuesPopoverDraft: '' });
+    this.setState({ activeCell: isOpen ? null : { issueId, colId, openUpward, anchorLeft, anchorTopPx, anchorBottomPx, spaceBelow, spaceAbove, popover: true }, optionFilterQuery: '', issuesPopoverDraft: '' });
   }
   selectOption(issueId, colId, optionId) {
     const fieldLabel = (this.state.fieldDefs[colId] && this.state.fieldDefs[colId].label) || colId;
@@ -10710,12 +10718,18 @@ class Component extends DCLogic {
     if (!ref) return text;
     // Pills stay compact -- unlike the single-ref field's own display
     // (which shows the full "Project / Issue title", see
-    // resolveWigwagRef's own doc), a Wigwag pill shows its short uuid,
-    // same convention withEmbeddedWigwagLinks already uses for an
-    // embedded link's pill ('#' + issueId.slice(0, 8)). A project-only
-    // link (no issueId) has no uuid to shorten, so it keeps the
-    // resolved project-name label.
-    if (ref.system === 'wigwag') return ref.issueId ? '#' + ref.issueId.slice(0, 8) : (this.resolveWigwagRef(ref).label || text);
+    // resolveWigwagRef's own doc), a Wigwag pill shows a short id. Live-
+    // reported (Tom): a bare issue-uuid prefix (the old '#'+8 convention,
+    // still used elsewhere e.g. withEmbeddedWigwagLinks) carries no
+    // project context at all, unlike e.g. "SUP-101" -- this pairs a
+    // short project-id prefix with a short issue-id prefix instead
+    // ("a8b-32cb1"), a cheap display-only win since both ids already
+    // exist; ref.projectId is always the already-resolved concrete id by
+    // the time a fieldRef is persisted (see applyWigwagLinkToField), not
+    // the raw pasted 'remote' form, so no extra resolution is needed
+    // here. A project-only link (no issueId) has no uuid to shorten, so
+    // it keeps the resolved project-name label.
+    if (ref.system === 'wigwag') return ref.issueId ? ref.projectId.slice(0, 3) + '-' + ref.issueId.slice(0, 5) : (this.resolveWigwagRef(ref).label || text);
     const n = normalizeRef(ref);
     if (!n) return text;
     const fetchedVia = this.liveFetchedViaForRef(n);
@@ -11044,7 +11058,7 @@ class Component extends DCLogic {
     const commitEditFn = () => this.startEdit(issue.id, colId, editValue);
     const gatedClick = readOnly ? undefined : e => { if (e && e.target.closest && e.target.closest('[data-testid="issues-pill"]')) return; this.cellClickGate(issue.id, colId, commitEditFn); };
     const popoverOpen = !readOnly && s.activeCell && s.activeCell.issueId === issue.id && s.activeCell.colId === colId && !!s.activeCell.popover;
-    const openPopover = readOnly ? undefined : e => { e.stopPropagation(); this.togglePopover(issue.id, colId, e, 460); };
+    const openPopover = readOnly ? undefined : e => { e.stopPropagation(); this.togglePopover(issue.id, colId, e, 560); };
     const cell = {
       isIssuesMulti: true, isBoundLive, isOverridden, boundGlyphTitle,
       showBoundGlyph: isBoundLive || isOverridden,
@@ -11057,6 +11071,16 @@ class Component extends DCLogic {
     if (popoverOpen) {
       cell.popoverStyle = 'position:fixed; left:' + s.activeCell.anchorLeft + 'px; ' +
         (s.activeCell.openUpward ? ('bottom:' + s.activeCell.anchorBottomPx + 'px;') : ('top:' + s.activeCell.anchorTopPx + 'px;'));
+      // Live-reported (Tom, widget mode): bounds the WHOLE popover (header
+      // + rows + footer) to however much room genuinely exists on
+      // whichever side it opened on, instead of just the old fixed
+      // 220px-for-the-rows-area-only -- a short widget viewport can still
+      // only offer e.g. 180px total, and the popover (with its own
+      // internal rows scroll) now shrinks to fit that instead of running
+      // off the opposite edge. 20px margin for breathing room, floor/
+      // ceiling keep it sane if spaceBelow/spaceAbove ever came back 0.
+      const available = (s.activeCell.openUpward ? s.activeCell.spaceAbove : s.activeCell.spaceBelow) - 20;
+      cell.popoverMaxHeightPx = Math.max(160, Math.min(420, available));
       cell.headerLabel = 'ISSUES (' + values.length + ')';
       cell.rows = values.map((text, i) => {
         const ref = refs[i] || null;

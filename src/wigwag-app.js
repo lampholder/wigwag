@@ -2467,6 +2467,7 @@ class Component extends DCLogic {
         if (this.state.sourceViewOpen) { this.closeSourceView(); return; }
         if (this.state.issueJsonViewOpen) { this.closeIssueJsonView(); return; }
         if (this.state.activeCell) { this.cancelEdit(); return; }
+        if (this.state.foreignRef) { this.closeForeignSlideOver(); return; }
         if (this.state.slideOverIssueId) { this.closeSlideOver(); return; }
         if (this.state.selectedIssueIds.length) { this.setState({ selectedIssueIds: [] }); return; }
         if (this.state.deleteProjectConfirmOpen) { this.setState({ deleteProjectConfirmOpen: false, deleteProjectNameDraft: '' }); return; }
@@ -4218,6 +4219,9 @@ class Component extends DCLogic {
     optionFilterQuery: '',
     slideOverIssueId: null,
     slideOverVisible: false,
+    foreignRef: null,
+    foreignSlideOverVisible: false,
+    foreignDoc: undefined,
     newCommentDraft: '',
     commentStreamDrafts: {},
     editingCommentFieldId: null,
@@ -4594,9 +4598,121 @@ class Component extends DCLogic {
       return;
     }
     const issueId = wg.issueId || null;
+    // A ref into the CURRENT project (or a bare project ref with no
+    // issueId to preview) navigates immediately, same as always. A ref
+    // into a DIFFERENT project, when it names a specific issue, instead
+    // opens a read-only preview of that issue right here -- switching
+    // projects out from under someone just to show them one issue is
+    // disorienting, especially for anyone unfamiliar with the multi-
+    // project switcher or without an obvious way back. The preview's own
+    // "Switch to this project" button is the explicit, opt-in version of
+    // what this used to do automatically.
+    if (projectId !== this.state.projectId && issueId) {
+      this.openForeignSlideOver(wg, projectId, issueId);
+      return;
+    }
     const hash = '#/project/' + encodeURIComponent(projectId) + (issueId ? '/issue/' + encodeURIComponent(issueId) : '');
     if (window.location.hash !== hash) history.pushState(null, '', hash);
     this.resolveDeepLinkFromHash(false);
+  }
+  // Mount hidden, flip visible a tick later so the transform actually
+  // animates in -- same timing trick openSlideOver/closeSlideOver use.
+  // Folded in with the doc fetch itself (docStore.getDoc is always async,
+  // a real IndexedDB read in Local mode) so the panel never flashes a
+  // false not-found state before the real doc arrives -- by the time
+  // foreignSlideOverVisible flips true, foreignDoc is already populated.
+  openForeignSlideOver(wg, projectId, issueId) {
+    this.setState({ foreignRef: { wg, projectId, issueId }, foreignSlideOverVisible: false, foreignDoc: undefined });
+    Promise.all([docStore.getDoc(projectId), new Promise(r => setTimeout(r, 20))]).then(([doc]) => {
+      // A fast second click while this fetch was in flight may have
+      // already replaced foreignRef with a newer open -- don't clobber it.
+      if (this.state.foreignRef && this.state.foreignRef.issueId === issueId && this.state.foreignRef.projectId === projectId) {
+        this.setState({ foreignDoc: doc, foreignSlideOverVisible: true });
+      }
+    });
+  }
+  // Arrow-bound (not a plain method) -- handed out bare as onClose below,
+  // same as closeSlideOver's own binding convention.
+  closeForeignSlideOver = () => {
+    this.setState({ foreignSlideOverVisible: false });
+    setTimeout(() => this.setState(s => (s.foreignSlideOverVisible ? {} : { foreignRef: null, foreignDoc: undefined })), 280);
+  };
+  // The explicit opt-in the preview banner offers: actually switch (with
+  // identity-switching etc. all still handled by resolveDeepLinkFromHash,
+  // same as any other deep link) and land on the real, editable slideover.
+  // Arrow-bound -- handed out bare as onSwitch below.
+  switchToForeignProject = () => {
+    const ref = this.state.foreignRef;
+    if (!ref) return;
+    this.setState({ foreignRef: null, foreignSlideOverVisible: false, foreignDoc: undefined });
+    const hash = '#/project/' + encodeURIComponent(ref.projectId) + (ref.issueId ? '/issue/' + encodeURIComponent(ref.issueId) : '');
+    if (window.location.hash !== hash) history.pushState(null, '', hash);
+    this.resolveDeepLinkFromHash(false);
+  };
+  // Read-only: resolves straight off the OTHER project's own stored doc
+  // (fetched fresh via docStore.getDoc when the preview opened, never the
+  // active project's live state). Deliberately a much lighter field/
+  // comment rendering than the real slideover -- nothing here is
+  // editable, so there's no cell-editing machinery to reuse, just enough
+  // context to recognize the issue and decide whether to switch.
+  // issue.fields[colId].history is the persisted source of truth
+  // regardless of whether this project has ever been active in this
+  // browser, so deriveIssueValues/latestCommentsById work straight off
+  // the raw fetched doc with no extra derivation step.
+  buildForeignSlideOverVals() {
+    const ref = this.state.foreignRef;
+    if (!ref) return null;
+    const projectMeta = this.state.projects.find(p => p.id === ref.projectId);
+    const projectName = projectMeta ? projectMeta.name : 'that project';
+    const base = {
+      projectName,
+      transform: this.state.foreignSlideOverVisible ? 'translateX(0)' : 'translateX(100%)',
+      overlayAlpha: this.state.foreignSlideOverVisible ? '0.28' : '0',
+      onClose: this.closeForeignSlideOver, onSwitch: this.switchToForeignProject
+    };
+    const notFound = { ...base, found: false, shortRef: '#' + ref.issueId.slice(0, 8), title: '', hasDescription: false, description: null, hasFields: false, fields: [], hasComments: false, comments: [], commentsOverflow: 0 };
+    const doc = this.state.foreignDoc;
+    if (!doc) return notFound;
+    const fieldDefs = doc.fieldDefs || {};
+    const issue = Array.isArray(doc.issues) ? doc.issues.find(i => i.id === ref.issueId && !issueIsDeleted(i)) : null;
+    if (!issue) return notFound;
+    const values = deriveIssueValues(issue, fieldDefs);
+    // The Object.keys(fieldDefs) fallback (no columnOrder persisted yet --
+    // true for a project fetched before it's ever been hydrated/saved in
+    // this browser) includes 'title' literally, unlike a real columnOrder
+    // which only ever carries it as the '__title__' position sentinel --
+    // realColumnOrder only strips the sentinel, so 'title' needs its own
+    // explicit exclusion here too.
+    const order = realColumnOrder((doc.columnOrder && doc.columnOrder.length) ? doc.columnOrder : Object.keys(fieldDefs)).filter(id => id !== 'title' && fieldDefs[id] && fieldDefs[id].type !== 'commentStream' && fieldDefs[id].type !== 'timestamp');
+    const descriptionColId = order.find(id => fieldDefs[id].type === 'text' && (fieldDefs[id].label || '').trim().toLowerCase() === 'description');
+    const description = descriptionColId ? { label: fieldDefs[descriptionColId].label, text: values[descriptionColId] ? String(values[descriptionColId]) : '' } : null;
+    const fields = order.filter(id => id !== descriptionColId).map(colId => {
+      const def = fieldDefs[colId];
+      const v = values[colId];
+      let displayValue = '', isPill = false, pillBg = '', pillFg = '';
+      if (def.type === 'select' && v) {
+        const opt = (def.options || []).find(o => o.id === v);
+        if (opt) { displayValue = opt.label; isPill = true; pillBg = col(opt.color).bg; pillFg = col(opt.color).fg; }
+      } else if (def.type === 'multiselect' && Array.isArray(v) && v.length) {
+        displayValue = v.map(id2 => { const opt = (def.options || []).find(o => o.id === id2); return opt ? opt.label : id2; }).join(', ');
+      } else if (def.type === 'issue' && Array.isArray(v)) {
+        // Multi-issue linking: deriveIssueValues returns an array of
+        // display strings for a 2+-entry 'issue'-type field -- joined
+        // the same way multiselect's own labels are, above.
+        displayValue = v.filter(Boolean).join(', ');
+      } else if (v != null && v !== '') {
+        displayValue = String(v);
+      }
+      return { colId, label: def.label, displayValue, isPill, pillBg, pillFg };
+    }).filter(f => f.displayValue);
+    const allComments = latestCommentsById((issue.fields.comments && issue.fields.comments.history) || []).filter(c => !c.redacted).sort((a, b) => (b.sortKey || 0) - (a.sortKey || 0));
+    const comments = allComments.slice(0, 3).map(c => ({ initial: (c.actor || '?')[0].toUpperCase(), actor: c.actor || 'Someone', time: this.timeLabelFor(c), text: c.text }));
+    return {
+      ...base, found: true, shortRef: '#' + issue.id.slice(0, 8), title: values.title || '(untitled)',
+      hasDescription: !!(description && description.text), description,
+      hasFields: fields.length > 0, fields,
+      hasComments: comments.length > 0, comments, commentsOverflow: Math.max(0, allComments.length - comments.length)
+    };
   }
   // Field-scoped wigwag counterpart to applyGithubLinkToField/
   // applyConnectorLinkToField -- same fieldRef/history shape, but no
@@ -13460,6 +13576,7 @@ class Component extends DCLogic {
       fieldEditor, closeFieldEditor: this.closeFieldEditor,
       ruleBuilder: this.ruleBuilderVals(), closeRuleBuilder: this.closeRuleBuilder,
       slideOver, closeSlideOver: this.closeSlideOver,
+      foreignSlideOver: this.buildForeignSlideOverVals(),
       newCommentDraft: s.newCommentDraft,
       onNewCommentChange: e => this.setState({ newCommentDraft: e.target.value }),
       onNewCommentPaste: e => this.handleMarkdownLinkPaste(e, v => this.setState({ newCommentDraft: v })),

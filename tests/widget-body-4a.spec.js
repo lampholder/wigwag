@@ -759,3 +759,65 @@ test.describe('Widget body: field-value popup stacking', () => {
     await expect(frame.locator('[data-testid=row]').nth(4).locator('[data-testid=field-cell][data-col=type]')).toContainText('Enhancement');
   });
 });
+
+// Live-reported (Tom): the Receive dialogue (the "paste what someone sent
+// you" modal) used to always render as a small, content-height-driven box
+// centered via align-items:center with no max-height/overflow handling --
+// fine in the real desktop app (always a tall browser window), but a
+// room-embedded widget is frequently wide-but-short (e.g. a sidebar panel
+// under a chat timeline), so isDesktopViewport's width-only breakpoint
+// stays true while there isn't remotely enough VERTICAL space, centering
+// the overflow off both the top and bottom with no scrollbar -- the
+// Cancel/Receive buttons (and "Open a file instead...") could end up
+// entirely unreachable. Fixed for isWidgetMode specifically: the dialogue
+// now fills the whole viewport as a flex column (fixed header, scrollable
+// middle holding the textarea + any recognized-media list, fixed footer
+// holding every action button) -- every control stays reachable
+// regardless of how short the widget's own viewport is. Desktop/Tauri
+// (isWidgetMode false) keeps the original small centered modal, untouched.
+test.describe('Widget body: Receive dialogue fills the viewport', () => {
+  test('on a wide-but-short widget viewport, the dialogue fills the screen and every action stays reachable', async ({ page }) => {
+    await page.setViewportSize({ width: 1000, height: 280 });
+    await h.gotoFakeWidgetHost(page, { roomId: '!receive4a:example.org', roomName: 'Widget Room', initialEntries: seedIssues(['Alpha task']) });
+    const frame = page.frameLocator('#widget').frameLocator('#frame');
+
+    await frame.locator('[data-testid=btn-import-merge]').first().click();
+    await page.waitForTimeout(200);
+
+    const modal = frame.locator('[data-testid=paste-merge-modal]');
+    await expect(modal).toBeVisible();
+    const box = await modal.boundingBox();
+    // Fills (effectively) the whole 280px-tall viewport -- not a small
+    // content-height box floating in the middle of it.
+    expect(box.height).toBeGreaterThan(250);
+
+    // Every action control is actually within the viewport and clickable,
+    // not pushed off-screen by the (very short) available height.
+    for (const testid of ['btn-paste-merge-open-file', 'btn-cancel-paste-merge', 'btn-submit-paste-merge']) {
+      const el = frame.locator('[data-testid=' + testid + ']');
+      await expect(el).toBeVisible();
+      const b = await el.boundingBox();
+      expect(b.y).toBeGreaterThanOrEqual(0);
+      expect(b.y + b.height).toBeLessThanOrEqual(280);
+    }
+
+    // The textarea itself still works for typing/submitting.
+    await frame.locator('[data-testid=paste-merge-textarea]').click();
+    await frame.locator('[data-testid=btn-cancel-paste-merge]').click();
+    await page.waitForTimeout(150);
+    await expect(modal).toHaveCount(0);
+  });
+
+  test('desktop/Tauri mode (not a widget) keeps the original small centered modal, unaffected', async ({ page }) => {
+    await h.gotoTrackerFreshIdentity(page);
+    await page.locator('[data-testid=btn-import-merge]').click();
+    await page.waitForTimeout(200);
+
+    const modal = page.locator('[data-testid=paste-merge-modal]');
+    const box = await modal.boundingBox();
+    const viewport = page.viewportSize();
+    expect(box.width).toBeLessThan(500); // still the fixed ~480px box, not a full-viewport fill
+    expect(Math.abs((box.x + box.width / 2) - viewport.width / 2)).toBeLessThan(30); // still centered
+    await page.locator('[data-testid=btn-cancel-paste-merge]').click();
+  });
+});

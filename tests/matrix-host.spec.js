@@ -1523,6 +1523,41 @@ test.describe('wigwag-matrix-host.html: moderator-gated project creation', () =>
     await expect(frame.locator('[data-testid=row]')).toContainText('Received issue');
   });
 
+  // Live-reported (Tom): this empty-room "Receive a project…" modal is a
+  // sibling of the main toolbar Receive dialog (same small-centered-box
+  // bug class, fixed there first) -- this screen only ever appears in
+  // widget/room mode at all (a room with zero projects; the desktop app
+  // always has one), so it always fills the viewport now rather than
+  // needing an isWidgetMode branch the way the main dialog did.
+  test('the empty-room "Receive a project…" modal fills the viewport on a wide-but-short room panel, keeping every action reachable', async ({ page }) => {
+    await page.setViewportSize({ width: 1000, height: 280 });
+    h.mockMatrixClientApi(page, { homeserverUrl: HOMESERVER, roomId: ROOM_ID, roomName: 'Bridge Room', initialEntries: [], powerLevels: MODERATOR_LEVELS });
+    await page.goto('/bridges/wigwag-matrix-host.html');
+    await page.locator('#homeserverUrl').fill(HOMESERVER);
+    await page.locator('#accessToken').fill('tok123');
+    await page.locator('#roomId').fill(ROOM_ID);
+    await page.locator('#connectBtn').click();
+    const frame = page.frameLocator('#frame');
+    await expect(frame.locator('[data-testid=room-no-projects]')).toBeVisible();
+
+    await frame.locator('[data-testid=btn-receive-first-room-project]').click();
+    const modal = frame.locator('[data-testid=room-no-projects-receive-modal]');
+    await expect(modal).toBeVisible();
+    const box = await modal.boundingBox();
+    expect(box.height).toBeGreaterThan(250); // fills the 280px-tall viewport, not a small floating box
+
+    for (const testid of ['btn-room-no-projects-open-file', 'btn-cancel-room-no-projects-receive', 'btn-submit-room-no-projects-receive']) {
+      const el = frame.locator('[data-testid=' + testid + ']');
+      await expect(el).toBeVisible();
+      const b = await el.boundingBox();
+      expect(b.y).toBeGreaterThanOrEqual(0);
+      expect(b.y + b.height).toBeLessThanOrEqual(280);
+    }
+
+    await frame.locator('[data-testid=btn-cancel-room-no-projects-receive]').click();
+    await expect(modal).toHaveCount(0);
+  });
+
   // Live-reported (Tom, 2026-09-28): a fresh bulk import correctly sent
   // exactly one snapshot (the earlier duplicate-snapshot race fixed above),
   // but every imported item stayed stuck showing 'pending' in the UI

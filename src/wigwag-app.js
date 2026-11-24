@@ -5135,6 +5135,43 @@ class Component extends DCLogic {
     e.preventDefault();
     this.attachFilesSequentially(e.dataTransfer && e.dataTransfer.files);
   }
+  // Pasting an image (a screenshot, or "Copy Image" from a browser/
+  // Preview) attaches it the same way as the paperclip/drop zone --
+  // same attachFileToComment chokepoint, just a third way to originate
+  // files into it. clipboardData.items is the fallback read (some
+  // engines never populate .files for a raw pasted image, only items) --
+  // but a real File added via items.add() already shows up in .files
+  // too, so this is "prefer files, fall back to items", not "files OR
+  // items are mutually exclusive shapes".
+  // A genuine OS file (e.g. copied in Finder, then pasted) always has a
+  // real .name; a raw clipboard image never does. That's the signal
+  // used to decide how to treat the WHOLE list: multiple genuinely
+  // separate named files are all taken, but when the first entry has no
+  // name this is a raw image paste -- and macOS commonly offers several
+  // same-content representations of that one image (e.g. both TIFF and
+  // PNG) as separate entries, not distinct images, so only the first is
+  // taken and given a synthesized "Pasted image.<ext>" name -- taking
+  // all of them would silently attach duplicates of the same picture.
+  filesFromClipboardEvent(e) {
+    const cd = e.clipboardData || window.clipboardData;
+    if (!cd) return [];
+    const direct = (cd.files && cd.files.length) ? Array.from(cd.files) : [];
+    const files = direct.length ? direct : Array.from(cd.items || []).filter(i => i.kind === 'file').map(i => i.getAsFile()).filter(Boolean);
+    if (!files.length) return [];
+    if (files[0].name) return files;
+    const blob = files[0];
+    const ext = (blob.type.split('/')[1] || 'png').split('+')[0];
+    return [new File([blob], 'Pasted image.' + ext, { type: blob.type })];
+  }
+  // Scoped to the main Comments composer only, same as the paperclip/
+  // drop zone (design handoff attachments.zip, tracker e16588b6) -- a
+  // paste carrying no file/image data falls through to the existing
+  // paste-a-URL-over-a-selection handling unchanged.
+  handleCommentComposerPaste(e, applyNewValue) {
+    const files = this.filesFromClipboardEvent(e);
+    if (files.length) { e.preventDefault(); this.attachFilesSequentially(files); return; }
+    this.handleMarkdownLinkPaste(e, applyNewValue);
+  }
   // Dragging a real OS file (e.g. from Finder) onto the composer is a
   // SEPARATE problem from the kanban drag-and-drop fixed above: a file
   // drag is never same-page, so there's no "replace HTML5 DnD with
@@ -13579,7 +13616,7 @@ class Component extends DCLogic {
       foreignSlideOver: this.buildForeignSlideOverVals(),
       newCommentDraft: s.newCommentDraft,
       onNewCommentChange: e => this.setState({ newCommentDraft: e.target.value }),
-      onNewCommentPaste: e => this.handleMarkdownLinkPaste(e, v => this.setState({ newCommentDraft: v })),
+      onNewCommentPaste: e => this.handleCommentComposerPaste(e, v => this.setState({ newCommentDraft: v })),
       onCommentKeyDown: e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); this.addComment(); } },
       addComment: this.addComment,
       // Media attachments (e16588b6): paperclip + drag-drop onto the

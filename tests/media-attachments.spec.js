@@ -167,6 +167,83 @@ test.describe('Media attachments: the comment composer attach affordance', () =>
     expect(draft).toContain('[b.txt](wigwag-media:');
   });
 
+  // Simulates a real browser paste by constructing an actual
+  // ClipboardEvent (whose clipboardData is settable via its own
+  // constructor init dict) and dispatching it directly in-page --
+  // Playwright's own locator.dispatchEvent('paste', ...) helper doesn't
+  // recognize 'paste' as a type needing a real ClipboardEvent, so a
+  // clipboardData passed that way never actually reaches the handler.
+  async function pasteFiles(input, fileSpecs) {
+    await input.evaluate((el, specs) => {
+      const dt = new DataTransfer();
+      for (const s of specs) dt.items.add(new File([new Uint8Array(s.bytes)], s.name, { type: s.type }));
+      el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+    }, fileSpecs);
+  }
+
+  // Pasting an actual OS file (e.g. copying a file in Finder, then
+  // pasting) arrives via clipboardData.files -- same shape as a drop,
+  // just a different origin event.
+  test('pasting a real file (clipboardData.files) attaches it the same way as a drop', async ({ page }) => {
+    await openFirstIssue(page);
+    const input = page.locator('[data-testid=new-comment-input]');
+    await pasteFiles(input, [{ name: 'pasted.txt', type: 'text/plain', bytes: [1, 2, 3] }]);
+    await page.waitForTimeout(300);
+
+    expect(await input.inputValue()).toMatch(/^\[pasted\.txt\]\(wigwag-media:[a-f0-9]{64}\)$/);
+  });
+
+  // A raw clipboard image (a screenshot, or "Copy Image" from a browser/
+  // Preview) has no backing file at all -- it arrives via
+  // clipboardData.items with an empty/missing name, synthesized into a
+  // sensible "Pasted image.<ext>" label derived from its MIME type.
+  test('pasting a raw clipboard image (no filename, via clipboardData.items) attaches it with a synthesized name', async ({ page }) => {
+    await openFirstIssue(page);
+    const input = page.locator('[data-testid=new-comment-input]');
+    await pasteFiles(input, [{ name: '', type: 'image/png', bytes: [1, 2, 3, 4] }]);
+    await page.waitForTimeout(300);
+
+    expect(await input.inputValue()).toMatch(/^\[Pasted image\.png\]\(wigwag-media:[a-f0-9]{64}\)$/);
+  });
+
+  // macOS commonly offers several same-content representations of ONE
+  // copied image (e.g. both a TIFF and a PNG item) as separate
+  // clipboard items -- only the first is attached, never both, or a
+  // single screenshot paste would silently create duplicate
+  // attachments of the exact same picture.
+  test('multiple same-content clipboard item representations attach only once, not once per representation', async ({ page }) => {
+    await openFirstIssue(page);
+    const input = page.locator('[data-testid=new-comment-input]');
+    await pasteFiles(input, [
+      { name: '', type: 'image/tiff', bytes: [9, 9, 9] },
+      { name: '', type: 'image/png', bytes: [9, 9, 9] }
+    ]);
+    await page.waitForTimeout(300);
+
+    const matches = (await input.inputValue()).match(/\(wigwag-media:[a-f0-9]{64}\)/g) || [];
+    expect(matches.length).toBe(1);
+  });
+
+  // Pasting ordinary text (no file/image data at all) must be completely
+  // unaffected -- the existing paste-a-URL-over-a-selection behavior
+  // still works, and plain text paste is untouched.
+  test('pasting plain text (no files) is unaffected -- falls through to normal paste handling', async ({ page }) => {
+    await openFirstIssue(page);
+    const input = page.locator('[data-testid=new-comment-input]');
+    await input.fill('before after');
+    await input.evaluate(el => { el.focus(); el.selectionStart = 7; el.selectionEnd = 12; }); // selects "after"
+    await input.evaluate(el => {
+      const dt = new DataTransfer();
+      dt.setData('text/plain', 'https://example.com/x');
+      el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+    });
+    await page.waitForTimeout(200);
+
+    // Falls through to handleMarkdownLinkPaste's existing URL-wrap
+    // behavior -- confirms the new file-check didn't short-circuit it.
+    expect(await input.inputValue()).toBe('before [after](https://example.com/x)');
+  });
+
   // Tauri/macOS doesn't reliably deliver a native OS file drop as a DOM
   // 'drop' event at all (confirmed, long-standing, unfixed upstream wry
   // bug: tauri-apps/tauri#3277) -- setupNativeDragDrop's real fix routes

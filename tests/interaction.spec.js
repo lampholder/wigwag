@@ -781,6 +781,41 @@ test.describe('Detail slide-over', () => {
     await expect(slideover).toContainText('#' + id.slice(0, 8));
   });
 
+  // Live-reported (Tom): the title/header bar should stay pinned at the
+  // top of the slide-over while scrolling through a long issue's fields/
+  // comments, instead of scrolling away with the rest of the content.
+  test('the title header stays pinned to the top while the rest of the slide-over scrolls', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 600 });
+    const projectId = await h.activeMilestoneId(page);
+    const doc = await h.idbGetProjectDoc(page, projectId);
+    const issue = doc.issues.find(i => i.id === 'i1');
+    for (let i = 0; i < 20; i++) h.pushCommentEntry(issue, 'Comment number ' + i);
+    await h.idbSetProjectDoc(page, projectId, doc);
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(300);
+
+    const slideover = await h.openSlideover(page, 1);
+    await page.waitForTimeout(300);
+    const header = slideover.locator('[data-testid=slideover-title-wrap]');
+    const title = await header.textContent();
+
+    const topBefore = (await header.boundingBox()).y;
+    await slideover.evaluate(el => { el.scrollTop = el.scrollHeight / 2; });
+    await page.waitForTimeout(150);
+
+    // Still pinned at the same position, still showing the title, not
+    // scrolled away with the rest of the content.
+    const topAfter = (await header.boundingBox()).y;
+    expect(topAfter).toBe(topBefore);
+    await expect(header).toBeVisible();
+    expect(await header.textContent()).toBe(title);
+
+    // And genuinely scrolled underneath it -- not just failing to scroll
+    // at all (which would trivially "pass" the position check above).
+    const scrollTop = await slideover.evaluate(el => el.scrollTop);
+    expect(scrollTop).toBeGreaterThan(0);
+  });
+
   // Tracker issue 4bee26c8: the source-platform glyph (Jira/Salesforce/
   // wigwag) in the title's own ref line used float:left; margin-top:2px,
   // which doesn't participate in baseline alignment -- sat visibly lower

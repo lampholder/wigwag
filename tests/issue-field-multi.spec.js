@@ -176,6 +176,56 @@ test.describe('Multi-issue linking: a non-Title issue field holding 2+ entries',
       expect((await idCell.innerText()).trim()).toBe(expected);
     });
 
+    test('once the target project has set a code, the pill prefers "<code>-<suffix>" over the hex-prefix fallback', async ({ page }) => {
+      const { targetA } = await seedTwoWigwagLinkedEntries(page);
+      const projectId = await h.activeMilestoneId(page);
+      const doc = await h.readActiveMilestoneDoc(page);
+      doc.projectHistory.push({
+        id: 'test-code-1', actor: 'test', text: 'Set project code to "SUP"',
+        field: '__project_code__', value: 'SUP', sortKey: (doc.projectHistory.length || 0) + 1000,
+        sig: null, pubKey: null
+      });
+      await h.writeActiveMilestoneDoc(page, doc);
+      await page.reload({ waitUntil: 'networkidle' });
+      await h.waitForBootSplashGone(page);
+      await page.waitForTimeout(300);
+
+      const pill = h.fieldCell(page, 1, 'linked').locator('[data-testid="issues-pill"]').first();
+      expect((await pill.innerText()).trim()).toBe('SUP-' + targetA.id.slice(0, 5));
+    });
+
+    // projectCodeFor's OTHER branch -- a project that's never been active
+    // in this browser, read via _projectSummaries rather than live state.
+    test('a code set on a DIFFERENT (never-activated) project is also picked up, via the project-summary cache', async ({ page }) => {
+      await page.evaluate(() => {
+        const idx = JSON.parse(localStorage.getItem('git_native_tracker_milestones_v1'));
+        idx.milestones.push({ id: 'other-project', name: 'Other Project' });
+        localStorage.setItem('git_native_tracker_milestones_v1', JSON.stringify(idx));
+        localStorage.setItem('git_native_tracker_v1:other-project', JSON.stringify({
+          fieldDefs: { title: { label: 'Issue', type: 'issue' } },
+          issues: [{ id: 'op-1', fieldRefs: {}, fieldLoading: {}, fields: { title: { history: [{ id: 'op-1-title', actor: 'test', value: 'A remote issue', sortKey: 1, sig: null, pubKey: null }] } } }],
+          projectHistory: [{ id: 'op-code-1', actor: 'test', text: 'Set project code to "OTH"', field: '__project_code__', value: 'OTH', sortKey: 1, sig: null, pubKey: null }],
+          githubRepo: '', githubRepoPath: 'tracker.jsonl', githubRepoBranch: ''
+        }));
+      });
+      const doc = await h.readActiveMilestoneDoc(page);
+      // Two entries -- promotes the field to the mini-pill path
+      // (resolveIssuePillLabel), which is what this test is actually
+      // exercising; a single entry renders via buildTextCell's own
+      // singular-ref branch instead, which never calls that function.
+      h.pushFieldEntry(doc.issues[0], 'linked', [
+        { title: 'A remote issue', href: h.buildWigwagHref({ projectId: 'other-project', issueId: 'op-1' }) },
+        'a plain-text second entry'
+      ]);
+      await h.writeActiveMilestoneDoc(page, doc);
+      await page.reload({ waitUntil: 'networkidle' });
+      await h.waitForBootSplashGone(page);
+      await page.waitForTimeout(500); // let the fire-and-forget project-summary sweep land
+
+      const pill = h.fieldCell(page, 1, 'linked').locator('[data-testid="issues-pill"]').first();
+      expect((await pill.innerText()).trim()).toBe('OTH-op-1');
+    });
+
     test('pill background is its own distinct tone, not the same color as the row-hover background', async ({ page }) => {
       await seedTwoWigwagLinkedEntries(page);
       const pill = h.fieldCell(page, 1, 'linked').locator('[data-testid="issues-pill"]').first();

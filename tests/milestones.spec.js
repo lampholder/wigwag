@@ -196,6 +196,103 @@ test.describe('Tracker switcher', () => {
     expect(doc.fieldDefs['__project_name__']).toBeUndefined();
   });
 
+  // Live-requested (Tom): a short, memorable project code ("SUP" rather
+  // than a bare uuid prefix), set from the same project panel as the
+  // rename flow, with no permission gate (same requireAttribution-only
+  // norm as everything else), grounded in real Jira project-key rules
+  // (2-10 chars, starts with a letter, letters/digits only -- no hyphen,
+  // since Jira itself disallows one there for exactly the reason wigwag's
+  // own "<code>-<suffix>" id format would make ambiguous; no underscore
+  // either, a documented source of Jira's own bugs).
+  test.describe('Project code', () => {
+    test('setting a code for the first time shows the badge and appends a real, derivable field:__project_code__ history entry', async ({ page }) => {
+      await page.locator('[data-testid=btn-notes]').click();
+      await page.waitForTimeout(300);
+      await expect(page.locator('[data-testid=notes-project-code-edit-btn]')).toHaveText('Set…');
+      await expect(page.getByText('Not set', { exact: true })).toBeVisible();
+
+      await page.locator('[data-testid=notes-project-code-edit-btn]').click();
+      const input = page.locator('[data-testid=notes-project-code-input]');
+      await expect(page.getByText('shown everywhere this project is referenced', { exact: false })).toBeVisible();
+      await input.fill('sup');
+      await page.keyboard.press('Enter');
+      await page.waitForTimeout(200);
+
+      await expect(page.locator('[data-testid=notes-project-code-badge]')).toHaveText('SUP'); // auto-uppercased
+      await expect(page.locator('[data-testid=notes-project-code-input]')).toHaveCount(0);
+
+      const doc = await h.idbGetProjectDoc(page, 'demo-milestone');
+      const codeEntries = doc.projectHistory.filter(h => h.field === '__project_code__');
+      expect(codeEntries.length).toBe(1);
+      expect(codeEntries[0].value).toBe('SUP');
+      expect(doc.fieldDefs['__project_code__']).toBeUndefined(); // sentinel never leaks into fieldDefs
+    });
+
+    test('changing an already-set code appends a new entry (append-only) and the warning is shown every time, not just the first', async ({ page }) => {
+      await page.locator('[data-testid=btn-notes]').click();
+      await page.waitForTimeout(300);
+      await page.locator('[data-testid=notes-project-code-edit-btn]').click();
+      await page.locator('[data-testid=notes-project-code-input]').fill('SUP');
+      await page.keyboard.press('Enter');
+      await page.waitForTimeout(200);
+
+      await page.locator('[data-testid=notes-project-code-edit-btn]').click(); // now "Edit..."
+      await expect(page.getByText('shown everywhere this project is referenced', { exact: false })).toBeVisible();
+      await page.locator('[data-testid=notes-project-code-input]').fill('NEW');
+      await page.keyboard.press('Enter');
+      await page.waitForTimeout(200);
+
+      await expect(page.locator('[data-testid=notes-project-code-badge]')).toHaveText('NEW');
+      const doc = await h.idbGetProjectDoc(page, 'demo-milestone');
+      const codeEntries = doc.projectHistory.filter(h => h.field === '__project_code__');
+      expect(codeEntries.length).toBe(2); // append-only, both entries survive
+      expect(codeEntries.map(e => e.value)).toEqual(['SUP', 'NEW']);
+    });
+
+    test('an invalid code (too short, or starting with a digit) is rejected inline, without committing or closing the editor', async ({ page }) => {
+      await page.locator('[data-testid=btn-notes]').click();
+      await page.waitForTimeout(300);
+      await page.locator('[data-testid=notes-project-code-edit-btn]').click();
+      const input = page.locator('[data-testid=notes-project-code-input]');
+
+      await input.fill('S'); // one char, below the 2-char minimum
+      await page.keyboard.press('Enter');
+      await page.waitForTimeout(150);
+      await expect(page.locator('[data-testid=notes-project-code-error]')).toBeVisible();
+      await expect(input).toBeVisible(); // still editing -- nothing committed
+
+      await input.fill('1AB'); // starts with a digit, not a letter
+      await page.keyboard.press('Enter');
+      await page.waitForTimeout(150);
+      await expect(page.locator('[data-testid=notes-project-code-error]')).toBeVisible();
+      await expect(input).toBeVisible();
+
+      const doc = await h.idbGetProjectDoc(page, 'demo-milestone');
+      expect((doc.projectHistory || []).filter(h => h.field === '__project_code__').length).toBe(0);
+    });
+
+    test('Escape cancels without committing; a blank draft also cancels rather than clearing an already-set code', async ({ page }) => {
+      await page.locator('[data-testid=btn-notes]').click();
+      await page.waitForTimeout(300);
+      await page.locator('[data-testid=notes-project-code-edit-btn]').click();
+      await page.locator('[data-testid=notes-project-code-input]').fill('SUP');
+      await page.keyboard.press('Enter');
+      await page.waitForTimeout(200);
+
+      await page.locator('[data-testid=notes-project-code-edit-btn]').click();
+      await page.locator('[data-testid=notes-project-code-input]').fill('ZZZ');
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(150);
+      await expect(page.locator('[data-testid=notes-project-code-badge]')).toHaveText('SUP');
+
+      await page.locator('[data-testid=notes-project-code-edit-btn]').click();
+      await page.locator('[data-testid=notes-project-code-input]').fill('');
+      await page.keyboard.press('Enter');
+      await page.waitForTimeout(150);
+      await expect(page.locator('[data-testid=notes-project-code-badge]')).toHaveText('SUP'); // unchanged, not cleared
+    });
+  });
+
   // The whole point of making the name derivable: another session picking
   // up a name change purely from history, the same way a field-definition
   // change already propagates via wigwag's existing cross-tab sync

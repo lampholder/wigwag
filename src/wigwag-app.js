@@ -9,7 +9,7 @@
 // names like deriveIssueValues(...), not window.WigwagCore.xxx(...))
 // because this destructure is the only thing that needed to change.
 const {
-  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxInflateRaw, parseZipEntries, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, columnFilterIsActive, dateFilterPresetRanges, parseFilterQuery, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, isPastedTextASingleUrl, wrapSelectionWithMarkdownLink, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, statusCategoryColorName, guessStatusFieldId, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, deriveFieldDefs, effectiveFieldDefs, deriveProjectName, PROJECT_NAME_FIELD_ID, deriveProjectNotes, PROJECT_NOTES_FIELD_ID, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, principalKind, SIGN_ALG, JOSE_ALG_ES256, signEntryPayload, verifyEntryPayload, signableEntryPayload, signableProjectEntryPayload, redactedEntryPayload, redactedProjectEntryPayload, signableCommentEntryPayload, signableProjectCommentEntryPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER
+  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxInflateRaw, parseZipEntries, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, columnFilterIsActive, dateFilterPresetRanges, parseFilterQuery, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, isPastedTextASingleUrl, wrapSelectionWithMarkdownLink, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, statusCategoryColorName, guessStatusFieldId, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, deriveFieldDefs, effectiveFieldDefs, deriveProjectName, PROJECT_NAME_FIELD_ID, deriveProjectNotes, PROJECT_NOTES_FIELD_ID, deriveProjectCode, PROJECT_CODE_FIELD_ID, isValidProjectCode, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, principalKind, SIGN_ALG, JOSE_ALG_ES256, signEntryPayload, verifyEntryPayload, signableEntryPayload, signableProjectEntryPayload, redactedEntryPayload, redactedProjectEntryPayload, signableCommentEntryPayload, signableProjectCommentEntryPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER
 ,
   buildSource, normalizeRef, sourceRefHasFullData, evalRule, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, fieldLocalBindState, liveBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, builtinKindConfigured, builtinKindReachable, resolveRefSystem, parseGithubUrl, parseGithubShortId, githubTokenCreationUrl, GITHUB_TOKEN_LIST_URL, parseGithubTokenExpiryHeader, parseGithubNextLink, parseJiraKey, parseSalesforceId, hostFromUrl, buildWigwagUri, parseWigwagUri, buildProjectTree, flattenProjectTree,
   CSV_ID_COLUMN_HEADER, parseCsvText, looksLikeCsvText, nextPaletteColor, buildCsvImportPlan,
@@ -204,6 +204,10 @@ function buildProjectSummaryFromDoc(doc) {
     githubRepo: (doc && doc.githubRepo) || '',
     githubRepoPath: (doc && doc.githubRepoPath) || 'tracker.jsonl',
     githubRepoBranch: (doc && doc.githubRepoBranch) || '',
+    // resolveIssuePillLabel's own cross-project case reads this to show
+    // "<code>-<issue-suffix>" for a project that's set one, the same
+    // way it already does for the active project via s.projectCode.
+    projectCode: deriveProjectCode((doc && doc.projectHistory) || []),
     issues: issues.map(iss => {
       let values = {};
       try { values = deriveIssueValues(iss, fieldDefs); } catch (e) { /* malformed issue -- blank title/status, not a crash */ }
@@ -1988,7 +1992,7 @@ class Component extends DCLogic {
     this._docIssuesBaseline[id] = JSON.stringify(doc.issues || []);
     this._projectSummaries[id] = buildProjectSummaryFromDoc(doc);
     const newTimestampFieldIds = ['created', 'updated'].filter(tid => !(doc.fieldDefs && doc.fieldDefs[tid]));
-    const { fieldDefs: hydratedFieldDefs, projectHistory: hydratedProjectHistory, projectName: hydratedProjectName, projectNotes: hydratedProjectNotes } = hydrateProject(doc.fieldDefs, doc.projectHistory || [], doc.projectNotes || '');
+    const { fieldDefs: hydratedFieldDefs, projectHistory: hydratedProjectHistory, projectName: hydratedProjectName, projectNotes: hydratedProjectNotes, projectCode: hydratedProjectCode } = hydrateProject(doc.fieldDefs, doc.projectHistory || [], doc.projectNotes || '');
     const hydratedIssues = doc.issues.map(iss => hydrateIssue(iss, hydratedFieldDefs));
     const storedHiddenFieldIds = this.hiddenFieldIdsFor(id) || [];
     const hiddenFieldIds = [...storedHiddenFieldIds, ...newTimestampFieldIds.filter(tid => !storedHiddenFieldIds.includes(tid))];
@@ -2008,6 +2012,7 @@ class Component extends DCLogic {
       mergeLog, pendingMerge, mergeReviewId: null, mergeReviewTimelineIssueId: null,
       githubRepo: doc.githubRepo || '', githubRepoPath: doc.githubRepoPath || 'tracker.jsonl', githubRepoBranch: doc.githubRepoBranch || '', githubTokenOverride: doc.githubTokenOverride || '',
       projectNotes: hydratedProjectNotes != null ? hydratedProjectNotes : (doc.projectNotes || ''), projectComments: doc.projectComments || [],
+      projectCode: hydratedProjectCode,
       githubSyncStatus: 'disconnected', githubSyncError: '', githubLastSyncedAt: null,
       columnWidths: this.columnWidthsFor(id),
       columnWrap: this.columnWrapFor(id),
@@ -2032,6 +2037,7 @@ class Component extends DCLogic {
       slideOverIssueId: null, slideOverVisible: false, newCommentDraft: '', commentStreamDrafts: {}, editingCommentFieldId: null, editingCommentId: null, editCommentDraft: '',
       switcherOpen: false, unknownProjectCold: null, unknownProjectNotice: null,
       trackerNameEditing: false, trackerNameDraft: '',
+      projectCodeEditing: false, projectCodeDraft: '', projectCodeError: '',
       projectNotesOpen: false, projectNotesVisible: false, projectNoteEditing: false, projectNoteDraft: '', projectCommentDraft: '',
       deleteProjectConfirmOpen: false, deleteProjectNameDraft: '', confirmDialog: null,
       selectedIssueIds: [], focusAnchorId: null,
@@ -2182,6 +2188,37 @@ class Component extends DCLogic {
     });
   }
   cancelTrackerNameEdit() { this.setState({ trackerNameEditing: false, trackerNameDraft: '' }); }
+  // Live-reported (Tom): a short, memorable project code ("SUP" rather
+  // than a bare uuid prefix) -- same no-permission-gate norm as renaming
+  // the project itself (requireAttribution is the only gate, same as
+  // every other signed write), set from the same project panel. Empty
+  // draft cancels rather than clears, same convention as
+  // commitTrackerNameEdit's own "no blank name" rule -- clearing an
+  // already-set code isn't offered here (not asked for; the field is
+  // tombstone-capable in storage if that's ever wanted later).
+  startEditProjectCode() {
+    this.setState({ projectCodeEditing: true, projectCodeDraft: this.state.projectCode || '', projectCodeError: '' });
+  }
+  cancelEditProjectCode() { this.setState({ projectCodeEditing: false, projectCodeDraft: '', projectCodeError: '' }); }
+  onProjectCodeDraftChange(e) { this.setState({ projectCodeDraft: e.target.value.toUpperCase(), projectCodeError: '' }); }
+  commitProjectCodeEdit() {
+    if (!this.state.projectCodeEditing) return;
+    const code = (this.state.projectCodeDraft || '').trim().toUpperCase();
+    if (!code) { this.cancelEditProjectCode(); return; }
+    if (!isValidProjectCode(code)) {
+      this.setState({ projectCodeError: '2-10 letters/numbers, starting with a letter -- no hyphens or other punctuation (same as a real Jira key).' });
+      return;
+    }
+    const oldCode = this.state.projectCode;
+    if (code === oldCode) { this.cancelEditProjectCode(); return; }
+    this.requireAttribution(() => {
+      this.setState({ projectCodeEditing: false, projectCodeDraft: '', projectCodeError: '' });
+      this.appendProjectHistory({
+        text: (oldCode ? 'Changed project code from "' + oldCode + '" to "' : 'Set project code to "') + code + '"',
+        field: PROJECT_CODE_FIELD_ID, value: code
+      });
+    });
+  }
   ensureHeaderPattern() {
     const id = this.state.projectId || '_default';
     const mount = document.querySelector('[data-testid="header-pattern-mount"]');
@@ -2758,7 +2795,8 @@ class Component extends DCLogic {
         fieldDefs: hydratedProject.fieldDefs, projectHistory: hydratedProject.projectHistory, issues: hydratedIssues, hiddenFieldIds: hiddenFieldIds2,
         columnOrder: reconcileColumnOrder(this.columnOrderFor(this.state.projectId), hydratedProject.fieldDefs, hiddenFieldIds2),
         projects: this.state.projects.map(m => m.id === activeProjectId && hydratedProject.projectName && hydratedProject.projectName !== m.name ? { ...m, name: hydratedProject.projectName } : m),
-        projectNotes: hydratedProject.projectNotes != null ? hydratedProject.projectNotes : (doc.projectNotes || this.state.projectNotes)
+        projectNotes: hydratedProject.projectNotes != null ? hydratedProject.projectNotes : (doc.projectNotes || this.state.projectNotes),
+        projectCode: hydratedProject.projectCode != null ? hydratedProject.projectCode : this.state.projectCode
       });
       this.checkForNewMentions(hydratedIssues);
       this.checkForSubscribedIssueUpdates(hydratedIssues);
@@ -3634,7 +3672,8 @@ class Component extends DCLogic {
       insertUnsigned: (entry) => this.setState(st => {
         const projectHistory = [...st.projectHistory, entry];
         const derivedNotes = deriveProjectNotes(projectHistory);
-        return { projectHistory, fieldDefs: deriveFieldDefs(projectHistory), projectNotes: derivedNotes != null ? derivedNotes : st.projectNotes };
+        const derivedCode = deriveProjectCode(projectHistory);
+        return { projectHistory, fieldDefs: deriveFieldDefs(projectHistory), projectNotes: derivedNotes != null ? derivedNotes : st.projectNotes, projectCode: derivedCode != null ? derivedCode : st.projectCode };
       }),
       patchSignature: (id, sortKey, sig, pubKey) => this.setState(st => ({
         projectHistory: st.projectHistory.map(h => h.id === id ? { ...h, sig, pubKey } : h)
@@ -3798,6 +3837,10 @@ class Component extends DCLogic {
       if (hydratedProject.projectNotes != null && hydratedProject.projectNotes !== projectNotes0) {
         projectNotes = hydratedProject.projectNotes;
       }
+      let projectCode = this.state.projectCode;
+      if (hydratedProject.projectCode != null && hydratedProject.projectCode !== projectCode) {
+        projectCode = hydratedProject.projectCode;
+      }
       let hiddenFieldIds = hiddenFieldIds0;
       if (!hadTimestampFieldsBeforeHydrate) {
         hiddenFieldIds = [...hiddenFieldIds0, ...['created', 'updated'].filter(tid => !hiddenFieldIds0.includes(tid))];
@@ -3811,7 +3854,7 @@ class Component extends DCLogic {
       // reintroduced.
       const backfillChangedSomething = hydratedIssues.some((iss, i) => iss.fields !== issues0[i].fields);
       patch = {
-        fieldDefs, issues: hydratedIssues, projectHistory, projects, hiddenFieldIds, projectNotes,
+        fieldDefs, issues: hydratedIssues, projectHistory, projects, hiddenFieldIds, projectNotes, projectCode,
         githubRepo: doc.githubRepo || this.state.githubRepo,
         githubRepoPath: doc.githubRepoPath || this.state.githubRepoPath,
         githubRepoBranch: doc.githubRepoBranch || this.state.githubRepoBranch,
@@ -4235,6 +4278,10 @@ class Component extends DCLogic {
     issueJsonCopyLabel: 'Copy JSON',
     projectNotes: '',
     projectComments: [],
+    projectCode: null,
+    projectCodeEditing: false,
+    projectCodeDraft: '',
+    projectCodeError: '',
     projectPanelSection: 'notes',
     projectLinkCopyLabel: 'Copy link',
     projectNotesOpen: false,
@@ -4504,6 +4551,15 @@ class Component extends DCLogic {
   projectGithubRepo(projectId) {
     const summary = this._projectSummaries[projectId];
     return summary ? summary.githubRepo : '';
+  }
+  // Same dual-path read resolveWigwagRef itself uses: the active
+  // project's own code is read live off state (always fresh, including
+  // an edit still mid-flight before persist() has a chance to refresh
+  // _projectSummaries), any other project's off the summary cache.
+  projectCodeFor(projectId) {
+    if (projectId === this.state.projectId) return this.state.projectCode;
+    const summary = this._projectSummaries[projectId];
+    return summary ? summary.projectCode : null;
   }
   // Reads another project's own stored repo-sync path/branch alongside
   // its repo, for wigwagLinkSuffix below.
@@ -10721,15 +10777,20 @@ class Component extends DCLogic {
     // resolveWigwagRef's own doc), a Wigwag pill shows a short id. Live-
     // reported (Tom): a bare issue-uuid prefix (the old '#'+8 convention,
     // still used elsewhere e.g. withEmbeddedWigwagLinks) carries no
-    // project context at all, unlike e.g. "SUP-101" -- this pairs a
-    // short project-id prefix with a short issue-id prefix instead
-    // ("a8b-32cb1"), a cheap display-only win since both ids already
-    // exist; ref.projectId is always the already-resolved concrete id by
-    // the time a fieldRef is persisted (see applyWigwagLinkToField), not
-    // the raw pasted 'remote' form, so no extra resolution is needed
-    // here. A project-only link (no issueId) has no uuid to shorten, so
-    // it keeps the resolved project-name label.
-    if (ref.system === 'wigwag') return ref.issueId ? ref.projectId.slice(0, 3) + '-' + ref.issueId.slice(0, 5) : (this.resolveWigwagRef(ref).label || text);
+    // project context at all, unlike e.g. "SUP-101" -- prefers that
+    // project's own set code (projectCodeFor) when there is one, same
+    // "<code>-<suffix>" shape as a real Jira key; falls back to a short
+    // project-id prefix (still better than nothing) when no code has
+    // been set yet. ref.projectId is always the already-resolved
+    // concrete id by the time a fieldRef is persisted (see
+    // applyWigwagLinkToField), not the raw pasted 'remote' form, so no
+    // extra resolution is needed here. A project-only link (no issueId)
+    // has no uuid to shorten, so it keeps the resolved project-name label.
+    if (ref.system === 'wigwag') {
+      if (!ref.issueId) return this.resolveWigwagRef(ref).label || text;
+      const code = this.projectCodeFor(ref.projectId);
+      return (code || ref.projectId.slice(0, 3)) + '-' + ref.issueId.slice(0, 5);
+    }
     const n = normalizeRef(ref);
     if (!n) return text;
     const fetchedVia = this.liveFetchedViaForRef(n);
@@ -12062,6 +12123,21 @@ class Component extends DCLogic {
           onStart: () => this.startEditTrackerName(),
           onCancel: () => this.cancelTrackerNameEdit(),
           onCommit: () => this.commitTrackerNameEdit(),
+        },
+        code: {
+          isReading: !s.projectCodeEditing,
+          isEditing: s.projectCodeEditing,
+          hasCode: !!s.projectCode,
+          value: s.projectCode || '',
+          editLabel: s.projectCode ? 'Edit…' : 'Set…',
+          draft: s.projectCodeDraft,
+          hasError: !!s.projectCodeError,
+          errorText: s.projectCodeError || '',
+          onDraftChange: e => this.onProjectCodeDraftChange(e),
+          onKeyDown: e => { if (e.key === 'Enter') this.commitProjectCodeEdit(); else if (e.key === 'Escape') { e.stopPropagation(); this.cancelEditProjectCode(); } },
+          onStart: () => this.startEditProjectCode(),
+          onCancel: () => this.cancelEditProjectCode(),
+          onCommit: () => this.commitProjectCodeEdit(),
         },
         activity: noteActiveList,
         isCommentsTab: s.activityTab !== 'history',

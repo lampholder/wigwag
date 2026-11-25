@@ -1854,11 +1854,41 @@ function deriveProjectNotes(projectHistory) {
   }
   return latest ? latest.value : null;
 }
+// Same reserved-sentinel pattern again, for a short, memorable project
+// code (live-reported, Tom: wigwag issue ids are hard to engage with
+// meaningfully -- "SUP-101" tells you the project and is easy to
+// remember; a bare uuid prefix tells you neither). Settable by anyone
+// (no permission gate, same as rename), purely a display label -- a
+// mini-pill's id shows it when set, falling back to a hex-substring
+// scheme otherwise (see resolveIssuePillLabel). Never affects the real
+// wigwag: uri (always projectId-based), so changing or clearing it can
+// never break an existing stored link, only how it's displayed.
+const PROJECT_CODE_FIELD_ID = '__project_code__';
+function deriveProjectCode(projectHistory) {
+  let latest = null;
+  for (const h of (projectHistory || [])) {
+    if (h.field !== PROJECT_CODE_FIELD_ID || h.value === undefined) continue;
+    if (!latest || h.sortKey > latest.sortKey) latest = h;
+  }
+  return latest ? latest.value : null;
+}
+// Grounded in real Jira project-key norms (2-10 characters, starting
+// with a letter): letters and digits only, uppercase. Deliberately no
+// hyphen (Jira itself disallows one here -- it inserts its own hyphen
+// between the key and the issue number, so one embedded in the key
+// would be ambiguous, confirmed live-breaking in older Jira: PRODUCT-2
+// is not a valid key) and no underscore either (a documented source of
+// Jira's own activity-stream bugs for keys that used one) -- the same
+// reasoning applies doubly here, since wigwag's own id format is
+// ALREADY "<code>-<suffix>", so a hyphen inside the code itself would
+// be exactly as ambiguous as it is in Jira.
+const PROJECT_CODE_RE = /^[A-Z][A-Z0-9]{1,9}$/;
+function isValidProjectCode(code) { return typeof code === 'string' && PROJECT_CODE_RE.test(code); }
 function deriveFieldDefs(projectHistory) {
   const latestByField = {};
   const earliestTypeByField = {};
   for (const h of (projectHistory || [])) {
-    if (!h.field || h.field === PROJECT_NAME_FIELD_ID || h.field === PROJECT_NOTES_FIELD_ID || h.value === undefined) continue;
+    if (!h.field || h.field === PROJECT_NAME_FIELD_ID || h.field === PROJECT_NOTES_FIELD_ID || h.field === PROJECT_CODE_FIELD_ID || h.value === undefined) continue;
     const existing = latestByField[h.field];
     if (!existing || h.sortKey > existing.sortKey) latestByField[h.field] = h;
     if (h.value && h.value.type) {
@@ -1990,7 +2020,7 @@ function hydrateProject(fieldDefs, projectHistory, projectNotes) {
   // never been renamed/noted -- so a caller can tell "no derived value
   // yet" apart from "derived value is empty" and fall back to its own
   // locally-cached value instead.
-  return { fieldDefs: deriveFieldDefs(backfilled), projectHistory: backfilled, projectName: deriveProjectName(backfilled), projectNotes: deriveProjectNotes(backfilled) };
+  return { fieldDefs: deriveFieldDefs(backfilled), projectHistory: backfilled, projectName: deriveProjectName(backfilled), projectNotes: deriveProjectNotes(backfilled), projectCode: deriveProjectCode(backfilled) };
 }
 
 
@@ -5696,7 +5726,7 @@ function flattenProjectTree(nodes, depth, guides) {
 }
 
 const WigwagCoreExports = {
-  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxInflateRaw, parseZipEntries, xlsxEscape, xlsxColLetter, xlsxDateSerial, xlsxDateTimeSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_NS, storageNamespacePrefix, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, LAYOUT_PROPOSAL_DEVICE_ID_KEY, CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, slugifyLabel, uniqueSlugId, newFieldId, newOptionId, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, tokenizeFilterQuery, parseFilterQuery, issueMatchesFieldToken, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, statusCategoryColorName, guessStatusFieldId, pickGithubFields, pickJiraFields, pickSalesforceFields, pickConnectorFields, connectorLinkText, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, deriveFieldDefs, effectiveFieldDefs, PROJECT_NAME_FIELD_ID, deriveProjectName, PROJECT_NOTES_FIELD_ID, deriveProjectNotes, simpleStringHash, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, issueTimestampValue, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, MATRIX_USER_ID_RE, principalKind, identityPrincipal, SIGN_ALG, JOSE_ALG_ES256, base64UrlFromBytes, bytesFromBase64Url, signEntryPayload, verifyEntryPayload, signableEntryPayload, signableProjectEntryPayload, redactedEntryPayload, redactedProjectEntryPayload, signableCommentEntryPayload, signableProjectCommentEntryPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, normalizeRef, sourceRefHasFullData, evalRule, compileConnectorMacro, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, resolveRefSystem, parseGithubUrl, parseGithubShortId, githubTokenCreationUrl, GITHUB_TOKEN_LIST_URL, parseGithubTokenExpiryHeader, parseGithubNextLink, parseJiraKey, parseSalesforceId, hostFromUrl, buildWigwagUri, parseWigwagUri, builtinKindConfigured, builtinKindReachable, fieldLocalBindState, liveBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, issueCreatedAt,
+  xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxInflateRaw, parseZipEntries, xlsxEscape, xlsxColLetter, xlsxDateSerial, xlsxDateTimeSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_NS, storageNamespacePrefix, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, LAYOUT_PROPOSAL_DEVICE_ID_KEY, CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, slugifyLabel, uniqueSlugId, newFieldId, newOptionId, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, tokenizeFilterQuery, parseFilterQuery, issueMatchesFieldToken, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, statusCategoryColorName, guessStatusFieldId, pickGithubFields, pickJiraFields, pickSalesforceFields, pickConnectorFields, connectorLinkText, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, deriveFieldDefs, effectiveFieldDefs, PROJECT_NAME_FIELD_ID, deriveProjectName, PROJECT_NOTES_FIELD_ID, deriveProjectNotes, PROJECT_CODE_FIELD_ID, deriveProjectCode, isValidProjectCode, simpleStringHash, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, issueTimestampValue, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, MATRIX_USER_ID_RE, principalKind, identityPrincipal, SIGN_ALG, JOSE_ALG_ES256, base64UrlFromBytes, bytesFromBase64Url, signEntryPayload, verifyEntryPayload, signableEntryPayload, signableProjectEntryPayload, redactedEntryPayload, redactedProjectEntryPayload, signableCommentEntryPayload, signableProjectCommentEntryPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER, buildSource, normalizeRef, sourceRefHasFullData, evalRule, compileConnectorMacro, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, resolveRefSystem, parseGithubUrl, parseGithubShortId, githubTokenCreationUrl, GITHUB_TOKEN_LIST_URL, parseGithubTokenExpiryHeader, parseGithubNextLink, parseJiraKey, parseSalesforceId, hostFromUrl, buildWigwagUri, parseWigwagUri, builtinKindConfigured, builtinKindReachable, fieldLocalBindState, liveBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, issueCreatedAt,
   importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry,
   squashHistory, redactEntry, redactProjectEntry, displayValueForHistory, buildSourceText, keyRegistryEncoder, rehydrateKeyRef, humanFileSize, isImageFilename, parseJsonl, parseCsvText, CSV_ID_COLUMN_HEADER, looksLikeCsvText, nextPaletteColor, buildCsvImportPlan, entryKey, unionByKey, mergeIssuePair, computeIssueMerge, mergeHasRealChanges, computeFieldDefsMerge, computeDerivedChangeEntries,
   isPastedTextASingleUrl, wrapSelectionWithMarkdownLink,

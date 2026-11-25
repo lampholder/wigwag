@@ -2594,6 +2594,37 @@
               </div>
             </div>
           </sc-if>
+
+          <div style="margin-top:10px;">
+            <sc-if value="{{ note.code.isReading }}" hint-placeholder-val="{{ true }}">
+              <div style="display:flex; align-items:center; gap:10px;">
+                <span style="font-size:11px; color: var(--text-secondary);">Code:</span>
+                <sc-if value="{{ note.code.hasCode }}" hint-placeholder-val="{{ false }}">
+                  <span data-testid="notes-project-code-badge" style="font-size:12px; font-family:ui-monospace,monospace; font-weight:700; padding:2px 8px; border-radius:9px; background: var(--surface-selected); color: var(--n59);">{{ note.code.value }}</span>
+                </sc-if>
+                <sc-if value="{{ !note.code.hasCode }}" hint-placeholder-val="{{ true }}">
+                  <span style="font-size:12px; color: var(--text-tertiary); font-style:italic;">Not set</span>
+                </sc-if>
+                <span data-testid="notes-project-code-edit-btn" sc-camel-on-click="{{ note.code.onStart }}" style="cursor:pointer; font-size:12px; font-weight:500; color: var(--accent-ink); padding:3px 7px; border-radius:5px;" style-hover="background:var(--c21);">{{ note.code.editLabel }}</span>
+              </div>
+            </sc-if>
+            <sc-if value="{{ note.code.isEditing }}" hint-placeholder-val="{{ false }}">
+              <div style="max-width:320px;">
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <input data-testid="notes-project-code-input" sc-camel-auto-focus="{{ true }}" value="{{ note.code.draft }}" sc-camel-on-change="{{ note.code.onDraftChange }}" sc-camel-on-key-down="{{ note.code.onKeyDown }}" maxlength="10" placeholder="e.g. SUP" style="width:110px; font-size:13px; font-weight:700; font-family:ui-monospace,monospace; text-transform:uppercase; padding:6px 9px; border:1px solid var(--c5); border-radius:6px; outline:none; box-sizing:border-box; background:transparent;">
+                  <span data-testid="notes-project-code-cancel-btn" sc-camel-on-click="{{ note.code.onCancel }}" style="cursor:pointer; font-size:12px; color: var(--text-muted); padding:5px 9px; border-radius:5px; flex-shrink:0;" style-hover="background:var(--n55);">Cancel</span>
+                  <span data-testid="notes-project-code-commit-btn" sc-camel-on-click="{{ note.code.onCommit }}" style="cursor:pointer; font-size:12px; font-weight:600; color:var(--ink-on-accent); background: var(--accent-fill); padding:6px 12px; border-radius:5px; flex-shrink:0;" style-hover="background:var(--c22);">Save</span>
+                </div>
+                <sc-if value="{{ note.code.hasError }}" hint-placeholder-val="{{ false }}">
+                  <div data-testid="notes-project-code-error" style="font-size:11.5px; color: var(--c17); margin-top:6px;">{{ note.code.errorText }}</div>
+                </sc-if>
+                <div style="display:flex; gap:7px; margin-top:9px; font-size:11.5px; color: var(--c23); line-height:1.5;">
+                  <span style="color: var(--c24); flex-shrink:0;">⚠</span>
+                  <span>A short, memorable label for this project (2-10 letters/numbers, e.g. SUP) -- shown everywhere this project is referenced, for everyone, the next time they load or receive an update. Purely a display label; existing links keep working either way.</span>
+                </div>
+              </div>
+            </sc-if>
+          </div>
         </div>
         <span data-testid="notes-copy-link-btn" sc-camel-on-click="{{ note.onCopyLink }}" title="Copy a link to this project" style="cursor:pointer; font-size:12px; font-weight:500; color: var(--accent-ink); padding:5px 9px; border-radius:5px; flex-shrink:0; margin-right:6px;" style-hover="background:var(--c21);">{{ note.copyLinkLabel }}</span>
         <span data-testid="notes-close-btn" sc-camel-on-click="{{ closeProjectNotes }}" style="cursor:pointer; font-size:18px; color: var(--text-secondary); padding:4px;">✕</span>

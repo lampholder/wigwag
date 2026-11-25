@@ -873,7 +873,7 @@ test.describe('GitHub token provisioning: confirmation fetch on credential save'
     await expect(page.locator('[data-testid=connector-form-modal]')).toBeHidden();
 
     const row = page.locator('[data-testid=connected-source-row]', { hasText: 'GitHub' });
-    await expect(row.locator('[data-testid=connected-source-confirmed-repos]')).toHaveText('Can see: acme/app, acme/infra · No expiry');
+    await expect(row.locator('[data-testid=connected-source-confirmed-repos]')).toHaveText('Can see 2 repositories · No expiry');
 
     const calls = await page.evaluate(() => window.__invokeCalls);
     const fetchCall = calls.find(c => c.cmd === 'connected_source_fetch');
@@ -919,7 +919,7 @@ test.describe('GitHub token provisioning: confirmation fetch on credential save'
     await expect(page.locator('[data-testid=connector-form-modal]')).toBeHidden();
 
     const row = page.locator('[data-testid=connected-source-row]', { hasText: 'GitHub' });
-    await expect(row.locator('[data-testid=connected-source-confirmed-repos]')).toHaveText('Can see: acme/app, acme/second-page-repo · No expiry');
+    await expect(row.locator('[data-testid=connected-source-confirmed-repos]')).toHaveText('Can see 2 repositories · No expiry');
 
     const calls = await page.evaluate(() => window.__invokeCalls);
     const fetchCalls = calls.filter(c => c.cmd === 'connected_source_fetch');
@@ -966,7 +966,7 @@ test.describe('GitHub token provisioning: confirmation fetch on credential save'
     await expect(page.locator('[data-testid=connector-form-modal]')).toBeHidden();
 
     const row = page.locator('[data-testid=connected-source-row]', { hasText: 'GitHub' });
-    await expect(row.locator('[data-testid=connected-source-confirmed-repos]')).toHaveText('Can see: acme/app · Expires Dec 31, 2026');
+    await expect(row.locator('[data-testid=connected-source-confirmed-repos]')).toHaveText('Can see 1 repository · Expires Dec 31, 2026');
   });
 
   test('editing a connector WITHOUT typing a new credential never re-confirms (no fetch call at all)', async ({ page }) => {

@@ -13125,8 +13125,18 @@ class Component extends DCLogic {
               // repo-selection mistake immediately instead of silently.
               // Jira/Salesforce and custom connectors never set
               // confirmedRepos, so this is always blank for them.
+              // A count, not the repo names themselves (same convention
+              // as the identity-level default token's own
+              // githubTokenConfirmedText, below) -- the full joined list
+              // used to silently overflow this row's fixed width and
+              // text-overflow:ellipsis would render as a lone "…" with
+              // no visible text in front of it once there were enough
+              // repos/a long enough name. Unlike that identity-level
+              // count, this one walks every page (confirmGithubCredentialRepos
+              // follows the Link header, not just the first 100), so the
+              // number here is the real total, not capped at "100+".
               confirmedReposText: c.kind === 'github' && Array.isArray(c.confirmedRepos)
-                ? (c.confirmedRepos.length ? 'Can see: ' + c.confirmedRepos.join(', ') : 'Can see: no repositories')
+                ? 'Can see ' + c.confirmedRepos.length + ' repositor' + (c.confirmedRepos.length === 1 ? 'y' : 'ies')
                   + ' · ' + (c.tokenExpiresAt ? 'Expires ' + new Date(c.tokenExpiresAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'No expiry')
                 : (c.kind === 'github' && c.confirmedRepos === null ? 'Couldn\'t verify this token\'s access' : ''),
               showConfirmedRepos: c.kind === 'github' && (Array.isArray(c.confirmedRepos) || c.confirmedRepos === null),

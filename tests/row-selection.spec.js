@@ -98,6 +98,22 @@ test.describe('Row selection: mouse interactions', () => {
     await page.waitForTimeout(150);
     await expect(page.locator('[data-testid=bulk-action-bar]')).toContainText('1 selected of 9');
   });
+
+  // Live-reported (Tom): the gap from the checkbox to the title column's
+  // own text (its left padding included) read a couple px wider than the
+  // gap from the gutter's own left edge to the checkbox -- despite the
+  // checkbox sitting centered in the gutter box. gutterCheckboxMarginLeft
+  // (src/wigwag-app.js) nudges it right to compensate.
+  test('the checkbox sits with roughly equal whitespace on both sides, once the title column\'s own left padding is counted', async ({ page }) => {
+    await h.gotoTracker(page);
+    const row = page.locator('[data-testid=row]').first();
+    const gutterBox = await row.locator('[data-testid=row-menu-wrap]').boundingBox();
+    const checkboxBox = await row.locator('[data-testid=row-select-checkbox]').boundingBox();
+    const titleBox = await row.locator('[data-testid=title-cell]').boundingBox();
+    const leftGap = checkboxBox.x - gutterBox.x;
+    const rightGap = titleBox.x - (checkboxBox.x + checkboxBox.width); // text itself starts another 12px in (the title cell's own padding)
+    expect(Math.abs(leftGap - (rightGap + 12))).toBeLessThanOrEqual(1);
+  });
 });
 
 test.describe('Row selection: keyboard', () => {

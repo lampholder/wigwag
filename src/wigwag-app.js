@@ -13688,9 +13688,15 @@ class Component extends DCLogic {
       // Widget-only: narrower gutter + smaller checkbox nudge lines the
       // checkbox up with the logo mark and "Issue" up with the project
       // title (live-reported, measured against real coordinates) --
-      // desktop keeps its original 56px/8px.
+      // desktop keeps its own separate gutter width.
       gutterWidth: ROOM_MODE_CAPABILITIES ? 36 : 56,
-      gutterCheckboxMarginLeft: ROOM_MODE_CAPABILITIES ? '3px' : '8px',
+      // Desktop nudge bumped 8px->12px (live-reported, Tom): the first
+      // column's own left padding (cellPaddingForWidth, 12px) meant the
+      // gap to its right read wider than the gap to the checkbox's left
+      // even though the checkbox itself sits centered in the gutter --
+      // 12px is the exact value that equalizes both (checked against
+      // real coordinates in tests/row-selection.spec.js).
+      gutterCheckboxMarginLeft: ROOM_MODE_CAPABILITIES ? '3px' : '12px',
       onToggleHeaderCheckbox: () => this.toggleHeaderCheckbox(),
       onClearSelection: () => this.setState({ selectedIssueIds: [] }),
       bulkBar: this.buildBulkBar(s, fieldDefs, isSelecting),

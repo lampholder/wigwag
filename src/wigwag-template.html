@@ -48,6 +48,7 @@
     }
     @keyframes shimmer { 0%,100% { opacity: 0.35; } 50% { opacity: 0.8; } }
     @keyframes pendingPulse { 0%,100% { opacity: 0.5; } 50% { opacity: 1; } }
+    @keyframes pendingGradientScroll { from { background-position: 220% 0; } to { background-position: -220% 0; } }
     @keyframes spin { to { transform: rotate(360deg); } }
     @keyframes mobileScrimIn { from { opacity: 0; } to { opacity: 1; } }
     @keyframes mobileSheetIn { from { transform: translateY(100%); } to { transform: translateY(0); } }
@@ -1050,7 +1051,7 @@
 
                     </sc-if>
             <sc-if value="{{ seg.isField }}">
-            <div data-testid="field-cell" data-col="{{ seg.cell.colId }}" sc-camel-on-click="{{ seg.cell.onCellClick }}" style="width: {{ seg.cell.width }}px; flex-shrink:0; box-sizing:border-box; padding: {{ seg.cell.padding }}; display:flex; align-items:center; position:relative; border-left: {{ seg.cell.rowBorderLeft }}; {{ seg.cell.cellHighlight }} {{ seg.cell.stickyStyle }} {{ seg.cell.pendingCellStyle }}">
+            <div data-testid="field-cell" data-col="{{ seg.cell.colId }}" sc-camel-on-click="{{ seg.cell.onCellClick }}" style="width: {{ seg.cell.width }}px; flex-shrink:0; box-sizing:border-box; padding: {{ seg.cell.padding }}; display:flex; align-items:center; position:relative; overflow:hidden; border-left: {{ seg.cell.rowBorderLeft }}; {{ seg.cell.cellHighlight }} {{ seg.cell.stickyStyle }} {{ seg.cell.pendingCellStyle }}">
 
               <sc-if value="{{ seg.cell.isText }}">
                 <sc-if value="{{ seg.cell.isEditing }}" hint-placeholder-val="{{ false }}">
@@ -1189,8 +1190,11 @@
                 </sc-if>
               </sc-if>
 
-              <sc-if value="{{ seg.cell.pendingVisible }}" hint-placeholder-val="{{ false }}">
+              <sc-if value="{{ seg.cell.pendingIsFailed }}" hint-placeholder-val="{{ false }}">
                 <span title="{{ seg.cell.pendingDotTitle }}" data-testid="pending-dot" style="position:absolute; right:8px; top:50%; transform:translateY(-50%); width:10px; height:10px; border-radius:50%; background: {{ seg.cell.pendingDotColor }}; {{ seg.cell.pendingDotAnimStyle }}"></span>
+              </sc-if>
+              <sc-if value="{{ seg.cell.pendingOverlayVisible }}" hint-placeholder-val="{{ false }}">
+                <div title="{{ seg.cell.pendingDotTitle }}" data-testid="pending-overlay" style="position:absolute; inset:0; pointer-events:none; background-image: linear-gradient(100deg, transparent 0%, oklch(0.5 0.13 235 / 0.22) 35%, oklch(0.5 0.13 235 / 0.4) 50%, oklch(0.5 0.13 235 / 0.22) 65%, transparent 100%); background-size:440% 100%; animation: pendingGradientScroll 6s linear infinite;"></div>
               </sc-if>
               <sc-if value="{{ seg.cell.isMulti }}">
                 <span sc-camel-on-click="{{ seg.cell.onClick }}" style="cursor:pointer; display:flex; align-items:center; justify-content:space-between; width:100%;">

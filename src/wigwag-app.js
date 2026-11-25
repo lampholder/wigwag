@@ -11445,16 +11445,21 @@ class Component extends DCLogic {
     return (summary && summary.project && summary.project[field]) || null;
   }
   applyPendingState(cell, status) {
-    if (!status) { cell.pendingVisible = false; cell.pendingCellStyle = ''; return; }
+    if (!status) { cell.pendingVisible = false; cell.pendingOverlayVisible = false; cell.pendingCellStyle = ''; return; }
     const failed = status === 'failed';
     cell.pendingVisible = true;
     cell.pendingIsFailed = failed;
+    // The in-flight (non-failed) look is a scrolling gradient overlay
+    // (see the template's data-testid="pending-overlay"), not the dot --
+    // the dot is kept only for the failed state, and for the detail
+    // panel's own field-label indicator, which this didn't change.
+    cell.pendingOverlayVisible = !failed;
     cell.pendingDotColor = failed ? 'var(--danger-ink)' : 'var(--accent-fill)';
     cell.pendingDotAnimStyle = failed ? '' : 'animation: pendingPulse 1.6s ease-in-out infinite;';
     cell.pendingDotTitle = failed ? 'Failed to sync' : 'Pending — waiting to be confirmed by the room';
     cell.pendingCellStyle = failed
       ? 'background:color-mix(in oklch, var(--danger-ink) 6%, transparent); border-left:2px solid var(--danger-ink); margin-left:-1px;'
-      : 'background:color-mix(in oklch, var(--accent-fill) 6%, transparent); border-left:2px solid var(--accent-fill); margin-left:-1px;';
+      : '';
     cell.pendingCaptionText = failed ? 'Failed to sync' : 'Pending, syncing to the room';
     cell.pendingCaptionColor = failed ? 'var(--danger-ink)' : 'var(--text-secondary)';
     cell.onRetryPending = failed ? () => this.retryPendingEdits() : null;

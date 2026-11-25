@@ -275,6 +275,9 @@ test.describe('wigwag-matrix-host.html: the localStorage bridge', () => {
     await expect(frame.locator('[data-testid=row]')).toHaveCount(1);
 
     const cell = frame.locator('[data-testid=field-cell][data-col=type]').first();
+    // In-flight (non-failed) renders as a scrolling gradient overlay on the
+    // cell itself; the dot is reserved for the failed state (see below).
+    const overlay = frame.locator('[data-testid=field-cell][data-col=type] [data-testid=pending-overlay]');
     const dot = frame.locator('[data-testid=field-cell][data-col=type] [data-testid=pending-dot]');
     await cell.click();
     await page.waitForTimeout(150);
@@ -282,7 +285,7 @@ test.describe('wigwag-matrix-host.html: the localStorage bridge', () => {
     await page.waitForTimeout(200);
     await frame.locator('[data-testid=select-option]').nth(1).click();
     await page.waitForTimeout(300);
-    await expect(dot).toBeVisible();
+    await expect(overlay).toBeVisible();
 
     // Confirmed once the sent entry actually round-trips back through the
     // room (the mock's send and poll endpoints are deliberately separate,
@@ -290,7 +293,7 @@ test.describe('wigwag-matrix-host.html: the localStorage bridge', () => {
     // entry arrived").
     const firstSent = state.sentEntries[state.sentEntries.length - 1];
     state.pendingEntries.push({ type: 'work.wigwag.entry', content: firstSent });
-    await expect(dot).toBeHidden({ timeout: 8000 });
+    await expect(overlay).toBeHidden({ timeout: 8000 });
 
     // Now force the send itself to fail outright (not a 429 -- that has
     // its own multi-second retry-with-backoff, a real and deliberate

@@ -28,7 +28,9 @@
     html, body { margin: 0; overscroll-behavior: none; }
     /* WebKit (Safari and WebKitGTK alike) only lets an <img>/<a>/text
        selection initiate a native drag by default -- a plain div with
-       draggable="true" (column headers, kanban cards, rule-builder rows)
+       draggable="true" (rule-builder rows; column headers and kanban
+       cards were moved off native drag-and-drop entirely, see
+       columnHeaderMouseDown/kanbanCardMouseDown in src/wigwag-app.js)
        needs this explicitly or dragstart never fires at all, even though
        the exact same markup works unmodified in Chromium and Firefox. */
     [draggable="true"] { -webkit-user-drag: element; }
@@ -742,7 +744,7 @@
         </div>
         <sc-for list="{{ headerSegments }}" as="seg" hint-placeholder-count="9">
         <sc-if value="{{ seg.isTitle }}">
-          <div data-testid="title-col-header" draggable="true" sc-camel-on-drag-over="{{ seg.onDragOver }}" sc-camel-on-drop="{{ seg.onDrop }}" style="width: {{ titleWidth }}px; flex-shrink:0; box-sizing:border-box; padding: {{ titleHeaderPadding }}; font-size:11.5px; font-weight:600; letter-spacing:0.02em; color: var(--n5); cursor:grab; user-select:none; display:flex; align-items:center; gap:4px; border-left: {{ seg.borderLeft }}; position:relative; {{ seg.stickyStyle }}">
+          <div data-testid="title-col-header" style="width: {{ titleWidth }}px; flex-shrink:0; box-sizing:border-box; padding: {{ titleHeaderPadding }}; font-size:11.5px; font-weight:600; letter-spacing:0.02em; color: var(--n5); cursor:grab; user-select:none; display:flex; align-items:center; gap:4px; border-left: {{ seg.borderLeft }}; position:relative; {{ seg.stickyStyle }}">
             <sc-if value="{{ seg.showIndicatorBefore }}" hint-placeholder-val="{{ false }}">
               <div style="position:absolute; left:-1.5px; top:0; bottom:0; width:3px; background: var(--c8); z-index:10;"></div>
             </sc-if>
@@ -789,7 +791,7 @@
         </div>
         </sc-if>
         <sc-if value="{{ seg.isComments }}">
-        <div title="Comments" draggable="true" sc-camel-on-drag-over="{{ seg.onDragOver }}" sc-camel-on-drop="{{ seg.onDrop }}" style="width:40px; flex-shrink:0; box-sizing:border-box; display:flex; align-items:center; justify-content:center; cursor:grab; border-left: {{ seg.borderLeft }}; position:relative; {{ seg.stickyStyle }}">
+        <div data-testid="comments-col-header" title="Comments" style="width:40px; flex-shrink:0; box-sizing:border-box; display:flex; align-items:center; justify-content:center; cursor:grab; border-left: {{ seg.borderLeft }}; position:relative; {{ seg.stickyStyle }}">
             <sc-if value="{{ seg.showIndicatorBefore }}" hint-placeholder-val="{{ false }}">
               <div style="position:absolute; left:-1.5px; top:0; bottom:0; width:3px; background: var(--c8); z-index:10;"></div>
             </sc-if>
@@ -800,7 +802,7 @@
         </div>
         </sc-if>
         <sc-if value="{{ seg.isField }}">
-          <div data-testid="col-header" data-col="{{ seg.col.id }}" draggable="true" sc-camel-on-drag-start="{{ seg.col.onDragStart }}" sc-camel-on-drag-over="{{ seg.col.onDragOver }}" sc-camel-on-drop="{{ seg.col.onDrop }}" sc-camel-on-drag-end="{{ seg.col.onDragEnd }}" style="width: {{ seg.col.width }}px; flex-shrink:0; box-sizing:border-box; padding: {{ seg.col.headerPadding }}; font-size:11.5px; font-weight:600; letter-spacing:0.02em; color: var(--n5); cursor:grab; user-select:none; display:flex; align-items:center; gap:4px; border-left: {{ seg.col.borderLeft }}; position:relative; {{ seg.col.stickyStyle }}">
+          <div data-testid="col-header" data-col="{{ seg.col.id }}" sc-camel-on-mouse-down="{{ seg.col.onHeaderMouseDown }}" style="width: {{ seg.col.width }}px; flex-shrink:0; box-sizing:border-box; padding: {{ seg.col.headerPadding }}; font-size:11.5px; font-weight:600; letter-spacing:0.02em; color: var(--n5); cursor:grab; user-select:none; display:flex; align-items:center; gap:4px; border-left: {{ seg.col.borderLeft }}; position:relative; opacity: {{ seg.col.headerDragOpacity }}; {{ seg.col.stickyStyle }}">
             <sc-if value="{{ seg.col.showIndicatorBefore }}" hint-placeholder-val="{{ false }}">
               <div style="position:absolute; left:-1.5px; top:0; bottom:0; width:3px; background: var(--c8); z-index:10;"></div>
             </sc-if>

@@ -9264,16 +9264,63 @@ class Component extends DCLogic {
     });
   }
 
-  dragStart(colId, e) { e.dataTransfer.setData('text/plain', colId); this.setState({ draggingColId: colId }); }
-  dragOverCol(colId, e) {
+  // Column-header reorder is plain mouse events, not native HTML5
+  // drag-and-drop -- same reasoning/pattern as kanbanCardMouseDown above
+  // (wry's WKWebView on macOS never delivers native drag/drop to the
+  // Tauri desktop app regardless of config, tauri-apps/tauri#3277; this
+  // was the actual cause of "works on kanban, not for table columns").
+  // headerAt hit-tests the real DOM under the cursor against every valid
+  // drop target (regular columns, plus Title/Comments which stay
+  // non-draggable sources but are still valid targets) rather than
+  // tracking header bounding boxes by hand.
+  columnHeaderMouseDown(colId, e) {
+    if (e.button !== 0) return;
     e.preventDefault();
-    const rect = e.currentTarget.getBoundingClientRect();
-    const side = (e.clientX - rect.left) < rect.width / 2 ? 'before' : 'after';
-    if (this.state.dragOverColId !== colId || this.state.dragOverSide !== side) {
-      this.setState({ dragOverColId: colId, dragOverSide: side });
-    }
+    const startX = e.clientX, startY = e.clientY;
+    const THRESHOLD = 4;
+    let dragging = false;
+    const headerAt = (x, y) => {
+      const el = document.elementFromPoint(x, y);
+      const header = el && el.closest && el.closest('[data-testid="col-header"], [data-testid="title-col-header"], [data-testid="comments-col-header"]');
+      if (!header) return null;
+      const rect = header.getBoundingClientRect();
+      const side = (x - rect.left) < rect.width / 2 ? 'before' : 'after';
+      const testid = header.dataset.testid;
+      const id = header.dataset.col || (testid === 'title-col-header' ? TITLE_COL_ID : COMMENTS_COL_ID);
+      return { id, side };
+    };
+    const onMove = ev => {
+      if (!dragging) {
+        if (Math.abs(ev.clientX - startX) < THRESHOLD && Math.abs(ev.clientY - startY) < THRESHOLD) return;
+        dragging = true;
+      }
+      const hit = headerAt(ev.clientX, ev.clientY);
+      this.setState({ draggingColId: colId, dragOverColId: hit ? hit.id : null, dragOverSide: hit ? hit.side : null });
+    };
+    const onUp = ev => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      if (!dragging) return;
+      const hit = headerAt(ev.clientX, ev.clientY);
+      this.setState({ draggingColId: null, dragOverColId: null, dragOverSide: null });
+      if (hit && hit.id !== colId) this.reorderColumn(colId, hit.id, hit.side);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
   }
-  dragEndCol() { this.setState({ draggingColId: null, dragOverColId: null, dragOverSide: null }); }
+  reorderColumn(draggedColId, targetColId, side) {
+    this.setState(s => {
+      const order = [...s.columnOrder];
+      const from = order.indexOf(draggedColId);
+      if (from === -1) return {};
+      order.splice(from, 1);
+      let to = order.indexOf(targetColId);
+      if (to === -1) to = order.length;
+      else if (side === 'after') to += 1;
+      order.splice(to, 0, draggedColId);
+      return { columnOrder: order };
+    });
+  }
   dragStartRuleRow(i, e) { e.dataTransfer.setData('text/plain', String(i)); this.setState({ draggingRuleRowIndex: i }); }
   dragOverRuleRow(i, e) {
     e.preventDefault();
@@ -9297,23 +9344,6 @@ class Component extends DCLogic {
     if (side === 'after') to += 1;
     rows.splice(to, 0, moved);
     this.commitRuleRows(colId, rows);
-  }
-  dropCol(targetColId, e) {
-    e.preventDefault();
-    const draggedId = e.dataTransfer.getData('text/plain');
-    const side = this.state.dragOverSide;
-    this.setState(s => {
-      if (!draggedId || draggedId === targetColId) return { draggingColId: null, dragOverColId: null, dragOverSide: null };
-      const order = [...s.columnOrder];
-      const from = order.indexOf(draggedId);
-      if (from === -1) return { draggingColId: null, dragOverColId: null, dragOverSide: null };
-      order.splice(from, 1);
-      let to = order.indexOf(targetColId);
-      if (to === -1) to = order.length;
-      else if (side === 'after') to += 1;
-      order.splice(to, 0, draggedId);
-      return { columnOrder: order, draggingColId: null, dragOverColId: null, dragOverSide: null };
-    });
   }
 
   toggleColMenu(colId, e) {
@@ -11799,10 +11829,8 @@ class Component extends DCLogic {
         labelColor: (headerCompression.compactIndicator && (isSorted || isFiltered)) ? 'var(--accent-ink)' : 'var(--n5)',
         isBindableType,
         onSort: () => this.sortBy(id),
-        onDragStart: e => this.dragStart(id, e),
-        onDragOver: e => this.dragOverCol(id, e),
-        onDrop: e => this.dropCol(id, e),
-        onDragEnd: () => this.dragEndCol(),
+        onHeaderMouseDown: e => this.columnHeaderMouseDown(id, e),
+        headerDragOpacity: s.draggingColId === id ? 0.4 : 1,
         showIndicatorBefore, showIndicatorAfter,
         menuOpen: s.openColMenuId === id,
         menuStyle: 'position:fixed; left:' + s.colMenuAnchorLeft + 'px; max-height:' + s.colMenuMaxHeightPx + 'px; overflow-y:auto; ' + (s.colMenuOpenUpward ? ('bottom:' + s.colMenuAnchorBottomPx + 'px;') : ('top:' + s.colMenuAnchorTopPx + 'px;')),
@@ -11885,14 +11913,16 @@ class Component extends DCLogic {
     const headerSegments = s.columnOrder.map((id, i) => {
       const borderLeft = (i === 0 || i === freezeIdx + 1) ? 'none' : '1px solid var(--n28)';
       if (id === TITLE_COL_ID) {
+        // Not draggable itself (never has been) -- only a valid drop
+        // target, hit-tested by the dragged column's own mousemove
+        // handler (columnHeaderMouseDown) rather than anything bound
+        // here.
         return { isTitle: true, isComments: false, isField: false, borderLeft, stickyStyle: headerStickyStyle(TITLE_COL_ID),
-          onDragOver: e => this.dragOverCol(TITLE_COL_ID, e), onDrop: e => this.dropCol(TITLE_COL_ID, e),
           showIndicatorBefore: titleDragOverSide === 'before' && !!s.draggingColId,
           showIndicatorAfter: titleDragOverSide === 'after' && !!s.draggingColId };
       }
       if (id === COMMENTS_COL_ID) {
         return { isTitle: false, isComments: true, isField: false, borderLeft, stickyStyle: headerStickyStyle(COMMENTS_COL_ID),
-          onDragOver: e => this.dragOverCol(COMMENTS_COL_ID, e), onDrop: e => this.dropCol(COMMENTS_COL_ID, e),
           showIndicatorBefore: commentsDragOverSide === 'before' && s.draggingColId && s.draggingColId !== COMMENTS_COL_ID,
           showIndicatorAfter: commentsDragOverSide === 'after' && s.draggingColId && s.draggingColId !== COMMENTS_COL_ID };
       }

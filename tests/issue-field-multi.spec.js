@@ -164,7 +164,7 @@ test.describe('Multi-issue linking: a non-Title issue field holding 2+ entries',
 
     test('a wigwag-linked pill shows <project-prefix>-<issue-prefix>, not a bare issue-uuid, matching in both the pill and the popover row', async ({ page }) => {
       const { projectId, targetA } = await seedTwoWigwagLinkedEntries(page);
-      const expected = projectId.slice(0, 3) + '-' + targetA.id.slice(0, 5);
+      const expected = projectId.slice(0, 3) + '-' + targetA.id.slice(0, 6);
 
       const cell = h.fieldCell(page, 1, 'linked');
       const pill = cell.locator('[data-testid="issues-pill"]').first();
@@ -191,7 +191,7 @@ test.describe('Multi-issue linking: a non-Title issue field holding 2+ entries',
       await page.waitForTimeout(300);
 
       const pill = h.fieldCell(page, 1, 'linked').locator('[data-testid="issues-pill"]').first();
-      expect((await pill.innerText()).trim()).toBe('SUP-' + targetA.id.slice(0, 5));
+      expect((await pill.innerText()).trim()).toBe('SUP-' + targetA.id.slice(0, 6));
     });
 
     // projectCodeFor's OTHER branch -- a project that's never been active
@@ -245,16 +245,38 @@ test.describe('Multi-issue linking: a non-Title issue field holding 2+ entries',
       expect(pillBg).toBe(reference);
     });
 
-    test('hovering one pill highlights the whole group, not just that pill', async ({ page }) => {
+    test('hovering one pill highlights the whole group in blue, not just that pill, and not generally hovering the cell area', async ({ page }) => {
       await seedTwoWigwagLinkedEntries(page);
       const pills = h.fieldCell(page, 1, 'linked').locator('[data-testid="issues-pill"]');
       await expect(pills).toHaveCount(2);
 
-      const otherFilterBefore = await pills.nth(1).evaluate(el => getComputedStyle(el).filter);
+      const blueBg = await page.evaluate(() => {
+        const probe = document.createElement('div');
+        probe.style.background = 'var(--c14)';
+        document.body.appendChild(probe);
+        const color = getComputedStyle(probe).backgroundColor;
+        probe.remove();
+        return color;
+      });
+
+      const otherBgBefore = await pills.nth(1).evaluate(el => getComputedStyle(el).backgroundColor);
+      expect(otherBgBefore).not.toBe(blueBg);
+
       await pills.nth(0).hover();
       await page.waitForTimeout(100);
-      const otherFilterDuring = await pills.nth(1).evaluate(el => getComputedStyle(el).filter);
-      expect(otherFilterDuring).not.toBe(otherFilterBefore); // the un-hovered sibling changed too
+      // The UN-hovered sibling also turns blue -- the whole group, not
+      // just the one pill the mouse is actually over.
+      expect(await pills.nth(0).evaluate(el => getComputedStyle(el).backgroundColor)).toBe(blueBg);
+      expect(await pills.nth(1).evaluate(el => getComputedStyle(el).backgroundColor)).toBe(blueBg);
+
+      // Moving to a gap inside the cell wrapper (not over either pill)
+      // must NOT trigger the highlight -- the old :hover-bubbling rule
+      // fired for the whole wrapper area, not just an actual pill.
+      const wrap = h.fieldCell(page, 1, 'linked').locator('[data-testid="issues-pills-wrap"]');
+      const wrapBox = await wrap.boundingBox();
+      await page.mouse.move(wrapBox.x + wrapBox.width - 2, wrapBox.y + 2);
+      await page.waitForTimeout(100);
+      expect(await pills.nth(1).evaluate(el => getComputedStyle(el).backgroundColor)).not.toBe(blueBg);
     });
 
     test('the popover is wide enough, and a long title wraps instead of single-line-truncating', async ({ page }) => {
@@ -262,14 +284,85 @@ test.describe('Multi-issue linking: a non-Title issue field holding 2+ entries',
       await h.fieldCell(page, 1, 'linked').locator('[data-testid="issues-pill"]').first().click();
       await page.waitForTimeout(200);
 
-      const popover = page.locator('[data-testid="issues-popover-row"]').first().locator('..').locator('..');
+      const popover = page.locator('[data-testid="issues-popover-row"]').first().locator('xpath=ancestor::div[3]');
       const box = await popover.boundingBox();
-      expect(box.width).toBeGreaterThan(500);
+      expect(box.width).toBeGreaterThan(650);
 
       const titleCell = page.locator('[data-testid="issues-popover-row"]').first().locator('div').nth(1);
       const whiteSpace = await titleCell.evaluate(el => getComputedStyle(el).whiteSpace);
       expect(whiteSpace).not.toBe('nowrap');
       await expect(titleCell).toContainText('genuinely very long issue title');
+    });
+
+    test('the id column never truncates (no ellipsis/hidden overflow), even at the longest possible code+suffix length', async ({ page }) => {
+      await seedTwoWigwagLinkedEntries(page);
+      await h.fieldCell(page, 1, 'linked').locator('[data-testid="issues-pill"]').first().click();
+      await page.waitForTimeout(200);
+
+      const idCellWrap = page.locator('[data-testid="issues-popover-row"]').first().locator('div').nth(0);
+      const overflow = await idCellWrap.evaluate(el => getComputedStyle(el).overflow);
+      const textOverflow = await idCellWrap.evaluate(el => getComputedStyle(el).textOverflow);
+      expect(overflow).not.toBe('hidden');
+      expect(textOverflow).not.toBe('ellipsis');
+    });
+
+    test('clicking anywhere in a wigwag row (not just the id link) opens that issue in place', async ({ page }) => {
+      await seedTwoWigwagLinkedEntries(page);
+      await h.fieldCell(page, 1, 'linked').locator('[data-testid="issues-pill"]').first().click();
+      await page.waitForTimeout(200);
+
+      // Clicking the TITLE text (not the id link, not the remove button)
+      // on the wigwag row previews the referenced issue in place.
+      const titleCell = page.locator('[data-testid="issues-popover-row"]').first().locator('div').nth(1);
+      await titleCell.click();
+      await page.waitForTimeout(400);
+      await expect(page.locator('[data-testid=slideover]')).toBeVisible(); // same-project wigwag ref opens the real slide-over
+    });
+
+    test('clicking anywhere in a row for a real external ref (GitHub) opens it in a new tab', async ({ page, context }) => {
+      await h.mockGithubApi(page);
+      const colId = await addField(page, 'Issues', 'issue');
+      await h.clickFieldToEdit(page, 1, colId);
+      await typeMultilineAndCommit(page, ['https://github.com/octocat/Hello-World/issues/1', 'https://github.com/octocat/Hello-World/issues/2']);
+      await page.waitForTimeout(400);
+
+      await h.fieldCell(page, 1, colId).locator('[data-testid="issues-pill"]').first().click();
+      await page.waitForTimeout(200);
+      const titleCell = page.locator('[data-testid="issues-popover-row"]').first().locator('div').nth(1);
+      const [newPage] = await Promise.all([
+        context.waitForEvent('page'),
+        titleCell.click()
+      ]);
+      // GitHub's own API resolves issue #1 to whichever real URL shape
+      // it actually is server-side (issues/ vs pull/, since a PR is an
+      // issue under the hood) -- this only cares that the row's own real
+      // href (not some other entry's) opened in a new tab.
+      expect(newPage.url()).toMatch(/github\.com\/octocat\/Hello-World\/(issues|pull)\/1$/);
+      await newPage.close();
+    });
+
+    test('clicking the remove (x) button does not also open the issue', async ({ page }) => {
+      await seedTwoWigwagLinkedEntries(page);
+      await h.fieldCell(page, 1, 'linked').locator('[data-testid="issues-pill"]').first().click();
+      await page.waitForTimeout(200);
+
+      await page.locator('[data-testid="issues-popover-remove"]').first().click();
+      await page.waitForTimeout(300);
+      await expect(page.locator('[data-testid=slideover]')).toHaveCount(0);
+      await expect(page.locator('[data-testid=foreign-slideover]')).toHaveCount(0);
+    });
+
+    test('hovering a row in the popover highlights it', async ({ page }) => {
+      await seedTwoWigwagLinkedEntries(page);
+      await h.fieldCell(page, 1, 'linked').locator('[data-testid="issues-pill"]').first().click();
+      await page.waitForTimeout(200);
+
+      const row = page.locator('[data-testid="issues-popover-row"]').first();
+      const bgBefore = await row.evaluate(el => getComputedStyle(el).backgroundColor);
+      await row.hover();
+      await page.waitForTimeout(100);
+      const bgDuring = await row.evaluate(el => getComputedStyle(el).backgroundColor);
+      expect(bgDuring).not.toBe(bgBefore);
     });
 
     // The positioning clamp lives in computeAnchor/togglePopover, shared

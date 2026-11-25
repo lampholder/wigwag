@@ -95,6 +95,35 @@ test.describe('wigwag: links -- issue-type fields', () => {
     await expect(page.locator('[data-testid=slideover]')).toHaveCount(1);
   });
 
+  // Live-reported (Tom): this single-ref "pill" (the small secondary ref
+  // line under a resolved 0/1-entry linked field) should echo the same
+  // pill chrome the multi-issue mini-pills got -- same rest background,
+  // same blue hover highlight -- instead of looking like a plain text
+  // link.
+  test('the resolved single-ref pill echoes the mini-pill styling: same background at rest, same blue highlight on hover', async ({ page }) => {
+    await h.clickFieldToEdit(page, 1, 'linked');
+    await h.pasteText(page, 'wigwag:/project/demo-milestone/issue/i2/');
+    await page.keyboard.press('Tab');
+    await h.waitForFieldResolved(page, 1, 'linked');
+
+    const pill = h.fieldCell(page, 1, 'linked').locator('a');
+    const [restBg, blueBg] = await page.evaluate(() => {
+      const probe = (v) => { const d = document.createElement('div'); d.style.background = v; document.body.appendChild(d); const c = getComputedStyle(d).backgroundColor; d.remove(); return c; };
+      return [probe('var(--surface-selected)'), probe('var(--c14)')];
+    });
+    // clickFieldToEdit/pasteText leave the mouse sitting wherever it last
+    // clicked, which can coincide with where the pill ends up once the
+    // field resolves -- move it well away first so the "rest" check
+    // isn't accidentally reading an already-hovered state.
+    await page.mouse.move(0, 0);
+    await page.waitForTimeout(100);
+    expect(await pill.evaluate(el => getComputedStyle(el).backgroundColor)).toBe(restBg);
+
+    await pill.hover();
+    await page.waitForTimeout(100);
+    expect(await pill.evaluate(el => getComputedStyle(el).backgroundColor)).toBe(blueBg);
+  });
+
   test('a link to a project not present in this browser falls back gracefully, no crash', async ({ page }) => {
     const errors = [];
     page.on('pageerror', e => errors.push(String(e)));

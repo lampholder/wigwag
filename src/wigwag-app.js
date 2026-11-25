@@ -10789,7 +10789,7 @@ class Component extends DCLogic {
     if (ref.system === 'wigwag') {
       if (!ref.issueId) return this.resolveWigwagRef(ref).label || text;
       const code = this.projectCodeFor(ref.projectId);
-      return (code || ref.projectId.slice(0, 3)) + '-' + ref.issueId.slice(0, 5);
+      return (code || ref.projectId.slice(0, 3)) + '-' + ref.issueId.slice(0, 6);
     }
     const n = normalizeRef(ref);
     if (!n) return text;
@@ -11119,7 +11119,7 @@ class Component extends DCLogic {
     const commitEditFn = () => this.startEdit(issue.id, colId, editValue);
     const gatedClick = readOnly ? undefined : e => { if (e && e.target.closest && e.target.closest('[data-testid="issues-pill"]')) return; this.cellClickGate(issue.id, colId, commitEditFn); };
     const popoverOpen = !readOnly && s.activeCell && s.activeCell.issueId === issue.id && s.activeCell.colId === colId && !!s.activeCell.popover;
-    const openPopover = readOnly ? undefined : e => { e.stopPropagation(); this.togglePopover(issue.id, colId, e, 560); };
+    const openPopover = readOnly ? undefined : e => { e.stopPropagation(); this.togglePopover(issue.id, colId, e, 720); };
     const cell = {
       isIssuesMulti: true, isBoundLive, isOverridden, boundGlyphTitle,
       showBoundGlyph: isBoundLive || isOverridden,
@@ -11150,16 +11150,32 @@ class Component extends DCLogic {
         const wgStatus = ref && isWg ? this.wigwagRefStatusFor(ref) : undefined;
         const statusColor = liveStatus && typeof liveStatus === 'object' ? col(statusCategoryColorName(liveStatus.statusCategory)) : (wgStatus ? wgStatus.color : null);
         const statusLabel = liveStatus && typeof liveStatus === 'object' ? liveStatus.status : (wgStatus ? wgStatus.label : '');
+        // Live-reported (Tom): clicking anywhere in the row should open
+        // the issue, not just the small id link -- wigwag via the same
+        // openWigwagRef chokepoint every other wigwag click goes through,
+        // any other resolved system via its own real href (a new tab,
+        // same as the id link's own target=_blank already did). A
+        // plain-text entry (no ref at all) has nothing to open. The row
+        // handler defers to a nested real <a> or the remove (x) button
+        // when the click actually landed on either of those, same
+        // "don't double-fire" pattern buildTextCell's own gatedClick uses.
+        const isOpenable = !!ref && (isWg || !!ref.href);
+        const openRef = () => { if (isWg) this.openWigwagRef(ref); else if (ref && ref.href) window.open(ref.href, '_blank', 'noopener,noreferrer'); };
         return {
           idLabel: ref ? (this.resolveIssuePillLabel(ref, text) || text) : '', titleLabel: text,
           hasHref: !!ref, href: ref ? (isWg ? '#' : (ref.href || null)) : null,
-          onRowClick: isWg ? (e => { e.preventDefault(); this.openWigwagRef(ref); }) : undefined,
+          isOpenable, rowCursor: isOpenable ? 'pointer' : 'default',
+          onIdClick: isWg ? (e => { e.preventDefault(); e.stopPropagation(); openRef(); }) : undefined,
+          onRowClick: isOpenable ? (e => {
+            if (e && e.target.closest && (e.target.closest('a') || e.target.closest('[data-testid="issues-popover-remove"]'))) return;
+            openRef();
+          }) : undefined,
           statusLoading: liveStatus === null,
           showStatus: !!statusColor,
           statusLabel,
           statusBg: statusColor ? statusColor.bg : '',
           statusFg: statusColor ? statusColor.fg : '',
-          onRemove: () => this.removeIssueFieldEntry(issue.id, colId, i)
+          onRemove: e => { if (e) e.stopPropagation(); this.removeIssueFieldEntry(issue.id, colId, i); }
         };
       });
       cell.addDraft = s.issuesPopoverDraft || '';

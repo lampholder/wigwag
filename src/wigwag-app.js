@@ -5269,25 +5269,27 @@ class Component extends DCLogic {
       if (el2) { el2.focus(); el2.setSelectionRange(pos, pos); }
     });
   }
-  // Comment composer attach (design handoff attachments.zip, tracker
-  // e16588b6): hash the dropped/picked file, copy it into local
-  // storage, insert [filename](wigwag-media:hash) at the cursor --
-  // same mechanism as pasting a GitHub/wigwag link, just a reference
-  // Wigwag itself originates instead of one found in pasted text.
-  // Scoped to the main Comments composer only for v1 (the doc only
-  // specs this one surface for attaching, not every comment-stream
-  // field or notes/text fields -- those can still RENDER a reference
-  // via Phase 3, just have no attach UI of their own yet).
-  // Returns a promise so multi-file callers (onCommentAttachInputChange/
-  // onCommentDrop below) can chain attaches one at a time -- each one
-  // reads the textarea's CURRENT value/caret via insertTextAtCaret, so
-  // running two concurrently races: both read the pre-insert value and
-  // whichever setState lands last silently discards the other's
-  // reference (confirmed live, the hard way, by a two-file-drop test).
-  // The resolved-promise wait after setState gives this custom
-  // framework's own render a tick to actually commit the new value to
-  // the real DOM textarea before the next file in the chain reads it.
-  attachFileToComment(file) {
+  // File attach (design handoff attachments.zip, tracker e16588b6):
+  // hash the dropped/picked file, copy it into local storage, insert
+  // [filename](wigwag-media:hash) at the cursor -- same mechanism as
+  // pasting a GitHub/wigwag link, just a reference Wigwag itself
+  // originates instead of one found in pasted text. Originally scoped
+  // to the main Comments composer only (v1 only specced that one
+  // surface); generalized to every markdown-capable multiline surface
+  // (comment-stream fields, project notes, Description/other text
+  // fields) -- testid + applyNewValue parameterize which real DOM
+  // textarea/state field a given surface actually is, everything else
+  // is shared.
+  // Returns a promise so multi-file callers (an attach-input's onChange,
+  // a drop) can chain attaches one at a time -- each one reads the
+  // textarea's CURRENT value/caret via insertTextAtCaret, so running two
+  // concurrently races: both read the pre-insert value and whichever
+  // setState lands last silently discards the other's reference
+  // (confirmed live, the hard way, by a two-file-drop test). The
+  // resolved-promise wait after setState gives this custom framework's
+  // own render a tick to actually commit the new value to the real DOM
+  // textarea before the next file in the chain reads it.
+  attachFileAt(testid, applyNewValue, file) {
     if (!this.isTauriConnectorRuntime()) { window.alert('Attaching files needs the desktop app.'); return Promise.resolve(); }
     // ']' would terminate the markdown label early (renderMarkdownInline's
     // own [^\]\n]+ label pattern) -- stripped rather than built out a
@@ -5298,26 +5300,46 @@ class Component extends DCLogic {
       const bytes = new Uint8Array(buf);
       return this.hashBytes(bytes).then(hash => this.mediaStoreWrite(hash, bytes).then(() => hash));
     }).then(hash => {
-      this.insertTextAtCaret('new-comment-input', '[' + label + '](wigwag-media:' + hash + ')', v => this.setState({ newCommentDraft: v }));
+      this.insertTextAtCaret(testid, '[' + label + '](wigwag-media:' + hash + ')', applyNewValue);
       return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     }).catch(e => window.alert('Could not attach "' + file.name + '": ' + e.message));
   }
+  attachFilesSequentiallyAt(testid, applyNewValue, files) {
+    return Array.from(files || []).reduce((p, f) => p.then(() => this.attachFileAt(testid, applyNewValue, f)), Promise.resolve());
+  }
+  attachFileToComment(file) { return this.attachFileAt('new-comment-input', v => this.setState({ newCommentDraft: v }), file); }
+  attachFilesSequentially(files) { return this.attachFilesSequentiallyAt('new-comment-input', v => this.setState({ newCommentDraft: v }), files); }
+  // Description/other multiline text fields (table cell AND slide-over)
+  // all share one real input testid/state field -- editDraft -- since
+  // only one can ever be actively edited at a time (see onInputChange's
+  // own definition, shared by all three render call sites).
+  attachFileToTextField(file) { return this.attachFileAt('text-field-edit-textarea', v => this.setState({ editDraft: v }), file); }
+  attachFilesToTextField(files) { return this.attachFilesSequentiallyAt('text-field-edit-textarea', v => this.setState({ editDraft: v }), files); }
+  // A comment-stream field's own draft is keyed by colId (a project can
+  // have more than one comment-stream field) -- unlike the single shared
+  // editDraft above, this needs the specific field's id threaded through.
+  attachFileToCommentStream(colId, file) { return this.attachFileAt('comment-stream-popover-textarea', v => this.setState(st => ({ commentStreamDrafts: { ...st.commentStreamDrafts, [colId]: v } })), file); }
+  attachFilesToCommentStream(colId, files) { return this.attachFilesSequentiallyAt('comment-stream-popover-textarea', v => this.setState(st => ({ commentStreamDrafts: { ...st.commentStreamDrafts, [colId]: v } })), files); }
+  attachFileToNotes(file) { return this.attachFileAt('notes-textarea', v => this.setState({ projectNoteDraft: v }), file); }
+  attachFilesToNotes(files) { return this.attachFilesSequentiallyAt('notes-textarea', v => this.setState({ projectNoteDraft: v }), files); }
   onCommentAttachClick() {
     const el = document.querySelector('[data-testid="comment-attach-input"]');
     if (el) el.click();
-  }
-  attachFilesSequentially(files) {
-    return Array.from(files || []).reduce((p, f) => p.then(() => this.attachFileToComment(f)), Promise.resolve());
   }
   onCommentAttachInputChange(e) {
     this.attachFilesSequentially(e.target.files);
     e.target.value = '';
   }
-  onCommentDragOver(e) { e.preventDefault(); }
-  onCommentDrop(e) {
+  // No real comment-specific logic in either -- shared verbatim by every
+  // attach-capable composer below (generic name kept only on the comment
+  // composer's own call sites for minimal diff).
+  onComposerDragOver(e) { e.preventDefault(); }
+  onComposerDrop(e, attachFilesFn) {
     e.preventDefault();
-    this.attachFilesSequentially(e.dataTransfer && e.dataTransfer.files);
+    attachFilesFn(e.dataTransfer && e.dataTransfer.files);
   }
+  onCommentDragOver(e) { this.onComposerDragOver(e); }
+  onCommentDrop(e) { this.onComposerDrop(e, f => this.attachFilesSequentially(f)); }
   // Pasting an image (a screenshot, or "Copy Image" from a browser/
   // Preview) attaches it the same way as the paperclip/drop zone --
   // same attachFileToComment chokepoint, just a third way to originate
@@ -5346,14 +5368,17 @@ class Component extends DCLogic {
     const ext = (blob.type.split('/')[1] || 'png').split('+')[0];
     return [new File([blob], 'Pasted image.' + ext, { type: blob.type })];
   }
-  // Scoped to the main Comments composer only, same as the paperclip/
-  // drop zone (design handoff attachments.zip, tracker e16588b6) -- a
-  // paste carrying no file/image data falls through to the existing
-  // paste-a-URL-over-a-selection handling unchanged.
-  handleCommentComposerPaste(e, applyNewValue) {
+  // Shared by every attach-capable composer (comments, comment-stream
+  // fields, notes, Description/other text fields) -- a paste carrying no
+  // file/image data falls through to the existing paste-a-URL-over-a-
+  // selection handling unchanged.
+  handleComposerPaste(e, applyNewValue, attachFilesFn) {
     const files = this.filesFromClipboardEvent(e);
-    if (files.length) { e.preventDefault(); this.attachFilesSequentially(files); return; }
+    if (files.length) { e.preventDefault(); attachFilesFn(files); return; }
     this.handleMarkdownLinkPaste(e, applyNewValue);
+  }
+  handleCommentComposerPaste(e, applyNewValue) {
+    this.handleComposerPaste(e, applyNewValue, f => this.attachFilesSequentially(f));
   }
   // Dragging a real OS file (e.g. from Finder) onto the composer is a
   // SEPARATE problem from the kanban drag-and-drop fixed above: a file
@@ -5376,9 +5401,12 @@ class Component extends DCLogic {
   // position arrives in PHYSICAL pixels relative to the webview's own
   // top-left corner (Tauri's documented contract for this event) --
   // divided by devicePixelRatio to land back in the CSS pixels
-  // elementFromPoint expects. Only a drop landing on the comment
-  // composer's own drop zone is handled; every other drop target is a
-  // future extension, not a silent no-op bug.
+  // elementFromPoint expects. Hit-tests against every attach-capable
+  // surface (same testids the DOM-level onDrop handlers above already
+  // bind to) rather than just the main comment composer's own drop
+  // zone, so a native OS drag lands in the right place regardless of
+  // which text field it's dropped on; a drop landing on none of them is
+  // a real no-op (dropped somewhere with no attach surface at all).
   setupNativeDragDrop() {
     if (!this.isTauriConnectorRuntime() || !window.__TAURI__.webview) return;
     window.__TAURI__.webview.getCurrentWebview().onDragDropEvent(event => {
@@ -5386,9 +5414,25 @@ class Component extends DCLogic {
       if (!p || p.type !== 'drop' || !p.paths || !p.paths.length) return;
       const scale = window.devicePixelRatio || 1;
       const el = document.elementFromPoint(p.position.x / scale, p.position.y / scale);
-      const dropZone = el && el.closest && el.closest('[data-testid="comment-composer-drop-zone"]');
-      if (!dropZone) return;
-      this.attachFilesSequentially(p.paths.map(path => this.fileShimFromPath(path)));
+      if (!el || !el.closest) return;
+      const files = () => p.paths.map(path => this.fileShimFromPath(path));
+      if (el.closest('[data-testid="comment-composer-drop-zone"]')) { this.attachFilesSequentially(files()); return; }
+      if (el.closest('[data-testid="text-field-edit-textarea"]')) {
+        // Same isAttachable guard buildCell's own onInputDrop applies --
+        // this textarea is also used for multi-issue-linking fields
+        // (one issue reference per line), where a file attach makes no
+        // sense even though the DOM element is identical.
+        const colId = this.state.activeCell && this.state.activeCell.colId;
+        const def = colId ? this.effectiveFieldDefs()[colId] : null;
+        if (def && def.type === 'text') this.attachFilesToTextField(files());
+        return;
+      }
+      if (el.closest('[data-testid="comment-stream-popover-textarea"]')) {
+        const colId = this.state.activeCell && this.state.activeCell.colId;
+        if (colId) this.attachFilesToCommentStream(colId, files());
+        return;
+      }
+      if (el.closest('[data-testid="notes-textarea"]')) { this.attachFilesToNotes(files()); return; }
     }).catch(e => console.error('[wigwag] failed to set up native file drop: ' + ((e && e.message) || e)));
   }
   // A real File object (from <input type=file> or a same-origin HTML5
@@ -11128,9 +11172,18 @@ class Component extends DCLogic {
       // markdown textarea -- Title alone keeps the original single-line
       // input untouched.
       const isMultiline = !!def && (def.type === 'text' || isMultiIssueField);
+      // Attaching a file only makes sense for real prose/markdown text --
+      // NOT a multi-issue-linking field, which also gets the multiline
+      // textarea (isMultiline above) but expects one issue reference per
+      // line, never a file.
+      const isAttachable = !!def && def.type === 'text';
       return { isText: true, isEditing: true, isDisplay: false, isMultiline, isPlainInput: !isMultiline, inputValue: s.editDraft, onCellClick: undefined,
         onInputChange: e => this.setState({ editDraft: e.target.value }),
-        onInputPaste: e => this.handleMarkdownLinkPaste(e, v => this.setState({ editDraft: v })),
+        onInputPaste: isAttachable
+          ? (e => this.handleComposerPaste(e, v => this.setState({ editDraft: v }), f => this.attachFilesToTextField(f)))
+          : (e => this.handleMarkdownLinkPaste(e, v => this.setState({ editDraft: v }))),
+        onInputDragOver: isAttachable ? (e => this.onComposerDragOver(e)) : undefined,
+        onInputDrop: isAttachable ? (e => this.onComposerDrop(e, f => this.attachFilesToTextField(f))) : undefined,
         onInputBlur: () => this.commitEdit(issue.id, colId),
         onInputKeyDown: isMultiIssueField ? (e => this.handleIssuesFieldEditKey(e, issue.id, colId))
           : isMultiline ? (e => this.handleMarkdownEditKey(e, issue.id, colId)) : (e => this.handleEditKey(e, issue.id, colId)),
@@ -11625,6 +11678,15 @@ class Component extends DCLogic {
       cellHighlight: (popoverOpen || isSelected) ? 'outline:2px solid var(--accent-fill); outline-offset:-2px;' : '',
       draft: s.commentStreamDrafts[colId] || '',
       onDraftChange: e => this.setState(st => ({ commentStreamDrafts: { ...st.commentStreamDrafts, [colId]: e.target.value } })),
+      onDraftPaste: e => this.handleComposerPaste(e, v => this.setState(st => ({ commentStreamDrafts: { ...st.commentStreamDrafts, [colId]: v } })), f => this.attachFilesToCommentStream(colId, f)),
+      onDraftDragOver: e => this.onComposerDragOver(e),
+      onDraftDrop: e => this.onComposerDrop(e, f => this.attachFilesToCommentStream(colId, f)),
+      // Single shared testid, not per-colId -- popoverOpen (below) gates
+      // the whole popover, so only one comment-stream field's composer is
+      // ever actually in the DOM at a time, same precedent the main
+      // comment composer's own comment-attach-input already relies on.
+      onAttachClick: () => { const el = document.querySelector('[data-testid="comment-stream-attach-input"]'); if (el) el.click(); },
+      onAttachInputChange: e => { this.attachFilesToCommentStream(colId, e.target.files); e.target.value = ''; },
       onDraftKeyDown: e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); this.addCommentStreamEntry(issue.id, colId, this.state.commentStreamDrafts[colId]); } },
       onPost: () => this.addCommentStreamEntry(issue.id, colId, this.state.commentStreamDrafts[colId]),
       // Detail-view field block only: jump the Activity area to this
@@ -12336,7 +12398,11 @@ class Component extends DCLogic {
         isReading: !s.projectNoteEditing,
         draft: s.projectNoteDraft,
         onDraftChange: e => this.setState({ projectNoteDraft: e.target.value }),
-        onDraftPaste: e => this.handleMarkdownLinkPaste(e, v => this.setState({ projectNoteDraft: v })),
+        onDraftPaste: e => this.handleComposerPaste(e, v => this.setState({ projectNoteDraft: v }), f => this.attachFilesToNotes(f)),
+        onDraftDragOver: e => this.onComposerDragOver(e),
+        onDraftDrop: e => this.onComposerDrop(e, f => this.attachFilesToNotes(f)),
+        onAttachClick: () => { const el = document.querySelector('[data-testid="notes-attach-input"]'); if (el) el.click(); },
+        onAttachInputChange: e => { this.attachFilesToNotes(e.target.files); e.target.value = ''; },
         onDraftKeyDown: e => {
           if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); this.saveNoteEdit(); }
           else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); this.cancelNoteEdit(); }

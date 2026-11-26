@@ -559,3 +559,170 @@ test.describe('Media attachments: Project Settings\' Media section', () => {
     await expect(present).toContainText('doc.txt');
   });
 });
+
+// Live-reported (Tom): attach was originally scoped to the main Comments
+// composer only (see this file's own header). Generalized to every other
+// markdown-capable multiline surface -- Description/other text fields,
+// a comment-stream field's own popover, and project notes -- via the
+// same attachFileAt/handleComposerPaste/onComposerDrop core the comment
+// composer already used, now shared instead of comment-specific. Also
+// fixed the paperclip icon itself, which rendered as an ugly, lopsided
+// shape (a hand-authored 16x16 path whose arc radii didn't actually fit
+// their own endpoints) -- replaced with Feather's well-known paperclip
+// path.
+test.describe('Media attachments: generalized to every text field', () => {
+  test.beforeEach(async ({ page }) => { await h.mockGithubApi(page); await h.gotoTracker(page); });
+
+  test('dropping a file onto a plain text field (table cell, inline edit) attaches it the same way as the comment composer', async ({ page }) => {
+    await h.clickFieldToEdit(page, 1, 'mitigation');
+    const textarea = page.locator('[data-testid=text-field-edit-textarea]');
+    await expect(textarea).toBeVisible();
+    const buffer = Buffer.from('dropped into a text field');
+    const dataTransfer = await page.evaluateHandle((bytes) => {
+      const dt = new DataTransfer();
+      const file = new File([new Uint8Array(bytes)], 'notes.txt', { type: 'text/plain' });
+      dt.items.add(file);
+      return dt;
+    }, Array.from(buffer));
+    await textarea.dispatchEvent('drop', { dataTransfer });
+    await page.waitForTimeout(300);
+    const draft = await textarea.inputValue();
+    expect(draft).toMatch(/^\[notes\.txt\]\(wigwag-media:[a-f0-9]{64}\)$/);
+  });
+
+  test('pasting a file into the Description section attaches it, inserted at the cursor', async ({ page }) => {
+    await h.openFieldEditor(page, 'mitigation');
+    const labelInput = page.locator('[data-testid=field-editor] input').first();
+    await labelInput.fill('Description');
+    await labelInput.dispatchEvent('change');
+    await page.waitForTimeout(200);
+    await page.mouse.click(50, 50);
+    await page.waitForTimeout(200);
+
+    await h.openSlideover(page, 1);
+    await page.waitForTimeout(300);
+    const section = page.locator('[data-testid=slideover-description]');
+    await section.click();
+    await page.waitForTimeout(150);
+    await section.click();
+    await page.waitForTimeout(200);
+
+    const textarea = page.locator('[data-testid=slideover-description] [data-testid=text-field-edit-textarea]');
+    await textarea.fill('See attached');
+    await textarea.evaluate(el => el.setSelectionRange(el.value.length, el.value.length));
+    // A real ClipboardEvent constructed+dispatched in-page -- Playwright's
+    // own locator.dispatchEvent('paste', ...) doesn't recognize 'paste' as
+    // needing a real ClipboardEvent, so a clipboardData passed that way
+    // never actually reaches the handler (confirmed by this file's own
+    // pasteFiles helper above, for the comment composer's equivalent test).
+    await textarea.evaluate(el => {
+      const dt = new DataTransfer();
+      dt.items.add(new File([new Uint8Array([1, 2, 3, 4])], 'report.pdf', { type: 'application/pdf' }));
+      el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+    });
+    await page.waitForTimeout(300);
+    const draft = await textarea.inputValue();
+    expect(draft).toMatch(/^See attached\[report\.pdf\]\(wigwag-media:[a-f0-9]{64}\)$/);
+  });
+
+  // A multi-issue-linking field reuses the exact same text-field-edit-
+  // textarea DOM element (same testid) as a real text field -- a file
+  // drop/paste there must NOT attach (a reference to an uploaded file
+  // makes no sense in a field that expects issue references, one per
+  // line), confirming the isAttachable guard actually gates on the
+  // field's real type, not just which element the drop landed on.
+  test('dropping a file onto a multi-issue-linking field (same textarea, different field type) does not attach it', async ({ page }) => {
+    await h.clickFieldToEdit(page, 1, 'linked');
+    const textarea = page.locator('[data-testid=text-field-edit-textarea]');
+    await expect(textarea).toBeVisible();
+    const buffer = Buffer.from('should not attach');
+    const dataTransfer = await page.evaluateHandle((bytes) => {
+      const dt = new DataTransfer();
+      const file = new File([new Uint8Array(bytes)], 'nope.txt', { type: 'text/plain' });
+      dt.items.add(file);
+      return dt;
+    }, Array.from(buffer));
+    await textarea.dispatchEvent('drop', { dataTransfer });
+    await page.waitForTimeout(300);
+    const draft = await textarea.inputValue();
+    expect(draft).not.toContain('wigwag-media:');
+  });
+
+  test('a comment-stream field\'s own popover has a working paperclip that inserts a reference at the cursor', async ({ page }) => {
+    await page.locator('[data-testid=add-field-wrap] span').first().click();
+    await page.waitForTimeout(80);
+    await page.locator('input[placeholder="Field name"]').fill('Update');
+    await page.locator('select').selectOption('commentStream');
+    await page.locator('button', { hasText: 'Add field' }).click();
+    await page.waitForTimeout(200);
+    const colId = await page.locator('[data-testid=col-header]').filter({ hasText: 'Update' }).first().getAttribute('data-col');
+
+    const cell = h.fieldCell(page, 1, colId);
+    await cell.click();
+    await page.waitForTimeout(100);
+    await cell.click();
+    await page.waitForTimeout(200);
+
+    const textarea = page.locator('[data-testid=comment-stream-popover-textarea]');
+    await textarea.fill('see ');
+    await textarea.evaluate(el => el.setSelectionRange(el.value.length, el.value.length));
+    const [chooser] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      page.locator('[data-testid=comment-stream-attach-btn]').click()
+    ]);
+    await chooser.setFiles({ name: 'diagram.png', mimeType: 'image/png', buffer: Buffer.from([1, 2, 3, 4]) });
+    await page.waitForTimeout(300);
+    const draft = await textarea.inputValue();
+    expect(draft).toMatch(/^see \[diagram\.png\]\(wigwag-media:[a-f0-9]{64}\)$/);
+
+    await page.locator('[data-testid=comment-stream-popover-post-btn]').click();
+    await page.waitForTimeout(300);
+    await expect(h.fieldCell(page, 1, colId)).toContainText('diagram.png');
+  });
+
+  test('project notes has a working paperclip, next to Cancel/Save', async ({ page }) => {
+    await h.openProjectPanel(page);
+    await page.locator('[data-testid=notes-edit-btn]').click();
+    await page.waitForTimeout(150);
+
+    const textarea = page.locator('[data-testid=notes-textarea]');
+    await textarea.fill('See the attached diagram.');
+    await textarea.evaluate(el => el.setSelectionRange(el.value.length, el.value.length));
+    const [chooser] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      page.locator('[data-testid=notes-attach-btn]').click()
+    ]);
+    await chooser.setFiles({ name: 'diagram.svg', mimeType: 'image/svg+xml', buffer: Buffer.from('<svg></svg>') });
+    await page.waitForTimeout(300);
+    const draft = await textarea.inputValue();
+    expect(draft).toMatch(/^See the attached diagram\.\[diagram\.svg\]\(wigwag-media:[a-f0-9]{64}\)$/);
+
+    await page.locator('[data-testid=notes-save-btn]').click();
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid=notes-body-wrap]')).toContainText('diagram.svg');
+  });
+
+  // Live-reported safety check: a native Tauri drop (tauri://drag-drop,
+  // not a DOM drop event -- see setupNativeDragDrop's own comment) must
+  // also respect the same per-surface routing, not just the DOM-level
+  // handlers above.
+  test('a native OS file drop lands correctly on a plain text field, not just the comment composer', async ({ page }) => {
+    await h.clickFieldToEdit(page, 1, 'mitigation');
+    const textarea = page.locator('[data-testid=text-field-edit-textarea]');
+    const box = await textarea.boundingBox();
+    await page.evaluate(({ box }) => {
+      window.__fakeExternalFiles['/Users/tom/Downloads/native-drop.txt'] = [1, 2, 3];
+      const scale = window.devicePixelRatio || 1;
+      window.__dragDropHandler({
+        payload: {
+          type: 'drop',
+          paths: ['/Users/tom/Downloads/native-drop.txt'],
+          position: { x: (box.x + box.width / 2) * scale, y: (box.y + box.height / 2) * scale }
+        }
+      });
+    }, { box });
+    await page.waitForTimeout(300);
+    const draft = await textarea.inputValue();
+    expect(draft).toMatch(/^\[native-drop\.txt\]\(wigwag-media:[a-f0-9]{64}\)$/);
+  });
+});

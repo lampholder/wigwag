@@ -419,7 +419,15 @@ class Component extends DCLogic {
     this._handledLayoutProposalKeyByProject = {};
     this.state.isMobileViewport = window.matchMedia('(max-width: 640px)').matches;
     this.state.layoutProposals = {};
+    this.state.appliedLayoutNotices = {};
     this.state.isRoomModerator = false;
+    // Separate from isRoomModerator -- propose-layout's own required
+    // level genuinely tracks the room's power_levels.events entry for
+    // work.wigwag.layout-proposal (currentCanProposeLayout in
+    // bridges/wigwag-matrix-host.html), not isRoomModerator's own
+    // project-creation-specific level. The two only ever agree in the
+    // common case (no custom per-event power_levels override).
+    this.state.canProposeLayout = false;
     // ?storageNamespace= was the OLD (now fully removed) widget host's
     // own signal that it was about to poke this frame's shared-origin
     // localStorage directly and expected an immediate, normal boot --
@@ -494,6 +502,7 @@ class Component extends DCLogic {
     // iframe's own render state reset, the host (and its outbox) did not.
     this.state.pendingEditsByProject = (ackData && ackData.pendingSummaries) || {};
     this.state.isRoomModerator = !!(ackData && ackData.isModerator);
+    this.state.canProposeLayout = !!(ackData && ackData.canProposeLayout);
     window.addEventListener('message', (e) => {
       if (!e.data) return;
       if (e.data.type === 'wigwag:storage-changed') { shim._applyRemote(e.data.key, e.data.newValue); return; }
@@ -509,11 +518,12 @@ class Component extends DCLogic {
       if (e.data.type === 'wigwag:pending-update') { this.setState(s => ({ pendingEditsByProject: { ...(s.pendingEditsByProject || {}), [e.data.projectId]: e.data.summary } })); return; }
       // Tracker #169/4f07e72b: re-derived fresh on every poll tick that
       // found anything new (see wigwag-matrix-host.html's own comment) --
-      // filterHandledLayoutProposals is what keeps an already-accepted/
+      // processIncomingLayoutProposals is what keeps an already-accepted/
       // dismissed proposal from reopening its own banner on a redundant
-      // re-delivery of the same still-current state event.
-      if (e.data.type === 'wigwag:layout-proposals') { this.setState({ layoutProposals: this.filterHandledLayoutProposals(e.data.proposalsByProjectId || {}) }); return; }
-      if (e.data.type === 'wigwag:moderator-status') { this.setState({ isRoomModerator: !!e.data.isModerator }); return; }
+      // re-delivery of the same still-current state event, and (new)
+      // force-applies a forced proposal targeting the active project.
+      if (e.data.type === 'wigwag:layout-proposals') { this.setState(this.processIncomingLayoutProposals(e.data.proposalsByProjectId || {})); return; }
+      if (e.data.type === 'wigwag:moderator-status') { this.setState({ isRoomModerator: !!e.data.isModerator, canProposeLayout: !!e.data.canProposeLayout }); return; }
       // Tracker #167/2275c4a6 follow-up, live-reported "table resizes
       // itself after rendering": wigwag-matrix-host.html's revealFrame
       // posts this right after actually setting #frame's display to
@@ -540,7 +550,7 @@ class Component extends DCLogic {
     // Keyed by project id since a room can hold more than one (#149).
     // Filtered down here, AFTER runBootSequence() (not alongside
     // pendingEditsByProject at the top of this function), because the
-    // self-exclusion check in filterHandledLayoutProposals
+    // self-exclusion check in processIncomingLayoutProposals
     // (proposedByMatrixUserId === my own identity's matrixUserId) needs
     // this.state.identities/activeIdentityId to already be populated --
     // resolveRoomModeIdentity above only writes IDENTITIES_KEY to
@@ -548,8 +558,10 @@ class Component extends DCLogic {
     // runBootSequence) is what actually loads it into state. Filtering
     // any earlier always saw an empty identity list, so a proposal that
     // is unmistakably the viewer's own still got shown once on every
-    // fresh connect (first ever, or right after a reload).
-    this.state.layoutProposals = this.filterHandledLayoutProposals((ackData && ackData.layoutProposals) || {});
+    // fresh connect (first ever, or right after a reload). Also where a
+    // forced proposal already live for the active project force-applies,
+    // same as a live push -- this.state.projectId is real by now too.
+    Object.assign(this.state, this.processIncomingLayoutProposals((ackData && ackData.layoutProposals) || {}));
     this.setState(Object.assign({}, this.state, { roomModeBootstrapping: false }));
     // Tracker #167/2275c4a6 follow-up, live-reported: this -- not
     // componentDidMount, which fires on the FIRST mount, while
@@ -2024,7 +2036,7 @@ class Component extends DCLogic {
       // UI state (menus, active/selected cell, add-item draft, slide-over)
       // plus what it implies (drag state, field-editor/color-picker modals,
       // an in-progress rename).
-      settingsOpen: false, exportMenuOpen: false, proposeLayoutConfirmOpen: false, sendCopied: false, sourceViewOpen: false, issueJsonViewOpen: false, addFieldOpen: false, switcherRowContextMenu: null,
+      settingsOpen: false, exportMenuOpen: false, proposeLayoutConfirmOpen: false, proposeLayoutForce: false, sendCopied: false, sourceViewOpen: false, issueJsonViewOpen: false, addFieldOpen: false, switcherRowContextMenu: null,
       addItemOpen: false, addItemDraft: '', filterQuery: '', widgetFilterOpen: false, jumpDismissed: false, jumpActiveIndex: 0, filterSuggestDismissed: true, filterSuggestActiveIndex: 0, sort: this.sortFor(id), sortSnapshot: computeSortSnapshot(this.sortFor(id), hydratedIssues, hydratedFieldDefs), columnFilters: this.columnFiltersFor(id),
       columnFilterExcludedIds: computeColumnFilterExcludedIds(this.columnFiltersFor(id), hydratedIssues, hydratedFieldDefs),
       draggingColId: null, dragOverColId: null, dragOverSide: null, openColMenuId: null,
@@ -4174,6 +4186,7 @@ class Component extends DCLogic {
     settingsSection: 'identity',
     exportMenuOpen: false,
     proposeLayoutConfirmOpen: false,
+    proposeLayoutForce: false,
     sendCopied: false,
     sourceViewOpen: false,
     copyLabel: 'Copy',
@@ -9148,7 +9161,7 @@ class Component extends DCLogic {
       return id;
     } catch (e) { return null; }
   }
-  buildLayoutProposalSnapshot() {
+  buildLayoutProposalSnapshot(forced) {
     const s = this.state;
     const identity = s.identities.find(i => i.id === s.activeIdentityId);
     return {
@@ -9160,7 +9173,8 @@ class Component extends DCLogic {
       proposedBy: (identity && identity.label) || null,
       proposedByMatrixUserId: (identity && identity.matrixUserId) || null,
       proposedByDeviceId: (identity && identity.matrixDeviceId) || this.getOrCreateDeviceId(),
-      proposedAt: Date.now()
+      proposedAt: Date.now(),
+      forced: !!forced
     };
   }
   // Live-reported (Tom, 2026-09-29): a moderator proposing a layout
@@ -9172,10 +9186,10 @@ class Component extends DCLogic {
   // suppresses exactly that reflection, for this project only.
   sendLayoutProposal() {
     const projectId = this.state.projectId;
-    const content = this.buildLayoutProposalSnapshot();
+    const content = this.buildLayoutProposalSnapshot(this.state.proposeLayoutForce);
     this._handledLayoutProposalKeyByProject[projectId] = this.layoutProposalKey(content);
     window.parent.postMessage({ type: 'wigwag:propose-layout', projectId, content }, '*');
-    this.setState({ proposeLayoutConfirmOpen: false });
+    this.setState({ proposeLayoutConfirmOpen: false, proposeLayoutForce: false });
   }
   layoutProposalKey(proposal) { return proposal ? (proposal.proposedBy + ':' + proposal.proposedAt) : null; }
   // Used both to decide whether an incoming push should (re)open a given
@@ -9192,29 +9206,18 @@ class Component extends DCLogic {
     const key = this.layoutProposalKey(proposal);
     return (!key || key === this._handledLayoutProposalKeyByProject[projectId]) ? null : proposal;
   }
-  filterHandledLayoutProposals(proposalsByProjectId) {
-    const s = this.state;
-    const myIdentity = s.identities.find(i => i.id === s.activeIdentityId);
-    const myDeviceId = (myIdentity && myIdentity.matrixDeviceId) || this.getOrCreateDeviceId();
-    const out = {};
-    for (const projectId in proposalsByProjectId) {
-      const proposal = proposalsByProjectId[projectId];
-      if (myDeviceId && proposal && proposal.proposedByDeviceId === myDeviceId) continue;
-      const kept = this.layoutProposalIfNotHandled(projectId, proposal);
-      if (kept) out[projectId] = kept;
-    }
-    return out;
-  }
-  // Applies the proposed columns/widths/visibility/freeze point purely as
-  // local state -- reuses the exact same fields (and, via
-  // componentDidUpdate, the exact same persistColumnWidths/
-  // persistColumnOrder/persistHiddenFieldIds functions) a manual drag-
-  // resize/reorder/hide/freeze already goes through, so the result is
-  // freely editable afterward with no special-cased "came from a
-  // proposal" residue anywhere. reconcileColumnOrder guards against a
-  // proposal naming a field id this device doesn't currently have.
-  acceptLayoutProposal(projectId, proposal) {
-    this._handledLayoutProposalKeyByProject[projectId] = this.layoutProposalKey(proposal);
+  // Returns the state patch (columnOrder/columnWidths/hiddenFieldIds/
+  // freezeColId/kanbanColId) a proposal maps to, purely as local state --
+  // reuses the exact same fields (and, via componentDidUpdate, the exact
+  // same persistColumnWidths/persistColumnOrder/persistHiddenFieldIds
+  // functions) a manual drag-resize/reorder/hide/freeze already goes
+  // through, so the result is freely editable afterward with no special-
+  // cased "came from a proposal" residue anywhere. reconcileColumnOrder
+  // guards against a proposal naming a field id this device doesn't
+  // currently have. Shared by acceptLayoutProposal (explicit Accept) and
+  // processIncomingLayoutProposals (a forced proposal, applied with no
+  // Accept step at all) -- same apply, different trigger.
+  layoutProposalApplyPatch(proposal) {
     const hiddenFieldIds = proposal.hiddenFieldIds || [];
     const columnOrder = reconcileColumnOrder(proposal.columnOrder, this.effectiveFieldDefs(), hiddenFieldIds);
     // Same "this device might not have what was proposed" guard as
@@ -9224,10 +9227,54 @@ class Component extends DCLogic {
     // makes sense to group by.
     const proposedGroupDef = proposal.kanbanColId ? this.effectiveFieldDefs()[proposal.kanbanColId] : null;
     const kanbanColId = (proposedGroupDef && proposedGroupDef.type === 'select') ? proposal.kanbanColId : null;
+    return { columnOrder, columnWidths: proposal.columnWidths || {}, hiddenFieldIds, freezeColId: proposal.freezeColId || null, kanbanColId };
+  }
+  // Self-exclusion (never show/apply your own just-sent proposal back to
+  // yourself) plus the handled-proposal filter (layoutProposalIfNotHandled)
+  // every incoming push/boot-time hydration needs -- PLUS, new for forced
+  // proposals, actually applying them with no Accept step at all. Only
+  // ever force-applies for the CURRENTLY ACTIVE project: columnOrder/
+  // columnWidths/etc are this device's live state for whichever project
+  // is open (same scoping acceptLayoutProposal's own comment already
+  // documents), so there's nothing real to apply a background project's
+  // forced layout TO yet -- it degrades to a plain, acceptable suggestion
+  // instead (kept in layoutProposals, Accept/Dismiss same as always),
+  // permanently, not just until the next switch -- this function only
+  // ever runs again on a NEW incoming push/poll tick, never on
+  // switchProject, so switching into that project later does not
+  // retroactively force-apply it. Returns a flat object meant to be used
+  // directly as a setState patch (live postMessage handler) or merged via
+  // Object.assign(this.state, ...) (boot-time, pre-mount, same idiom this
+  // function's predecessor already used).
+  processIncomingLayoutProposals(proposalsByProjectId) {
+    const s = this.state;
+    const myIdentity = s.identities.find(i => i.id === s.activeIdentityId);
+    const myDeviceId = (myIdentity && myIdentity.matrixDeviceId) || this.getOrCreateDeviceId();
+    const layoutProposals = {};
+    const appliedLayoutNotices = Object.assign({}, s.appliedLayoutNotices);
+    let forcedPatch = null;
+    for (const projectId in proposalsByProjectId) {
+      const proposal = proposalsByProjectId[projectId];
+      if (myDeviceId && proposal && proposal.proposedByDeviceId === myDeviceId) continue;
+      const kept = this.layoutProposalIfNotHandled(projectId, proposal);
+      if (!kept) continue;
+      if (kept.forced && projectId === s.projectId) {
+        this._handledLayoutProposalKeyByProject[projectId] = this.layoutProposalKey(kept);
+        appliedLayoutNotices[projectId] = kept;
+        forcedPatch = this.layoutProposalApplyPatch(kept);
+      } else {
+        layoutProposals[projectId] = kept;
+      }
+    }
+    return Object.assign({ layoutProposals, appliedLayoutNotices }, forcedPatch || {});
+  }
+  acceptLayoutProposal(projectId, proposal) {
+    this._handledLayoutProposalKeyByProject[projectId] = this.layoutProposalKey(proposal);
+    const patch = this.layoutProposalApplyPatch(proposal);
     this.setState(s => {
       const layoutProposals = Object.assign({}, s.layoutProposals);
       delete layoutProposals[projectId];
-      return { columnOrder, columnWidths: proposal.columnWidths || {}, hiddenFieldIds, freezeColId: proposal.freezeColId || null, kanbanColId, layoutProposals };
+      return Object.assign({}, patch, { layoutProposals });
     });
   }
   // Live-reported (Tom, 2026-09-29): dismissing the one currently showing
@@ -9243,6 +9290,16 @@ class Component extends DCLogic {
       }
       this._handledLayoutProposalKeyByProject[projectId] = this.layoutProposalKey(proposal);
       return { layoutProposals: {} };
+    });
+  }
+  // The dismiss-only confirmation left behind once a forced proposal has
+  // already been auto-applied (see processIncomingLayoutProposals) --
+  // there's nothing left to accept, this just clears the notice.
+  dismissAppliedLayoutNotice(projectId) {
+    this.setState(s => {
+      const appliedLayoutNotices = Object.assign({}, s.appliedLayoutNotices);
+      delete appliedLayoutNotices[projectId];
+      return { appliedLayoutNotices };
     });
   }
   // Always resolves from the real stored value now -- never hard-locked,
@@ -13037,12 +13094,18 @@ class Component extends DCLogic {
       onDismissRoomWriteRejected: () => this.setState({ roomWriteRejectedMessage: null }),
       // Tracker #169/4f07e72b: hidden entirely for a non-moderator (design
       // handoff's own call -- no disabled state, the icon just isn't
-      // there), not merely disabled -- isRoomModerator is a real, live
-      // Matrix power-level check (see isModeratorForStateEvent in
-      // wigwag-core.js), not a client-side-only guess; the actual send is
-      // still gated server-side regardless (belt-and-braces, same as
-      // project creation).
-      showProposeLayout: !!ROOM_MODE_CAPABILITIES && s.isRoomModerator,
+      // there), not merely disabled. canProposeLayout (distinct from
+      // isRoomModerator -- see its own comment) is a real, live Matrix
+      // power-level check specifically against the room's
+      // power_levels.events["work.wigwag.layout-proposal"] entry (see
+      // currentCanProposeLayout in bridges/wigwag-matrix-host.html), not
+      // a client-side-only guess, and not reusing project-creation's own
+      // level; the actual send is still gated server-side regardless
+      // (belt-and-braces, same as project creation). Gates both the
+      // plain "suggest" send and the "force" toggle below -- force only
+      // changes what a RECEIVING client does with an already-authorized
+      // proposal, not who's allowed to send one.
+      showProposeLayout: !!ROOM_MODE_CAPABILITIES && s.canProposeLayout,
       proposeLayoutConfirmOpen: s.proposeLayoutConfirmOpen,
       // Live-reported (Tom, 2026-09-29): a plain position:absolute popover
       // here silently did nothing visible -- the whole widget toolbar pill
@@ -13062,19 +13125,50 @@ class Component extends DCLogic {
           anchorRightPx = window.innerWidth - rect.right;
           anchorTopPx = rect.bottom + 6;
         }
-        this.setState(st => ({ proposeLayoutConfirmOpen: !st.proposeLayoutConfirmOpen, proposeLayoutConfirmAnchorRightPx: anchorRightPx, proposeLayoutConfirmAnchorTopPx: anchorTopPx }));
+        // Force defaults back to off every time this opens -- it's a
+        // per-send choice, never something that should silently carry
+        // over from a previous proposal.
+        this.setState(st => ({ proposeLayoutConfirmOpen: !st.proposeLayoutConfirmOpen, proposeLayoutConfirmAnchorRightPx: anchorRightPx, proposeLayoutConfirmAnchorTopPx: anchorTopPx, proposeLayoutForce: false }));
       },
-      onCancelProposeLayoutConfirm: () => this.setState({ proposeLayoutConfirmOpen: false }),
+      onCancelProposeLayoutConfirm: () => this.setState({ proposeLayoutConfirmOpen: false, proposeLayoutForce: false }),
+      onToggleProposeLayoutForce: () => this.setState(st => ({ proposeLayoutForce: !st.proposeLayoutForce })),
+      proposeLayoutForce: s.proposeLayoutForce,
+      proposeLayoutForceTrackBg: s.proposeLayoutForce ? 'var(--accent-fill)' : 'var(--n28)',
+      proposeLayoutForceThumbTransform: s.proposeLayoutForce ? 'translateX(13px)' : 'translateX(1px)',
+      // Default ("suggest"): the recipient decides via Accept/Dismiss,
+      // same as always. "Force": applies immediately on every other
+      // device with no Accept step -- the confirm step makes that
+      // distinction explicit before it's ever sent, not just a toggle
+      // label buried in the popover.
+      proposeLayoutConfirmBodyText: s.proposeLayoutForce
+        ? 'Force this layout on everyone in the room? It applies immediately -- no Accept step, no option to decline.'
+        : 'Propose this layout to the room? Others can accept or dismiss it.',
+      proposeLayoutConfirmButtonLabel: s.proposeLayoutForce ? 'Force' : 'Propose',
+      proposeLayoutConfirmButtonBg: s.proposeLayoutForce ? 'var(--c17)' : 'var(--accent-fill)',
       onSendLayoutProposal: () => this.sendLayoutProposal(),
       layoutProposalBanner: (() => {
-        // Only ever the ACTIVE project's proposal -- a room can hold more
-        // than one project (#149), but this device's columnOrder/
-        // columnWidths/hiddenFieldIds/freezeColId state (what Accept
-        // writes to) belongs to whichever project is currently open, same
-        // as every other per-project cosmetic pref.
+        // Only ever the ACTIVE project's proposal/notice -- a room can
+        // hold more than one project (#149), but this device's
+        // columnOrder/columnWidths/hiddenFieldIds/freezeColId state (what
+        // Accept, or a forced apply, writes to) belongs to whichever
+        // project is currently open, same as every other per-project
+        // cosmetic pref. A forced proposal already auto-applied (see
+        // processIncomingLayoutProposals) takes priority -- it's a
+        // dismiss-only confirmation of something that already happened,
+        // not something still awaiting a decision.
+        const applied = s.appliedLayoutNotices[s.projectId];
+        if (applied) {
+          return {
+            forced: true,
+            proposedByLabel: applied.proposedBy || 'Someone',
+            ageLabel: relativeAge(applied.proposedAt) || 'just now',
+            onDismiss: () => this.dismissAppliedLayoutNotice(s.projectId)
+          };
+        }
         const proposal = s.layoutProposals[s.projectId];
         if (!proposal) return null;
         return {
+          forced: false,
           proposedByLabel: proposal.proposedBy || 'Someone',
           ageLabel: relativeAge(proposal.proposedAt) || 'just now',
           onAccept: () => this.acceptLayoutProposal(s.projectId, proposal),

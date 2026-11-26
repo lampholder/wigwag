@@ -5097,7 +5097,7 @@ const WIGWAG_MATRIX_LAYOUT_PROPOSAL_TYPE = 'work.wigwag.layout-proposal';
 // browser/device, LAYOUT_PROPOSAL_DEVICE_ID_KEY) is what the self-check
 // actually uses -- the account id is kept only as descriptive metadata,
 // not for suppression.
-function matrixStateEventContentFromLayoutProposal({ columnOrder, columnWidths, hiddenFieldIds, freezeColId, kanbanColId, proposedBy, proposedByMatrixUserId, proposedByDeviceId, proposedAt }) {
+function matrixStateEventContentFromLayoutProposal({ columnOrder, columnWidths, hiddenFieldIds, freezeColId, kanbanColId, proposedBy, proposedByMatrixUserId, proposedByDeviceId, proposedAt, forced }) {
   return {
     v: WIGWAG_MATRIX_EVENT_VERSION,
     columnOrder: columnOrder || [],
@@ -5109,6 +5109,14 @@ function matrixStateEventContentFromLayoutProposal({ columnOrder, columnWidths, 
     proposedByMatrixUserId: proposedByMatrixUserId || null,
     proposedByDeviceId: proposedByDeviceId || null,
     proposedAt: proposedAt || null,
+    // Force-apply (no Accept step) vs. a plain suggestion a recipient can
+    // accept/dismiss -- see isModeratorForStateEvent's own comment for why
+    // this doesn't get its own, stricter power-level check: both ride the
+    // one shared moderator gate already enforced client- and server-side
+    // for this event type, "force" only changes what a RECEIVING client
+    // does with an already-authorized proposal, not who's allowed to send
+    // one.
+    forced: !!forced,
   };
 }
 // Tolerant like projectIdFromMatrixStateEvent: returns null on a
@@ -5130,6 +5138,7 @@ function layoutProposalFromMatrixStateEvent(rawEvent) {
     proposedByMatrixUserId: content.proposedByMatrixUserId || null,
     proposedByDeviceId: content.proposedByDeviceId || null,
     proposedAt: content.proposedAt || null,
+    forced: !!content.forced,
   };
 }
 async function sendMatrixLayoutProposal({ fetchImpl, homeserverUrl, accessToken, roomId, projectId, content }) {

@@ -2877,6 +2877,42 @@ test.describe('wigwag-matrix-host.html: moderator-proposed table layouts', () =>
     await expect(frame.locator('[data-testid=btn-propose-layout]')).toHaveCount(0);
   });
 
+  // Live-reported (Tom): propose-layout's own required level should
+  // genuinely track the room's power_levels.events entry for
+  // work.wigwag.layout-proposal, not silently ride the generic moderator
+  // check's own (project-creation-specific) level -- the two only ever
+  // agreed in the common case (no custom per-event override).
+  test('a custom power_levels.events override for work.wigwag.layout-proposal, set HIGHER than this otherwise-moderator user'
+    + ' qualifies for, hides the icon', async ({ page }) => {
+    const levels = { users: { '@test-user:example.org': 50 }, users_default: 0, state_default: 50, events: { 'work.wigwag.layout-proposal': 100 } };
+    await connect(page, { powerLevels: levels });
+    const frame = page.frameLocator('#frame');
+    await expect(frame.locator('[data-testid=btn-propose-layout]')).toHaveCount(0);
+  });
+
+  test('a custom power_levels.events override for work.wigwag.layout-proposal, set LOWER than state_default,'
+    + ' shows the icon for a user who would otherwise fail the generic moderator check', async ({ page }) => {
+    const levels = { users_default: 0, state_default: 50, events: { 'work.wigwag.layout-proposal': 0 } };
+    await connect(page, { powerLevels: levels });
+    const frame = page.frameLocator('#frame');
+    await expect(frame.locator('[data-testid=btn-propose-layout]')).toBeVisible();
+  });
+
+  // Live follow-up on the icon-only tests above: the SEND path itself
+  // (not just whether the icon shows) must also key off the same
+  // layout-proposal-specific level, not state_default -- confirms the
+  // host's real send dispatch, not just currentCanProposeLayout's own
+  // return value.
+  test('a user who only qualifies via the custom layout-proposal override (not the generic moderator level) can actually send one', async ({ page }) => {
+    const levels = { users_default: 0, state_default: 50, events: { 'work.wigwag.layout-proposal': 0 } };
+    const state = await connect(page, { powerLevels: levels });
+    const frame = page.frameLocator('#frame');
+    await frame.locator('[data-testid=btn-propose-layout]').click();
+    await frame.locator('[data-testid=btn-confirm-propose-layout]').click();
+    await page.waitForTimeout(200);
+    expect(state.sentLayoutProposals.length).toBe(1);
+  });
+
   test('a moderator sending a layout proposal PUTs a real state event keyed by the project id, with a confirm step first', async ({ page }) => {
     const state = await connect(page, { powerLevels: MODERATOR_LEVELS });
     const frame = page.frameLocator('#frame');
@@ -3157,6 +3193,108 @@ test.describe('wigwag-matrix-host.html: moderator-proposed table layouts', () =>
     await expect(frame.locator('[data-testid=layout-proposal-banner]')).toHaveCount(0);
     // Never applied -- status is still visible, nothing was hidden.
     await expect(frame.locator('[data-testid=col-header][data-col="status"]')).not.toHaveCount(0);
+  });
+
+  test.describe('Force apply (suggest vs. force toggle)', () => {
+    test('the confirm popover defaults to suggest -- sending with the toggle untouched sends forced:false', async ({ page }) => {
+      const state = await connect(page, { powerLevels: MODERATOR_LEVELS });
+      const frame = page.frameLocator('#frame');
+      await frame.locator('[data-testid=btn-propose-layout]').click();
+      await expect(frame.locator('[data-testid=btn-confirm-propose-layout]')).toHaveText('Propose');
+      await frame.locator('[data-testid=btn-confirm-propose-layout]').click();
+      await page.waitForTimeout(200);
+      expect(state.sentLayoutProposals[0].content.forced).toBe(false);
+    });
+
+    test('toggling force changes the confirm copy and button label, and sends forced:true', async ({ page }) => {
+      const state = await connect(page, { powerLevels: MODERATOR_LEVELS });
+      const frame = page.frameLocator('#frame');
+      await frame.locator('[data-testid=btn-propose-layout]').click();
+      await frame.locator('[data-testid=btn-toggle-propose-layout-force]').click();
+      await expect(frame.locator('[data-testid=propose-layout-confirm-popover]')).toContainText('applies immediately');
+      await expect(frame.locator('[data-testid=btn-confirm-propose-layout]')).toHaveText('Force');
+      await frame.locator('[data-testid=btn-confirm-propose-layout]').click();
+      await page.waitForTimeout(200);
+      expect(state.sentLayoutProposals[0].content.forced).toBe(true);
+    });
+
+    test('re-opening the confirm popover always resets force back off, even right after sending a forced one', async ({ page }) => {
+      const frame = page.frameLocator('#frame');
+      await connect(page, { powerLevels: MODERATOR_LEVELS });
+      await frame.locator('[data-testid=btn-propose-layout]').click();
+      await frame.locator('[data-testid=btn-toggle-propose-layout-force]').click();
+      await frame.locator('[data-testid=btn-confirm-propose-layout]').click();
+      await page.waitForTimeout(200);
+
+      await frame.locator('[data-testid=btn-propose-layout]').click();
+      await expect(frame.locator('[data-testid=btn-confirm-propose-layout]')).toHaveText('Propose');
+    });
+
+    // The actual point of "force": a recipient sees the new layout take
+    // effect immediately, with no Accept click -- just a dismiss-only
+    // confirmation of what already happened.
+    test('a forced proposal already live when a recipient connects applies immediately, with a dismiss-only notice (no Accept button)', async ({ page }) => {
+      const proposalContent = core.matrixStateEventContentFromLayoutProposal({
+        columnOrder: ['__title__', 'priority', '__comments__'],
+        hiddenFieldIds: ['status'],
+        proposedBy: 'Alex',
+        proposedByMatrixUserId: '@alex:example.org',
+        proposedByDeviceId: 'alex-device',
+        proposedAt: 555,
+        forced: true
+      });
+      await connect(page, { initialLayoutProposals: { [PROJ]: proposalContent } });
+      const frame = page.frameLocator('#frame');
+
+      // Applied already, before any click at all.
+      await expect(frame.locator('[data-testid=col-header][data-col="status"]')).toHaveCount(0);
+      await expect(frame.locator('[data-testid=layout-proposal-banner]')).toContainText('applied a new table layout');
+      await expect(frame.locator('[data-testid=btn-accept-layout]')).toHaveCount(0);
+      await expect(frame.locator('[data-testid=btn-dismiss-layout]')).toBeVisible();
+
+      await frame.locator('[data-testid=btn-dismiss-layout]').click();
+      await page.waitForTimeout(200);
+      await expect(frame.locator('[data-testid=layout-proposal-banner]')).toHaveCount(0);
+      // Dismissing the already-applied notice never undoes the apply.
+      await expect(frame.locator('[data-testid=col-header][data-col="status"]')).toHaveCount(0);
+    });
+
+    // Columns/widths/visibility/freeze are per-ACTIVE-project local state --
+    // a forced proposal for a project this device isn't currently viewing
+    // has nothing real to apply to yet, so it degrades to a plain,
+    // acceptable suggestion instead of silently mutating background state.
+    test('a forced proposal for a project that is NOT the active one is held as a normal acceptable suggestion, not silently applied -- even after switching into it', async ({ page }) => {
+      const OTHER_PROJ = 'second-project';
+      const otherProposal = core.matrixStateEventContentFromLayoutProposal({
+        columnOrder: ['__title__', '__comments__'],
+        hiddenFieldIds: ['status'],
+        proposedBy: 'Alex',
+        proposedByMatrixUserId: '@alex:example.org',
+        proposedByDeviceId: 'alex-device',
+        proposedAt: 555,
+        forced: true
+      });
+      const entries = seedProjectEntries().concat([
+        { type: 'work.wigwag.entry', content: { v: 1, scope: 'project', projectId: OTHER_PROJ, entry: { id: 'other-def', field: 'title', value: { label: 'Issue', type: 'issue' }, sortKey: 0, origin: 'authored' } } },
+        entryEvent({ issueId: 'j1', field: 'title', entry: { id: 'hj1', value: 'Other project issue', sortKey: 1 }, projectId: OTHER_PROJ })
+      ]);
+      await connect(page, { initialEntries: entries, initialLayoutProposals: { [OTHER_PROJ]: otherProposal } });
+      const frame = page.frameLocator('#frame');
+      // Not the active project -- no banner, nothing applied to this
+      // device's own (unrelated) current project state.
+      await expect(frame.locator('[data-testid=layout-proposal-banner]')).toHaveCount(0);
+      await expect(frame.locator('[data-testid=col-header][data-col="status"]')).not.toHaveCount(0);
+
+      // Switching into it shows a normal, acceptable banner -- NOT an
+      // already-applied notice -- confirming "force" never silently
+      // took effect in the background while this device wasn't looking.
+      await frame.locator('[data-testid=btn-switcher]').first().click();
+      await page.waitForTimeout(150);
+      await frame.locator('[data-testid=switcher-project-row]').filter({ hasText: OTHER_PROJ.slice(-8) }).click();
+      await page.waitForTimeout(300);
+      await expect(frame.locator('[data-testid=layout-proposal-banner]')).toContainText('proposed a table layout');
+      await expect(frame.locator('[data-testid=btn-accept-layout]')).toBeVisible();
+    });
   });
 
   // The core protocol guarantee (WIGWAG_MATRIX_LAYOUT_PROPOSAL_TYPE's own

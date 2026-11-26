@@ -1349,6 +1349,22 @@ if (new URLSearchParams(location.search).get('widgetId')) {
       const result = core.isModeratorForStateEvent(ev ? ev.content : null, resolvedMatrixUserId, core.WIGWAG_MATRIX_PROJECT_STATE_TYPE, roomCreatorSender);
       return result;
     }
+    // Live-reported (Tom, 2026-11-26): propose-layout's own required level
+    // should genuinely track the room's power_levels.events entry for
+    // WIGWAG_MATRIX_LAYOUT_PROPOSAL_TYPE, not silently ride
+    // currentIsModerator()'s own (project-creation-specific) level -- the
+    // two only ever agreed in the common case (no custom per-event
+    // override), which is exactly why that reuse went unnoticed as long as
+    // it did (see currentIsModerator's own comment on that history). A
+    // room operator who sets power_levels.events["work.wigwag.layout-
+    // proposal"] to something other than state_default now actually
+    // changes who can propose (and force) a layout, with no further
+    // client-side change needed -- isModeratorForStateEvent already reads
+    // events[eventType] generically; this was only ever a caller bug.
+    function currentCanProposeLayout() {
+      const ev = latestStateEventOfType('m.room.power_levels', '');
+      return core.isModeratorForStateEvent(ev ? ev.content : null, resolvedMatrixUserId, core.WIGWAG_MATRIX_LAYOUT_PROPOSAL_TYPE, roomCreatorSender);
+    }
     // Extracted (tracker #169/4f07e72b follow-up, 2026-10-02) from what
     // used to be inline in the bridgeTimer tick below, so a live-PUSHED
     // event (onPushedTimelineEvent, see its own comment) goes through the
@@ -1520,7 +1536,7 @@ if (new URLSearchParams(location.search).get('widgetId')) {
       // already reads.
       if (type === 'm.room.create' && data.sender) {
         roomCreatorSender = data.sender;
-        localStorage.postMessageToFrame({ type: 'wigwag:moderator-status', isModerator: currentIsModerator() });
+        localStorage.postMessageToFrame({ type: 'wigwag:moderator-status', isModerator: currentIsModerator(), canProposeLayout: currentCanProposeLayout() });
         return;
       }
       // work.wigwag.project (2026-10-03): unlike the other state-shaped
@@ -1550,7 +1566,7 @@ if (new URLSearchParams(location.search).get('widgetId')) {
       if (type === core.WIGWAG_MATRIX_LAYOUT_PROPOSAL_TYPE) {
         localStorage.postMessageToFrame({ type: 'wigwag:layout-proposals', proposalsByProjectId: currentLayoutProposalsByProjectId() });
       } else if (type === 'm.room.power_levels') {
-        localStorage.postMessageToFrame({ type: 'wigwag:moderator-status', isModerator: currentIsModerator() });
+        localStorage.postMessageToFrame({ type: 'wigwag:moderator-status', isModerator: currentIsModerator(), canProposeLayout: currentCanProposeLayout() });
       }
     }
     if (typeof transport.onStateUpdate === 'function') transport.onStateUpdate(onPushedStateUpdate);
@@ -2144,7 +2160,8 @@ if (new URLSearchParams(location.search).get('widgetId')) {
           // not something scoped to "while this session has been open".
           // Keyed by project id since a room can hold more than one.
           layoutProposals: currentLayoutProposalsByProjectId(),
-          isModerator: currentIsModerator()
+          isModerator: currentIsModerator(),
+          canProposeLayout: currentCanProposeLayout()
         }, '*');
         return;
       }
@@ -2580,7 +2597,7 @@ if (new URLSearchParams(location.search).get('widgetId')) {
             localStorage.postMessageToFrame({ type: 'wigwag:layout-proposals', proposalsByProjectId: currentLayoutProposalsByProjectId() });
           }
           if (moderatorMightHaveChanged) {
-            localStorage.postMessageToFrame({ type: 'wigwag:moderator-status', isModerator: currentIsModerator() });
+            localStorage.postMessageToFrame({ type: 'wigwag:moderator-status', isModerator: currentIsModerator(), canProposeLayout: currentCanProposeLayout() });
           }
         }, 5000);
 

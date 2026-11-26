@@ -13067,8 +13067,20 @@ class Component extends DCLogic {
       },
       lastUpdatedLabel: this.lastUpdatedLabel(),
       formatVersionLabel: 'v' + FORMAT_VERSION,
-      isMobileViewport: s.isMobileViewport,
-      isDesktopViewport: !s.isMobileViewport,
+      // Live-reported (Tom): the widget can cross the 640px mobile
+      // breakpoint on its own (Element's room list + member list panels
+      // both open narrows it plenty), swapping collaborators mid-session
+      // into the entirely separate mobile tree -- a different UI/
+      // interaction model, not just a restyle. In-room collaboration
+      // wants everyone looking at the same view regardless of how narrow
+      // any one person's panel happens to be, so the widget is pinned to
+      // the desktop tree unconditionally for now -- isMobileViewport
+      // itself (and the underlying matchMedia tracking in
+      // componentDidMount) is untouched, only what the template actually
+      // sees is forced here, so the real web/Tauri narrow-viewport
+      // behavior is completely unaffected.
+      isMobileViewport: !ROOM_MODE_CAPABILITIES && s.isMobileViewport,
+      isDesktopViewport: !!ROOM_MODE_CAPABILITIES || !s.isMobileViewport,
       // tracker #153 (45556022): a Matrix widget host confirms itself via
       // the same ROOM_MODE_CAPABILITIES handshake ack Room Scoped Widget
       // Mode already uses for storage -- reused here as the "are we

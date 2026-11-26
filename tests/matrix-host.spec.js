@@ -540,6 +540,25 @@ test.describe('wigwag-matrix-host.html: widget-embedded transport', () => {
     await expect(frame.locator('[data-testid=row]')).toContainText('Fix the widget bug');
   });
 
+  // Live-reported (Tom): a widget host can legitimately narrow the iframe
+  // below the 640px mobile breakpoint on its own (e.g. Element with both
+  // the room list and member list panels open) -- swapping that one
+  // viewer into the entirely separate mobile tree (different UI, different
+  // interaction model) while everyone else in the room still sees desktop
+  // actively works against in-room collaboration, where it matters that
+  // everyone's looking at the same thing. The widget is now pinned to the
+  // desktop tree unconditionally, regardless of how narrow its own iframe
+  // gets -- the real web/Tauri app (gotoTracker, no ROOM_MODE_CAPABILITIES)
+  // keeps its normal mobile-breakpoint behavior, covered separately in
+  // tests/mobile.spec.js.
+  test('a widget-embedded iframe narrower than the mobile breakpoint still renders the desktop tree, not the mobile one', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await h.gotoFakeWidgetHost(page, { roomId: '!widgetroom:example.org', roomName: 'Narrow Widget Room', initialEntries: seedLegacyEntries() });
+    const frame = page.frameLocator('#widget').frameLocator('#frame');
+    await expect(frame.locator('[data-testid=mobile-header]')).toHaveCount(0);
+    await expect(frame.locator('[data-testid=tracker-name-title]').first()).toBeVisible();
+  });
+
   test('creating an issue inside the widget-embedded iframe sends its entries through send_event, deduplicated', async ({ page }) => {
     await h.gotoFakeWidgetHost(page, { roomId: '!widgetroom:example.org', roomName: 'Widget Room', initialEntries: seedLegacyEntries() });
     const widget = page.frameLocator('#widget');

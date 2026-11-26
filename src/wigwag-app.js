@@ -2663,7 +2663,7 @@ class Component extends DCLogic {
     this.autoGrowTextareas();
     this.measureTableOverflow();
     this.measureStatusBarOverflow();
-    this._onWindowResize = () => { this.measureTableOverflow(); this.measureStatusBarOverflow(); this.measureKanbanOverflow(); };
+    this._onWindowResize = () => { this.measureTableOverflow(); this.measureStatusBarOverflow(); this.measureKanbanOverflow(); this.recomputeAddItemPlaceholder(); };
     window.addEventListener('resize', this._onWindowResize);
     this.setupAppearanceControl();
     this._mobileMq = window.matchMedia('(max-width: 640px)');
@@ -3940,7 +3940,7 @@ class Component extends DCLogic {
       this.setState({ issues: hydratedIssues });
     } catch (err) { console.warn('[tracker] failed to adopt external issues:', err); }
   }
-  componentDidUpdate() { this.ensureHeaderPattern(); this.persist(); this.persistSecrets(); this.persistProjectIndex(); this.persistIdentities(); this.persistCommentReads(); this.persistColumnWidths(); this.persistColumnWrap(); this.persistColumnOrder(); this.persistHiddenFieldIds(); this.persistColumnFilters(); this.persistSort(); this.maybeScheduleGithubPush(); this.hydrateMarkdownBodies(); this.autoGrowTextareas(); this.maybeMeasureTableOverflow(); this.maybeMeasureStatusBarOverflow(); this.maybeMeasureKanbanOverflow(); }
+  componentDidUpdate() { this.ensureHeaderPattern(); this.persist(); this.persistSecrets(); this.persistProjectIndex(); this.persistIdentities(); this.persistCommentReads(); this.persistColumnWidths(); this.persistColumnWrap(); this.persistColumnOrder(); this.persistHiddenFieldIds(); this.persistColumnFilters(); this.persistSort(); this.maybeScheduleGithubPush(); this.hydrateMarkdownBodies(); this.autoGrowTextareas(); this.maybeMeasureTableOverflow(); this.maybeMeasureStatusBarOverflow(); this.maybeMeasureKanbanOverflow(); this.recomputeAddItemPlaceholder(); }
   // Covers every markdown-rendered surface in the app -- issue/project
   // comments, project notes, and (as of the text-field markdown feature)
   // every plain 'text' field's cell/slide-over display -- all through the
@@ -4181,6 +4181,12 @@ class Component extends DCLogic {
     addFieldAnchorLeft: 0, addFieldAnchorTopPx: 0, addFieldAnchorBottomPx: 0, addFieldOpenUpward: false, addFieldMaxHeightPx: 400,
     addItemOpen: false,
     addItemDraft: '',
+    // Tauri-only context-connector hint on the add-item placeholder --
+    // which of addItemPlaceholderVariants() currently fits the real
+    // input width. Not reset on project switch (not per-project data);
+    // recomputeAddItemPlaceholder keeps it correct via componentDidUpdate
+    // and the window resize handler.
+    addItemPlaceholderVariantIdx: 0,
     // Tracker #191: bulk-link-issues-from-a-multi-line-paste. bulkPasteLines
     // is null when inactive, else the raw pasted lines (array of strings) --
     // everything else is re-derived fresh from it every render (see
@@ -4917,6 +4923,114 @@ class Component extends DCLogic {
   builtinConfigured(key) {
     return builtinKindConfigured(this.resolveFetchConnector('__builtin_' + key));
   }
+  // Tracker handoff "context_connector_hint" (Tauri-only add-item
+  // placeholder hint). Ported from a design reference built against an
+  // older, flat jiraProxySecret/salesforceProxySecret/
+  // googleDriveProxySecret state shape -- those identity-proxy fields
+  // have had no Settings UI since the Connected Sources rework (Jira/
+  // Salesforce credentials now live in connectedSources[], checked the
+  // same way builtinConfigured() already does for every other dispatch
+  // site). Checking the dead fields instead would make the hint claim
+  // "not configured" forever, even for a user who genuinely has set
+  // Jira/Salesforce up. Google Drive was never actually implemented
+  // anywhere in this codebase (no connector kind, no settings UI, no
+  // rendering) -- dropped here rather than naming a system there's no
+  // real way to configure; filed as tracker a7b998c8 if it's ever
+  // wanted for real. GitHub deliberately still checks the ACTIVE
+  // PROJECT's own githubRepo, not the builtin connector's own always-
+  // reachable (anonymous-access) status -- the builtin connector is
+  // configured by definition for every project, which would make
+  // "GitHub" permanently present and the "public GitHub" fallback
+  // phrase dead code; githubRepo is the one GitHub-shaped signal that
+  // actually varies, matching the intent of a hint that reflects real
+  // engagement.
+  configuredConnectorNames() {
+    const s = this.state;
+    const names = [];
+    if (s.githubRepo) names.push('GitHub');
+    if (this.builtinConfigured('jira')) names.push('Jira');
+    if (this.builtinConfigured('salesforce')) names.push('Salesforce');
+    return names;
+  }
+  joinWithOr(names) {
+    if (names.length <= 1) return names.join('');
+    if (names.length === 2) return names.join(' or ');
+    return names.slice(0, -1).join(', ') + ', or ' + names[names.length - 1];
+  }
+  // Non-Tauri: the original, unchanged static placeholder. Tauri: blank
+  // -- the overlay (addItemShowPlaceholderOverlay) takes over the whole
+  // visual job once the draft is empty, and native placeholder text
+  // sitting underneath it would double up as soon as it showed through.
+  addItemNativePlaceholder() {
+    return this.isTauriConnectorRuntime() ? '' : 'Start typing to create an item, or paste a public GitHub issue link';
+  }
+  // Ordered most to least verbose -- recomputeAddItemPlaceholder picks the
+  // first one that actually fits the live input width, so the sentence
+  // degrades gracefully instead of overflowing/wrapping the field. The
+  // trailing ", or add a context connector" CTA is the one thing every
+  // level keeps; only the paste-a-link clause in front of it shrinks away.
+  addItemPlaceholderVariants() {
+    const names = this.configuredConnectorNames();
+    const listPhrase = (names.length ? this.joinWithOr(names) : 'public GitHub') + ' link';
+    const firstPhrase = (names[0] || 'GitHub') + ' link';
+    return [
+      { lead: 'Start typing to create an issue, paste a ' + listPhrase, mutedPrefix: ', or ', linkText: 'add a context connector' },
+      { lead: 'Paste a ' + listPhrase, mutedPrefix: ', or ', linkText: 'add a context connector' },
+      { lead: 'Paste a ' + firstPhrase, mutedPrefix: ', or ', linkText: 'add a context connector' },
+      { lead: 'Start typing to create an issue', mutedPrefix: ', or ', linkText: 'add a context connector' },
+      { lead: '', mutedPrefix: '', linkText: 'Add a context connector' }
+    ];
+  }
+  measureTextWidth(text, font) {
+    if (!this._measureCanvasCtx) this._measureCanvasCtx = document.createElement('canvas').getContext('2d');
+    this._measureCanvasCtx.font = font;
+    return this._measureCanvasCtx.measureText(text).width;
+  }
+  // No ref-callback mount hook in this template engine (unlike the
+  // design reference) -- queries the real input/textarea by testid
+  // instead, same idiom goToAddItemInput already uses. Called from
+  // componentDidUpdate's own measurement fan-out (covers mount, and as
+  // a bonus over the design reference, a connector becoming configured
+  // mid-session while the box is already open) and from the existing
+  // window-resize handler (componentDidUpdate alone never fires on a
+  // resize with no state change).
+  recomputeAddItemPlaceholder() {
+    if (!this.state.addItemOpen && !this.state.mobileAddOpen) return;
+    const el = document.querySelector('[data-testid="add-item-input"]') || document.querySelector('[data-testid="mobile-add-input"]') || document.querySelector('[data-testid="widget-add-item-input"]');
+    if (!el) return;
+    const font = getComputedStyle(el).font || '13px -apple-system, sans-serif';
+    const available = el.clientWidth - 8;
+    const variants = this.addItemPlaceholderVariants();
+    let idx = variants.length - 1;
+    for (let i = 0; i < variants.length; i++) {
+      const text = variants[i].lead + variants[i].mutedPrefix + variants[i].linkText;
+      if (this.measureTextWidth(text, font) <= available) { idx = i; break; }
+    }
+    if (idx !== this.state.addItemPlaceholderVariantIdx) this.setState({ addItemPlaceholderVariantIdx: idx });
+  }
+  // Mobile has its own full-screen settings sheet (mobileSettingsSection,
+  // no separate "open" flag -- a real section id means open) rather than
+  // the desktop settingsOpen/settingsSection pair, and its own full-
+  // screen add-item page (mobileAddOpen) that this closes first rather
+  // than stacking two full-screen overlays with no spec for how that
+  // should look.
+  onAddItemPlaceholderLinkClick = e => {
+    e.stopPropagation();
+    if (this.state.mobileAddOpen) this.setState({ mobileAddOpen: false, mobileSettingsSection: 'connectedDataSources' });
+    else this.setState({ settingsOpen: true, settingsSection: 'connectedDataSources' });
+  };
+  // A real click fires mousedown (shifts focus, blurring the add-item
+  // input) -> blur -> click, in that order -- onAddItemBlur reacts to
+  // that blur by collapsing the whole box (addItemOpen: false) when the
+  // draft is empty, which it always is while this overlay is even
+  // showing. Without this, the box (and the CTA span itself) unmounts
+  // before the click handler above ever runs, so the link silently did
+  // nothing (confirmed live while building this). preventDefault on
+  // mousedown stops the browser's default focus-shift, so blur never
+  // fires at all -- same trick any dropdown/autocomplete item uses to
+  // survive a click without the triggering input blurring out from
+  // under it first.
+  onAddItemPlaceholderLinkMouseDown = e => e.preventDefault();
   // Connected Sources (Phase 1) macro engine. isTauriConnectorRuntime
   // follows the same window.__TAURI__-namespace feature-detect idiom as
   // isTauriNotificationRuntime/isTauriUpdaterRuntime -- a macro always
@@ -13781,6 +13895,20 @@ class Component extends DCLogic {
       onAddItemKeyDown: this.onAddItemKeyDown,
       onAddItemBlur: this.onAddItemBlur,
       onAddItemPaste: this.onAddItemPaste,
+      addItemNativePlaceholder: this.addItemNativePlaceholder(),
+      addItemShowPlaceholderOverlay: this.isTauriConnectorRuntime() && !s.addItemDraft.trim(),
+      addItemPlaceholderLead: (this.addItemPlaceholderVariants()[s.addItemPlaceholderVariantIdx] || this.addItemPlaceholderVariants()[0]).lead,
+      addItemPlaceholderMutedPrefix: (this.addItemPlaceholderVariants()[s.addItemPlaceholderVariantIdx] || this.addItemPlaceholderVariants()[0]).mutedPrefix,
+      addItemPlaceholderLinkText: (this.addItemPlaceholderVariants()[s.addItemPlaceholderVariantIdx] || this.addItemPlaceholderVariants()[0]).linkText,
+      onAddItemPlaceholderLinkClick: this.onAddItemPlaceholderLinkClick,
+      onAddItemPlaceholderLinkMouseDown: this.onAddItemPlaceholderLinkMouseDown,
+      // The mobile add-item sheet's own static caption under the textarea
+      // (pre-existing, independent of this feature) always repeated the
+      // same generic text regardless of draft content -- in Tauri it
+      // would now sit directly below the new dynamic overlay showing a
+      // different, connector-aware hint, so it's suppressed there rather
+      // than show two conflicting hints at once.
+      addItemCaptionHidden: this.isTauriConnectorRuntime(),
       bulkPaste: this.buildBulkPasteViewModel(s),
       bulkSummaryOpen: s.bulkSummaryOpen,
       onToggleBulkSummaryPopover: this.toggleBulkSummaryPopover,

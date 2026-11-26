@@ -1509,7 +1509,16 @@
     <div sc-camel-on-click="{{ onAddItemBoxClick }}" style="display:flex; align-items:center; border:1px solid {{ addItemBorderColor }}; box-shadow: 0 1px 3px var(--sh7); border-radius:8px; background:var(--surface-page); padding:10px 14px 10px 0; cursor: {{ addItemCursor }};">
       <span sc-camel-on-click="{{ onAddItemPlusClick }}" style="cursor:pointer; color: var(--text-muted); font-size:16px; line-height:1; width:56px; flex-shrink:0; display:flex; align-items:center; justify-content:center;">+</span>
       <sc-if value="{{ addItemOpen }}" hint-placeholder-val="{{ false }}">
-        <input data-testid="add-item-input" sc-camel-auto-focus="{{ true }}" placeholder="Start typing to create an item, or paste a public GitHub issue link" value="{{ addItemDraft }}" sc-camel-on-change="{{ onAddItemDraftChange }}" sc-camel-on-key-down="{{ onAddItemKeyDown }}" sc-camel-on-blur="{{ onAddItemBlur }}" sc-camel-on-paste="{{ onAddItemPaste }}" style="border:none; outline:none; font-size:13px; font-family:inherit; flex:1; color: var(--n43); padding-left:12px; background:transparent;">
+        <div style="position:relative; flex:1; min-width:0;">
+          <input data-testid="add-item-input" sc-camel-auto-focus="{{ true }}" placeholder="{{ addItemNativePlaceholder }}" value="{{ addItemDraft }}" sc-camel-on-change="{{ onAddItemDraftChange }}" sc-camel-on-key-down="{{ onAddItemKeyDown }}" sc-camel-on-blur="{{ onAddItemBlur }}" sc-camel-on-paste="{{ onAddItemPaste }}" style="position:relative; z-index:1; width:100%; box-sizing:border-box; border:none; outline:none; font-size:13px; font-family:inherit; color: var(--n43); padding-left:12px; background:transparent;">
+          <sc-if value="{{ addItemShowPlaceholderOverlay }}" hint-placeholder-val="{{ false }}">
+            <div data-testid="add-item-placeholder-overlay" style="position:absolute; inset:0; z-index:2; display:flex; align-items:center; padding-left:12px; font-size:13px; font-family:inherit; color: var(--text-muted); pointer-events:none; white-space:nowrap; overflow:hidden;">
+              <span style="pointer-events:none; white-space:pre;">{{ addItemPlaceholderLead }}</span>
+              <span style="pointer-events:none; opacity:0.6; white-space:pre;">{{ addItemPlaceholderMutedPrefix }}</span>
+              <span sc-camel-on-mouse-down="{{ onAddItemPlaceholderLinkMouseDown }}" sc-camel-on-click="{{ onAddItemPlaceholderLinkClick }}" style="pointer-events:auto; cursor:pointer; text-decoration:underline; opacity:0.6; flex-shrink:0;">{{ addItemPlaceholderLinkText }}</span>
+            </div>
+          </sc-if>
+        </div>
       </sc-if>
       <sc-if value="{{ addItemCollapsed }}" hint-placeholder-val="{{ true }}">
         <span style="font-size:13px; color: var(--text-secondary); display:flex; align-items:center; gap:6px; padding-left:12px;">You can use <span style="border:1px solid var(--border-strong); border-radius:5px; padding:1px 6px; font-size:11.5px; background: var(--surface-hover);">{{ addItemShortcutHint }}</span> to add an item</span>
@@ -3972,8 +3981,19 @@
         <span style="flex:1;"></span>
       </div>
       <div style="padding:16px 18px;">
-        <textarea data-testid="mobile-add-input" sc-camel-auto-focus="{{ true }}" placeholder="Start typing to create an item, or paste a public GitHub issue link" value="{{ mobile.addItemDraft }}" sc-camel-on-change="{{ mobile.onAddItemDraftChange }}" style="width:100%; box-sizing:border-box; min-height:90px; border:1px solid var(--accent-ink); border-radius:10px; padding:14px; font-size:15px; color:var(--n18); font-family:inherit; resize:vertical;"></textarea>
-        <div style="font-size:11.5px; color:var(--n24); margin-top:8px;">Start typing to create an item, or paste a public GitHub issue link</div>
+        <div style="position:relative;">
+          <textarea data-testid="mobile-add-input" sc-camel-auto-focus="{{ true }}" placeholder="{{ addItemNativePlaceholder }}" value="{{ mobile.addItemDraft }}" sc-camel-on-change="{{ mobile.onAddItemDraftChange }}" style="position:relative; z-index:1; width:100%; box-sizing:border-box; min-height:90px; border:1px solid var(--accent-ink); border-radius:10px; padding:14px; font-size:15px; color:var(--n18); font-family:inherit; resize:vertical;"></textarea>
+          <sc-if value="{{ addItemShowPlaceholderOverlay }}" hint-placeholder-val="{{ false }}">
+            <div data-testid="mobile-add-item-placeholder-overlay" style="position:absolute; inset:1px; z-index:2; padding:14px; font-size:15px; font-family:inherit; color:var(--n24); pointer-events:none; line-height:1.4;">
+              <span style="pointer-events:none; white-space:pre;">{{ addItemPlaceholderLead }}</span>
+              <span style="pointer-events:none; opacity:0.6; white-space:pre;">{{ addItemPlaceholderMutedPrefix }}</span>
+              <span sc-camel-on-mouse-down="{{ onAddItemPlaceholderLinkMouseDown }}" sc-camel-on-click="{{ onAddItemPlaceholderLinkClick }}" style="pointer-events:auto; cursor:pointer; text-decoration:underline; opacity:0.6;">{{ addItemPlaceholderLinkText }}</span>
+            </div>
+          </sc-if>
+        </div>
+        <sc-if value="{{ !addItemCaptionHidden }}" hint-placeholder-val="{{ true }}">
+          <div style="font-size:11.5px; color:var(--n24); margin-top:8px;">Start typing to create an item, or paste a public GitHub issue link</div>
+        </sc-if>
       </div>
       <div style="padding:0 18px 18px; margin-top:auto;">
         <div data-testid="mobile-add-submit" sc-camel-on-click="{{ mobile.onSubmitAdd }}" style="background:var(--accent-fill); color:var(--ink-on-accent); text-align:center; padding:13px; border-radius:10px; font-size:15px; font-weight:600; cursor:pointer;">Add issue</div>

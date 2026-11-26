@@ -7457,10 +7457,8 @@ class Component extends DCLogic {
         onMoveDown: () => this.moveRuleRow(colId, i, 1),
         upOpacity: i === 0 ? 0.25 : 1,
         downOpacity: i === rows.length - 1 ? 0.25 : 1,
-        onDragStart: e => this.dragStartRuleRow(i, e),
-        onDragOver: e => this.dragOverRuleRow(i, e),
-        onDrop: e => this.dropRuleRow(colId, i, e),
-        onDragEnd: () => this.dragEndRuleRow(),
+        idx: i,
+        onRowMouseDown: e => this.ruleRowMouseDown(colId, i, e),
         dragOpacity: s.draggingRuleRowIndex === i ? 0.4 : 1,
         showIndicatorBefore: isDraggingRows && s.dragOverRuleRowIndex === i && s.dragOverRuleRowSide === 'before' && s.draggingRuleRowIndex !== i,
         showIndicatorAfter: isDraggingRows && s.dragOverRuleRowIndex === i && s.dragOverRuleRowSide === 'after' && s.draggingRuleRowIndex !== i
@@ -9435,22 +9433,48 @@ class Component extends DCLogic {
       return { columnOrder: order };
     });
   }
-  dragStartRuleRow(i, e) { e.dataTransfer.setData('text/plain', String(i)); this.setState({ draggingRuleRowIndex: i }); }
-  dragOverRuleRow(i, e) {
+  // Same mousedown/mousemove/mouseup pattern as columnHeaderMouseDown/
+  // kanbanCardMouseDown, replacing native HTML5 draggable/dragstart/
+  // dragover/drop for the same reason (tauri-apps/tauri#3277, tracker
+  // ab6e4339) -- rowAt hit-tests the real rule-row DOM under the cursor
+  // (data-idx, newly added) rather than tracking row bounding boxes by
+  // hand.
+  ruleRowMouseDown(colId, i, e) {
+    if (e.button !== 0) return;
     e.preventDefault();
-    const rect = e.currentTarget.getBoundingClientRect();
-    const side = (e.clientY - rect.top) < rect.height / 2 ? 'before' : 'after';
-    if (this.state.dragOverRuleRowIndex !== i || this.state.dragOverRuleRowSide !== side) {
-      this.setState({ dragOverRuleRowIndex: i, dragOverRuleRowSide: side });
-    }
+    const startX = e.clientX, startY = e.clientY;
+    const THRESHOLD = 4;
+    let dragging = false;
+    const rowAt = (x, y) => {
+      const el = document.elementFromPoint(x, y);
+      const row = el && el.closest && el.closest('[data-testid="rule-row"]');
+      if (!row) return null;
+      const idx = parseInt(row.dataset.idx, 10);
+      if (Number.isNaN(idx)) return null;
+      const rect = row.getBoundingClientRect();
+      const side = (y - rect.top) < rect.height / 2 ? 'before' : 'after';
+      return { idx, side };
+    };
+    const onMove = ev => {
+      if (!dragging) {
+        if (Math.abs(ev.clientX - startX) < THRESHOLD && Math.abs(ev.clientY - startY) < THRESHOLD) return;
+        dragging = true;
+      }
+      const hit = rowAt(ev.clientX, ev.clientY);
+      this.setState({ draggingRuleRowIndex: i, dragOverRuleRowIndex: hit ? hit.idx : null, dragOverRuleRowSide: hit ? hit.side : null });
+    };
+    const onUp = ev => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      if (!dragging) return;
+      const hit = rowAt(ev.clientX, ev.clientY);
+      this.setState({ draggingRuleRowIndex: null, dragOverRuleRowIndex: null, dragOverRuleRowSide: null });
+      if (hit && hit.idx !== i) this.reorderRuleRow(colId, i, hit.idx, hit.side);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
   }
-  dragEndRuleRow() { this.setState({ draggingRuleRowIndex: null, dragOverRuleRowIndex: null, dragOverRuleRowSide: null }); }
-  dropRuleRow(colId, targetIdx, e) {
-    e.preventDefault();
-    const draggedIdx = parseInt(e.dataTransfer.getData('text/plain'), 10);
-    const side = this.state.dragOverRuleRowSide;
-    this.setState({ draggingRuleRowIndex: null, dragOverRuleRowIndex: null, dragOverRuleRowSide: null });
-    if (Number.isNaN(draggedIdx) || draggedIdx === targetIdx) return;
+  reorderRuleRow(colId, draggedIdx, targetIdx, side) {
     const rows = (this.ruleDefRows(this.effectiveDef(colId)) || []).slice();
     if (!rows[draggedIdx]) return;
     const [moved] = rows.splice(draggedIdx, 1);

@@ -206,8 +206,9 @@ test.describe('Bound value panel: row-based conditions', () => {
     await rows.nth(2).locator('[data-testid=rule-row-then]').selectOption({ label: 'P2' });
     await page.waitForTimeout(200);
 
-    // Drag the first row's handle onto the third row -- real HTML5
-    // draggable/dragstart, the same mechanism (and same style of test) as
+    // Drag the first row's handle onto the third row -- plain mouse
+    // events (ruleRowMouseDown), same mechanism (and same style of test,
+    // via Playwright's dragTo() driving real mouse events end to end) as
     // the column-header drag-reorder regression in interaction.spec.js.
     await rows.nth(0).locator('[data-testid=rule-row-drag-handle]').dragTo(rows.nth(2));
     await page.waitForTimeout(300);

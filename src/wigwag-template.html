@@ -26,14 +26,6 @@
     
   <style>
     html, body { margin: 0; overscroll-behavior: none; }
-    /* WebKit (Safari and WebKitGTK alike) only lets an <img>/<a>/text
-       selection initiate a native drag by default -- a plain div with
-       draggable="true" (rule-builder rows; column headers and kanban
-       cards were moved off native drag-and-drop entirely, see
-       columnHeaderMouseDown/kanbanCardMouseDown in src/wigwag-app.js)
-       needs this explicitly or dragstart never fires at all, even though
-       the exact same markup works unmodified in Chromium and Firefox. */
-    [draggable="true"] { -webkit-user-drag: element; }
     /* No visible scrollbar chrome on the table's scroll container, on
        either axis, in any browser -- scrolling itself is unaffected.
        "N more below" (data-testid="more-below-pill") is the signal that
@@ -1857,7 +1849,7 @@
           <div style="font-size:11px; color: var(--n20); line-height:1.45; margin-bottom:18px;">{{ ruleBuilder.sourceHint }}</div>
           <sc-if value="{{ ruleBuilder.isRows }}" hint-placeholder-val="{{ true }}">
             <sc-for list="{{ ruleBuilder.rows }}" as="row" hint-placeholder-count="2">
-              <div data-testid="rule-row" sc-camel-on-drag-over="{{ row.onDragOver }}" sc-camel-on-drop="{{ row.onDrop }}" style="border:1px solid var(--n28); border-radius:8px; padding:10px 12px 12px; margin-bottom:8px; background: var(--n49); position:relative; opacity: {{ row.dragOpacity }};">
+              <div data-testid="rule-row" data-idx="{{ row.idx }}" style="border:1px solid var(--n28); border-radius:8px; padding:10px 12px 12px; margin-bottom:8px; background: var(--n49); position:relative; opacity: {{ row.dragOpacity }};">
                 <sc-if value="{{ row.showIndicatorBefore }}" hint-placeholder-val="{{ false }}">
                   <div style="position:absolute; left:0; right:0; top:-1.5px; height:3px; background: var(--c8); z-index:10; border-radius:2px;"></div>
                 </sc-if>
@@ -1867,7 +1859,7 @@
                 <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
                   <span style="font-size:10px; font-weight:700; letter-spacing:0.07em; color: var(--text-secondary);">{{ row.keyword }}</span>
                   <div style="display:flex; align-items:center; gap:9px;">
-                    <span data-testid="rule-row-drag-handle" draggable="true" sc-camel-on-drag-start="{{ row.onDragStart }}" sc-camel-on-drag-end="{{ row.onDragEnd }}" title="Drag to reorder" style="cursor:grab; font-size:13px; color: var(--n39); line-height:1; letter-spacing:-1px; padding:4px 5px; margin:-4px -5px;">⠿</span>
+                    <span data-testid="rule-row-drag-handle" sc-camel-on-mouse-down="{{ row.onRowMouseDown }}" title="Drag to reorder" style="cursor:grab; font-size:13px; color: var(--n39); line-height:1; letter-spacing:-1px; padding:4px 5px; margin:-4px -5px;">⠿</span>
                     <span sc-camel-on-click="{{ row.onMoveUp }}" style="cursor:pointer; opacity: {{ row.upOpacity }}; font-size:12px; color: var(--text-muted);">↑</span>
                     <span sc-camel-on-click="{{ row.onMoveDown }}" style="cursor:pointer; opacity: {{ row.downOpacity }}; font-size:12px; color: var(--text-muted);">↓</span>
                     <span data-testid="rule-row-remove" sc-camel-on-click="{{ row.onRemove }}" style="cursor:pointer; color: var(--c17); font-size:12px;">✕</span>

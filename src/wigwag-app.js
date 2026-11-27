@@ -11,7 +11,7 @@
 const {
   xlsxCrc32, xlsxDeflateRaw, xlsxU16, xlsxU32, XLSX_DOS_TIME, XLSX_DOS_DATE, xlsxBuildZip, xlsxInflateRaw, parseZipEntries, xlsxEscape, xlsxColLetter, xlsxDateSerial, XLSX_PALETTE_HEX, xlsxFieldHref, xlsxBuildStyles, xlsxStylesXml, buildXlsxWorkbook, blankProjectFieldDefs, WIDTHS, defaultFieldDefs, defaultColumnOrder, canonicalColumnOrder, reconcileColumnOrder, TITLE_COL_ID, COMMENTS_COL_ID, SENTINEL_COLUMN_IDS, realColumnOrder, FORMAT_VERSION, STORAGE_KEY, SECRETS_KEY, PROJECTS_KEY, SESSION_PROJECT_KEY, IDENTITIES_KEY, COLUMN_WIDTHS_KEY, WRAP_KEY, COLUMN_ORDER_KEY, COLUMN_FILTERS_KEY, HIDDEN_FIELDS_KEY, LOCAL_FIELD_BINDINGS_KEY, LOCAL_DERIVED_ENTRY_IDS_KEY, UNSET_FILTER_VALUE, issueValueMatchesFilter, computeColumnFilterExcludedIds, columnFilterIsActive, dateFilterPresetRanges, parseFilterQuery, issueMatchesFieldTokens, computeFilterSuggestions, commitFilterSuggestion, isPastedTextASingleUrl, wrapSelectionWithMarkdownLink, COMMENT_READS_KEY, ISSUE_SUBSCRIPTIONS_KEY, SORT_KEY, SNAPSHOT_INGESTED_KEY, MENTION_NOTIFICATIONS_KEY, NOTIFIED_MENTIONS_KEY, NOTIFIED_MENTIONS_CAP, textMentionsEmail, truncate, splitHighlightSegments, matchingIssuesByIdPrefix, splitEmbeddedWigwagLinks, relativeAge, fieldRefSearchText, JIRA_KEY_RE, SF_ID_PREFIXES, salesforceObjectTypeFromId, IDENTITY_PROXY_FIELDS, identityProxyFieldsFrom, refInfo, col, statusCategoryColorName, guessStatusFieldId, pickGithubFields, pickJiraFields, pickSalesforceFields, escapeHtml, renderMarkdownInline, renderMarkdown, commentGroupKey, latestCommentsById, deriveIssueValues, deriveIssueFieldRefs, ISSUE_DELETED_FIELD_ID, issueIsDeleted, hydrateIssue, deriveFieldDefs, effectiveFieldDefs, deriveProjectName, PROJECT_NAME_FIELD_ID, deriveProjectNotes, PROJECT_NOTES_FIELD_ID, deriveProjectCode, PROJECT_CODE_FIELD_ID, isValidProjectCode, backfillProjectHistory, hydrateProject, ensureCommentsFieldDef, ensureTimestampFieldDefs, issueActivitySortKeys, base64FromBytes, bytesFromBase64, base64FromText, textFromBase64, principalKind, SIGN_ALG, JOSE_ALG_ES256, signEntryPayload, verifyEntryPayload, signableEntryPayload, signableProjectEntryPayload, redactedEntryPayload, redactedProjectEntryPayload, signableCommentEntryPayload, signableProjectCommentEntryPayload, RULE_NO_OPERAND_OPS, S, ruleCondition, ruleRowCriteria, ruleRowCondition, optionLabelForThen, ruleThenLiteral, compileRuleRows, COLORS, PALETTE_ORDER
 ,
-  buildSource, normalizeRef, sourceRefHasFullData, evalRule, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, fieldLocalBindState, liveBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, builtinKindConfigured, builtinKindReachable, resolveRefSystem, parseGithubUrl, parseGithubShortId, githubTokenCreationUrl, GITHUB_TOKEN_LIST_URL, parseGithubTokenExpiryHeader, parseGithubNextLink, parseJiraKey, parseSalesforceId, hostFromUrl, buildWigwagUri, parseWigwagUri, buildProjectTree, flattenProjectTree,
+  buildSource, normalizeRef, sourceRefHasFullData, evalRule, ruleNeedsSourceData, isEmptyBoundValue, computeBoundValue, isRefLocallyLive, fieldLocalBindState, liveBindState, applyComputedToField, applyLinkedRules, applyLiveLinkedRules, computeBoundFieldRef, settleLinkedRules, sortValue, computeSortSnapshot, builtinKindConfigured, builtinKindReachable, resolveRefSystem, parseGithubUrl, parseGithubShortId, githubTokenCreationUrl, GITHUB_TOKEN_LIST_URL, parseGithubTokenExpiryHeader, parseGithubNextLink, parseJiraKey, parseSalesforceId, hostFromUrl, buildWigwagUri, parseWigwagUri, buildProjectTree, flattenProjectTree, parseFlexibleDate, dateForFieldStorage, formatRelativeDate, formatDateDisplay,
   CSV_ID_COLUMN_HEADER, parseCsvText, looksLikeCsvText, nextPaletteColor, buildCsvImportPlan,
   CONNECTED_SOURCES_KEY, CONNECTED_SOURCE_RESERVED_KEYS, slugifyConnectorKey, newFieldId, newOptionId, pickConnectorFields, connectorLinkText, compileConnectorMacro,
   importSigningKey, signWithKey, verifyPayload, advanceSortKey, commitSignedEntry,
@@ -10701,6 +10701,14 @@ class Component extends DCLogic {
     }
     this.appendProjectHistory({ text: '"' + label + '" default value ' + (value ? ('set to "' + display + '"') : 'cleared'), field: colId, value: { ...def, defaultValue: value || null } });
   }
+  setFieldDateFormat(colId, value) {
+    const def = this.state.fieldDefs[colId];
+    this.appendProjectHistory({ text: '"' + (def.label || colId) + '" format set to ' + (value === 'relative' ? 'relative' : 'absolute'), field: colId, value: { ...def, dateFormat: value === 'relative' ? 'relative' : 'absolute' } });
+  }
+  setFieldColorGrade(colId, checked) {
+    const def = this.state.fieldDefs[colId];
+    this.appendProjectHistory({ text: '"' + (def.label || colId) + '" color grading ' + (checked ? 'enabled' : 'disabled'), field: colId, value: { ...def, colorGrade: !!checked } });
+  }
   setFieldRule(colId, value) {
     const def = this.effectiveDef(colId);
     this.recomputeAndLogDerived(() => {
@@ -11556,25 +11564,81 @@ class Component extends DCLogic {
     return cell;
   }
 
+  // Design handoff "Date Field Binding, Relative Format & Color Grading":
+  // dateRangeForColumn/dateGradePill below. isBoundLive/isOverridden
+  // follow the exact same "always resolves from the real stored value,
+  // badge is purely informational" convention buildSelectCell/
+  // buildMultiCell already use -- issue.values[colId] is already settled
+  // by applyLinkedRules by the time this runs, so no separate
+  // computeBoundValue call is needed here just to get a display value.
   buildDateCell(issue, colId, def, readOnly) {
     const s = this.state;
     const raw = issue.values[colId];
-    const displayText = raw || '—';
+    const bindState = def.linkedSourceId ? liveBindState(issue, colId, def, this.liveRuleCtx(issue.id)) : 'plain';
+    const isBoundLive = bindState === 'bound', isOverridden = bindState === 'overridden';
+    const isBoundCol = isBoundLive || isOverridden;
+    const grade = def.colorGrade ? this.dateGradePill(raw, colId) : null;
+    const displayText = raw ? formatDateDisplay(raw, def) : '—';
     const isSelected = s.selectedCell && s.selectedCell.issueId === issue.id && s.selectedCell.colId === colId;
     const cellHighlight = isSelected ? 'outline:2px solid var(--accent-fill); outline-offset:-2px;' : '';
     const active = !readOnly && s.activeCell && s.activeCell.issueId === issue.id && s.activeCell.colId === colId;
+    const badgeProps = { showCornerBadge: isBoundCol,
+      badgeFill: isOverridden ? 'var(--accent-fill)' : 'transparent', badgeColor: isOverridden ? 'var(--accent-fill)' : 'var(--text-tertiary)',
+      boundGlyphTitle: isOverridden ? 'Manually set — overrides the rule. Refresh to pull the rule\'s value back in.' : (isBoundLive ? this.lockTitle(def) + ' — click to override.' : '') };
     if (active) {
-      return { isDate: true, isEditing: true, isDisplay: false, inputValue: s.editDraft, onCellClick: undefined,
+      return Object.assign({ isDate: true, isEditing: true, isDisplay: false, inputValue: s.editDraft, onCellClick: undefined,
         onInputChange: e => this.setState({ editDraft: e.target.value }),
         onInputPaste: e => this.handleMarkdownLinkPaste(e, v => this.setState({ editDraft: v })),
         onInputBlur: () => this.commitEdit(issue.id, colId),
-        onInputKeyDown: e => this.handleEditKey(e, issue.id, colId), cellHighlight: '' };
+        onInputKeyDown: e => this.handleEditKey(e, issue.id, colId), cellHighlight: '' }, badgeProps);
     }
     const commitEditFn = () => this.startEdit(issue.id, colId, raw || '');
     const gatedClick = readOnly ? undefined : () => this.cellClickGate(issue.id, colId, commitEditFn);
-    return { isDate: true, isEditing: false, isDisplay: true, displayText,
+    return Object.assign({ isDate: true, isEditing: false, isDisplay: true, displayText,
       textColor: raw ? 'var(--text-primary)' : 'var(--text-placeholder)',
-      onClick: gatedClick, onCellClick: gatedClick, cellHighlight };
+      isPill: !!grade, pillBg: grade ? grade.bg : '', pillFg: grade ? grade.fg : '',
+      onClick: gatedClick, onCellClick: gatedClick, cellHighlight }, badgeProps);
+  }
+  // Column-wide earliest/latest resolved value cache, recomputed only
+  // when the issues array identity changes (not per cell) -- the
+  // README's own "once per render pass, not per cell" requirement.
+  dateRangeForColumn(colId) {
+    const issues = this.state.issues;
+    this._dateRangeCache = this._dateRangeCache || {};
+    const cached = this._dateRangeCache[colId];
+    if (cached && cached.issues === issues) return cached.range;
+    let min = null, max = null;
+    for (const issue of issues) {
+      if (issueIsDeleted(issue)) continue;
+      const d = parseFlexibleDate(issue.values[colId]);
+      if (!d) continue;
+      const t = d.getTime();
+      if (min == null || t < min) min = t;
+      if (max == null || t > max) max = t;
+    }
+    const range = { min, max };
+    this._dateRangeCache[colId] = { issues, range };
+    return range;
+  }
+  // Pivoted on "now": a past date shades red, more saturated the further
+  // back it is relative to the column's OWN earliest value; a future
+  // date shades blue, more saturated the further out relative to the
+  // column's own latest value. Uses color-mix against --surface so no
+  // new design tokens are needed beyond the existing red/blue pill pair.
+  dateGradePill(raw, colId) {
+    const d = parseFlexibleDate(raw);
+    if (!d) return null;
+    const now = Date.now();
+    const t = d.getTime();
+    const diff = t - now;
+    if (diff === 0) return null;
+    const isPast = diff < 0;
+    const range = this.dateRangeForColumn(colId);
+    const span = isPast ? (range.min != null ? now - range.min : 0) : (range.max != null ? range.max - now : 0);
+    const frac = span > 0 ? Math.min(1, Math.abs(diff) / span) : 1;
+    const pct = Math.round(25 + frac * 75);
+    const tierBg = isPast ? 'var(--c26)' : 'var(--c20)';
+    return { bg: 'color-mix(in oklch, ' + tierBg + ' ' + pct + '%, var(--surface) ' + (100 - pct) + '%)', fg: isPast ? 'var(--c27)' : 'var(--c3)' };
   }
   // Tracker #148 (0c46404d): Created/Updated -- always read-only (no
   // click-to-edit at all, unlike other field types which are only
@@ -12027,7 +12091,7 @@ class Component extends DCLogic {
     const colorFn = col;
     const columns = order.map((id, i) => {
       const def = fieldDefs[id];
-      const isBindableType = def.type === 'select' || def.type === 'multiselect' || def.type === 'text' || def.type === 'issue';
+      const isBindableType = def.type === 'select' || def.type === 'multiselect' || def.type === 'text' || def.type === 'issue' || def.type === 'date';
       const isTextLike = def.type === 'text' || def.type === 'issue' || def.type === 'commentStream';
       const width = s.columnWidths[id] || WIDTHS[id] || 160;
       const isSorted = s.sort.colId === id;
@@ -12475,10 +12539,19 @@ class Component extends DCLogic {
           sourceOptions: this.bindableSources(colId),
           ruleSummary: this.ruleSummary(def),
           ruleLinkLabel: def.linkedSourceId ? 'Edit rules…' : 'Set up…',
-          isBindable: def.type === 'select' || def.type === 'multiselect' || def.type === 'text' || def.type === 'issue',
+          isBindable: def.type === 'select' || def.type === 'multiselect' || def.type === 'text' || def.type === 'issue' || def.type === 'date',
           onOpenRules: () => this.openRuleBuilder(colId),
           hasOptions: def.type === 'select' || def.type === 'multiselect',
-          bindHint: def.type === 'multiselect' ? 'Return an array of option ids or labels.' : def.type === 'text' ? 'Return a string.' : def.type === 'issue' ? 'Copies another field\'s real link, not just its text.' : '',
+          bindHint: def.type === 'multiselect' ? 'Return an array of option ids or labels.' : def.type === 'text' ? 'Return a string.' : def.type === 'issue' ? 'Copies another field\'s real link, not just its text.' : def.type === 'date' ? 'Return a date — an ISO string, epoch number, or anything else "Mar 5 2026" is parsed automatically.' : '',
+          isDateType: def.type === 'date',
+          dateFormat: def.dateFormat || 'absolute',
+          isDateFormatAbsolute: (def.dateFormat || 'absolute') === 'absolute',
+          isDateFormatRelative: def.dateFormat === 'relative',
+          onDateFormatChange: e => this.setFieldDateFormat(colId, e.target.value),
+          colorGrade: !!def.colorGrade,
+          colorGradeToggleTrackBg: def.colorGrade ? 'var(--accent-fill)' : 'var(--n28)',
+          colorGradeToggleThumbTransform: def.colorGrade ? 'translateX(13px)' : 'translateX(1px)',
+          onToggleColorGrade: () => this.setFieldColorGrade(colId, !def.colorGrade),
           newOptLabel: s.fieldEditorNewOptLabel,
           onNewOptLabelChange: e => this.setState({ fieldEditorNewOptLabel: e.target.value }),
           onAddOpt: () => this.addFieldEditorOption(colId),
@@ -12925,6 +12998,10 @@ class Component extends DCLogic {
               if (opt) { displayValue = opt.label; isPill = true; pillBg = col(opt.color).bg; pillFg = col(opt.color).fg; }
             } else if (def.type === 'multiselect' && Array.isArray(v) && v.length) {
               displayValue = v.map(id => { const opt = (def.options || []).find(o => o.id === id); return opt ? opt.label : id; }).join(', ');
+            } else if (def.type === 'date' && v) {
+              displayValue = formatDateDisplay(v, def);
+              const grade = def.colorGrade ? this.dateGradePill(v, colId) : null;
+              if (grade) { isPill = true; pillBg = grade.bg; pillFg = grade.fg; }
             } else {
               displayValue = v == null || v === '' ? '—' : (def.type === 'timestamp' ? relativeAge(v) : String(v));
             }

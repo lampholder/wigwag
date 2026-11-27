@@ -1149,7 +1149,12 @@
                 </sc-if>
                 <sc-if value="{{ seg.cell.isDisplay }}" hint-placeholder-val="{{ true }}">
                   <span sc-camel-on-click="{{ seg.cell.onClick }}" style="display:flex; align-items:center; justify-content:space-between; gap:6px; cursor:text; width:100%; max-width:100%;">
-                    <span style="font-size:13px; color: {{ seg.cell.textColor }}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; font-variant-numeric: tabular-nums;">{{ seg.cell.displayText }}</span>
+                    <sc-if value="{{ seg.cell.isPill }}" hint-placeholder-val="{{ false }}">
+                      <span style="font-size:12.5px; padding:3px 10px; border-radius:12px; background: {{ seg.cell.pillBg }}; color: {{ seg.cell.pillFg }}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-variant-numeric: tabular-nums;">{{ seg.cell.displayText }}</span>
+                    </sc-if>
+                    <sc-if value="{{ !seg.cell.isPill }}" hint-placeholder-val="{{ true }}">
+                      <span style="font-size:13px; color: {{ seg.cell.textColor }}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; font-variant-numeric: tabular-nums;">{{ seg.cell.displayText }}</span>
+                    </sc-if>
                     <svg width="13" height="13" sc-camel-view-box="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="color: var(--text-tertiary); flex-shrink:0;"><rect x="2" y="3" width="12" height="11" rx="1.5"></rect><line x1="2" y1="6.5" x2="14" y2="6.5"></line><line x1="5" y1="1.5" x2="5" y2="4.5"></line><line x1="11" y1="1.5" x2="11" y2="4.5"></line></svg>
                   </span>
                 </sc-if>
@@ -1797,6 +1802,20 @@
         <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; border:1px solid var(--n34); border-radius:6px; padding:8px 10px; margin-bottom:16px;">
           <span style="font-size:12.5px; color: var(--n48);">{{ fieldEditor.ruleSummary }}</span>
           <span data-testid="field-editor-open-rules" sc-camel-on-click="{{ fieldEditor.onOpenRules }}" style="cursor:pointer; font-size:12.5px; font-weight:600; color: var(--accent-ink); white-space:nowrap;">{{ fieldEditor.ruleLinkLabel }}</span>
+        </div>
+      </sc-if>
+      <sc-if value="{{ fieldEditor.isDateType }}" hint-placeholder-val="{{ false }}">
+        <div style="border-top:1px solid var(--border-subtle); margin:16px 0 14px;"></div>
+        <div style="font-size:11px; font-weight:600; letter-spacing:0.04em; color: var(--text-muted); margin-bottom:6px;">FORMAT</div>
+        <sc-raw-select data-testid="field-editor-date-format-select" value="{{ fieldEditor.dateFormat }}" sc-camel-on-change="{{ fieldEditor.onDateFormatChange }}" style="width:100%; box-sizing:border-box; padding:6px 8px; border:1px solid var(--border); border-radius:6px; font-size:13px; font-family:inherit; margin-bottom:14px;">
+          <option value="absolute">Absolute (e.g. Mar 5, 2026)</option>
+          <option value="relative">Relative (e.g. 3 days ago)</option>
+        </sc-raw-select>
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:16px;">
+          <span style="font-size:13px;">Color grade by age</span>
+          <span data-testid="field-editor-color-grade-toggle" sc-camel-on-click="{{ fieldEditor.onToggleColorGrade }}" style="flex-shrink:0; width:26px; height:15px; border-radius:999px; background: {{ fieldEditor.colorGradeToggleTrackBg }}; position:relative; cursor:pointer; transition:background 0.15s ease; box-sizing:border-box;">
+            <span style="display:block; width:11px; height:11px; border-radius:50%; background:#fff; position:absolute; top:2px; left:0; transform: {{ fieldEditor.colorGradeToggleThumbTransform }}; transition:transform 0.15s ease; box-shadow:0 1px 2px var(--sh7);"></span>
+          </span>
         </div>
       </sc-if>
 <sc-if value="{{ fieldEditor.hasOptions }}" hint-placeholder-val="{{ true }}">

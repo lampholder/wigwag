@@ -581,24 +581,24 @@ test.describe('Date fields', () => {
     await expect(cell.locator('input[type=date]')).toBeVisible();
   });
 
-  test('a set date renders as plain ISO 8601 (YYYY-MM-DD), and the same value shows in the slide-over', async ({ page }) => {
+  test('a set date renders in readable absolute format (design handoff: binding/relative-format/color-grading), and the same display shows in the slide-over', async ({ page }) => {
     const colId = await addDateField(page, 'Due date');
     await setDate(page, colId, 1, '2026-08-10');
 
-    await expect(h.fieldCell(page, 1, colId)).toHaveText('2026-08-10');
+    await expect(h.fieldCell(page, 1, colId)).toHaveText('Aug 10, 2026');
 
     await h.openSlideover(page, 1);
-    await expect(h.slideoverField(page, colId)).toContainText('2026-08-10');
+    await expect(h.slideoverField(page, colId)).toContainText('Aug 10, 2026');
   });
 
   test('a date value persists across reload', async ({ page }) => {
     const colId = await addDateField(page, 'Due date');
     await setDate(page, colId, 1, '2026-08-10');
-    await expect(h.fieldCell(page, 1, colId)).toHaveText('2026-08-10');
+    await expect(h.fieldCell(page, 1, colId)).toHaveText('Aug 10, 2026');
 
     await page.reload();
     await page.waitForTimeout(300);
-    await expect(h.fieldCell(page, 1, colId)).toHaveText('2026-08-10');
+    await expect(h.fieldCell(page, 1, colId)).toHaveText('Aug 10, 2026');
   });
 
   // The glyph is a browser-independent cue for the "at rest" (display)
@@ -633,10 +633,21 @@ test.describe('Date fields', () => {
     expect(h.latestFieldValue(i1, colId)).toBe('2026-08-10');
   });
 
-  test('has no OPTIONS section or "Edit field…" menu item -- not bindable via a rule', async ({ page }) => {
+  // Design handoff "Date Field Binding, Relative Format & Color Grading":
+  // a date field is now bindable like select/text/issue, so "Edit field…"
+  // (and the field editor's Bound Source/Bound Value/Format/Color-grade
+  // sections) are reachable -- but it still has no OPTIONS section, since
+  // it's not option-based.
+  test('"Edit field…" is reachable (now bindable, with Format/Color-grade settings), but there is still no OPTIONS section', async ({ page }) => {
     const colId = await addDateField(page, 'Due date');
     await h.openColumnMenu(page, colId);
-    await expect(page.getByText('Edit field…', { exact: true })).toHaveCount(0);
+    await expect(page.getByText('Edit field…', { exact: true })).toHaveCount(1);
+    await page.getByText('Edit field…', { exact: true }).click();
+    await page.waitForTimeout(150);
+    await expect(page.locator('[data-testid=field-editor]')).toContainText('BOUND SOURCE');
+    await expect(page.locator('[data-testid=field-editor-date-format-select]')).toBeVisible();
+    await expect(page.locator('[data-testid=field-editor-color-grade-toggle]')).toBeVisible();
+    await expect(page.locator('[data-testid=field-editor]')).not.toContainText('OPTIONS');
   });
 
   test('has no "Wrap text" menu item and no checkbox-list filter options -- fixed-format, not free-form or option-based', async ({ page }) => {

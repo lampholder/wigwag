@@ -705,7 +705,7 @@ test.describe('M7: row detail', () => {
       await page.waitForTimeout(300);
 
       await expect(input).toHaveCount(0);
-      await expect(row).toContainText('2026-12-25');
+      await expect(row).toContainText('Dec 25, 2026');
     });
   });
 
@@ -1085,7 +1085,7 @@ test.describe('Mobile: bottom sheet swipe-to-dismiss', () => {
 
     await page.locator('[data-testid=mobile-row]').first().click();
     await page.waitForTimeout(350);
-    await expect(page.locator('[data-testid=mobile-row-detail-field][data-col=dueDate]')).toContainText('2026-11-11');
+    await expect(page.locator('[data-testid=mobile-row-detail-field][data-col=dueDate]')).toContainText('Nov 11, 2026');
   });
 });
 

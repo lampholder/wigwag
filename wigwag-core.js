@@ -705,6 +705,80 @@ function localISODate(d) {
   const p = n => String(n).padStart(2, '0');
   return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
 }
+// Design handoff "Date Field Binding, Relative Format & Color Grading":
+// turns a bound rule's raw computed value (an ISO string, an epoch number
+// in seconds or ms, or anything else Date.parse understands) into a real
+// Date, so a date-typed field can be a rule TARGET like select/text
+// already are. Returns null for anything unparseable.
+function parseFlexibleDate(raw) {
+  if (raw instanceof Date) return isNaN(raw.getTime()) ? null : raw;
+  if (typeof raw === 'number') {
+    // Epoch seconds vs ms: anything this small as ms would land in 1970,
+    // never a plausible value for a rule computing "today" or "closedAt".
+    const ms = raw < 1e12 ? raw * 1000 : raw;
+    const d = new Date(ms);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  if (typeof raw === 'string' && raw.trim()) {
+    const trimmed = raw.trim();
+    if (/^\d+$/.test(trimmed)) return parseFlexibleDate(Number(trimmed));
+    const d = new Date(trimmed);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  return null;
+}
+// Target-type coercion for applyComputedToField -- always the plain
+// 'YYYY-MM-DD' storage shape a date field's own value already uses
+// (issueValueMatchesFilter's string-range comparison depends on this),
+// regardless of what shape the rule's source data came in as.
+function dateForFieldStorage(d) {
+  return localISODate(d);
+}
+// Sign-aware "X ago" / "in X" -- deliberately separate from relativeAge
+// (that one is past-only and day-capped, used for Created/Updated
+// timestamps everywhere else; touching it would break those callers).
+// Granularity widens as the gap grows: minutes, hours, days, months, years.
+function formatRelativeDate(d, now) {
+  now = now || new Date();
+  const diffMs = d.getTime() - now.getTime();
+  const future = diffMs >= 0;
+  const abs = Math.abs(diffMs);
+  const mins = Math.round(abs / 60000);
+  let n, unit;
+  if (mins < 1) return 'just now';
+  if (mins < 60) { n = mins; unit = 'minute'; }
+  else {
+    const hours = Math.round(mins / 60);
+    if (hours < 24) { n = hours; unit = 'hour'; }
+    else {
+      const days = Math.round(hours / 24);
+      if (days < 30) { n = days; unit = 'day'; }
+      else {
+        const months = Math.round(days / 30);
+        if (months < 12) { n = months; unit = 'month'; }
+        else { n = Math.round(days / 365); unit = 'year'; }
+      }
+    }
+  }
+  const phrase = n + ' ' + unit + (n === 1 ? '' : 's');
+  return future ? ('in ' + phrase) : (phrase + ' ago');
+}
+// Field-level display dispatch -- 'absolute' (default) is a readable
+// calendar date, 'relative' is formatRelativeDate; applies to a manually
+// entered value exactly the same as a bound one, since both end up in the
+// same 'YYYY-MM-DD' storage shape by the time this runs.
+function formatDateDisplay(raw, def) {
+  if (raw == null || raw === '') return '';
+  // 'YYYY-MM-DD' has no time component -- parse as LOCAL midnight (not
+  // UTC, which new Date('YYYY-MM-DD') does) so the displayed calendar day
+  // never shifts a day off depending on the viewer's timezone, same
+  // local-components concern localISODate itself exists to avoid.
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+  const d = m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : parseFlexibleDate(raw);
+  if (!d) return String(raw);
+  if (def && def.dateFormat === 'relative') return formatRelativeDate(d);
+  return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+}
 function dateFilterPresetRanges(now) {
   const daysAgo = n => { const d = new Date(now); d.setDate(d.getDate() - n); return localISODate(d); };
   const today = localISODate(now);
@@ -2667,6 +2741,14 @@ function applyComputedToField(values, colId, def, computed) {
     const cur = values[colId] || [];
     const same = cur.length === ids.length && cur.every((v, i) => v === ids[i]);
     return same ? values : { ...values, [colId]: ids };
+  }
+  if (def.type === 'date') {
+    // Same "confident unresolvable answer clears the field" convention
+    // select's own branch above uses (opt ? opt.id : null) -- an
+    // unparseable computed value clears to '', the type's own "no value".
+    const parsed = parseFlexibleDate(computed);
+    const next = parsed ? dateForFieldStorage(parsed) : '';
+    return next === values[colId] ? values : { ...values, [colId]: next };
   }
   if (def.type === 'issue' && Array.isArray(computed)) {
     // Multi-issue linking non-goal: a rule that computes 2+ issues
@@ -5671,6 +5753,7 @@ const WigwagCoreExports = {
   squashHistory, redactEntry, redactProjectEntry, displayValueForHistory, buildSourceText, keyRegistryEncoder, rehydrateKeyRef, humanFileSize, isImageFilename, parseJsonl, parseCsvText, CSV_ID_COLUMN_HEADER, looksLikeCsvText, nextPaletteColor, buildCsvImportPlan, entryKey, unionByKey, mergeIssuePair, computeIssueMerge, mergeHasRealChanges, computeFieldDefsMerge, computeDerivedChangeEntries,
   isPastedTextASingleUrl, wrapSelectionWithMarkdownLink,
   buildGithubContentsUrl, buildGithubContentsHeaders, buildGithubCommitMessage, pullGithubFile, pushGithubFile, probeGithubRepoAccess, computeHeaderMeshTriangles, columnFilterIsActive, localISODate, dateFilterPresetRanges,
+  parseFlexibleDate, dateForFieldStorage, formatRelativeDate, formatDateDisplay,
   computeHeaderCompression, cellPaddingForWidth, computeAffordanceFade,
   WIGWAG_EXPORT_TYPE, WIGWAG_EXPORT_VERSION, canonicalRecordsText, computeContentSha256Hex, fingerprintPublicKey, buildExportEnvelope, parseExportEnvelope, verifyExportEnvelope,
   EXPORT_TRUST_KEY, lookupSenderTrust, classifySenderTrust, rememberSenderTrust, classifyExportProvenance,

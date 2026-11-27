@@ -101,9 +101,15 @@
 </helmet>
 <sc-if value="{{ bootOverlayVisible }}" hint-placeholder-val="{{ true }}">
   <div data-testid="boot-splash" style="position:fixed; inset:0; z-index:400; background:var(--surface-page); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; opacity:{{ bootOverlayOpacity }}; transition:opacity 0.4s ease; pointer-events:{{ bootOverlayPointerEvents }};">
-    <div style="display:flex; flex-direction:column; align-items:center; gap:14px;">
-      <svg viewBox="0 0 48 62" fill="none" style="width:34px; height:44px; display:block;"><path d="M0 2C0 0.8954 0.8954 0 2 0C3.1046 0 4 0.8954 4 2V60C4 61.1046 3.1046 62 2 62C0.8954 62 0 61.1046 0 60V2Z" fill="var(--logo-ink)"></path><path d="M4 4H48V48H4V4Z" fill="#EF4755"></path><path d="M17 18H33V34H17V18Z" fill="white"></path></svg>
-      <span style="font-family:'Space Grotesk', system-ui, sans-serif; font-size:19px; font-weight:700; letter-spacing:-0.005em; color: var(--n10);">Wigwag</span>
+    <div style="display:flex; flex-direction:column; align-items:center; gap:8px;">
+      <svg viewBox="0 0 48 62" fill="none" style="width:26px; height:34px; display:block;"><path d="M0 2C0 0.8954 0.8954 0 2 0C3.1046 0 4 0.8954 4 2V60C4 61.1046 3.1046 62 2 62C0.8954 62 0 61.1046 0 60V2Z" fill="var(--logo-ink)"></path><path d="M4 4H48V48H4V4Z" fill="#EF4755"></path><path d="M17 18H33V34H17V18Z" fill="white"></path></svg>
+      <div style="display:flex; flex-direction:column; align-items:center; gap:7px;">
+        <span style="font-family:'Space Grotesk', system-ui, sans-serif; font-size:13px; font-weight:700; letter-spacing:0; color: var(--text-tertiary);">Wigwag</span>
+        <div style="display:flex; flex-direction:column; align-items:center; gap:0;">
+          <span style="font-size:16.5px; font-weight:650; color: var(--text-primary); text-align:center; max-width:230px; line-height:1.3; letter-spacing:-0.01em;">Issue tracking over Matrix</span>
+          <span style="font-size:11.5px; color: var(--text-tertiary); text-align:center; letter-spacing:0.01em;">quick · flexible · private</span>
+        </div>
+      </div>
     </div>
   </div>
 </sc-if>
